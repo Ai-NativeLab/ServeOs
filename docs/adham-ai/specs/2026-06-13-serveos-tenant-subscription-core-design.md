@@ -258,7 +258,11 @@ en/ar + RTL, EG/SA region fields, audit logging.
 
 - Menu/catalog, products, branches' operational data → **Menu sub-project**
 - Online ordering, cart, checkout, QR/table ordering, customer payment gateways →
-  **Ordering sub-project**
+  **Ordering sub-project**. *Captured forward requirement: orders from all channels
+  (web storefront, QR/table, and WhatsApp) must surface in a single unified order
+  list in the tenant dashboard, so the owner sees web and WhatsApp orders side by
+  side — the dashboard is the one source of truth, with WhatsApp as an additional
+  channel feeding into it, not a separate silo.*
 - WhatsApp commerce integration (foundation only reserves the number-count
   entitlement + `OtpProvider` seam) → **WhatsApp sub-project**
 - Reservations, customer accounts/favorites, analytics dashboards, real
