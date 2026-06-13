@@ -1,4 +1,5 @@
 import { pgTable, uuid, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { tenants } from "@/server/tenancy/schema";
 
 export const users = pgTable(
@@ -17,6 +18,8 @@ export const users = pgTable(
   (t) => [
     uniqueIndex("users_email_per_tenant").on(t.tenantId, t.email),
     uniqueIndex("users_phone_per_tenant").on(t.tenantId, t.phone),
+    uniqueIndex("users_email_platform_unique").on(t.email).where(sql`${t.tenantId} IS NULL`),
+    uniqueIndex("users_phone_platform_unique").on(t.phone).where(sql`${t.tenantId} IS NULL`),
   ],
 );
 

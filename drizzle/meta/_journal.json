@@ -43,6 +43,13 @@
       "when": 1781386697344,
       "tag": "0005_tiresome_ultron",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1781389506827,
+      "tag": "0006_simple_quentin_quire",
+      "breakpoints": true
     }
   ]
 }

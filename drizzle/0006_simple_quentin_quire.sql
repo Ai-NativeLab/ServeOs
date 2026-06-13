@@ -1,0 +1,2 @@
+CREATE UNIQUE INDEX "users_email_platform_unique" ON "users" USING btree ("email") WHERE "users"."tenant_id" IS NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "users_phone_platform_unique" ON "users" USING btree ("phone") WHERE "users"."tenant_id" IS NULL;
