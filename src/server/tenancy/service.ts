@@ -11,7 +11,7 @@ export async function createTenant(
   const timezone = input.country === "SA" ? "Asia/Riyadh" : "Africa/Cairo";
   const [row] = await db
     .insert(tenants)
-    .values({ currency, timezone, ...input })
+    .values({ ...input, currency, timezone })
     .returning();
   return row;
 }

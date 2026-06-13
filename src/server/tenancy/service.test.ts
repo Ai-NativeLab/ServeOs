@@ -27,4 +27,18 @@ describe("tenancy service", () => {
     expect(await resolveTenantByHost("app.serveos.localhost", "serveos.localhost")).toBeNull();
     expect(await resolveTenantByHost("admin.serveos.localhost", "serveos.localhost")).toBeNull();
   });
+
+  it("derived currency/timezone win over caller-supplied values", async () => {
+    const t = await createTenant({ slug: "eg-co", name: "EG Co", country: "EG", currency: "USD", timezone: "America/New_York" } as any);
+    expect(t.currency).toBe("EGP");
+    expect(t.timezone).toBe("Africa/Cairo");
+  });
+
+  it("subdomainFromHost returns null for reserved and multi-label hosts and is case-insensitive", async () => {
+    const { subdomainFromHost } = await import("./service");
+    expect(subdomainFromHost("api.serveos.localhost", "serveos.localhost")).toBeNull();
+    expect(subdomainFromHost("www.serveos.localhost", "serveos.localhost")).toBeNull();
+    expect(subdomainFromHost("a.b.serveos.localhost", "serveos.localhost")).toBeNull();
+    expect(subdomainFromHost("ROMA.serveos.localhost", "serveos.localhost")).toBe("roma");
+  });
 });

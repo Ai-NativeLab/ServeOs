@@ -19,4 +19,10 @@ describe("classifyHost", () => {
   it("strips a port before classifying", () => {
     expect(classifyHost("app.serveos.localhost:3000", root)).toEqual({ surface: "dashboard" });
   });
+  it("classifies a multi-label host as marketing", () => {
+    expect(classifyHost("a.b.serveos.localhost", root)).toEqual({ surface: "marketing" });
+  });
+  it("is case-insensitive on the host", () => {
+    expect(classifyHost("ROMA.serveos.localhost", root)).toEqual({ surface: "storefront", slug: "roma" });
+  });
 });
