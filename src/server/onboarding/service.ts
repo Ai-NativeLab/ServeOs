@@ -23,6 +23,8 @@ const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])$/;
 export async function registerRestaurant(input: RegisterInput): Promise<RegisterResult> {
   if (!SLUG_RE.test(input.slug)) throw new Error(`Invalid slug: ${input.slug}`);
 
+  const passwordHash = await hashPassword(input.password);
+
   return db.transaction(async (tx) => {
     const currency = input.country === "SA" ? "SAR" : "EGP";
     const timezone = input.country === "SA" ? "Asia/Riyadh" : "Africa/Cairo";
@@ -32,7 +34,6 @@ export async function registerRestaurant(input: RegisterInput): Promise<Register
       .values({ slug: input.slug, name: input.restaurantName, country: input.country, currency, timezone, status: "onboarding" })
       .returning();
 
-    const passwordHash = await hashPassword(input.password);
     const [owner] = await tx
       .insert(users)
       .values({ tenantId: tenant.id, name: input.ownerName, email: input.email, passwordHash })

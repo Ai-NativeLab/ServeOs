@@ -20,7 +20,8 @@ export async function listPendingApplications() {
 
 export async function approveTenant(tenantId: string, adminUserId: string): Promise<void> {
   await db.transaction(async (tx) => {
-    await tx.update(tenants).set({ status: "active" }).where(eq(tenants.id, tenantId));
+    const [t] = await tx.update(tenants).set({ status: "active" }).where(eq(tenants.id, tenantId)).returning();
+    if (!t) throw new Error("Tenant not found");
     await tx
       .update(onboardingApplications)
       .set({ status: "approved", reviewedBy: adminUserId })
@@ -36,7 +37,8 @@ export async function approveTenant(tenantId: string, adminUserId: string): Prom
 
 export async function rejectTenant(tenantId: string, adminUserId: string, notes: string): Promise<void> {
   await db.transaction(async (tx) => {
-    await tx.update(tenants).set({ status: "rejected" }).where(eq(tenants.id, tenantId));
+    const [t] = await tx.update(tenants).set({ status: "rejected" }).where(eq(tenants.id, tenantId)).returning();
+    if (!t) throw new Error("Tenant not found");
     await tx
       .update(onboardingApplications)
       .set({ status: "rejected", reviewedBy: adminUserId, reviewNotes: notes })
@@ -53,7 +55,8 @@ export async function rejectTenant(tenantId: string, adminUserId: string, notes:
 
 export async function suspendTenant(tenantId: string, adminUserId: string): Promise<void> {
   await db.transaction(async (tx) => {
-    await tx.update(tenants).set({ status: "suspended" }).where(eq(tenants.id, tenantId));
+    const [t] = await tx.update(tenants).set({ status: "suspended" }).where(eq(tenants.id, tenantId)).returning();
+    if (!t) throw new Error("Tenant not found");
     await tx.insert(auditLogs).values({ tenantId, actorUserId: adminUserId, action: "tenant.suspended", target: tenantId });
   });
 }

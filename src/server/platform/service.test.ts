@@ -57,4 +57,12 @@ describe("platform approval", () => {
     const logs = await db.select().from(auditLogs).where(eq(auditLogs.tenantId, tenantId));
     expect(logs.map((l) => l.action)).toContain("tenant.suspended");
   });
+
+  it("throws when approving a non-existent tenant and writes no audit log", async () => {
+    const a = await admin();
+    const fakeId = "00000000-0000-0000-0000-000000000000";
+    await expect(approveTenant(fakeId, a.id)).rejects.toThrow(/not found/i);
+    const logs = await db.select().from(auditLogs).where(eq(auditLogs.tenantId, fakeId));
+    expect(logs).toHaveLength(0);
+  });
 });
