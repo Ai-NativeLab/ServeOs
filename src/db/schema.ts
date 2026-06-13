@@ -1,2 +1,2 @@
 // Re-exports every domain's Drizzle schema. Domains append their export here.
-export {};
+export * from "../server/tenancy/schema";
