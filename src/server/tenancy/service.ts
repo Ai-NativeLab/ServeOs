@@ -1,0 +1,39 @@
+import { eq } from "drizzle-orm";
+import { db } from "@/db/client";
+import { tenants, type NewTenant, type Tenant } from "./schema";
+
+const RESERVED = new Set(["app", "admin", "www", "api"]);
+
+export async function createTenant(
+  input: Pick<NewTenant, "slug" | "name" | "country"> & Partial<NewTenant>,
+): Promise<Tenant> {
+  const currency = input.country === "SA" ? "SAR" : "EGP";
+  const timezone = input.country === "SA" ? "Asia/Riyadh" : "Africa/Cairo";
+  const [row] = await db
+    .insert(tenants)
+    .values({ currency, timezone, ...input })
+    .returning();
+  return row;
+}
+
+/** Extracts the subdomain slug from a host, or null if it's the root / reserved host. */
+export function subdomainFromHost(host: string, rootDomain: string): string | null {
+  const h = host.split(":")[0].toLowerCase();
+  if (h === rootDomain) return null;
+  if (!h.endsWith(`.${rootDomain}`)) return null;
+  const sub = h.slice(0, -(`.${rootDomain}`.length));
+  if (!sub || sub.includes(".") || RESERVED.has(sub)) return null;
+  return sub;
+}
+
+export async function resolveTenantByHost(host: string, rootDomain: string): Promise<Tenant | null> {
+  const slug = subdomainFromHost(host, rootDomain);
+  if (!slug) return null;
+  const [row] = await db.select().from(tenants).where(eq(tenants.slug, slug)).limit(1);
+  return row ?? null;
+}
+
+export async function getTenantBySlug(slug: string): Promise<Tenant | null> {
+  const [row] = await db.select().from(tenants).where(eq(tenants.slug, slug)).limit(1);
+  return row ?? null;
+}
