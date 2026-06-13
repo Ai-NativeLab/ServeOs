@@ -12,4 +12,4 @@ export function loadEnv(source: Record<string, string | undefined> = process.env
   };
 }
 
-export const env = (): Env => loadEnv();
+export const getEnv = (): Env => loadEnv();

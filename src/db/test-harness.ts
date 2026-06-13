@@ -8,6 +8,6 @@ export async function truncateAll() {
     WHERE schemaname = 'public' AND tablename <> '__drizzle_migrations'
   `);
   if (rows.length === 0) return;
-  const list = rows.map((r) => `"${r.tablename}"`).join(", ");
+  const list = rows.map((r) => `"${r.tablename.replace(/"/g, '""')}"`).join(", ");
   await db.execute(sql.raw(`TRUNCATE ${list} RESTART IDENTITY CASCADE`));
 }
