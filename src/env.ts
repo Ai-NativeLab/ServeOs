@@ -3,7 +3,7 @@ export type Env = {
   ROOT_DOMAIN: string;
 };
 
-export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
+export function loadEnv(source: Record<string, string | undefined> = process.env): Env {
   const DATABASE_URL = source.DATABASE_URL;
   if (!DATABASE_URL) throw new Error("Missing required env: DATABASE_URL");
   return {
