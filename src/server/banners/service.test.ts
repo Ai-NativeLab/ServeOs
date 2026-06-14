@@ -55,4 +55,20 @@ describe("banners service", () => {
     await createBanner(a.id, { imageUrl: "a.jpg" });
     expect(await listBanners(b.id)).toHaveLength(0);
   });
+
+  it("getActiveBanners includes banners that started in the past", async () => {
+    const t = await makeTenant("bn-start");
+    const past = new Date(Date.now() - 60_000);
+    await createBanner(t.id, { imageUrl: "past.jpg", isActive: true, startsAt: past });
+    const active = await getActiveBanners(t.id);
+    expect(active.map((b) => b.imageUrl)).toContain("past.jpg");
+  });
+
+  it("getActiveBanners excludes banners whose startsAt is in the future", async () => {
+    const t = await makeTenant("bn-future");
+    const future = new Date(Date.now() + 60_000);
+    await createBanner(t.id, { imageUrl: "future.jpg", isActive: true, startsAt: future });
+    const active = await getActiveBanners(t.id);
+    expect(active.map((b) => b.imageUrl)).not.toContain("future.jpg");
+  });
 });

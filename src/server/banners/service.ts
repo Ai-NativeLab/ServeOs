@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull, lt, or } from "drizzle-orm";
+import { and, eq, gte, isNull, lte, or } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { banners, type Banner, type NewBanner } from "./schema";
 import { BannerNotFoundError } from "./errors";
@@ -40,8 +40,8 @@ export async function getActiveBanners(tenantId: string): Promise<Banner[]> {
     tx.select().from(banners).where(
       and(
         eq(banners.isActive, true),
-        or(isNull(banners.startsAt), lt(banners.startsAt, now)),
-        or(isNull(banners.endsAt), gt(banners.endsAt, now)),
+        or(isNull(banners.startsAt), lte(banners.startsAt, now)),
+        or(isNull(banners.endsAt), gte(banners.endsAt, now)),
       ),
     ).orderBy(banners.sortOrder),
   );
