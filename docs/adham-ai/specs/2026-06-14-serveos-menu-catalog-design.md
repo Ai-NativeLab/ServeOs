@@ -145,6 +145,13 @@ branch_product_availability                      -- sparse: absence = available
 
 RLS: FORCE RLS on all five tables, same policy pattern.
 
+**Cascade deletes (DB-level FK constraints):**
+- `products` deleted → CASCADE to `modifier_groups` → CASCADE to `modifier_options`
+- `products` deleted → CASCADE to `branch_product_availability`
+- `modifier_groups` deleted → CASCADE to `modifier_options`
+- `branches` deleted (hard) → CASCADE to `branch_product_availability`
+  (`deleteBranch` is a soft-delete so this only matters for future hard-deletes)
+
 **Sparsity rule for `branch_product_availability`:** a row is only inserted when
 availability is being overridden (unavailable, or price override set). When
 `setBranchAvailability` is called with `available=true` and no `priceOverride`, any
@@ -249,6 +256,8 @@ getPublishedMenu(tenantId: string, branchId?: string): Promise<PublishedMenu>
 // Joins categories (is_active=true) → products (is_published=true)
 // If branchId: LEFT JOIN branch_product_availability where branch_id=branchId;
 //   exclude rows where is_available=false; apply price_override when set.
+// If no branchId: no branch filtering — all published products included regardless
+//   of per-branch availability overrides (global menu view).
 // Includes modifier groups + options for each product.
 ```
 
