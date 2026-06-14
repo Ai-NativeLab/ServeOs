@@ -33,7 +33,7 @@ builds on. Each later sub-project gets its own spec → plan → build cycle.
 |------|----------|
 | **Stack** | Next.js (App Router) + Postgres + Drizzle ORM |
 | **Auth** | Self-hosted (Auth.js or Lucia), Drizzle session adapter |
-| **Tenancy** | Shared DB, `tenant_id` on every tenant-scoped table + Postgres Row-Level Security (RLS) |
+| **Tenancy** | Shared DB, `tenant_id` on every tenant-scoped table. FORCE RLS + `withTenant` for per-tenant operational data tables; service-layer `tenant_id` filtering for platform/control tables accessed cross-tenant or pre-context (see §3, §6) |
 | **Routing** | `{slug}.serveos.com` storefronts, `app.serveos.com` dashboard, `admin.serveos.com` platform; custom domains later |
 | **App structure** | Single modular Next.js app; logic in `src/server/` domain modules |
 | **Onboarding** | Instant trial dashboard access → admin approval required to publish public storefront |
@@ -85,9 +85,20 @@ calls these services through server actions / route handlers.
 
 ## 3. Data Model
 
-Every tenant-scoped table has `tenant_id` with an RLS policy
-`tenant_id = current_setting('app.tenant_id')`. Platform tables (plans, super-admins)
-are not tenant-scoped.
+Every tenant-scoped table carries a `tenant_id`. **Isolation model (see also §6):**
+per-tenant *operational data* tables — those always read/written within a single
+tenant's request context — are protected by FORCE Row-Level Security with a policy
+`tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid`, enforced via
+the `withTenant()` wrapper. In this foundation that pattern is established on the
+`tenant_settings` table and is the **mandatory** model for the operational tables
+added by later sub-projects (menu, products, orders, reservations). The foundation's
+own platform/control tables (`tenants`, `users`, `sessions`, `roles`, `user_roles`,
+`subscriptions`, `invoices`, `usage_counters`, `onboarding_applications`,
+`audit_logs`) are **not** RLS-scoped: they are accessed cross-tenant by the platform
+admin (e.g. the approval queue lists all tenants) or before a tenant context exists
+(host/slug resolution, login, registration that creates the tenant). These are
+isolated by explicit `tenant_id` filtering in the service layer. Platform-global
+tables (`plans`) are not tenant-scoped at all.
 
 ### Identity & tenancy
 
@@ -223,8 +234,15 @@ short-circuit the dashboard to read-only.
 - A single error boundary per surface maps domain errors → HTTP status + localized
   message; unexpected errors are logged with `tenant_id` + request id and shown as a
   generic fallback.
-- **RLS as a safety net:** even if app code forgets a `tenant_id` filter, RLS blocks
-  cross-tenant reads/writes. Tenant resolution fails **closed**.
+- **Isolation backstop (scoped):** for per-tenant *operational data* tables (the
+  `withTenant`/FORCE-RLS set — `tenant_settings` here, plus menu/orders/etc. later),
+  RLS blocks cross-tenant reads/writes even if app code forgets a `tenant_id` filter,
+  and queries with no tenant context fail **closed** (zero rows). The foundation's
+  platform/control tables (auth, subscriptions, invoices, onboarding, audit) are
+  **not** RLS-backed by design (they are accessed cross-tenant by the platform admin
+  or pre-context); their isolation depends on explicit service-layer `tenant_id`
+  filtering, which is covered by the service unit tests. Tenant *resolution* always
+  fails **closed**.
 - Middleware guards: unknown host → marketing 404; unapproved tenant storefront →
   "coming soon"; suspended tenant → read-only/closed states.
 
@@ -274,5 +292,6 @@ en/ar + RTL, EG/SA region fields, audit logging.
 
 A restaurant can self-register, get a trial dashboard, be approved by an admin, and
 have a branded, **installable PWA** storefront resolve on its subdomain — with plan
-entitlements enforceable and RLS-guaranteed tenant isolation — ready for the Menu
-sub-project to build on top.
+entitlements enforceable, the FORCE-RLS `withTenant` isolation pattern established
+for per-tenant operational data, and service-layer `tenant_id` filtering on the
+control tables — ready for the Menu sub-project to build on top.
