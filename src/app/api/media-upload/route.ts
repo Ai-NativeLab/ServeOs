@@ -16,7 +16,8 @@ export async function POST(req: NextRequest) {
   let ctx: Awaited<ReturnType<typeof requireDashboardUser>>;
   try {
     ctx = await requireDashboardUser();
-  } catch {
+  } catch (e) {
+    if (typeof (e as { digest?: string }).digest === "string") throw e;
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
