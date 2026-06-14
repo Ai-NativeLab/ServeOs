@@ -112,10 +112,10 @@ export async function getProduct(tenantId: string, productId: string): Promise<P
 }
 
 export async function createProduct(tenantId: string, input: CreateProductInput): Promise<Product> {
-  const current = await withTenant(tenantId, (tx) =>
-    tx.select({ id: products.id }).from(products),
+  const [{ value }] = await withTenant(tenantId, (tx) =>
+    tx.select({ value: count() }).from(products),
   );
-  await checkQuota(tenantId, "products", current.length);
+  await checkQuota(tenantId, "products", Number(value));
   const [row] = await withTenant(tenantId, (tx) =>
     tx.insert(products).values({ ...input, tenantId }).returning(),
   );
