@@ -5,6 +5,13 @@ import { requireDashboardUser } from "@/server/auth/dashboard-context";
 const ALLOWED_TYPES = ["category", "product", "banner"] as const;
 type MediaType = (typeof ALLOWED_TYPES)[number];
 
+const ALLOWED_CONTENT_TYPES: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/gif": "gif",
+};
+
 export async function POST(req: NextRequest) {
   let ctx: Awaited<ReturnType<typeof requireDashboardUser>>;
   try {
@@ -16,11 +23,11 @@ export async function POST(req: NextRequest) {
   const body = await req.json() as { type?: string; filename?: string; contentType?: string };
   const { type, filename, contentType } = body;
 
-  if (!type || !ALLOWED_TYPES.includes(type as MediaType) || !filename || !contentType) {
+  const ext = ALLOWED_CONTENT_TYPES[contentType ?? ""];
+  if (!type || !ALLOWED_TYPES.includes(type as MediaType) || !filename || !ext) {
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   }
 
-  const ext = filename.split(".").pop() ?? "bin";
   const path = `${ctx.tenantId}/${type}/${randomUUID()}.${ext}`;
   const bucket = "media";
 
