@@ -160,7 +160,7 @@ export async function upsertModifierGroup(tenantId: string, productId: string, i
     const [row] = await withTenant(tenantId, (tx) =>
       tx.update(modifierGroups)
         .set({ nameEn: input.nameEn, nameAr: input.nameAr, required: input.required, minSelections: input.minSelections, maxSelections: input.maxSelections, sortOrder: input.sortOrder ?? 0 })
-        .where(and(eq(modifierGroups.id, input.id!), eq(modifierGroups.tenantId, tenantId)))
+        .where(and(eq(modifierGroups.id, input.id!), eq(modifierGroups.tenantId, tenantId), eq(modifierGroups.productId, productId)))
         .returning(),
     );
     if (!row) throw new Error("Modifier group not found");

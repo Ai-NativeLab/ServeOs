@@ -143,6 +143,23 @@ describe("catalog: modifier groups and options", () => {
     const full = await getProduct(t.id, prod.id);
     expect(full.modifierGroups).toHaveLength(0);
   });
+
+  it("upsertModifierGroup cannot update a group belonging to a different product", async () => {
+    const t = await makeTenant("cross-mod");
+    const cat = await createCategory(t.id, { nameEn: "C", nameAr: "ج" });
+    const prodA = await createProduct(t.id, { nameEn: "A", nameAr: "أ", basePrice: "5", categoryId: cat.id });
+    const prodB = await createProduct(t.id, { nameEn: "B", nameAr: "ب", basePrice: "5", categoryId: cat.id });
+    // Group belongs to prodB
+    const group = await upsertModifierGroup(t.id, prodB.id, {
+      nameEn: "G", nameAr: "ج", required: false, minSelections: 0, maxSelections: 1,
+    });
+    // Attempt to update it via prodA's context — must throw
+    await expect(
+      upsertModifierGroup(t.id, prodA.id, {
+        id: group.id, nameEn: "Hacked", nameAr: "ج", required: false, minSelections: 0, maxSelections: 1,
+      }),
+    ).rejects.toThrow("Modifier group not found");
+  });
 });
 
 describe("catalog: branch availability and getPublishedMenu", () => {
