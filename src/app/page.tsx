@@ -85,9 +85,52 @@ export default async function Home({
   }
 
   return (
-    <main style={{ padding: 48, fontFamily: "system-ui" }}>
-      <h1>ServeOS</h1>
-      <p>The operating system for restaurants. Online ordering, reservations, and WhatsApp commerce.</p>
-    </main>
+    <div style={{ fontFamily: "system-ui", minHeight: "100vh", display: "flex", flexDirection: "column" }}>
+      <nav style={{ background: "#0f172a", padding: "16px 32px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ width: 28, height: 28, background: "#f97316", borderRadius: 6 }} />
+          <span style={{ color: "#fff", fontWeight: 700, fontSize: 18 }}>ServeOS</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <a href="/login" style={{ color: "#94a3b8", textDecoration: "none", fontSize: 14 }}>Sign in</a>
+          <a href="/register" style={{ background: "#f97316", color: "#fff", padding: "8px 18px", borderRadius: 6, textDecoration: "none", fontSize: 14, fontWeight: 600 }}>Get started</a>
+        </div>
+      </nav>
+
+      <section style={{ background: "#0f172a", padding: "80px 32px", textAlign: "center", flex: 1 }}>
+        <h1 style={{ color: "#fff", fontSize: 40, fontWeight: 800, margin: 0, lineHeight: 1.15 }}>
+          Run your restaurant.<br />Not your software.
+        </h1>
+        <p style={{ color: "#64748b", fontSize: 18, marginTop: 12 }}>
+          Menu, orders, WhatsApp commerce — one platform.
+        </p>
+        <div style={{ marginTop: 32, display: "inline-flex", gap: 12 }}>
+          <a href="/register" style={{ background: "#f97316", color: "#fff", padding: "12px 24px", borderRadius: 6, textDecoration: "none", fontSize: 15, fontWeight: 600 }}>Get started free</a>
+          <a href="/login" style={{ border: "1px solid #334155", color: "#94a3b8", padding: "12px 24px", borderRadius: 6, textDecoration: "none", fontSize: 15 }}>Sign in →</a>
+        </div>
+      </section>
+
+      <section style={{ background: "#fff", display: "grid", gridTemplateColumns: "repeat(3,1fr)", borderTop: "1px solid #f1f5f9" }}>
+        {[
+          { emoji: "🍽️", title: "Menu & Catalog", desc: "Products, categories, branches, and modifiers. Your full menu online." },
+          { emoji: "📦", title: "Online Ordering", desc: "Cart, checkout, and real-time order tracking for your customers." },
+          { emoji: "💬", title: "WhatsApp Commerce", desc: "Let customers order via WhatsApp chatbot — no app needed." },
+        ].map((pillar, i) => (
+          <div key={pillar.title} style={{ padding: "32px 24px", borderRight: i < 2 ? "1px solid #f1f5f9" : undefined }}>
+            <div style={{ fontSize: 24, marginBottom: 12 }}>{pillar.emoji}</div>
+            <div style={{ fontWeight: 700, fontSize: 15, color: "#0f172a", marginBottom: 6 }}>{pillar.title}</div>
+            <div style={{ fontSize: 13, color: "#6b7280", lineHeight: 1.5 }}>{pillar.desc}</div>
+          </div>
+        ))}
+      </section>
+
+      <footer style={{ background: "#0f172a", padding: "20px 32px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ color: "#475569", fontSize: 13 }}>© 2026 ServeOS</span>
+        <div style={{ display: "flex", gap: 16 }}>
+          <a href="#" style={{ color: "#475569", fontSize: 13, textDecoration: "none" }}>Privacy</a>
+          <a href="#" style={{ color: "#475569", fontSize: 13, textDecoration: "none" }}>Terms</a>
+        </div>
+      </footer>
+    </div>
   );
 }
