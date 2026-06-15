@@ -27,5 +27,5 @@ export async function loginAction(formData: FormData) {
   }
   const token = await createSession(user.id, "dashboard");
   (await cookies()).set(SESSION_COOKIE, token, { httpOnly: true, sameSite: "lax", path: "/" });
-  redirect("/");
+  redirect("/dashboard");
 }
