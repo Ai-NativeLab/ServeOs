@@ -12,7 +12,7 @@ describe("plans schema", () => {
         priceMonthly: "0",
         currency: "EGP",
         limits: { branches: 1, staff: 2, products: 50, whatsapp_numbers: 1, orders_per_month: 200, messages_per_month: 0 },
-        features: { whatsapp: false, custom_domain: false, custom_theme: false, reservations: false, advanced_analytics: false },
+        features: { whatsapp: false, custom_domain: false, custom_theme: false, reservations: false, advanced_analytics: false, online_ordering: false },
       })
       .returning();
     expect(p.limits.branches).toBe(1);
