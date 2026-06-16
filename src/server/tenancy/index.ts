@@ -6,3 +6,4 @@ export {
   getTenantBySlug,
   isTenantServable,
 } from "./service";
+export { getTenantSettings, setVatRate, getVatRate, defaultVatRate, type TenantSettingsData } from "./settings";

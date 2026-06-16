@@ -1,0 +1,38 @@
+import { eq } from "drizzle-orm";
+import { db } from "@/db/client";
+import { withTenant } from "@/db/with-tenant";
+import { tenants, tenantSettings } from "./schema";
+
+export type TenantSettingsData = { vatRate?: number };
+
+/** tenant_settings is RLS-backed → read/write through withTenant. */
+export async function getTenantSettings(tenantId: string): Promise<TenantSettingsData> {
+  const [row] = await withTenant(tenantId, (tx) =>
+    tx.select().from(tenantSettings).where(eq(tenantSettings.tenantId, tenantId)).limit(1),
+  );
+  return (row?.data as TenantSettingsData | undefined) ?? {};
+}
+
+export async function setVatRate(tenantId: string, vatRate: number): Promise<void> {
+  await withTenant(tenantId, async (tx) => {
+    const [row] = await tx.select().from(tenantSettings).where(eq(tenantSettings.tenantId, tenantId)).limit(1);
+    const data = { ...((row?.data as TenantSettingsData | undefined) ?? {}), vatRate };
+    if (row) {
+      await tx.update(tenantSettings).set({ data }).where(eq(tenantSettings.id, row.id));
+    } else {
+      await tx.insert(tenantSettings).values({ tenantId, data });
+    }
+  });
+}
+
+export function defaultVatRate(country: string): number {
+  return country === "SA" ? 15 : 14;
+}
+
+/** Configured VAT rate, or the country default. tenants is a control table → plain db. */
+export async function getVatRate(tenantId: string): Promise<number> {
+  const settings = await getTenantSettings(tenantId);
+  if (typeof settings.vatRate === "number") return settings.vatRate;
+  const [t] = await db.select({ country: tenants.country }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+  return defaultVatRate(t?.country ?? "EG");
+}
