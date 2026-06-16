@@ -67,6 +67,57 @@ async function main() {
   await ensureUser(romaTenant.id, "manager@roma.com", "Nour Khalil", "manager1234", "manager", "Manager");
   await ensureUser(romaTenant.id, "staff@roma.com",   "Karim Nasser", "staff1234",   "staff",   "Staff");
 
+  // ── Roma branch + catalog (idempotent) ─────────────────────────────────────
+  {
+    const { listBranches, createBranch } = await import("../src/server/branches/service");
+    const { listCategories, createCategory, listProducts, createProduct, updateProduct } = await import("../src/server/catalog/service");
+
+    let branches = await listBranches(romaTenant.id);
+    if (branches.length === 0) {
+      await createBranch(romaTenant.id, { name: "Main Branch" });
+      branches = await listBranches(romaTenant.id);
+    }
+
+    const categories = await listCategories(romaTenant.id);
+    let categoryId: string;
+    if (categories.length === 0) {
+      const cat = await createCategory(romaTenant.id, { nameEn: "Pizzas", nameAr: "بيتزا" });
+      categoryId = cat.id;
+    } else {
+      categoryId = categories[0].id;
+    }
+
+    const products = await listProducts(romaTenant.id);
+    if (products.length === 0) {
+      const product = await createProduct(romaTenant.id, {
+        nameEn: "Margherita",
+        nameAr: "مارجريتا",
+        basePrice: "89",
+        categoryId,
+      });
+      await updateProduct(romaTenant.id, product.id, { isPublished: true });
+    }
+  }
+
+  // ── Ordering demo data ──────────────────────────────────────────────────────
+  {
+    const { listBranches, updateBranchOrdering, listDeliveryAreas, createDeliveryArea } = await import("../src/server/branches/service");
+    const { setVatRate } = await import("../src/server/tenancy/settings");
+    const branches = await listBranches(romaTenant.id);
+    if (branches[0]) {
+      const b = branches[0];
+      await updateBranchOrdering(romaTenant.id, b.id, {
+        acceptingOrders: true,
+        openingHours: Array.from({ length: 7 }, (_, day) => ({ day, open: "10:00", close: "23:00", closed: false })),
+      });
+      if ((await listDeliveryAreas(romaTenant.id, b.id)).length === 0) {
+        await createDeliveryArea(romaTenant.id, b.id, { nameEn: "Maadi", nameAr: "المعادي", deliveryFee: "25", minOrderAmount: "100", etaMinutes: 35 });
+        await createDeliveryArea(romaTenant.id, b.id, { nameEn: "Nasr City", nameAr: "مدينة نصر", deliveryFee: "40", minOrderAmount: "150", etaMinutes: 50 });
+      }
+    }
+    await setVatRate(romaTenant.id, 14);
+  }
+
   // ── Summary ─────────────────────────────────────────────────────────────────
   console.log(`
 Seed complete — users created:
