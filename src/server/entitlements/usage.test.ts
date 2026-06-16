@@ -5,8 +5,7 @@ import { usageCounters } from "@/server/subscription/schema";
 import { and, eq } from "drizzle-orm";
 import { seedDefaultPlans } from "@/server/subscription/plans.seed";
 import { startTrial } from "@/server/subscription/service";
-import { hasFeature } from "@/server/entitlements/service";
-import { incrementUsage } from "@/server/entitlements/service";
+import { hasFeature, incrementUsage } from "@/server/entitlements/service";
 
 async function makeTenant(slug = "u1") {
   const [t] = await db.insert(tenants).values({ slug, name: "T", country: "EG" }).returning();
@@ -32,6 +31,7 @@ describe("entitlements usage + online_ordering", () => {
       .from(usageCounters)
       .where(and(eq(usageCounters.tenantId, t.id), eq(usageCounters.metric, "orders"), eq(usageCounters.periodStart, periodStart)))
       .limit(1);
+    expect(row).toBeDefined();
     expect(row.count).toBe(2);
   });
 });
