@@ -8,8 +8,11 @@ export default defineConfig({
     globalSetup: ["./src/db/test-global-setup.ts"],
     setupFiles: ["./src/db/test-setup.ts"],
     fileParallelism: false,
-    testTimeout: 30000,
-    hookTimeout: 30000,
+    // Integration tests hit a remote Supabase Postgres; the heaviest (ordering
+    // checkout, which does many sequential round-trips) need headroom when the
+    // network/DB is slow, so the budget is generous.
+    testTimeout: 60000,
+    hookTimeout: 60000,
     env: { NODE_ENV: "test" },
   },
   resolve: { alias: { "@": path.resolve(__dirname, "src") } },
