@@ -53,3 +53,30 @@ export async function checkUsage(tenantId: string, metric: "orders" | "messages"
   const used = row?.count ?? 0;
   if (used >= limit) throw new QuotaExceededError(metric, limit, used);
 }
+
+/**
+ * Increments the usage counter for the current billing period (first day of the
+ * month, matching checkUsage). usage_counters is a control table (not RLS-backed),
+ * so this uses the plain db client. Read-then-write avoids needing a unique
+ * constraint; a rare double-increment race is acceptable for non-critical metering.
+ */
+export async function incrementUsage(tenantId: string, metric: "orders" | "messages", by = 1): Promise<void> {
+  const now = new Date();
+  const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const [row] = await db
+    .select()
+    .from(usageCounters)
+    .where(
+      and(
+        eq(usageCounters.tenantId, tenantId),
+        eq(usageCounters.metric, metric),
+        eq(usageCounters.periodStart, periodStart),
+      ),
+    )
+    .limit(1);
+  if (row) {
+    await db.update(usageCounters).set({ count: row.count + by }).where(eq(usageCounters.id, row.id));
+  } else {
+    await db.insert(usageCounters).values({ tenantId, metric, periodStart, count: by });
+  }
+}

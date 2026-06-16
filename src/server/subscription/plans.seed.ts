@@ -9,21 +9,21 @@ export const DEFAULT_PLANS: Seed[] = [
     name: "Basic",
     priceMonthly: "0",
     limits: { branches: 1, staff: 2, products: 50, whatsapp_numbers: 0, orders_per_month: 200, messages_per_month: 0 },
-    features: { whatsapp: false, custom_domain: false, custom_theme: false, reservations: false, advanced_analytics: false },
+    features: { whatsapp: false, custom_domain: false, custom_theme: false, reservations: false, advanced_analytics: false, online_ordering: true },
   },
   {
     key: "pro",
     name: "Pro",
     priceMonthly: "499",
     limits: { branches: 3, staff: 10, products: 500, whatsapp_numbers: 1, orders_per_month: 2000, messages_per_month: 5000 },
-    features: { whatsapp: true, custom_domain: false, custom_theme: true, reservations: true, advanced_analytics: false },
+    features: { whatsapp: true, custom_domain: false, custom_theme: true, reservations: true, advanced_analytics: false, online_ordering: true },
   },
   {
     key: "enterprise",
     name: "Enterprise",
     priceMonthly: "1499",
     limits: { branches: 50, staff: 200, products: 100000, whatsapp_numbers: 10, orders_per_month: 100000, messages_per_month: 100000 },
-    features: { whatsapp: true, custom_domain: true, custom_theme: true, reservations: true, advanced_analytics: true },
+    features: { whatsapp: true, custom_domain: true, custom_theme: true, reservations: true, advanced_analytics: true, online_ordering: true },
   },
 ];
 

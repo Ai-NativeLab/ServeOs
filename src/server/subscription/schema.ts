@@ -15,6 +15,7 @@ export type PlanFeatures = {
   custom_theme: boolean;
   reservations: boolean;
   advanced_analytics: boolean;
+  online_ordering: boolean;
 };
 
 export const plans = pgTable("plans", {
