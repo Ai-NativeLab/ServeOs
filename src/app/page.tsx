@@ -4,6 +4,7 @@ import { getPublishedMenu } from "@/server/catalog/service";
 import { getActiveBanners } from "@/server/banners/service";
 import { listBranches } from "@/server/branches/service";
 import { BranchSelector } from "./_components/BranchSelector";
+import { StorefrontMenu } from "./_components/StorefrontMenu";
 
 export default async function Home({
   searchParams,
@@ -57,28 +58,7 @@ export default async function Home({
         <section style={{ padding: "0 24px 32px" }}>
           <h1 style={{ fontSize: 28, marginBottom: 4 }}>{tenant.name}</h1>
           {menu.categories.length === 0 && <p>Menu coming soon.</p>}
-          {menu.categories.map((cat) => (
-            <div key={cat.id} style={{ marginBottom: 32 }}>
-              <h2 style={{ fontSize: 20, borderBottom: "2px solid currentColor", paddingBottom: 4 }}>
-                {cat.nameEn} / {cat.nameAr}
-              </h2>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: 16, marginTop: 12 }}>
-                {cat.products.map((p) => (
-                  <div key={p.id} style={{ border: "1px solid #e5e7eb", borderRadius: 8, overflow: "hidden" }}>
-                    {p.imageUrl && <img src={p.imageUrl} alt={p.nameEn} style={{ width: "100%", height: 160, objectFit: "cover" }} />}
-                    <div style={{ padding: 12 }}>
-                      <div style={{ fontWeight: 600 }}>{p.nameEn}</div>
-                      <div dir="rtl" style={{ color: "#6b7280", fontSize: 14 }}>{p.nameAr}</div>
-                      {p.descriptionEn && <p style={{ fontSize: 13, color: "#6b7280", marginTop: 4 }}>{p.descriptionEn}</p>}
-                      <div style={{ marginTop: 8, fontWeight: 700 }}>
-                        {p.effectivePrice.toFixed(2)}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
+          <StorefrontMenu menu={menu} branchId={branchId ?? null} slug={slug!} />
         </section>
       </main>
     );
