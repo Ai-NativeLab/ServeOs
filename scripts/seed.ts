@@ -1,6 +1,6 @@
 import { config } from "dotenv";
 config({ path: process.env.ENV_FILE ?? ".env.local", override: true });
-import { eq } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 
 async function main() {
   const { db, pool } = await import("../src/db/client");
@@ -13,9 +13,9 @@ async function main() {
 
   await seedDefaultPlans();
 
-  // Platform super-admin (idempotent by email existence)
+  // ── Platform super-admin ────────────────────────────────────────────────────
   const adminEmail = "admin@serveos.com";
-  let [admin] = await db.select().from(users).where(eq(users.email, adminEmail)).limit(1);
+  let [admin] = await db.select().from(users).where(and(eq(users.email, adminEmail), isNull(users.tenantId))).limit(1);
   if (!admin) {
     [admin] = await db
       .insert(users)
@@ -25,10 +25,10 @@ async function main() {
     await db.insert(userRoles).values({ userId: admin.id, roleId: role.id });
   }
 
-  // Demo restaurant (idempotent by slug existence) — approved + live
+  // ── Demo restaurant: Pizza Roma ─────────────────────────────────────────────
   const demoSlug = "roma";
-  const [existing] = await db.select().from(tenants).where(eq(tenants.slug, demoSlug)).limit(1);
-  if (!existing) {
+  let [romaTenant] = await db.select().from(tenants).where(eq(tenants.slug, demoSlug)).limit(1);
+  if (!romaTenant) {
     const demo = await registerRestaurant({
       restaurantName: "Pizza Roma",
       slug: demoSlug,
@@ -38,9 +38,50 @@ async function main() {
       password: "owner1234",
     });
     await approveTenant(demo.tenantId, admin.id);
+    [romaTenant] = await db.select().from(tenants).where(eq(tenants.slug, demoSlug)).limit(1);
   }
 
-  console.log("Seed complete: admin@serveos.com / admin1234, owner@roma.com / owner1234, storefront roma.serveos.localhost");
+  // ── Additional Roma staff ───────────────────────────────────────────────────
+  // Ensure tenant-scoped role rows exist (idempotent)
+  async function ensureTenantRole(tenantId: string, key: string, name: string) {
+    let [role] = await db.select().from(roles).where(and(eq(roles.tenantId, tenantId), eq(roles.key, key))).limit(1);
+    if (!role) {
+      [role] = await db.insert(roles).values({ tenantId, key, name }).returning();
+    }
+    return role;
+  }
+
+  async function ensureUser(tenantId: string, email: string, name: string, password: string, roleKey: string, roleName: string) {
+    let [user] = await db.select().from(users).where(and(eq(users.tenantId, tenantId), eq(users.email, email))).limit(1);
+    if (!user) {
+      [user] = await db
+        .insert(users)
+        .values({ tenantId, name, email, passwordHash: await hashPassword(password) })
+        .returning();
+      const role = await ensureTenantRole(tenantId, roleKey, roleName);
+      await db.insert(userRoles).values({ userId: user.id, roleId: role.id });
+    }
+    return user;
+  }
+
+  await ensureUser(romaTenant.id, "manager@roma.com", "Nour Khalil", "manager1234", "manager", "Manager");
+  await ensureUser(romaTenant.id, "staff@roma.com",   "Karim Nasser", "staff1234",   "staff",   "Staff");
+
+  // ── Summary ─────────────────────────────────────────────────────────────────
+  console.log(`
+Seed complete — users created:
+
+  PLATFORM
+  ┌─ Super Admin   admin@serveos.com     / admin1234     → /admin/login
+
+  PIZZA ROMA (slug: roma)
+  ├─ Owner         owner@roma.com        / owner1234     → /login (slug: roma)
+  ├─ Manager       manager@roma.com      / manager1234   → /login (slug: roma)
+  └─ Staff         staff@roma.com        / staff1234     → /login (slug: roma)
+
+  Storefront: http://roma.serveos.localhost:3000
+  `);
+
   await pool.end();
 }
 
