@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { checkQuota } from "@/server/entitlements/service";
-import { branches, type Branch, type NewBranch } from "./schema";
+import { branches, deliveryAreas, type Branch, type NewBranch, type DeliveryArea, type OpeningHours } from "./schema";
 import { BranchNotFoundError } from "./errors";
 
 export type CreateBranchInput = Pick<NewBranch, "name" | "address" | "phone" | "sortOrder">;
@@ -45,4 +45,46 @@ export async function deleteBranch(tenantId: string, branchId: string): Promise<
     tx.update(branches).set({ isActive: false }).where(and(eq(branches.id, branchId), eq(branches.tenantId, tenantId))).returning({ id: branches.id }),
   );
   if (!row) throw new BranchNotFoundError();
+}
+
+export type UpdateBranchOrderingInput = { acceptingOrders?: boolean; openingHours?: OpeningHours };
+
+export async function updateBranchOrdering(tenantId: string, branchId: string, input: UpdateBranchOrderingInput): Promise<Branch> {
+  const [row] = await withTenant(tenantId, (tx) =>
+    tx.update(branches).set(input).where(and(eq(branches.id, branchId), eq(branches.tenantId, tenantId))).returning(),
+  );
+  if (!row) throw new BranchNotFoundError();
+  return row;
+}
+
+export type CreateDeliveryAreaInput = {
+  nameEn: string; nameAr: string; deliveryFee: string; minOrderAmount: string; etaMinutes?: number | null; sortOrder?: number;
+};
+export type UpdateDeliveryAreaInput = Partial<CreateDeliveryAreaInput & { isActive: boolean }>;
+
+export async function listDeliveryAreas(tenantId: string, branchId: string): Promise<DeliveryArea[]> {
+  return withTenant(tenantId, (tx) =>
+    tx.select().from(deliveryAreas).where(eq(deliveryAreas.branchId, branchId)).orderBy(deliveryAreas.sortOrder),
+  );
+}
+
+export async function createDeliveryArea(tenantId: string, branchId: string, input: CreateDeliveryAreaInput): Promise<DeliveryArea> {
+  const [row] = await withTenant(tenantId, (tx) =>
+    tx.insert(deliveryAreas).values({ ...input, tenantId, branchId }).returning(),
+  );
+  return row;
+}
+
+export async function updateDeliveryArea(tenantId: string, areaId: string, input: UpdateDeliveryAreaInput): Promise<DeliveryArea> {
+  const [row] = await withTenant(tenantId, (tx) =>
+    tx.update(deliveryAreas).set(input).where(and(eq(deliveryAreas.id, areaId), eq(deliveryAreas.tenantId, tenantId))).returning(),
+  );
+  if (!row) throw new BranchNotFoundError();
+  return row;
+}
+
+export async function deleteDeliveryArea(tenantId: string, areaId: string): Promise<void> {
+  await withTenant(tenantId, (tx) =>
+    tx.delete(deliveryAreas).where(and(eq(deliveryAreas.id, areaId), eq(deliveryAreas.tenantId, tenantId))),
+  );
 }
