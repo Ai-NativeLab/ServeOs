@@ -12,7 +12,7 @@ describe("dashboardNavItems", () => {
     expect(labels).toEqual(["Home", "Orders", "Menu", "Branches", "Banners", "Settings"]);
   });
 
-  it("gives managers everything except nothing role-locked beyond owner extras", () => {
+  it("gives managers the full nav (Home through Settings)", () => {
     const labels = dashboardNavItems(["manager"]).map((i) => i.label);
     expect(labels).toContain("Home");
     expect(labels).toContain("Settings");

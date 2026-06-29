@@ -42,7 +42,7 @@ export default async function DashboardHome() {
 
   return (
     <>
-      <PageHeader title="Home" description="Your setup progress and today's orders." />
+      <PageHeader title="Home" description="Your setup progress and a snapshot of recent orders." />
 
       <Card className="p-5 mb-6">
         <h2 className="text-sm font-semibold mb-3">Get set up</h2>

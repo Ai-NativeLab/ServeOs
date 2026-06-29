@@ -1,3 +1,4 @@
+"use client";
 import Link from "next/link";
 import { Bell } from "lucide-react";
 import {
@@ -36,8 +37,8 @@ export function Topbar({ userName, roleLabel, pendingCount }: { userName: string
             <div className="text-xs text-muted-foreground">{roleLabel}</div>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
-          <DropdownMenuItem asChild>
-            <form action={signOutAction}>
+          <DropdownMenuItem className="p-0">
+            <form action={signOutAction} className="w-full">
               <SubmitButton variant="ghost" className="w-full justify-start px-2 h-8 font-normal">Sign out</SubmitButton>
             </form>
           </DropdownMenuItem>
