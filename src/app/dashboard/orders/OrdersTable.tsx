@@ -1,10 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
+import type { OrderRow } from "@/server/ordering/service";
 
-type Row = { id: string; orderNumber: number; customerName: string; fulfillmentType: string; total: string; status: string; paymentStatus: string };
-
-export function OrdersTable({ initial }: { initial: Row[] }) {
-  const [rows, setRows] = useState<Row[]>(initial);
+export function OrdersTable({ initial }: { initial: OrderRow[] }) {
+  const [rows, setRows] = useState<OrderRow[]>(initial);
   const pending = rows.filter((r) => r.status === "pending").length;
 
   useEffect(() => {

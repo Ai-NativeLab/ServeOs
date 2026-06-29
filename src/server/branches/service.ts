@@ -68,6 +68,14 @@ export async function listDeliveryAreas(tenantId: string, branchId: string): Pro
   );
 }
 
+/** All of a tenant's delivery areas across every branch, in one query (avoids an
+ * N+1 when a page needs areas grouped by branch). RLS scopes rows to the tenant. */
+export async function listDeliveryAreasForTenant(tenantId: string): Promise<DeliveryArea[]> {
+  return withTenant(tenantId, (tx) =>
+    tx.select().from(deliveryAreas).orderBy(deliveryAreas.branchId, deliveryAreas.sortOrder),
+  );
+}
+
 export async function createDeliveryArea(tenantId: string, branchId: string, input: CreateDeliveryAreaInput): Promise<DeliveryArea> {
   const [row] = await withTenant(tenantId, (tx) =>
     tx.insert(deliveryAreas).values({ ...input, tenantId, branchId }).returning(),

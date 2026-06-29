@@ -4,7 +4,7 @@ import { loadCart, clearCart, cartSubtotal, type Cart } from "../_components/car
 
 type Area = { id: string; nameEn: string; nameAr: string; deliveryFee: string; minOrderAmount: string; etaMinutes: number | null };
 
-export function CheckoutForm({ slug, branchId, country }: { slug: string; branchId: string | null; country: string }) {
+export function CheckoutForm({ slug, branchId, vatRate }: { slug: string; branchId: string | null; vatRate: number }) {
   const [cart, setCart] = useState<Cart>({ branchId: null, lines: [] });
   const [fulfillment, setFulfillment] = useState<"pickup" | "delivery">("delivery");
   const [areas, setAreas] = useState<Area[]>([]);
@@ -15,8 +15,6 @@ export function CheckoutForm({ slug, branchId, country }: { slug: string; branch
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-
-  const vatRate = country === "SA" ? 15 : 14;
 
   useEffect(() => {
     const sync = () => setCart(loadCart());

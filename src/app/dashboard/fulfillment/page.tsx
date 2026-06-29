@@ -1,5 +1,5 @@
 import { requireFulfillmentPermission } from "../fulfillment-permission";
-import { listBranches, listDeliveryAreas } from "@/server/branches/service";
+import { listBranches, listDeliveryAreasForTenant } from "@/server/branches/service";
 import { getVatRate } from "@/server/tenancy/settings";
 import { setAcceptingOrdersAction, setOpeningHoursAction, addAreaAction, deleteAreaAction, setVatAction } from "./actions";
 
@@ -7,9 +7,15 @@ const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 export default async function FulfillmentPage() {
   const { tenantId } = await requireFulfillmentPermission();
-  const branches = await listBranches(tenantId);
-  const vatRate = await getVatRate(tenantId);
-  const areasByBranch = Object.fromEntries(await Promise.all(branches.map(async (b) => [b.id, await listDeliveryAreas(tenantId, b.id)] as const)));
+  const [branches, vatRate, allAreas] = await Promise.all([
+    listBranches(tenantId),
+    getVatRate(tenantId),
+    listDeliveryAreasForTenant(tenantId),
+  ]);
+  const areasByBranch = allAreas.reduce<Record<string, typeof allAreas>>((acc, a) => {
+    (acc[a.branchId] ??= []).push(a);
+    return acc;
+  }, {});
 
   return (
     <main style={{ padding: 32, fontFamily: "system-ui", maxWidth: 720 }}>

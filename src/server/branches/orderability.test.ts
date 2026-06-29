@@ -45,4 +45,14 @@ describe("isBranchOrderable", () => {
     const hours = [{ day: 5, open: "10:00", close: "23:00", closed: false }];
     expect(isBranchOrderable(branch({ openingHours: hours }), tue14)).toBe(false);
   });
+  it("yesterday's wrap tail keeps it open even when today is marked closed", () => {
+    // Monday (day 1) 18:00 → 02:00 wrap; Tuesday (day 2) explicitly closed.
+    const hours = [
+      { day: 1, open: "18:00", close: "02:00", closed: false },
+      { day: 2, open: "00:00", close: "00:00", closed: true },
+    ];
+    const tue01 = new Date(2026, 5, 16, 1, 0);
+    expect(isBranchOrderable(branch({ openingHours: hours }), tue01)).toBe(true); // Tue 01:00 is in Mon's tail (< 02:00)
+    expect(isBranchOrderable(branch({ openingHours: hours }), tue02)).toBe(false); // 02:00 is the exclusive close
+  });
 });

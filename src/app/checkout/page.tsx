@@ -1,5 +1,5 @@
 import { headers } from "next/headers";
-import { getTenantBySlug, isTenantServable } from "@/server/tenancy";
+import { getTenantBySlug, isTenantServable, getVatRate } from "@/server/tenancy";
 import { listBranches } from "@/server/branches/service";
 import { CheckoutForm } from "./CheckoutForm";
 
@@ -13,13 +13,13 @@ export default async function CheckoutPage({ searchParams }: { searchParams: Pro
   const tenant = await getTenantBySlug(slug);
   if (!tenant || !isTenantServable(tenant)) return <main style={{ padding: 32 }}><h1>Restaurant not available</h1></main>;
 
-  const branches = await listBranches(tenant.id);
+  const [branches, vatRate] = await Promise.all([listBranches(tenant.id), getVatRate(tenant.id)]);
   const branchId = branch ?? branches[0]?.id ?? null;
 
   return (
     <main style={{ padding: 24, maxWidth: 480, margin: "0 auto", fontFamily: "system-ui" }}>
       <h1 style={{ fontSize: 22 }}>Checkout — {tenant.name}</h1>
-      <CheckoutForm slug={slug} branchId={branchId} country={tenant.country} />
+      <CheckoutForm slug={slug} branchId={branchId} vatRate={vatRate} />
     </main>
   );
 }

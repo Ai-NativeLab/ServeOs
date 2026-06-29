@@ -2,7 +2,7 @@ export { branches, deliveryAreas, type Branch, type NewBranch, type DeliveryArea
 export { BranchNotFoundError } from "./errors";
 export {
   listBranches, getBranch, createBranch, updateBranch, deleteBranch,
-  updateBranchOrdering, listDeliveryAreas, createDeliveryArea, updateDeliveryArea, deleteDeliveryArea,
+  updateBranchOrdering, listDeliveryAreas, listDeliveryAreasForTenant, createDeliveryArea, updateDeliveryArea, deleteDeliveryArea,
   type CreateBranchInput, type UpdateBranchInput, type UpdateBranchOrderingInput,
   type CreateDeliveryAreaInput, type UpdateDeliveryAreaInput,
 } from "./service";

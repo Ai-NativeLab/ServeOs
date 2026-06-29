@@ -45,3 +45,17 @@ each exposing a service via its `index.ts` barrel. Tenant data is isolated by a
 Menu/catalog, ordering/checkout, payment gateways, WhatsApp commerce, reservations,
 customer accounts, analytics. Cross-channel orders (web + WhatsApp) will surface in a
 single unified dashboard order list — see the design spec.
+
+Platform (super admin)
+
+URL	Credentials
+localhost:3000/admin/login	admin@serveos.com / admin1234
+Redirects to /admin (pending restaurant queue) after sign-in.
+
+Pizza Roma (restaurant users)
+
+Role	Email	Password	URL
+Owner	owner@roma.com	owner1234	localhost:3000/login (slug: roma)
+Manager	manager@roma.com	manager1234	same
+Staff	staff@roma.com	staff1234	same
+The dev server is already running — open localhost:3000/admin/login to test the admin path, and localhost:3000/login for restaurant users.

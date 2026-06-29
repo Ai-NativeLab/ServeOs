@@ -38,9 +38,6 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
   const now = input.now ?? new Date();
 
   const result = await withTenant(tenantId, async (tx) => {
-    // Serialize order-number generation per tenant.
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${tenantId})::bigint)`);
-
     // 1. Branch + orderability
     const [branch] = await tx.select().from(branches).where(eq(branches.id, input.branchId)).limit(1);
     if (!branch) throw new OrderValidationError("unknown branch");
@@ -68,7 +65,9 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
         : [];
       const optById = new Map(opts.map((o) => [o.id, o]));
 
-      const selected = line.selectedOptionIds.map((id) => {
+      // Dedupe first: a crafted request could repeat an option id to inflate the
+      // per-group count (bypassing maxSelections) and double-charge its priceDelta.
+      const selected = [...new Set(line.selectedOptionIds)].map((id) => {
         const o = optById.get(id);
         if (!o) throw new OrderValidationError("invalid modifier selection");
         return o;
@@ -120,9 +119,12 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
     const vatAmount = subtotal * (vatRate / 100);
     const total = subtotal + vatAmount + deliveryFee;
 
-    // 5. Order number (per-tenant max+1, under the advisory lock above). No
+    // 5. Order number (per-tenant max+1). Acquire the per-tenant advisory lock
+    // only now — after all validation I/O — so concurrent checkouts serialize
+    // for just the read-max-then-insert window, not the whole transaction. No
     // explicit tenant filter needed: FORCE RLS scopes this MAX to the tenant
     // via app.tenant_id (set by withTenant), same as every other query here.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${tenantId})::bigint)`);
     const [{ next }] = await tx.select({ next: sql<number>`COALESCE(MAX(${orders.orderNumber}), 0) + 1` }).from(orders);
     const orderNumber = Number(next);
     const statusToken = randomUUID();
@@ -182,6 +184,14 @@ export async function listOrders(tenantId: string, opts: ListOrdersOpts): Promis
   });
 }
 
+/** The compact order shape the dashboard list (SSR + polling endpoint) renders. */
+export type OrderRow = Pick<Order, "id" | "orderNumber" | "customerName" | "fulfillmentType" | "total" | "status" | "paymentStatus">;
+
+export function toOrderRow(o: Order): OrderRow {
+  const { id, orderNumber, customerName, fulfillmentType, total, status, paymentStatus } = o;
+  return { id, orderNumber, customerName, fulfillmentType, total, status, paymentStatus };
+}
+
 export async function pendingOrderCount(tenantId: string): Promise<number> {
   const [row] = await withTenant(tenantId, (tx) =>
     tx.select({ c: sql<number>`COUNT(*)` }).from(orders).where(eq(orders.status, "pending")),
@@ -205,10 +215,15 @@ export async function transitionStatus(tenantId: string, orderId: string, to: Or
 
 export async function markPaid(tenantId: string, orderId: string, _userId: string): Promise<Order> {
   return withTenant(tenantId, async (tx) => {
+    const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+    if (!order) throw new OrderNotFoundError();
+    // A rejected/cancelled order can't be paid — guard the terminal-failure states.
+    if (order.status === "cancelled" || order.status === "rejected") {
+      throw new InvalidTransitionError(order.status, "paid");
+    }
     const [updated] = await tx.update(orders)
       .set({ paymentStatus: "paid", updatedAt: new Date() })
       .where(eq(orders.id, orderId)).returning();
-    if (!updated) throw new OrderNotFoundError();
     return updated;
   });
 }
