@@ -38,6 +38,11 @@ export async function getTenantBySlug(slug: string): Promise<Tenant | null> {
   return row ?? null;
 }
 
+export async function getTenantById(id: string): Promise<Tenant | null> {
+  const [row] = await db.select().from(tenants).where(eq(tenants.id, id)).limit(1);
+  return row ?? null;
+}
+
 export function isTenantServable(tenant: { status: string }): boolean {
   return tenant.status === "active" || tenant.status === "trial";
 }
