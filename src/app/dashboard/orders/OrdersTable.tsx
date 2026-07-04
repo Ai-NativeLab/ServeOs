@@ -18,6 +18,25 @@ const FILTERS: Record<string, (r: OrderRow) => boolean> = {
   ready: (r) => r.status === "ready" || r.status === "out_for_delivery",
 };
 
+const EMPTY_STATE_COPY: Record<string, { title: string; description: string }> = {
+  all: {
+    title: "No orders yet",
+    description: "New orders from your storefront will appear here automatically.",
+  },
+  pending: {
+    title: "No pending orders",
+    description: "New orders needing confirmation will show up here.",
+  },
+  preparing: {
+    title: "Nothing in preparation",
+    description: "Confirmed orders being prepared will show up here.",
+  },
+  ready: {
+    title: "Nothing ready yet",
+    description: "Orders ready for pickup or delivery will show up here.",
+  },
+};
+
 export function OrdersTable({ initial }: { initial: OrderRow[] }) {
   const [rows, setRows] = useState<OrderRow[]>(initial);
   const [filter, setFilter] = useState<string>("all");
@@ -51,10 +70,8 @@ export function OrdersTable({ initial }: { initial: OrderRow[] }) {
 
       {visible.length === 0 ? (
         <EmptyState
-          title={filter === "all" ? "No orders yet" : "Nothing here right now"}
-          description={filter === "all"
-            ? "New orders from your storefront will appear here automatically."
-            : "Orders in this state will appear here."}
+          title={(EMPTY_STATE_COPY[filter] ?? EMPTY_STATE_COPY.all).title}
+          description={(EMPTY_STATE_COPY[filter] ?? EMPTY_STATE_COPY.all).description}
         />
       ) : (
         <div className="rounded-xl border bg-card overflow-hidden">
@@ -73,7 +90,16 @@ export function OrdersTable({ initial }: { initial: OrderRow[] }) {
               {visible.map((r) => (
                 <TableRow
                   key={r.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Order ${r.orderNumber}, view details`}
                   onClick={() => router.push(`/dashboard/orders/${r.id}`)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      if (e.key === " ") e.preventDefault();
+                      router.push(`/dashboard/orders/${r.id}`);
+                    }
+                  }}
                   className={cn("cursor-pointer", r.status === "pending" && "bg-primary/5")}
                 >
                   <TableCell className="font-mono text-sm">{r.orderNumber}</TableCell>
