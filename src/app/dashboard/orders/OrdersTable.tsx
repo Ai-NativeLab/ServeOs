@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Bike, ShoppingBag } from "lucide-react";
 import type { OrderRow } from "@/server/ordering/service";
@@ -90,19 +91,18 @@ export function OrdersTable({ initial }: { initial: OrderRow[] }) {
               {visible.map((r) => (
                 <TableRow
                   key={r.id}
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`Order ${r.orderNumber}, view details`}
                   onClick={() => router.push(`/dashboard/orders/${r.id}`)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      if (e.key === " ") e.preventDefault();
-                      router.push(`/dashboard/orders/${r.id}`);
-                    }
-                  }}
                   className={cn("cursor-pointer", r.status === "pending" && "bg-primary/5")}
                 >
-                  <TableCell className="font-mono text-sm">{r.orderNumber}</TableCell>
+                  <TableCell className="font-mono text-sm">
+                    <Link
+                      href={`/dashboard/orders/${r.id}`}
+                      className="rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {r.orderNumber}
+                    </Link>
+                  </TableCell>
                   <TableCell>{r.customerName}</TableCell>
                   <TableCell>
                     {r.fulfillmentType === "delivery"
