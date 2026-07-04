@@ -1,5 +1,6 @@
 "use client";
 import { useTransition } from "react";
+import { unstable_rethrow } from "next/navigation";
 import { toast } from "sonner";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -39,7 +40,8 @@ export function ConfirmActionButton({
                 try {
                   await action();
                   if (successMessage) toast.success(successMessage);
-                } catch {
+                } catch (err) {
+                  unstable_rethrow(err);
                   toast.error("Something went wrong. Please try again.");
                 }
               })
