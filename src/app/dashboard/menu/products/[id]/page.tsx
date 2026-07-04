@@ -1,14 +1,19 @@
+import Link from "next/link";
+import { ArrowLeft, Plus } from "lucide-react";
 import { requireDashboardUser } from "@/server/auth/dashboard-context";
 import { authorize } from "@/server/rbac/authorize";
 import { getProduct } from "@/server/catalog/service";
 import {
-  updateProductAction,
-  deleteProductAction,
-  upsertModifierGroupAction,
-  deleteModifierGroupAction,
-  upsertModifierOptionAction,
-  deleteModifierOptionAction,
+  updateProductAction, deleteProductAction, upsertModifierGroupAction,
+  deleteModifierGroupAction, upsertModifierOptionAction, deleteModifierOptionAction,
 } from "../actions";
+import { PageHeader } from "@/components/dashboard/PageHeader";
+import { SubmitButton } from "@/components/dashboard/SubmitButton";
+import { ToastForm } from "@/components/dashboard/ToastForm";
+import { ConfirmActionButton } from "@/components/dashboard/ConfirmActionButton";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 export default async function EditProductPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -16,77 +21,108 @@ export default async function EditProductPage({ params }: { params: Promise<{ id
   authorize(ctx.roleKeys, "menu:manage");
   const product = await getProduct(ctx.tenantId, id);
 
-  const updateAction = updateProductAction.bind(null, id);
-  const deleteAction = deleteProductAction.bind(null, id);
-  const addGroupAction = upsertModifierGroupAction.bind(null, id);
-
   return (
-    <main style={{ padding: 32, fontFamily: "system-ui" }}>
-      <h1>Edit Product: {product.nameEn}</h1>
+    <>
+      <Link href="/dashboard/menu" className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground mb-4">
+        <ArrowLeft className="size-4" strokeWidth={1.5} /> Menu
+      </Link>
+      <PageHeader eyebrow="Catalog" title={product.nameEn} />
 
-      <form action={updateAction}>
-        <div><label>Name (EN): <input name="nameEn" defaultValue={product.nameEn} required /></label></div>
-        <div><label>Name (AR): <input name="nameAr" defaultValue={product.nameAr} required dir="rtl" /></label></div>
-        <div><label>Description (EN): <input name="descriptionEn" defaultValue={product.descriptionEn ?? ""} /></label></div>
-        <div><label>Description (AR): <input name="descriptionAr" defaultValue={product.descriptionAr ?? ""} dir="rtl" /></label></div>
-        <div><label>Base Price: <input name="basePrice" type="number" step="0.01" defaultValue={String(product.basePrice)} required /></label></div>
-        <div>
-          <label>
-            <input type="checkbox" name="isPublished" value="true" defaultChecked={product.isPublished} />
-            {" "}Published
+      <Card className="p-5 max-w-2xl mb-6">
+        <form action={updateProductAction.bind(null, id)} className="grid gap-4">
+          <div className="grid md:grid-cols-2 gap-4">
+            <div className="grid gap-1.5">
+              <Label htmlFor="nameEn">Name (EN)</Label>
+              <Input id="nameEn" name="nameEn" defaultValue={product.nameEn} required />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="nameAr">Name (AR)</Label>
+              <Input id="nameAr" name="nameAr" defaultValue={product.nameAr} required dir="rtl" />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="descriptionEn">Description (EN)</Label>
+              <Input id="descriptionEn" name="descriptionEn" defaultValue={product.descriptionEn ?? ""} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="descriptionAr">Description (AR)</Label>
+              <Input id="descriptionAr" name="descriptionAr" defaultValue={product.descriptionAr ?? ""} dir="rtl" />
+            </div>
+          </div>
+          <div className="grid gap-1.5 max-w-48">
+            <Label htmlFor="basePrice">Base price</Label>
+            <Input id="basePrice" name="basePrice" type="number" step="0.01" min="0" defaultValue={String(product.basePrice)} required />
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" name="isPublished" value="true" defaultChecked={product.isPublished} className="size-4 accent-(--color-primary)" />
+            Published — visible on your storefront
           </label>
-        </div>
-        <button type="submit">Save</button>
-      </form>
+          <div><SubmitButton>Save changes</SubmitButton></div>
+        </form>
+      </Card>
 
-      <h2>Modifier Groups</h2>
-      {product.modifierGroups.map((group) => {
-        const delGroup = deleteModifierGroupAction.bind(null, id, group.id);
-        const addOpt = upsertModifierOptionAction.bind(null, id, group.id);
-        return (
-          <section key={group.id} style={{ border: "1px solid #ccc", padding: 12, marginBottom: 12 }}>
-            <strong>{group.nameEn} / {group.nameAr}</strong>
-            {" "}(min: {group.minSelections}, max: {group.maxSelections}, required: {String(group.required)})
-            <form action={delGroup} style={{ display: "inline" }}>
-              <button type="submit" style={{ color: "red", marginLeft: 8 }}>[delete group]</button>
-            </form>
-            <ul>
-              {group.options.map((opt) => {
-                const delOpt = deleteModifierOptionAction.bind(null, id, opt.id);
-                return (
-                  <li key={opt.id}>
-                    {opt.nameEn} / {opt.nameAr} (+{opt.priceDelta})
-                    <form action={delOpt} style={{ display: "inline" }}>
-                      <button type="submit" style={{ color: "red", marginLeft: 4 }}>[x]</button>
-                    </form>
-                  </li>
-                );
-              })}
+      <h2 className="eyebrow text-primary mb-3">Modifier groups</h2>
+      <div className="space-y-4 max-w-2xl mb-6">
+        {product.modifierGroups.map((group) => (
+          <Card key={group.id} className="p-5">
+            <div className="flex items-start justify-between gap-3 mb-2">
+              <div>
+                <div className="font-medium text-ink">{group.nameEn} <span className="text-muted-foreground" dir="rtl">/ {group.nameAr}</span></div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  min {group.minSelections} · max {group.maxSelections} · {group.required ? "required" : "optional"}
+                </div>
+              </div>
+              <ConfirmActionButton
+                action={deleteModifierGroupAction.bind(null, id, group.id)}
+                label="Delete group"
+                size="sm"
+                title={`Delete "${group.nameEn}"?`}
+                description="The group and all its options will be removed from this product."
+                successMessage="Group deleted"
+              />
+            </div>
+            <ul className="text-sm divide-y">
+              {group.options.map((opt) => (
+                <li key={opt.id} className="py-2 flex items-center justify-between gap-2">
+                  <span>{opt.nameEn} <span className="text-muted-foreground" dir="rtl">/ {opt.nameAr}</span></span>
+                  <span className="flex items-center gap-3">
+                    <span className="font-mono text-xs">+{Number(opt.priceDelta).toFixed(2)}</span>
+                    <ToastForm action={deleteModifierOptionAction.bind(null, id, opt.id)} successMessage="Option removed">
+                      <SubmitButton variant="ghost" size="sm" className="text-destructive hover:text-destructive">Remove</SubmitButton>
+                    </ToastForm>
+                  </span>
+                </li>
+              ))}
             </ul>
-            <form action={addOpt}>
-              <input name="nameEn" placeholder="Option EN" required />
-              <input name="nameAr" placeholder="Option AR" dir="rtl" required />
-              <input name="priceDelta" type="number" step="0.01" placeholder="Price delta" defaultValue="0" />
-              <button type="submit">Add Option</button>
-            </form>
-          </section>
-        );
-      })}
+            <ToastForm action={upsertModifierOptionAction.bind(null, id, group.id)} successMessage="Option added" className="flex flex-wrap items-end gap-2 mt-3">
+              <Input name="nameEn" placeholder="Option (EN)" required className="w-36" />
+              <Input name="nameAr" placeholder="Option (AR)" dir="rtl" required className="w-36" />
+              <Input name="priceDelta" type="number" step="0.01" placeholder="+ price" defaultValue="0" className="w-24" />
+              <SubmitButton variant="outline" size="sm"><Plus className="size-4" />Add option</SubmitButton>
+            </ToastForm>
+          </Card>
+        ))}
 
-      <h3>Add Modifier Group</h3>
-      <form action={addGroupAction}>
-        <input name="nameEn" placeholder="Group name EN" required />
-        <input name="nameAr" placeholder="Group name AR" dir="rtl" required />
-        <label><input type="checkbox" name="required" value="true" /> Required</label>
-        <input name="minSelections" type="number" defaultValue="0" min="0" placeholder="Min" />
-        <input name="maxSelections" type="number" defaultValue="1" min="1" placeholder="Max" />
-        <button type="submit">Add Group</button>
-      </form>
+        <Card className="p-5">
+          <h3 className="text-sm font-medium text-ink mb-3">Add modifier group</h3>
+          <ToastForm action={upsertModifierGroupAction.bind(null, id)} successMessage="Group added" className="flex flex-wrap items-end gap-2">
+            <Input name="nameEn" placeholder="Group name (EN)" required className="w-40" />
+            <Input name="nameAr" placeholder="Group name (AR)" dir="rtl" required className="w-40" />
+            <Input name="minSelections" type="number" defaultValue="0" min="0" className="w-20" aria-label="Min selections" />
+            <Input name="maxSelections" type="number" defaultValue="1" min="1" className="w-20" aria-label="Max selections" />
+            <label className="flex items-center gap-1.5 text-sm h-9">
+              <input type="checkbox" name="required" value="true" className="size-4 accent-(--color-primary)" /> Required
+            </label>
+            <SubmitButton variant="outline" size="sm"><Plus className="size-4" />Add group</SubmitButton>
+          </ToastForm>
+        </Card>
+      </div>
 
-      <form action={deleteAction} style={{ marginTop: 24 }}>
-        <button type="submit" style={{ color: "red" }}>Delete Product</button>
-      </form>
-      <p><a href="/dashboard/menu">← Back</a></p>
-    </main>
+      <ConfirmActionButton
+        action={deleteProductAction.bind(null, id)}
+        label="Delete product"
+        title={`Delete "${product.nameEn}"?`}
+        description="The product and its modifiers will be removed from your menu. This can't be undone."
+      />
+    </>
   );
 }
