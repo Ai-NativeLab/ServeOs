@@ -47,3 +47,5 @@ next-env.d.ts
 
 # brainstorm mockups
 /.adham-ai/
+
+.worktrees/
