@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* Dynamic badge classes from src/lib/order-status.ts — Tailwind can't see them, so force-generate. */
+@source inline("{bg,ring}-status-{pending,confirmed,preparing,ready,delivery,completed,danger}/{15,30}");
+@source inline("text-status-{pending,confirmed,preparing,ready,delivery,completed,danger}-fg");
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -19,6 +23,7 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-ink: var(--ink);
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);
@@ -32,6 +37,23 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  --color-status-pending: #e8a33d;
+  --color-status-pending-fg: #8f6410;
+  --color-status-confirmed: #2e6bff;
+  --color-status-confirmed-fg: #1f49b0;
+  --color-status-preparing: #2dd4c4;
+  --color-status-preparing-fg: #0b7a70;
+  --color-status-ready: #38d08c;
+  --color-status-ready-fg: #177a4f;
+  --color-status-delivery: #0fb5a6;
+  --color-status-delivery-fg: #086e63;
+  --color-status-completed: #948676;
+  --color-status-completed-fg: #6e6459;
+  --color-status-danger: #ce2c2c;
+  --color-status-danger-fg: #a22222;
+  --font-sans: var(--font-space-grotesk), var(--font-plex-arabic), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-bricolage), var(--font-space-grotesk), ui-sans-serif, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -39,70 +61,56 @@
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.129 0.042 264.695);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.129 0.042 264.695);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.129 0.042 264.695);
-  --primary: oklch(0.705 0.213 47.6);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.968 0.007 247.896);
-  --secondary-foreground: oklch(0.208 0.042 265.755);
-  --muted: oklch(0.968 0.007 247.896);
-  --muted-foreground: oklch(0.554 0.046 257.417);
-  --accent: oklch(0.968 0.007 247.896);
-  --accent-foreground: oklch(0.208 0.042 265.755);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.929 0.013 255.508);
-  --input: oklch(0.929 0.013 255.508);
-  --ring: oklch(0.705 0.213 47.6);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.714);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.984 0.003 247.858);
-  --sidebar-foreground: oklch(0.129 0.042 264.695);
-  --sidebar-primary: oklch(0.705 0.213 47.6);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.968 0.007 247.896);
-  --sidebar-accent-foreground: oklch(0.208 0.042 265.755);
-  --sidebar-border: oklch(0.929 0.013 255.508);
-  --sidebar-ring: oklch(0.705 0.213 47.6);
+  --background: #fbf7f2;
+  --foreground: #3a332c;
+  --card: #fffdfb;
+  --card-foreground: #3a332c;
+  --popover: #fffdfb;
+  --popover-foreground: #3a332c;
+  --primary: #f0522b;
+  --primary-foreground: #ffffff;
+  --secondary: #f4ede4;
+  --secondary-foreground: #1a0f0a;
+  --muted: #f4ede4;
+  --muted-foreground: #948676;
+  --accent: #fbe3da;
+  --accent-foreground: #1a0f0a;
+  --destructive: #ce2c2c;
+  --border: rgba(26, 15, 10, 0.09);
+  --input: rgba(26, 15, 10, 0.12);
+  --ring: #f0522b;
+  --ink: #1a0f0a;
+  --chart-1: #f0522b;
+  --chart-2: #2dd4c4;
+  --chart-3: #2e6bff;
+  --chart-4: #e8a33d;
+  --chart-5: #38d08c;
+  --radius: 0.75rem;
+  --sidebar: #17100b;
+  --sidebar-foreground: #fbf1ec;
+  --sidebar-primary: #f0522b;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgba(240, 82, 43, 0.16);
+  --sidebar-accent-foreground: #ff6b45;
+  --sidebar-border: rgba(255, 255, 255, 0.14);
+  --sidebar-ring: #f0522b;
 }
 
-.dark {
-  --background: oklch(0.129 0.042 264.695);
-  --foreground: oklch(0.984 0.003 247.858);
-  --card: oklch(0.208 0.042 265.755);
-  --card-foreground: oklch(0.984 0.003 247.858);
-  --popover: oklch(0.208 0.042 265.755);
-  --popover-foreground: oklch(0.984 0.003 247.858);
-  --primary: oklch(0.705 0.213 47.6);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.279 0.041 260.031);
-  --secondary-foreground: oklch(0.984 0.003 247.858);
-  --muted: oklch(0.279 0.041 260.031);
-  --muted-foreground: oklch(0.704 0.04 256.788);
-  --accent: oklch(0.279 0.041 260.031);
-  --accent-foreground: oklch(0.984 0.003 247.858);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.705 0.213 47.6);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.208 0.042 265.755);
-  --sidebar-foreground: oklch(0.984 0.003 247.858);
-  --sidebar-primary: oklch(0.705 0.213 47.6);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.279 0.041 260.031);
-  --sidebar-accent-foreground: oklch(0.984 0.003 247.858);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.705 0.213 47.6);
+@layer base {
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--background);
+    color: var(--foreground);
+  }
+  h1, h2, h3 {
+    color: var(--ink);
+  }
+}
+
+@utility eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
 }
