@@ -42,17 +42,21 @@ export default async function DashboardHome() {
 
   return (
     <>
-      <PageHeader title="Home" description="Your setup progress and a snapshot of recent orders." />
+      <PageHeader
+        eyebrow="Overview"
+        title="Home"
+        description="Your setup progress and a snapshot of recent orders."
+      />
 
       <Card className="p-5 mb-6">
-        <h2 className="text-sm font-semibold mb-3">Get set up</h2>
+        <h2 className="eyebrow text-primary mb-3">Get set up</h2>
         <ul className="space-y-2">
           {steps.map((step) => (
             <li key={step.key}>
               <Link href={step.href} className="flex items-center gap-3 text-sm hover:underline">
                 {step.done
-                  ? <CheckCircle2 className="size-5 text-green-600" />
-                  : <Circle className="size-5 text-slate-300" />}
+                  ? <CheckCircle2 className="size-5 text-primary" />
+                  : <Circle className="size-5 text-muted-foreground/40" />}
                 <span className={step.done ? "text-muted-foreground line-through" : ""}>{step.label}</span>
               </Link>
             </li>
@@ -60,12 +64,12 @@ export default async function DashboardHome() {
         </ul>
       </Card>
 
-      <h2 className="text-sm font-semibold mb-3">Orders</h2>
+      <h2 className="eyebrow text-primary mb-3">Today's orders</h2>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {snapshot.map((s) => (
           <Card key={s.status} className="p-4">
-            <div className="text-2xl font-semibold">{s.count}</div>
-            <div className={`inline-block mt-1 rounded px-2 py-0.5 text-xs ${s.meta.badgeClass}`}>{s.meta.label}</div>
+            <div className="font-display text-3xl font-bold text-ink">{s.count}</div>
+            <div className={`inline-block mt-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${s.meta.badgeClass}`}>{s.meta.label}</div>
           </Card>
         ))}
       </div>

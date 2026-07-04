@@ -12,7 +12,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const items = dashboardNavItems(roleKeys);
 
   return (
-    <div className="min-h-screen flex bg-slate-50 text-slate-900">
+    <div className="min-h-screen flex bg-background text-foreground">
       <Sidebar items={items} restaurantName={tenant?.name ?? "Restaurant"} />
       <div className="flex-1 flex flex-col min-w-0">
         <Topbar userName={user.name} roleLabel={roleKeys[0] ?? "member"} pendingCount={pending} />

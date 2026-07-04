@@ -11,12 +11,12 @@ import { SubmitButton } from "./SubmitButton";
 
 export function Topbar({ userName, roleLabel, pendingCount }: { userName: string; roleLabel: string; pendingCount: number }) {
   return (
-    <header className="h-14 flex items-center justify-end gap-3 border-b bg-white px-4">
+    <header className="h-14 flex items-center justify-end gap-3 border-b bg-card px-4">
       <Button asChild variant="ghost" size="icon" className="relative">
         <Link href="/dashboard/orders" aria-label="Pending orders">
           <Bell className="size-5" />
           {pendingCount > 0 && (
-            <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full bg-primary text-[10px] leading-4 text-white text-center">
+            <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full bg-primary text-[10px] leading-4 text-primary-foreground text-center">
               {pendingCount}
             </span>
           )}
@@ -25,7 +25,7 @@ export function Topbar({ userName, roleLabel, pendingCount }: { userName: string
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" className="gap-2">
-            <span className="size-7 rounded-full bg-slate-200 grid place-items-center text-xs font-semibold">
+            <span className="size-7 rounded-full bg-secondary text-ink grid place-items-center text-xs font-semibold">
               {userName.slice(0, 1).toUpperCase()}
             </span>
             <span className="text-sm">{userName}</span>
