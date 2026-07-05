@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import type { PublishedMenu } from "@/server/catalog/schema";
 import { addLine, loadCart, removeLine, cartSubtotal, type Cart } from "./cart";
+import { CategoryNav } from "./storefront/CategoryNav";
 
 type MenuProduct = PublishedMenu["categories"][number]["products"][number];
 
@@ -29,6 +30,8 @@ export function StorefrontMenu({ menu, branchId, slug, orderingEnabled }: { menu
 
   return (
     <>
+      <CategoryNav categories={menu.categories.map((c) => ({ id: c.id, nameEn: c.nameEn }))} />
+
       {orderingEnabled && (
         <button onClick={() => setDrawerOpen(true)} style={{ position: "fixed", insetInlineEnd: 16, top: 16, zIndex: 20, background: "#0f172a", color: "#fff", border: 0, borderRadius: 999, padding: "10px 16px", fontWeight: 700 }}>
           🛒 {cart.lines.reduce((s, l) => s + l.quantity, 0)}
@@ -36,7 +39,7 @@ export function StorefrontMenu({ menu, branchId, slug, orderingEnabled }: { menu
       )}
 
       {menu.categories.map((cat) => (
-        <div key={cat.id} style={{ marginBottom: 32 }}>
+        <div key={cat.id} id={`category-${cat.id}`} className="scroll-mt-32 py-6">
           <h2 style={{ fontSize: 20, borderBottom: "2px solid currentColor", paddingBottom: 4 }}>{cat.nameEn} / {cat.nameAr}</h2>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: 16, marginTop: 12 }}>
             {cat.products.map((p) => <ProductCard key={p.id} product={p} onAdd={orderingEnabled ? add : undefined} />)}
