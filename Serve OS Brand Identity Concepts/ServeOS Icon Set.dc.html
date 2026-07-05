@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;padding:0;background:#E7E0D6;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
+  *{box-sizing:border-box;}
+</style>
+</helmet>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="mk-node" viewBox="0 0 100 100">
+    <path d="M26 32 L74 32 L50 78 Z" fill="none" stroke="currentColor" stroke-width="6" stroke-linejoin="round"></path>
+    <circle cx="26" cy="32" r="9" fill="currentColor"></circle>
+    <circle cx="74" cy="32" r="9" fill="currentColor"></circle>
+    <circle cx="50" cy="78" r="9" fill="currentColor"></circle>
+  </symbol>
+  <!-- heavier weight for tiny favicon legibility -->
+  <symbol id="mk-node-bold" viewBox="0 0 100 100">
+    <path d="M27 34 L73 34 L50 76 Z" fill="none" stroke="currentColor" stroke-width="9" stroke-linejoin="round"></path>
+    <circle cx="27" cy="34" r="11" fill="currentColor"></circle>
+    <circle cx="73" cy="34" r="11" fill="currentColor"></circle>
+    <circle cx="50" cy="76" r="11" fill="currentColor"></circle>
+  </symbol>
+</defs></svg>
+
+<div style="padding:56px 40px 96px;display:flex;justify-content:center;">
+<div style="width:1120px;max-width:100%;display:flex;flex-direction:column;gap:24px;">
+
+  <!-- MASTHEAD -->
+  <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:24px;flex-wrap:wrap;padding:4px 4px 8px;">
+    <div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:rgba(26,15,10,.5);margin-bottom:14px;">Icon &amp; Favicon Set&nbsp;&nbsp;·&nbsp;&nbsp;shown at actual size</div>
+      <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:40px;letter-spacing:-.02em;color:#1A0F0A;line-height:1;">App &amp; favicon set</div>
+    </div>
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:14px;line-height:1.5;color:#4E463D;max-width:42ch;text-align:right;">Connected-triangle mark, Serve Coral <span style="font-family:'JetBrains Mono',monospace;font-size:12px;">#F0522B</span>. Every tile below is rendered at its exact pixel dimensions — zoom to 100% to judge true small-size legibility.</div>
+  </div>
+
+  <!-- 01 FAVICON -->
+  <section style="background:#FBF7F2;border:1px solid rgba(26,15,10,.09);border-radius:22px;padding:36px 40px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:6px;">01 — Favicon</div>
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:13px;color:#6E6459;margin-bottom:26px;">Uses a slightly heavier mark weight so it holds at 16&nbsp;px. <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;">favicon.ico / .png</span></div>
+    <div style="display:flex;gap:44px;align-items:flex-end;flex-wrap:wrap;">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:14px;">
+        <div style="width:16px;height:16px;border-radius:3px;background:#F0522B;display:grid;place-items:center;"><svg style="width:12px;height:12px;display:block;color:#fff;"><use href="#mk-node-bold"></use></svg></div>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#6E6459;">16×16</span>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:14px;">
+        <div style="width:32px;height:32px;border-radius:6px;background:#F0522B;display:grid;place-items:center;"><svg style="width:23px;height:23px;display:block;color:#fff;"><use href="#mk-node-bold"></use></svg></div>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#6E6459;">32×32</span>
+      </div>
+      <div style="width:1px;align-self:stretch;background:rgba(26,15,10,.1);"></div>
+      <!-- browser-tab context proof -->
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <div style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid rgba(26,15,10,.12);border-radius:9px 9px 0 0;padding:9px 14px;width:250px;box-shadow:0 6px 16px -12px rgba(26,15,10,.5);">
+          <div style="width:16px;height:16px;border-radius:3px;background:#F0522B;display:grid;place-items:center;flex:none;"><svg style="width:12px;height:12px;display:block;color:#fff;"><use href="#mk-node-bold"></use></svg></div>
+          <span style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;color:#3A332C;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">ServeOS — Dashboard</span>
+          <span style="margin-left:auto;color:#B9AB9A;font-size:13px;flex:none;">×</span>
+        </div>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#6E6459;">In a browser tab</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 APPLE TOUCH -->
+  <section style="background:#FBF7F2;border:1px solid rgba(26,15,10,.09);border-radius:22px;padding:36px 40px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:6px;">02 — Apple touch icon</div>
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:13px;color:#6E6459;margin-bottom:26px;">Full-bleed square (iOS applies its own corner mask). <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;">apple-touch-icon.png</span></div>
+    <div style="display:flex;gap:44px;align-items:flex-end;flex-wrap:wrap;">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:14px;">
+        <div style="width:180px;height:180px;border-radius:40px;background:#F0522B;display:grid;place-items:center;box-shadow:0 20px 40px -24px rgba(240,82,43,.7);"><svg style="width:104px;height:104px;display:block;color:#fff;"><use href="#mk-node"></use></svg></div>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#6E6459;">180×180</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:12px;font-family:'Space Grotesk',sans-serif;font-size:13px;color:#3A332C;line-height:1.55;max-width:34ch;">
+        <div>Coral fills the tile edge-to-edge; the white mark sits at ~58% of the canvas — comfortable optical weight on a home screen.</div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#6E6459;">Corner radius shown as iOS renders it (~22%).</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 03 PWA -->
+  <section style="background:#FBF7F2;border:1px solid rgba(26,15,10,.09);border-radius:22px;padding:36px 40px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:6px;">03 — PWA icons (any purpose)</div>
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:13px;color:#6E6459;margin-bottom:26px;">Square, full-bleed. Referenced from <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;">manifest.json</span> → icons[].</div>
+    <div style="display:flex;gap:48px;align-items:flex-end;flex-wrap:wrap;">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:14px;">
+        <div style="width:192px;height:192px;border-radius:12px;background:#F0522B;display:grid;place-items:center;"><svg style="width:112px;height:112px;display:block;color:#fff;"><use href="#mk-node"></use></svg></div>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#6E6459;">192×192</span>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:14px;">
+        <div style="width:512px;height:512px;border-radius:28px;background:#F0522B;display:grid;place-items:center;"><svg style="width:300px;height:300px;display:block;color:#fff;"><use href="#mk-node"></use></svg></div>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#6E6459;">512×512</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 04 MASKABLE -->
+  <section style="background:#FBF7F2;border:1px solid rgba(26,15,10,.09);border-radius:22px;padding:36px 40px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:6px;">04 — Maskable 512 (purpose: maskable)</div>
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:13px;color:#6E6459;margin-bottom:26px;">Mark centered inside the ~80% safe zone so Android's circle / squircle / teardrop masks never clip it.</div>
+    <div style="display:flex;gap:48px;align-items:flex-start;flex-wrap:wrap;">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:14px;">
+        <div style="position:relative;width:512px;height:512px;border-radius:12px;background:#F0522B;display:grid;place-items:center;overflow:hidden;">
+          <!-- safe-zone guide: 80% circle -->
+          <div style="position:absolute;width:410px;height:410px;border:2px dashed rgba(255,255,255,.5);border-radius:50%;"></div>
+          <svg style="width:250px;height:250px;display:block;color:#fff;position:relative;"><use href="#mk-node"></use></svg>
+        </div>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#6E6459;">512×512 · safe zone shown</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:16px;">
+        <div style="font-family:'Space Grotesk',sans-serif;font-size:13px;color:#3A332C;line-height:1.55;max-width:30ch;">Mark scaled to ~49% of the canvas — fully inside the 80% safe circle. Coral bleeds past every mask edge.</div>
+        <!-- mask previews -->
+        <div style="display:flex;gap:16px;">
+          <div style="display:flex;flex-direction:column;align-items:center;gap:8px;"><div style="width:88px;height:88px;background:#F0522B;border-radius:50%;display:grid;place-items:center;"><svg style="width:43px;height:43px;display:block;color:#fff;"><use href="#mk-node"></use></svg></div><span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#6E6459;">circle</span></div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:8px;"><div style="width:88px;height:88px;background:#F0522B;border-radius:26px;display:grid;place-items:center;"><svg style="width:43px;height:43px;display:block;color:#fff;"><use href="#mk-node"></use></svg></div><span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#6E6459;">squircle</span></div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:8px;"><div style="width:88px;height:88px;background:#F0522B;border-radius:50% 50% 50% 8px;display:grid;place-items:center;"><svg style="width:43px;height:43px;display:block;color:#fff;"><use href="#mk-node"></use></svg></div><span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#6E6459;">teardrop</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 05 MONOCHROME PINNED TAB -->
+  <section style="background:#FBF7F2;border:1px solid rgba(26,15,10,.09);border-radius:22px;padding:36px 40px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:6px;">05 — Monochrome silhouette · Safari pinned tab</div>
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:13px;color:#6E6459;margin-bottom:26px;">Single-path solid silhouette, transparent background. Safari recolors it; here it's shown in Coral and in flat black. <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;">mask-icon.svg</span></div>
+    <div style="display:flex;gap:44px;align-items:flex-end;flex-wrap:wrap;">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:14px;">
+        <div style="width:64px;height:64px;display:grid;place-items:center;background:#fff;border:1px solid rgba(26,15,10,.1);border-radius:12px;"><svg width="40" height="40" viewBox="0 0 100 100"><path d="M18 28 L82 28 L50 84 Z M50 62 L64 38 L36 38 Z" fill="#1A0F0A" fill-rule="evenodd"></path></svg></div>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#6E6459;">solid · black</span>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:14px;">
+        <div style="width:64px;height:64px;display:grid;place-items:center;background:#fff;border:1px solid rgba(26,15,10,.1);border-radius:12px;"><svg width="40" height="40" viewBox="0 0 100 100"><path d="M18 28 L82 28 L50 84 Z M50 62 L64 38 L36 38 Z" fill="#F0522B" fill-rule="evenodd"></path></svg></div>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#6E6459;">solid · coral (Safari tint)</span>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:14px;">
+        <div style="width:16px;height:16px;display:grid;place-items:center;"><svg width="16" height="16" viewBox="0 0 100 100"><path d="M18 28 L82 28 L50 84 Z M50 62 L64 38 L36 38 Z" fill="#1A0F0A" fill-rule="evenodd"></path></svg></div>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#6E6459;">16×16 silhouette</span>
+      </div>
+      <div style="width:1px;align-self:stretch;background:rgba(26,15,10,.1);"></div>
+      <div style="font-family:'Space Grotesk',sans-serif;font-size:13px;color:#3A332C;line-height:1.55;max-width:26ch;">Pinned-tab icons must be a <strong style="color:#1A0F0A;">filled</strong> shape, not strokes — so the outline mark becomes a solid triangle with the center knocked out.</div>
+    </div>
+  </section>
+
+  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(26,15,10,.4);text-align:center;padding-top:8px;">ServeOS Icon Set · export each tile as PNG at its labelled size · pinned-tab &amp; favicon-SVG as SVG</div>
+
+</div>
+</div>
+</x-dc>
+</body>
+</html>

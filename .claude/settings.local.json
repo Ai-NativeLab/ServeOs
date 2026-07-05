@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add *)",
+      "Bash(git -c user.name=ServeOS -c user.email=adhamesam82@gmail.com commit -q -m 'docs: adapt plan DB setup from Docker to Supabase *)",
+      "Bash(git checkout *)",
+      "Bash(npx --yes create-next-app@latest serveos-temp --typescript --app --src-dir --no-tailwind --eslint --import-alias \"@/*\" --use-npm --no-turbopack)",
+      "Bash(rm -rf \"/Users/macbook/Desktop/Software projects/Serveos/serveos-temp\")",
+      "Bash(npm install *)"
+    ],
+    "additionalDirectories": [
+      "/Users/macbook/Desktop/Software projects/Serveos/serveos-temp"
+    ]
+  }
+}

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@700;800&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;padding:0;background:#E7E0D6;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
+  *{box-sizing:border-box;}
+</style>
+</helmet>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <!-- shared: 24 grid · 2px · round -->
+  <symbol id="u-home" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.5 L12 3.5 L20 10.5 V19 a1.5 1.5 0 0 1 -1.5 1.5 H5.5 A1.5 1.5 0 0 1 4 19 Z"></path><path d="M9.5 20.5 V14 h5 v6.5"></path></g></symbol>
+  <symbol id="u-orders" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8 H18 L17 20 a1.5 1.5 0 0 1 -1.5 1.4 H8.5 A1.5 1.5 0 0 1 7 20 Z"></path><path d="M8.5 8 V6.5 a3.5 3.5 0 0 1 7 0 V8"></path></g></symbol>
+  <symbol id="u-menu" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 6.5 H20"></path><path d="M10 12 H20"></path><path d="M10 17.5 H20"></path></g><g fill="currentColor"><circle cx="5" cy="6.5" r="1.3"></circle><circle cx="5" cy="12" r="1.3"></circle><circle cx="5" cy="17.5" r="1.3"></circle></g></symbol>
+  <symbol id="ic-table" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5.5"></circle><rect x="9" y="1.6" width="6" height="2.6" rx="1.3"></rect><rect x="9" y="19.8" width="6" height="2.6" rx="1.3"></rect><rect x="1.6" y="9" width="2.6" height="6" rx="1.3"></rect><rect x="19.8" y="9" width="2.6" height="6" rx="1.3"></rect></g></symbol>
+  <symbol id="ic-inventory" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="6" width="16" height="14" rx="2.2"></rect><path d="M4 11 H20"></path><path d="M12 6 V11"></path><path d="M9.5 15 H14.5"></path></g></symbol>
+  <symbol id="ic-analytics" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 3.5 V20 H20.5"></path><path d="M7.5 15 L11 11 L14 13.5 L19.5 7"></path></g><circle cx="19.5" cy="7" r="1.7" fill="currentColor"></circle></symbol>
+  <symbol id="u-customers" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9.5" cy="9" r="3.2"></circle><path d="M3.8 19.5 a5.7 5.7 0 0 1 11.4 0"></path><path d="M16.5 6.4 a3.2 3.2 0 0 1 0 6.2"></path><path d="M17.5 14 a5.7 5.7 0 0 1 3.1 5"></path></g></symbol>
+  <symbol id="u-settings" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5 H20"></path><path d="M4 12 H20"></path><path d="M4 17.5 H20"></path></g><g fill="#FBF7F2" stroke="currentColor" stroke-width="2"><circle cx="8" cy="6.5" r="2.2"></circle><circle cx="16" cy="12" r="2.2"></circle><circle cx="10" cy="17.5" r="2.2"></circle></g></symbol>
+  <symbol id="u-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="M15.5 15.5 L20.5 20.5"></path></g></symbol>
+  <symbol id="u-add" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 8.5 V15.5"></path><path d="M8.5 12 H15.5"></path></g></symbol>
+  <symbol id="u-edit" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20 L4.5 16 L15.5 5 a2 2 0 0 1 3 0 l0.5 0.5 a2 2 0 0 1 0 3 L8 19.5 Z"></path><path d="M14 6.5 L17.5 10"></path></g></symbol>
+  <symbol id="u-delete" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5 H20"></path><path d="M6.5 6.5 L7.4 20 a1.5 1.5 0 0 0 1.5 1.4 H15 a1.5 1.5 0 0 0 1.5 -1.4 L17.5 6.5"></path><path d="M9.5 6.5 V4.6 a1.4 1.4 0 0 1 1.4 -1.4 H13.1 a1.4 1.4 0 0 1 1.4 1.4 V6.5"></path><path d="M10.2 10.5 V17"></path><path d="M13.8 10.5 V17"></path></g></symbol>
+  <symbol id="u-bell" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16 V10 a6 6 0 0 1 12 0 V16 l1.6 2.4 H4.4 Z"></path><path d="M9.7 18.4 a2.5 2.5 0 0 0 4.6 0"></path></g></symbol>
+  <!-- semantic -->
+  <symbol id="s-success" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"></circle><path d="M8 12 L11 15 L16 9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></symbol>
+  <symbol id="s-warning" viewBox="0 0 24 24"><path d="M12 3.5 L21.5 20 a1 1 0 0 1 -0.9 1.5 H3.4 A1 1 0 0 1 2.5 20 Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"></path><path d="M12 9.5 V14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path><circle cx="12" cy="17.5" r="1.3" fill="currentColor"></circle></symbol>
+  <symbol id="s-error" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"></circle><path d="M9 9 L15 15 M15 9 L9 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path></symbol>
+  <symbol id="s-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"></circle><path d="M12 11 V16.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path><circle cx="12" cy="7.7" r="1.3" fill="currentColor"></circle></symbol>
+</defs></svg>
+
+<div style="padding:56px 40px 96px;display:flex;justify-content:center;">
+<div style="width:1120px;max-width:100%;display:flex;flex-direction:column;gap:24px;">
+
+  <!-- MASTHEAD -->
+  <div style="padding:4px 4px 8px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:rgba(26,15,10,.5);margin-bottom:14px;">Core UI Icons&nbsp;&nbsp;·&nbsp;&nbsp;24px grid · 2px stroke</div>
+    <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:42px;letter-spacing:-.02em;color:#1A0F0A;line-height:1;">Dashboard icon set</div>
+  </div>
+
+  <!-- NAVIGATION -->
+  <section style="background:#FBF7F2;border:1px solid rgba(26,15,10,.09);border-radius:22px;padding:32px 40px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:24px;">Navigation</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;">
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px;background:#fff;"><svg style="width:40px;height:40px;color:#1A0F0A;"><use href="#u-home"></use></svg><span style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:500;color:#3A332C;">Home</span></div>
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px;background:#fff;"><svg style="width:40px;height:40px;color:#1A0F0A;"><use href="#u-orders"></use></svg><span style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:500;color:#3A332C;">Orders</span></div>
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px;background:#fff;"><svg style="width:40px;height:40px;color:#1A0F0A;"><use href="#u-menu"></use></svg><span style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:500;color:#3A332C;">Menu</span></div>
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px;background:#fff;"><svg style="width:40px;height:40px;color:#1A0F0A;"><use href="#ic-table"></use></svg><span style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:500;color:#3A332C;">Reservations</span></div>
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px;background:#fff;"><svg style="width:40px;height:40px;color:#1A0F0A;"><use href="#ic-inventory"></use></svg><span style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:500;color:#3A332C;">Inventory</span></div>
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px;background:#fff;"><svg style="width:40px;height:40px;color:#1A0F0A;"><use href="#ic-analytics"></use></svg><span style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:500;color:#3A332C;">Analytics</span></div>
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px;background:#fff;"><svg style="width:40px;height:40px;color:#1A0F0A;"><use href="#u-customers"></use></svg><span style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:500;color:#3A332C;">Customers</span></div>
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px;background:#fff;"><svg style="width:40px;height:40px;color:#1A0F0A;"><use href="#u-settings"></use></svg><span style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:500;color:#3A332C;">Settings</span></div>
+    </div>
+  </section>
+
+  <!-- ACTIONS -->
+  <section style="background:#FBF7F2;border:1px solid rgba(26,15,10,.09);border-radius:22px;padding:32px 40px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:24px;">Actions</div>
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:14px;">
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px;background:#fff;"><svg style="width:40px;height:40px;color:#1A0F0A;"><use href="#u-search"></use></svg><span style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:500;color:#3A332C;">Search</span></div>
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px;background:#fff;"><svg style="width:40px;height:40px;color:#1A0F0A;"><use href="#u-add"></use></svg><span style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:500;color:#3A332C;">Add</span></div>
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px;background:#fff;"><svg style="width:40px;height:40px;color:#1A0F0A;"><use href="#u-edit"></use></svg><span style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:500;color:#3A332C;">Edit</span></div>
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px;background:#fff;"><svg style="width:40px;height:40px;color:#1A0F0A;"><use href="#u-delete"></use></svg><span style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:500;color:#3A332C;">Delete</span></div>
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px;background:#fff;"><svg style="width:40px;height:40px;color:#1A0F0A;"><use href="#u-bell"></use></svg><span style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:500;color:#3A332C;">Notification</span></div>
+    </div>
+  </section>
+
+  <!-- STATUS -->
+  <section style="background:#FBF7F2;border:1px solid rgba(26,15,10,.09);border-radius:22px;padding:32px 40px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:24px;">Semantic status</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;">
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px;background:#DDF0E6;"><svg style="width:40px;height:40px;color:#1F8A5B;"><use href="#s-success"></use></svg><span style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:600;color:#186B47;">Success</span></div>
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px;background:#FBEED6;"><svg style="width:40px;height:40px;color:#E8A33D;"><use href="#s-warning"></use></svg><span style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:600;color:#B47C25;">Warning</span></div>
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px;background:#F8DFDC;"><svg style="width:40px;height:40px;color:#CE2C2C;"><use href="#s-error"></use></svg><span style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:600;color:#A82323;">Error</span></div>
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px;background:#DEE8FF;"><svg style="width:40px;height:40px;color:#2E6BFF;"><use href="#s-info"></use></svg><span style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:600;color:#2453CC;">Info</span></div>
+    </div>
+  </section>
+
+  <!-- TRUE 24px STRIP -->
+  <section style="background:#140D08;border:1px solid rgba(255,255,255,.08);border-radius:22px;padding:30px 40px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:rgba(251,241,236,.5);margin-bottom:20px;">Actual size · 24×24 · on dark</div>
+    <div style="display:flex;flex-wrap:wrap;gap:22px;align-items:center;color:#FBF1EC;">
+      <svg style="width:24px;height:24px;color:#FBF1EC;"><use href="#u-home"></use></svg>
+      <svg style="width:24px;height:24px;color:#FBF1EC;"><use href="#u-orders"></use></svg>
+      <svg style="width:24px;height:24px;color:#FBF1EC;"><use href="#u-menu"></use></svg>
+      <svg style="width:24px;height:24px;color:#FBF1EC;"><use href="#ic-table"></use></svg>
+      <svg style="width:24px;height:24px;color:#FBF1EC;"><use href="#ic-inventory"></use></svg>
+      <svg style="width:24px;height:24px;color:#FBF1EC;"><use href="#ic-analytics"></use></svg>
+      <svg style="width:24px;height:24px;color:#FBF1EC;"><use href="#u-customers"></use></svg>
+      <svg style="width:24px;height:24px;color:#FBF1EC;"><use href="#u-settings"></use></svg>
+      <svg style="width:24px;height:24px;color:#FBF1EC;"><use href="#u-search"></use></svg>
+      <svg style="width:24px;height:24px;color:#FBF1EC;"><use href="#u-add"></use></svg>
+      <svg style="width:24px;height:24px;color:#FBF1EC;"><use href="#u-edit"></use></svg>
+      <svg style="width:24px;height:24px;color:#FBF1EC;"><use href="#u-delete"></use></svg>
+      <svg style="width:24px;height:24px;color:#FBF1EC;"><use href="#u-bell"></use></svg>
+      <span style="width:1px;height:24px;background:rgba(255,255,255,.15);"></span>
+      <svg style="width:24px;height:24px;color:#38D08C;"><use href="#s-success"></use></svg>
+      <svg style="width:24px;height:24px;color:#F5BE5C;"><use href="#s-warning"></use></svg>
+      <svg style="width:24px;height:24px;color:#F26D5F;"><use href="#s-error"></use></svg>
+      <svg style="width:24px;height:24px;color:#6E9BFF;"><use href="#s-info"></use></svg>
+    </div>
+  </section>
+
+  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(26,15,10,.4);text-align:center;padding-top:8px;">ServeOS UI Icons · 17 glyphs · export as SVG · stroke 2px on 24 grid</div>
+
+</div>
+</div>
+</x-dc>
+</body>
+</html>

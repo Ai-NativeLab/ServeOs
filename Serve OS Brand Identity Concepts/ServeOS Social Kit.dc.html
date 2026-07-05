@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;padding:0;background:#E7E0D6;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
+  *{box-sizing:border-box;}
+</style>
+</helmet>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="mk-node" viewBox="0 0 100 100">
+    <path d="M26 32 L74 32 L50 78 Z" fill="none" stroke="currentColor" stroke-width="6" stroke-linejoin="round"></path>
+    <circle cx="26" cy="32" r="9" fill="currentColor"></circle>
+    <circle cx="74" cy="32" r="9" fill="currentColor"></circle>
+    <circle cx="50" cy="78" r="9" fill="currentColor"></circle>
+  </symbol>
+</defs></svg>
+
+<div style="padding:56px 40px 96px;display:flex;flex-direction:column;align-items:center;gap:44px;">
+
+  <!-- MASTHEAD -->
+  <div style="width:1600px;max-width:100%;padding:4px 4px 8px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:rgba(26,15,10,.5);margin-bottom:14px;">Social Kit</div>
+    <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:42px;letter-spacing:-.02em;color:#1A0F0A;line-height:1;">ServeOS across every platform</div>
+  </div>
+
+  <!-- 01 PROFILE PICTURE -->
+  <section style="width:1600px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:14px;">01 — Profile picture · 400×400</div>
+    <div style="display:flex;gap:24px;">
+      <div style="width:400px;height:400px;border-radius:50%;background:radial-gradient(circle at 42% 36%,#FF6B45 0%,#F0522B 70%);display:grid;place-items:center;box-shadow:0 24px 50px -26px rgba(240,82,43,.7);">
+        <svg style="width:190px;height:190px;color:#fff;"><use href="#mk-node"></use></svg>
+      </div>
+      <div style="width:400px;height:400px;border-radius:50%;background:#17100B;display:grid;place-items:center;border:1px solid rgba(255,255,255,.08);">
+        <svg style="width:190px;height:190px;color:#FF6B45;"><use href="#mk-node"></use></svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 LINKEDIN 1128x191 -->
+  <section style="width:1600px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:14px;">02 — LinkedIn cover · 1128×191</div>
+    <div style="width:1128px;height:191px;position:relative;overflow:hidden;background:#17100B;border-radius:6px;">
+      <div style="position:absolute;top:-140px;left:-100px;width:420px;height:420px;border-radius:50%;background:radial-gradient(circle,#FF5E34,rgba(240,82,43,0) 66%);"></div>
+      <div style="position:absolute;bottom:-160px;right:-80px;width:400px;height:400px;border-radius:50%;background:radial-gradient(circle,rgba(45,212,196,.5),rgba(15,181,166,0) 62%);"></div>
+      <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:space-between;padding:0 56px;">
+        <div style="display:flex;align-items:center;gap:14px;">
+          <svg style="width:34px;height:34px;color:#FF6B45;"><use href="#mk-node"></use></svg>
+          <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:26px;color:#FBF1EC;">Serve<span style="color:#FF6B45;">OS</span></div>
+        </div>
+        <div style="font-family:'Space Grotesk',sans-serif;font-size:16px;color:rgba(251,241,236,.82);">The operating system for restaurants.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 03 X / TWITTER 1500x500 -->
+  <section style="width:1600px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:14px;">03 — X / Twitter header · 1500×500</div>
+    <div style="width:1500px;height:500px;position:relative;overflow:hidden;background:#17100B;border-radius:6px;">
+      <div style="position:absolute;top:-260px;left:-180px;width:760px;height:760px;border-radius:50%;background:radial-gradient(circle,#FF5E34,rgba(240,82,43,0) 66%);"></div>
+      <div style="position:absolute;bottom:-260px;right:-140px;width:700px;height:700px;border-radius:50%;background:radial-gradient(circle,rgba(45,212,196,.45),rgba(15,181,166,0) 62%);"></div>
+      <!-- avatar cutout guide (X places round pfp bottom-left, overlapping) -->
+      <div style="position:absolute;left:64px;bottom:-70px;width:180px;height:180px;border-radius:50%;border:6px solid #17100B;background:#F0522B;display:grid;place-items:center;">
+        <svg style="width:88px;height:88px;color:#fff;"><use href="#mk-node"></use></svg>
+      </div>
+      <div style="position:absolute;top:64px;right:72px;text-align:right;">
+        <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:38px;color:#FBF1EC;letter-spacing:-.02em;">The operating system<br>for restaurants.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 04 FACEBOOK COVER 820x312 -->
+  <section style="width:1600px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:14px;">04 — Facebook cover · 820×312</div>
+    <div style="width:820px;height:312px;position:relative;overflow:hidden;background:#17100B;border-radius:6px;">
+      <div style="position:absolute;top:-160px;left:-100px;width:460px;height:460px;border-radius:50%;background:radial-gradient(circle,#FF5E34,rgba(240,82,43,0) 66%);"></div>
+      <div style="position:absolute;bottom:-160px;right:-80px;width:420px;height:420px;border-radius:50%;background:radial-gradient(circle,rgba(45,212,196,.45),rgba(15,181,166,0) 62%);"></div>
+      <!-- keep left ~110px clear for FB profile-photo overlap -->
+      <div style="position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 40px 0 150px;">
+        <div style="display:flex;align-items:center;gap:11px;margin-bottom:14px;">
+          <svg style="width:26px;height:26px;color:#FF6B45;"><use href="#mk-node"></use></svg>
+          <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:20px;color:#FBF1EC;">Serve<span style="color:#FF6B45;">OS</span></div>
+        </div>
+        <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:28px;color:#FBF1EC;letter-spacing:-.02em;line-height:1.15;">Ordering, POS &amp; AI —<br>one system.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 05 YOUTUBE 2560x1440 (scaled), safe area 1546x423 centered -->
+  <section style="width:1600px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:14px;">05 — YouTube banner · 2560×1440 (shown at 62.5% · safe area 1546×423 marked)</div>
+    <div style="width:1600px;height:900px;position:relative;overflow:hidden;background:#17100B;border-radius:6px;">
+      <div style="position:absolute;top:-320px;left:-220px;width:900px;height:900px;border-radius:50%;background:radial-gradient(circle,#FF5E34,rgba(240,82,43,0) 66%);"></div>
+      <div style="position:absolute;bottom:-340px;right:-200px;width:860px;height:860px;border-radius:50%;background:radial-gradient(circle,rgba(45,212,196,.42),rgba(15,181,166,0) 62%);"></div>
+      <!-- safe area: 1546x423 at 62.5% scale = 966x264 -->
+      <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:966px;height:264px;border:1.5px dashed rgba(94,235,221,.55);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;">
+        <div style="display:flex;align-items:center;gap:14px;">
+          <svg style="width:44px;height:44px;color:#FF6B45;"><use href="#mk-node"></use></svg>
+          <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:34px;color:#FBF1EC;">Serve<span style="color:#FF6B45;">OS</span></div>
+        </div>
+        <div style="font-family:'Space Grotesk',sans-serif;font-size:17px;color:rgba(251,241,236,.8);">The operating system for restaurants.</div>
+      </div>
+      <div style="position:absolute;bottom:14px;right:20px;font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(251,241,236,.4);">safe area: avatar &amp; device chrome crop outside this zone</div>
+    </div>
+  </section>
+
+  <!-- 06 FEED POST TEMPLATE 1080x1080 -->
+  <section style="width:1600px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:14px;">06 — Feed post template · 1080×1080 (shown at 55.5%, duplicate &amp; swap headline)</div>
+    <div style="display:flex;gap:24px;">
+      <div style="width:600px;height:600px;position:relative;overflow:hidden;background:#17100B;border-radius:14px;box-shadow:0 24px 50px -30px rgba(26,15,10,.35);">
+        <div style="position:absolute;top:-180px;left:-140px;width:560px;height:560px;border-radius:50%;background:radial-gradient(circle,#FF5E34,rgba(240,82,43,0) 66%);"></div>
+        <div style="position:absolute;bottom:-200px;right:-140px;width:540px;height:540px;border-radius:50%;background:radial-gradient(circle,rgba(45,212,196,.4),rgba(15,181,166,0) 62%);"></div>
+        <div style="position:absolute;inset:0;padding:48px;display:flex;flex-direction:column;justify-content:space-between;">
+          <div style="display:flex;align-items:center;gap:11px;">
+            <svg style="width:26px;height:26px;color:#FF6B45;"><use href="#mk-node"></use></svg>
+            <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:20px;color:#FBF1EC;">Serve<span style="color:#FF6B45;">OS</span></div>
+          </div>
+          <div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#5EEBDD;margin-bottom:14px;">Product update</div>
+            <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:38px;line-height:1.06;letter-spacing:-.02em;color:#FBF1EC;">[Headline goes<br>here]</div>
+          </div>
+          <div style="font-family:'Space Grotesk',sans-serif;font-size:14px;color:rgba(251,241,236,.6);">serveos.cloud</div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:12px;max-width:340px;">
+        <div style="font-family:'Space Grotesk',sans-serif;font-size:13.5px;line-height:1.6;color:#3A332C;">Reusable base: logo top-left, eyebrow label, headline slot, domain footer. Swap the <strong style="color:#1A0F0A;">[Headline]</strong> and eyebrow per post — layout, glow and safe margins stay fixed.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 07 STORY TEMPLATE 1080x1920 -->
+  <section style="width:1600px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:14px;">07 — Story template · 1080×1920 (shown at 33.3%, duplicate &amp; swap headline)</div>
+    <div style="display:flex;gap:24px;align-items:flex-start;">
+      <div style="width:360px;height:640px;position:relative;overflow:hidden;background:#17100B;border-radius:22px;box-shadow:0 24px 50px -30px rgba(26,15,10,.35);">
+        <div style="position:absolute;top:-160px;left:-120px;width:460px;height:460px;border-radius:50%;background:radial-gradient(circle,#FF5E34,rgba(240,82,43,0) 66%);"></div>
+        <div style="position:absolute;bottom:-200px;right:-120px;width:440px;height:440px;border-radius:50%;background:radial-gradient(circle,rgba(45,212,196,.42),rgba(15,181,166,0) 62%);"></div>
+        <!-- safe zone guide: keep clear of top ~250 / bottom ~250 (UI chrome) at full res; scaled ~83/83 -->
+        <div style="position:absolute;inset:83px 28px;border:1.5px dashed rgba(94,235,221,.4);border-radius:14px;"></div>
+        <div style="position:absolute;inset:0;padding:44px 30px;display:flex;flex-direction:column;justify-content:space-between;">
+          <div style="display:flex;align-items:center;gap:9px;">
+            <svg style="width:20px;height:20px;color:#FF6B45;"><use href="#mk-node"></use></svg>
+            <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:16px;color:#FBF1EC;">Serve<span style="color:#FF6B45;">OS</span></div>
+          </div>
+          <div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#5EEBDD;margin-bottom:12px;">New feature</div>
+            <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:30px;line-height:1.08;letter-spacing:-.02em;color:#FBF1EC;">[Headline<br>goes here]</div>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:10px;">
+            <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:13px;color:#fff;background:#F0522B;border-radius:999px;padding:10px 22px;">Swipe up</div>
+            <div style="font-family:'Space Grotesk',sans-serif;font-size:11px;color:rgba(251,241,236,.55);">serveos.cloud</div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:12px;max-width:340px;padding-top:10px;">
+        <div style="font-family:'Space Grotesk',sans-serif;font-size:13.5px;line-height:1.6;color:#3A332C;">Dashed guide marks the safe zone clear of each platform's own UI (profile ring, reply bar, progress dots). Keep logo, headline and CTA inside it.</div>
+      </div>
+    </div>
+  </section>
+
+  <div style="width:1600px;font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(26,15,10,.4);text-align:center;padding-top:8px;">ServeOS Social Kit · export each artboard at its native resolution</div>
+
+</div>
+</x-dc>
+</body>
+</html>

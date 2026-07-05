@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Sans+Arabic:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;padding:0;background:#E7E0D6;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
+  *{box-sizing:border-box;}
+</style>
+</helmet>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="mk-node" viewBox="0 0 100 100">
+    <path d="M26 32 L74 32 L50 78 Z" fill="none" stroke="currentColor" stroke-width="6" stroke-linejoin="round"></path>
+    <circle cx="26" cy="32" r="9" fill="currentColor"></circle>
+    <circle cx="74" cy="32" r="9" fill="currentColor"></circle>
+    <circle cx="50" cy="78" r="9" fill="currentColor"></circle>
+  </symbol>
+  <symbol id="u-edit" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20 L4.5 16 L15.5 5 a2 2 0 0 1 3 0 l0.5 0.5 a2 2 0 0 1 0 3 L8 19.5 Z"></path><path d="M14 6.5 L17.5 10"></path></g></symbol>
+  <symbol id="u-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="M15.5 15.5 L20.5 20.5"></path></g></symbol>
+  <symbol id="u-add" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 8.5 V15.5"></path><path d="M8.5 12 H15.5"></path></g></symbol>
+  <symbol id="u-bell" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16 V10 a6 6 0 0 1 12 0 V16 l1.6 2.4 H4.4 Z"></path><path d="M9.7 18.4 a2.5 2.5 0 0 0 4.6 0"></path></g></symbol>
+</defs></svg>
+
+<div style="padding:56px 40px 96px;display:flex;flex-direction:column;align-items:center;gap:44px;">
+
+  <!-- MASTHEAD -->
+  <div style="width:1600px;max-width:100%;padding:4px 4px 8px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:rgba(26,15,10,.5);margin-bottom:14px;">RTL / Arabic Adaptations</div>
+    <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:42px;letter-spacing:-.02em;color:#1A0F0A;line-height:1;">Mirroring the directional assets</div>
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:14.5px;color:#4E463D;margin-top:12px;max-width:90ch;">The <strong style="color:#1A0F0A;">ServeOS wordmark stays LTR always</strong> — it's a proper name, never mirrored, and keeps its coral "OS" on the right of the mark regardless of interface direction. Everything else that implies a reading direction — hero copy blocks, CTA arrows, the login illustration/form split, OG layout — flips for Arabic. Purely symmetric icons (search, add, bell, status dots) need no change at all.</div>
+  </div>
+
+  <!-- 00 ICON RULE -->
+  <section style="width:1600px;background:#FBF7F2;border:1px solid rgba(26,15,10,.09);border-radius:20px;padding:30px 40px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:20px;">00 — Icon mirroring rule</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+      <div>
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:14px;color:#1A0F0A;margin-bottom:12px;">Mirror in RTL (directional)</div>
+        <div style="display:flex;gap:24px;align-items:center;">
+          <div style="display:flex;flex-direction:column;align-items:center;gap:8px;"><svg style="width:30px;height:30px;color:#1A0F0A;"><use href="#u-edit"></use></svg><span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#948676;">edit (nib flips)</span></div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:8px;"><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:24px;color:#1A0F0A;">→</span><span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#948676;">CTA arrows → ←</span></div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:8px;"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#948676;">chevrons ›</span><span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#948676;">breadcrumbs, back/next</span></div>
+        </div>
+      </div>
+      <div>
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:14px;color:#1A0F0A;margin-bottom:12px;">Symmetric — no change needed</div>
+        <div style="display:flex;gap:24px;align-items:center;">
+          <svg style="width:30px;height:30px;color:#1A0F0A;"><use href="#u-search"></use></svg>
+          <svg style="width:30px;height:30px;color:#1A0F0A;"><use href="#u-add"></use></svg>
+          <svg style="width:30px;height:30px;color:#1A0F0A;"><use href="#u-bell"></use></svg>
+          <svg style="width:30px;height:30px;color:#F0522B;"><use href="#mk-node"></use></svg>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 01 HERO -->
+  <section style="width:1600px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:14px;">01 — Marketing hero · LTR vs RTL</div>
+    <div style="display:flex;gap:20px;">
+      <!-- LTR -->
+      <div style="width:790px;height:460px;position:relative;overflow:hidden;background:#17100B;border-radius:16px;">
+        <div style="position:absolute;top:-160px;left:-120px;width:520px;height:520px;border-radius:50%;background:radial-gradient(circle,#FF5E34,rgba(240,82,43,0) 66%);"></div>
+        <div style="position:absolute;bottom:-180px;right:-100px;width:500px;height:500px;border-radius:50%;background:radial-gradient(circle,rgba(45,212,196,.42),rgba(15,181,166,0) 62%);"></div>
+        <div style="position:absolute;inset:0;background:radial-gradient(ellipse 46% 54% at 42% 52%,rgba(20,13,9,.7) 0%,rgba(20,13,9,.3) 46%,rgba(20,13,9,0) 78%);"></div>
+        <div style="position:absolute;top:26px;left:36px;display:flex;align-items:center;gap:10px;"><svg style="width:22px;height:22px;color:#FF6B45;"><use href="#mk-node"></use></svg><div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:18px;color:#FBF1EC;">Serve<span style="color:#FF6B45;">OS</span></div></div>
+        <div style="position:absolute;top:50%;left:36px;transform:translateY(-50%);max-width:420px;">
+          <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:38px;line-height:1.05;letter-spacing:-.02em;color:#FFF8F4;margin-bottom:16px;">The operating system<br>your business <span style="color:#FF7A54;">runs on.</span></div>
+          <div style="font-family:'Space Grotesk',sans-serif;font-size:14px;color:rgba(251,241,236,.85);margin-bottom:22px;max-width:36ch;">Ordering, POS and AI insight — one connected backbone.</div>
+          <div style="display:flex;gap:10px;"><div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:14px;color:#fff;background:#F0522B;border-radius:10px;padding:11px 20px;display:flex;align-items:center;gap:8px;">Get Started <span>→</span></div></div>
+        </div>
+        <div style="position:absolute;bottom:14px;left:16px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(251,241,236,.4);">LTR · content left, arrow →</div>
+      </div>
+      <!-- RTL -->
+      <div dir="rtl" style="width:790px;height:460px;position:relative;overflow:hidden;background:#17100B;border-radius:16px;">
+        <div style="position:absolute;top:-160px;right:-120px;width:520px;height:520px;border-radius:50%;background:radial-gradient(circle,#FF5E34,rgba(240,82,43,0) 66%);"></div>
+        <div style="position:absolute;bottom:-180px;left:-100px;width:500px;height:500px;border-radius:50%;background:radial-gradient(circle,rgba(45,212,196,.42),rgba(15,181,166,0) 62%);"></div>
+        <div style="position:absolute;inset:0;background:radial-gradient(ellipse 46% 54% at 58% 52%,rgba(20,13,9,.7) 0%,rgba(20,13,9,.3) 46%,rgba(20,13,9,0) 78%);"></div>
+        <div style="position:absolute;top:26px;right:36px;display:flex;align-items:center;gap:10px;"><svg style="width:22px;height:22px;color:#FF6B45;"><use href="#mk-node"></use></svg><div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:18px;color:#FBF1EC;direction:ltr;">Serve<span style="color:#FF6B45;">OS</span></div></div>
+        <div style="position:absolute;top:50%;right:36px;transform:translateY(-50%);max-width:420px;text-align:right;">
+          <div style="font-family:'IBM Plex Sans Arabic',sans-serif;font-weight:700;font-size:36px;line-height:1.3;color:#FFF8F4;margin-bottom:16px;">نظام التشغيل الذي<br>يعمل عليه <span style="color:#FF7A54;">عملك.</span></div>
+          <div style="font-family:'IBM Plex Sans Arabic',sans-serif;font-size:15px;color:rgba(251,241,236,.85);margin-bottom:22px;max-width:36ch;">الطلبات ونقاط البيع والذكاء الاصطناعي — نظام واحد متصل.</div>
+          <div style="display:flex;gap:10px;justify-content:flex-end;"><div style="font-family:'IBM Plex Sans Arabic',sans-serif;font-weight:700;font-size:14px;color:#fff;background:#F0522B;border-radius:10px;padding:11px 20px;display:flex;align-items:center;gap:8px;"><span>←</span> ابدأ الآن</div></div>
+        </div>
+        <div style="position:absolute;bottom:14px;right:16px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(251,241,236,.4);">RTL · content right, arrow ←، logo LTR</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 LOGIN PANEL -->
+  <section style="width:1600px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:14px;">02 — Login/signup split · panel &amp; form swap sides</div>
+    <div style="display:flex;gap:20px;">
+      <!-- LTR: illustration left, form right -->
+      <div style="width:790px;height:420px;display:flex;border-radius:16px;overflow:hidden;">
+        <div style="width:395px;height:420px;position:relative;background:#17100B;">
+          <svg viewBox="0 0 395 420" style="position:absolute;inset:0;width:100%;height:100%;"><g fill="none" stroke="#FF6B45" stroke-width="1.2" opacity="0.35"><path d="M100 120 L230 100 L190 190 Z"></path></g><g fill="#FF6B45" opacity="0.7"><circle cx="100" cy="120" r="4"></circle><circle cx="230" cy="100" r="4"></circle><circle cx="190" cy="190" r="5"></circle></g></svg>
+          <div style="position:absolute;top:24px;left:26px;display:flex;align-items:center;gap:8px;"><svg style="width:18px;height:18px;color:#FF6B45;"><use href="#mk-node"></use></svg><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:14px;color:#FBF1EC;">Serve<span style="color:#FF6B45;">OS</span></span></div>
+          <div style="position:absolute;bottom:30px;left:26px;right:26px;font-family:'Space Grotesk',sans-serif;font-size:13px;color:rgba(251,241,236,.75);">One system behind every order you take.</div>
+        </div>
+        <div style="width:395px;height:420px;background:#FFFDFB;display:flex;align-items:center;justify-content:center;">
+          <div style="width:220px;display:flex;flex-direction:column;gap:12px;">
+            <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:16px;color:#1A0F0A;">Sign in</div>
+            <div style="height:34px;border:1px solid rgba(26,15,10,.15);border-radius:8px;"></div>
+            <div style="height:34px;border:1px solid rgba(26,15,10,.15);border-radius:8px;"></div>
+            <div style="height:36px;background:#F0522B;border-radius:8px;"></div>
+          </div>
+        </div>
+      </div>
+      <!-- RTL: form left, illustration right (mirrors) -->
+      <div dir="rtl" style="width:790px;height:420px;display:flex;border-radius:16px;overflow:hidden;">
+        <div style="width:395px;height:420px;background:#FFFDFB;display:flex;align-items:center;justify-content:center;">
+          <div style="width:220px;display:flex;flex-direction:column;gap:12px;">
+            <div style="font-family:'IBM Plex Sans Arabic',sans-serif;font-weight:700;font-size:17px;color:#1A0F0A;text-align:right;">تسجيل الدخول</div>
+            <div style="height:34px;border:1px solid rgba(26,15,10,.15);border-radius:8px;"></div>
+            <div style="height:34px;border:1px solid rgba(26,15,10,.15);border-radius:8px;"></div>
+            <div style="height:36px;background:#F0522B;border-radius:8px;"></div>
+          </div>
+        </div>
+        <div style="width:395px;height:420px;position:relative;background:#17100B;">
+          <svg viewBox="0 0 395 420" style="position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1);"><g fill="none" stroke="#FF6B45" stroke-width="1.2" opacity="0.35"><path d="M100 120 L230 100 L190 190 Z"></path></g><g fill="#FF6B45" opacity="0.7"><circle cx="100" cy="120" r="4"></circle><circle cx="230" cy="100" r="4"></circle><circle cx="190" cy="190" r="5"></circle></g></svg>
+          <div style="position:absolute;top:24px;right:26px;display:flex;align-items:center;gap:8px;"><svg style="width:18px;height:18px;color:#FF6B45;"><use href="#mk-node"></use></svg><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:14px;color:#FBF1EC;direction:ltr;">Serve<span style="color:#FF6B45;">OS</span></span></div>
+          <div style="position:absolute;bottom:30px;left:26px;right:26px;font-family:'IBM Plex Sans Arabic',sans-serif;font-size:13px;color:rgba(251,241,236,.75);text-align:right;">نظام واحد خلف كل طلب تستقبله.</div>
+        </div>
+      </div>
+    </div>
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;color:#6E6459;margin-top:12px;">Illustration triangle-network is mirrored (scaleX(-1)) so its node flow still reads start→end in the new direction; form moves to the side closest to reading start.</div>
+  </section>
+
+  <!-- 03 OG IMAGE -->
+  <section style="width:1600px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:14px;">03 — Open Graph share image · content anchor flips</div>
+    <div style="display:flex;gap:20px;">
+      <div style="width:790px;height:415px;position:relative;overflow:hidden;background:#17100B;border-radius:12px;">
+        <div style="position:absolute;top:-200px;left:-140px;width:600px;height:600px;border-radius:50%;background:radial-gradient(circle,#FF5E34,rgba(240,82,43,0) 66%);"></div>
+        <div style="position:absolute;bottom:-220px;right:-120px;width:580px;height:580px;border-radius:50%;background:radial-gradient(circle,rgba(45,212,196,.4),rgba(15,181,166,0) 62%);"></div>
+        <div style="position:absolute;inset:0;padding:44px 50px;display:flex;flex-direction:column;justify-content:space-between;">
+          <div style="display:flex;align-items:center;gap:10px;"><svg style="width:26px;height:26px;color:#FF6B45;"><use href="#mk-node"></use></svg><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:20px;color:#FBF1EC;">Serve<span style="color:#FF6B45;">OS</span></span></div>
+          <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:42px;line-height:1.02;letter-spacing:-.02em;color:#FFF8F4;">The operating system<br>for <span style="color:#FF7A54;">restaurants.</span></div>
+          <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:15px;color:rgba(251,241,236,.9);">serveos.cloud</div>
+        </div>
+      </div>
+      <div dir="rtl" style="width:790px;height:415px;position:relative;overflow:hidden;background:#17100B;border-radius:12px;">
+        <div style="position:absolute;top:-200px;right:-140px;width:600px;height:600px;border-radius:50%;background:radial-gradient(circle,#FF5E34,rgba(240,82,43,0) 66%);"></div>
+        <div style="position:absolute;bottom:-220px;left:-120px;width:580px;height:580px;border-radius:50%;background:radial-gradient(circle,rgba(45,212,196,.4),rgba(15,181,166,0) 62%);"></div>
+        <div style="position:absolute;inset:0;padding:44px 50px;display:flex;flex-direction:column;justify-content:space-between;align-items:flex-start;">
+          <div style="display:flex;align-items:center;gap:10px;"><svg style="width:26px;height:26px;color:#FF6B45;"><use href="#mk-node"></use></svg><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:20px;color:#FBF1EC;direction:ltr;">Serve<span style="color:#FF6B45;">OS</span></span></div>
+          <div style="font-family:'IBM Plex Sans Arabic',sans-serif;font-weight:700;font-size:38px;line-height:1.35;color:#FFF8F4;text-align:right;">نظام التشغيل<br>لـ<span style="color:#FF7A54;">المطاعم.</span></div>
+          <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:15px;color:rgba(251,241,236,.9);direction:ltr;">serveos.cloud</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div style="width:1600px;font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(26,15,10,.4);text-align:center;padding-top:8px;">ServeOS RTL Adaptations · logo lockup never mirrors · illustrations/CTAs/layout do</div>
+
+</div>
+</x-dc>
+</body>
+</html>

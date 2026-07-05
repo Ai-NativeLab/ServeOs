@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;padding:0;background:#E7E0D6;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
+  *{box-sizing:border-box;}
+</style>
+</helmet>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="mk-node" viewBox="0 0 100 100">
+    <path d="M26 32 L74 32 L50 78 Z" fill="none" stroke="currentColor" stroke-width="6" stroke-linejoin="round"></path>
+    <circle cx="26" cy="32" r="9" fill="currentColor"></circle>
+    <circle cx="74" cy="32" r="9" fill="currentColor"></circle>
+    <circle cx="50" cy="78" r="9" fill="currentColor"></circle>
+  </symbol>
+  <symbol id="ic-qr" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.6"></rect><rect x="14" y="3" width="7" height="7" rx="1.6"></rect><rect x="3" y="14" width="7" height="7" rx="1.6"></rect></g><g fill="currentColor"><rect x="15" y="15" width="2.6" height="2.6" rx="0.7"></rect><rect x="18.4" y="18.4" width="2.6" height="2.6" rx="0.7"></rect><rect x="15" y="19" width="2.6" height="2" rx="0.7"></rect><rect x="19" y="15" width="2" height="2.6" rx="0.7"></rect></g></symbol>
+  <symbol id="ic-pos" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2.5" width="14" height="19" rx="2.6"></rect><rect x="8" y="5.5" width="8" height="4.5" rx="1"></rect></g><g fill="currentColor"><circle cx="9.4" cy="14.2" r="1.15"></circle><circle cx="14.6" cy="14.2" r="1.15"></circle><circle cx="9.4" cy="18" r="1.15"></circle><circle cx="14.6" cy="18" r="1.15"></circle></g></symbol>
+  <symbol id="ic-chat" viewBox="0 0 24 24"><path d="M7 4 h10 a4 4 0 0 1 4 4 v4 a4 4 0 0 1 -4 4 h-6 l-4.5 3.4 v-3.4 a4 4 0 0 1 -3.5 -4 v-4 a4 4 0 0 1 4 -4 z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path><g fill="currentColor"><circle cx="8.6" cy="10" r="1.15"></circle><circle cx="12" cy="10" r="1.15"></circle><circle cx="15.4" cy="10" r="1.15"></circle></g></symbol>
+  <symbol id="ic-table" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5.5"></circle><rect x="9" y="1.6" width="6" height="2.6" rx="1.3"></rect><rect x="9" y="19.8" width="6" height="2.6" rx="1.3"></rect><rect x="1.6" y="9" width="2.6" height="6" rx="1.3"></rect><rect x="19.8" y="9" width="2.6" height="6" rx="1.3"></rect></g></symbol>
+  <symbol id="ic-inventory" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="6" width="16" height="14" rx="2.2"></rect><path d="M4 11 H20"></path><path d="M12 6 V11"></path><path d="M9.5 15 H14.5"></path></g></symbol>
+  <symbol id="ic-analytics" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 3.5 V20 H20.5"></path><path d="M7.5 15 L11 11 L14 13.5 L19.5 7"></path></g><circle cx="19.5" cy="7" r="1.7" fill="currentColor"></circle></symbol>
+</defs></svg>
+
+<div style="padding:56px 40px 96px;display:flex;justify-content:center;">
+<div style="width:1120px;max-width:100%;display:flex;flex-direction:column;gap:24px;">
+
+  <!-- MASTHEAD -->
+  <div style="padding:4px 4px 8px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:rgba(26,15,10,.5);margin-bottom:14px;">Dashboard Sidebar Branding</div>
+    <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:42px;letter-spacing:-.02em;color:#1A0F0A;line-height:1;">Sidebar logo — expanded &amp; collapsed</div>
+  </div>
+
+  <!-- 01 LOGO ARTBOARDS -->
+  <section style="background:#FBF7F2;border:1px solid rgba(26,15,10,.09);border-radius:22px;padding:34px 40px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:24px;">01 — Logo artboards</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;">
+      <!-- expanded light -->
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;overflow:hidden;">
+        <div style="background:#FFFDFB;padding:34px;display:flex;align-items:center;justify-content:center;">
+          <div style="width:160px;height:40px;display:flex;align-items:center;gap:11px;"><svg style="width:32px;height:32px;display:block;color:#F0522B;flex:none;"><use href="#mk-node"></use></svg><div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:25px;letter-spacing:-.03em;color:#1A0F0A;line-height:1;">Serve<span style="color:#F0522B;">OS</span></div></div>
+        </div>
+        <div style="padding:11px 16px;background:#fff;border-top:1px solid rgba(26,15,10,.07);font-family:'JetBrains Mono',monospace;font-size:11px;color:#6E6459;">Expanded · 160×40 · light</div>
+      </div>
+      <!-- expanded dark -->
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;overflow:hidden;">
+        <div style="background:#17100B;padding:34px;display:flex;align-items:center;justify-content:center;">
+          <div style="width:160px;height:40px;display:flex;align-items:center;gap:11px;"><svg style="width:32px;height:32px;display:block;color:#FF6B45;flex:none;"><use href="#mk-node"></use></svg><div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:25px;letter-spacing:-.03em;color:#FBF1EC;line-height:1;">Serve<span style="color:#FF6B45;">OS</span></div></div>
+        </div>
+        <div style="padding:11px 16px;background:#fff;border-top:1px solid rgba(26,15,10,.07);font-family:'JetBrains Mono',monospace;font-size:11px;color:#6E6459;">Expanded · 160×40 · dark</div>
+      </div>
+      <!-- collapsed light -->
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;overflow:hidden;">
+        <div style="background:#FFFDFB;padding:34px;display:flex;align-items:center;justify-content:center;gap:26px;">
+          <div style="width:32px;height:32px;display:grid;place-items:center;"><svg style="width:32px;height:32px;display:block;color:#F0522B;"><use href="#mk-node"></use></svg></div>
+          <div style="width:32px;height:32px;border-radius:8px;background:#F0522B;display:grid;place-items:center;"><svg style="width:22px;height:22px;display:block;color:#fff;"><use href="#mk-node"></use></svg></div>
+        </div>
+        <div style="padding:11px 16px;background:#fff;border-top:1px solid rgba(26,15,10,.07);font-family:'JetBrains Mono',monospace;font-size:11px;color:#6E6459;">Collapsed · 32×32 · light &nbsp;(plain / tile)</div>
+      </div>
+      <!-- collapsed dark -->
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:14px;overflow:hidden;">
+        <div style="background:#17100B;padding:34px;display:flex;align-items:center;justify-content:center;gap:26px;">
+          <div style="width:32px;height:32px;display:grid;place-items:center;"><svg style="width:32px;height:32px;display:block;color:#FF6B45;"><use href="#mk-node"></use></svg></div>
+          <div style="width:32px;height:32px;border-radius:8px;background:#F0522B;display:grid;place-items:center;"><svg style="width:22px;height:22px;display:block;color:#fff;"><use href="#mk-node"></use></svg></div>
+        </div>
+        <div style="padding:11px 16px;background:#fff;border-top:1px solid rgba(26,15,10,.07);font-family:'JetBrains Mono',monospace;font-size:11px;color:#6E6459;">Collapsed · 32×32 · dark &nbsp;(plain / tile)</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 IN CONTEXT -->
+  <section style="background:#FBF7F2;border:1px solid rgba(26,15,10,.09);border-radius:22px;padding:34px 40px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#F0522B;margin-bottom:24px;">02 — In context</div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;">
+
+      <!-- LIGHT app -->
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:16px;overflow:hidden;display:flex;height:560px;background:#F4EDE4;">
+        <!-- expanded sidebar (light) -->
+        <div style="width:230px;background:#FFFDFB;border-right:1px solid rgba(26,15,10,.08);display:flex;flex-direction:column;padding:22px 16px;flex:none;">
+          <div style="display:flex;align-items:center;gap:10px;padding:4px 8px 22px;">
+            <svg style="width:28px;height:28px;display:block;color:#F0522B;flex:none;"><use href="#mk-node"></use></svg>
+            <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:22px;letter-spacing:-.03em;color:#1A0F0A;">Serve<span style="color:#F0522B;">OS</span></div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:3px;">
+            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;background:#FBE3DA;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:14px;color:#C6421F;"><svg style="width:19px;height:19px;color:#F0522B;"><use href="#ic-analytics"></use></svg>Analytics</div>
+            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;font-family:'Space Grotesk',sans-serif;font-weight:500;font-size:14px;color:#4E463D;"><svg style="width:19px;height:19px;color:#6E6459;"><use href="#ic-qr"></use></svg>QR Menu</div>
+            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;font-family:'Space Grotesk',sans-serif;font-weight:500;font-size:14px;color:#4E463D;"><svg style="width:19px;height:19px;color:#6E6459;"><use href="#ic-pos"></use></svg>Point of Sale</div>
+            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;font-family:'Space Grotesk',sans-serif;font-weight:500;font-size:14px;color:#4E463D;"><svg style="width:19px;height:19px;color:#6E6459;"><use href="#ic-chat"></use></svg>WhatsApp</div>
+            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;font-family:'Space Grotesk',sans-serif;font-weight:500;font-size:14px;color:#4E463D;"><svg style="width:19px;height:19px;color:#6E6459;"><use href="#ic-table"></use></svg>Reservations</div>
+            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;font-family:'Space Grotesk',sans-serif;font-weight:500;font-size:14px;color:#4E463D;"><svg style="width:19px;height:19px;color:#6E6459;"><use href="#ic-inventory"></use></svg>Inventory</div>
+          </div>
+          <div style="margin-top:auto;display:flex;align-items:center;gap:10px;padding:10px 8px;border-top:1px solid rgba(26,15,10,.08);">
+            <div style="width:32px;height:32px;border-radius:50%;background:#0FB5A6;display:grid;place-items:center;font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:13px;color:#fff;">NR</div>
+            <div style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:600;color:#1A0F0A;">Casa Mesa</div>
+          </div>
+        </div>
+        <!-- content ghost -->
+        <div style="flex:1;padding:26px;">
+          <div style="width:120px;height:12px;border-radius:6px;background:rgba(26,15,10,.12);margin-bottom:20px;"></div>
+          <div style="display:flex;gap:12px;margin-bottom:16px;"><div style="flex:1;height:70px;border-radius:12px;background:#fff;border:1px solid rgba(26,15,10,.07);"></div><div style="flex:1;height:70px;border-radius:12px;background:#fff;border:1px solid rgba(26,15,10,.07);"></div><div style="flex:1;height:70px;border-radius:12px;background:#fff;border:1px solid rgba(26,15,10,.07);"></div></div>
+          <div style="height:220px;border-radius:12px;background:#fff;border:1px solid rgba(26,15,10,.07);"></div>
+        </div>
+        <div style="position:relative;"></div>
+      </div>
+
+      <!-- DARK app -->
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:16px;overflow:hidden;display:flex;height:560px;background:#0E0906;">
+        <div style="width:230px;background:#17100B;border-right:1px solid rgba(255,255,255,.07);display:flex;flex-direction:column;padding:22px 16px;flex:none;">
+          <div style="display:flex;align-items:center;gap:10px;padding:4px 8px 22px;">
+            <svg style="width:28px;height:28px;display:block;color:#FF6B45;flex:none;"><use href="#mk-node"></use></svg>
+            <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:22px;letter-spacing:-.03em;color:#FBF1EC;">Serve<span style="color:#FF6B45;">OS</span></div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:3px;">
+            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;background:rgba(240,82,43,.16);font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:14px;color:#FF8963;"><svg style="width:19px;height:19px;color:#FF6B45;"><use href="#ic-analytics"></use></svg>Analytics</div>
+            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;font-family:'Space Grotesk',sans-serif;font-weight:500;font-size:14px;color:rgba(251,241,236,.7);"><svg style="width:19px;height:19px;color:rgba(251,241,236,.5);"><use href="#ic-qr"></use></svg>QR Menu</div>
+            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;font-family:'Space Grotesk',sans-serif;font-weight:500;font-size:14px;color:rgba(251,241,236,.7);"><svg style="width:19px;height:19px;color:rgba(251,241,236,.5);"><use href="#ic-pos"></use></svg>Point of Sale</div>
+            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;font-family:'Space Grotesk',sans-serif;font-weight:500;font-size:14px;color:rgba(251,241,236,.7);"><svg style="width:19px;height:19px;color:rgba(251,241,236,.5);"><use href="#ic-chat"></use></svg>WhatsApp</div>
+            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;font-family:'Space Grotesk',sans-serif;font-weight:500;font-size:14px;color:rgba(251,241,236,.7);"><svg style="width:19px;height:19px;color:rgba(251,241,236,.5);"><use href="#ic-table"></use></svg>Reservations</div>
+            <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;font-family:'Space Grotesk',sans-serif;font-weight:500;font-size:14px;color:rgba(251,241,236,.7);"><svg style="width:19px;height:19px;color:rgba(251,241,236,.5);"><use href="#ic-inventory"></use></svg>Inventory</div>
+          </div>
+          <div style="margin-top:auto;display:flex;align-items:center;gap:10px;padding:10px 8px;border-top:1px solid rgba(255,255,255,.08);">
+            <div style="width:32px;height:32px;border-radius:50%;background:#2DD4C4;display:grid;place-items:center;font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:13px;color:#0B2C29;">NR</div>
+            <div style="font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:600;color:#FBF1EC;">Casa Mesa</div>
+          </div>
+        </div>
+        <div style="flex:1;padding:26px;">
+          <div style="width:120px;height:12px;border-radius:6px;background:rgba(255,255,255,.14);margin-bottom:20px;"></div>
+          <div style="display:flex;gap:12px;margin-bottom:16px;"><div style="flex:1;height:70px;border-radius:12px;background:#1B130D;border:1px solid rgba(255,255,255,.06);"></div><div style="flex:1;height:70px;border-radius:12px;background:#1B130D;border:1px solid rgba(255,255,255,.06);"></div><div style="flex:1;height:70px;border-radius:12px;background:#1B130D;border:1px solid rgba(255,255,255,.06);"></div></div>
+          <div style="height:220px;border-radius:12px;background:#1B130D;border:1px solid rgba(255,255,255,.06);"></div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- collapsed rails -->
+    <div style="display:flex;gap:18px;margin-top:18px;">
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:16px;overflow:hidden;flex:1;display:flex;height:300px;background:#F4EDE4;">
+        <div style="width:72px;background:#FFFDFB;border-right:1px solid rgba(26,15,10,.08);display:flex;flex-direction:column;align-items:center;padding:20px 0;gap:6px;flex:none;">
+          <div style="width:36px;height:36px;border-radius:9px;background:#F0522B;display:grid;place-items:center;margin-bottom:14px;"><svg style="width:24px;height:24px;color:#fff;"><use href="#mk-node"></use></svg></div>
+          <div style="width:44px;height:44px;border-radius:11px;background:#FBE3DA;display:grid;place-items:center;"><svg style="width:20px;height:20px;color:#F0522B;"><use href="#ic-analytics"></use></svg></div>
+          <div style="width:44px;height:44px;border-radius:11px;display:grid;place-items:center;"><svg style="width:20px;height:20px;color:#6E6459;"><use href="#ic-qr"></use></svg></div>
+          <div style="width:44px;height:44px;border-radius:11px;display:grid;place-items:center;"><svg style="width:20px;height:20px;color:#6E6459;"><use href="#ic-pos"></use></svg></div>
+          <div style="width:44px;height:44px;border-radius:11px;display:grid;place-items:center;"><svg style="width:20px;height:20px;color:#6E6459;"><use href="#ic-chat"></use></svg></div>
+          <div style="margin-top:auto;width:32px;height:32px;border-radius:50%;background:#0FB5A6;display:grid;place-items:center;font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:12px;color:#fff;">NR</div>
+        </div>
+        <div style="flex:1;padding:22px;"><div style="width:100px;height:10px;border-radius:5px;background:rgba(26,15,10,.12);"></div></div>
+      </div>
+      <div style="border:1px solid rgba(26,15,10,.09);border-radius:16px;overflow:hidden;flex:1;display:flex;height:300px;background:#0E0906;">
+        <div style="width:72px;background:#17100B;border-right:1px solid rgba(255,255,255,.07);display:flex;flex-direction:column;align-items:center;padding:20px 0;gap:6px;flex:none;">
+          <div style="width:36px;height:36px;border-radius:9px;background:#F0522B;display:grid;place-items:center;margin-bottom:14px;"><svg style="width:24px;height:24px;color:#fff;"><use href="#mk-node"></use></svg></div>
+          <div style="width:44px;height:44px;border-radius:11px;background:rgba(240,82,43,.16);display:grid;place-items:center;"><svg style="width:20px;height:20px;color:#FF6B45;"><use href="#ic-analytics"></use></svg></div>
+          <div style="width:44px;height:44px;border-radius:11px;display:grid;place-items:center;"><svg style="width:20px;height:20px;color:rgba(251,241,236,.5);"><use href="#ic-qr"></use></svg></div>
+          <div style="width:44px;height:44px;border-radius:11px;display:grid;place-items:center;"><svg style="width:20px;height:20px;color:rgba(251,241,236,.5);"><use href="#ic-pos"></use></svg></div>
+          <div style="width:44px;height:44px;border-radius:11px;display:grid;place-items:center;"><svg style="width:20px;height:20px;color:rgba(251,241,236,.5);"><use href="#ic-chat"></use></svg></div>
+          <div style="margin-top:auto;width:32px;height:32px;border-radius:50%;background:#2DD4C4;display:grid;place-items:center;font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:12px;color:#0B2C29;">NR</div>
+        </div>
+        <div style="flex:1;padding:22px;"><div style="width:100px;height:10px;border-radius:5px;background:rgba(255,255,255,.14);"></div></div>
+      </div>
+    </div>
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#6E6459;margin-top:12px;">Collapsed rail (72px) — coral symbol tile at top, active nav icon in coral.</div>
+  </section>
+
+</div>
+</div>
+</x-dc>
+</body>
+</html>

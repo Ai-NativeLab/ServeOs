@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Expanded:wght@700;800&family=Bricolage+Grotesque:wght@600;700;800&family=Instrument+Serif:ital@0;1&family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Sans+Arabic:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;padding:0;background:#E8E3DB;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
+  *{box-sizing:border-box;}
+</style>
+</helmet>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="mk-mono" viewBox="0 0 100 100">
+      <mask id="monoS">
+        <rect width="100" height="100" fill="#fff"></rect>
+        <text x="50" y="74" text-anchor="middle" font-family="'Space Grotesk',sans-serif" font-weight="700" font-size="78" fill="#000">S</text>
+      </mask>
+      <rect x="6" y="6" width="88" height="88" rx="26" fill="currentColor" mask="url(#monoS)"></rect>
+    </symbol>
+    <symbol id="mk-flow" viewBox="0 0 100 100">
+      <g fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round">
+        <path d="M12 34 C 32 16, 46 16, 56 34 S 80 52, 90 34"></path>
+        <path d="M12 54 C 32 36, 46 36, 56 54 S 80 72, 90 54"></path>
+        <path d="M12 74 C 32 56, 46 56, 56 74 S 80 92, 90 74"></path>
+      </g>
+    </symbol>
+    <symbol id="mk-pulse" viewBox="0 0 100 100">
+      <polyline points="8,58 40,58 50,58 56,30 63,82 70,58 92,58" fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"></polyline>
+      <circle cx="56" cy="30" r="7" fill="currentColor"></circle>
+    </symbol>
+    <symbol id="mk-arch" viewBox="0 0 100 100">
+      <path d="M22 84 L22 50 A28 28 0 0 1 78 50 L78 84" fill="none" stroke="currentColor" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"></path>
+      <circle cx="50" cy="56" r="6.5" fill="currentColor"></circle>
+    </symbol>
+    <symbol id="mk-morse" viewBox="0 0 100 100">
+      <g fill="currentColor">
+        <circle cx="26" cy="20" r="7"></circle><circle cx="50" cy="20" r="7"></circle><circle cx="74" cy="20" r="7"></circle>
+        <rect x="10" y="44" width="22" height="12" rx="6"></rect><rect x="39" y="44" width="22" height="12" rx="6"></rect><rect x="68" y="44" width="22" height="12" rx="6"></rect>
+        <circle cx="26" cy="80" r="7"></circle><circle cx="50" cy="80" r="7"></circle><circle cx="74" cy="80" r="7"></circle>
+      </g>
+    </symbol>
+  </defs>
+</svg>
+
+<div style="padding:64px 64px 96px;display:flex;justify-content:center;">
+<div style="width:1736px;max-width:100%;">
+
+  <!-- ============ HEADER ============ -->
+  <div style="margin-bottom:44px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:rgba(23,19,16,.5);margin-bottom:18px;">SERVE&nbsp;OS&nbsp;&nbsp;/&nbsp;&nbsp;BRAND IDENTITY&nbsp;&nbsp;/&nbsp;&nbsp;TWELVE ROUTES&nbsp;·&nbsp;BUILT FOR SMEs</div>
+    <h1 style="font-family:'Archivo Expanded',sans-serif;font-weight:800;font-size:58px;line-height:0.98;letter-spacing:-0.02em;color:#171310;margin:0 0 20px;max-width:20ch;">Twelve ways into the same brand.</h1>
+    <p style="font-family:'Space Grotesk',sans-serif;font-size:17px;line-height:1.55;color:#3a332c;margin:0 0 30px;max-width:66ch;">One naming system, a dozen genuinely different territories for the operating system small and mid-sized businesses run on — ordering, POS and AI insight in one backbone. Each mark is shown on light and dark, tested at 16&nbsp;px, and set in a type stack that runs English and العربية.</p>
+
+    <!-- multilingual type proof -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;background:#fffdfb;border:1px solid rgba(23,19,16,.08);border-radius:18px;padding:24px 28px;">
+      <div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.16em;color:rgba(23,19,16,.42);margin-bottom:10px;">EN · SPACE GROTESK</div>
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:500;font-size:19px;line-height:1.35;color:#171310;">The operating system your business runs on.</div>
+      </div>
+      <div style="border-left:1px solid rgba(23,19,16,.08);padding-left:24px;">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.16em;color:rgba(23,19,16,.42);margin-bottom:10px;">AR · IBM PLEX SANS ARABIC · RTL</div>
+        <div dir="rtl" style="font-family:'IBM Plex Sans Arabic',sans-serif;font-weight:600;font-size:20px;line-height:1.45;color:#171310;text-align:right;">نظام التشغيل الذي يعمل عليه عملك.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== TURN 2 SYMBOLS ===== -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+    <symbol id="mk-power" viewBox="0 0 100 100">
+      <path d="M32 30 A32 32 0 1 0 68 30" fill="none" stroke="currentColor" stroke-width="10" stroke-linecap="round"></path>
+      <line x1="50" y1="12" x2="50" y2="48" stroke="currentColor" stroke-width="10" stroke-linecap="round"></line>
+    </symbol>
+    <symbol id="mk-stack" viewBox="0 0 100 100">
+      <path d="M50 16 L84 34 L50 52 L16 34 Z" fill="currentColor"></path>
+      <path d="M16 48 L50 66 L84 48" fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"></path>
+      <path d="M16 62 L50 80 L84 62" fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"></path>
+    </symbol>
+    <symbol id="mk-node" viewBox="0 0 100 100">
+      <path d="M26 32 L74 32 L50 78 Z" fill="none" stroke="currentColor" stroke-width="6" stroke-linejoin="round"></path>
+      <circle cx="26" cy="32" r="9" fill="currentColor"></circle>
+      <circle cx="74" cy="32" r="9" fill="currentColor"></circle>
+      <circle cx="50" cy="78" r="9" fill="currentColor"></circle>
+    </symbol>
+    <symbol id="mk-aperture" viewBox="0 0 100 100">
+      <circle cx="50" cy="50" r="27" fill="none" stroke="currentColor" stroke-width="8"></circle>
+      <circle cx="50" cy="50" r="6.5" fill="currentColor"></circle>
+      <g stroke="currentColor" stroke-width="8" stroke-linecap="round">
+        <line x1="50" y1="8" x2="50" y2="17"></line><line x1="50" y1="83" x2="50" y2="92"></line>
+        <line x1="8" y1="50" x2="17" y2="50"></line><line x1="83" y1="50" x2="92" y2="50"></line>
+      </g>
+    </symbol>
+    <symbol id="mk-prompt" viewBox="0 0 100 100">
+      <path d="M28 32 L50 50 L28 68" fill="none" stroke="currentColor" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"></path>
+      <rect x="56" y="60" width="26" height="10" rx="5" fill="currentColor"></rect>
+    </symbol>
+  </defs></svg>
+
+  <!-- ===== ROUND 04 LABEL ===== -->
+  <div style="display:flex;align-items:center;gap:14px;margin:8px 0 22px;">
+    <span style="font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:#171310;font-weight:500;">Round 04 — Wordmark type options</span>
+    <span style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#fff;background:#171310;border-radius:999px;padding:4px 9px;">Newest</span>
+    <span style="height:1px;background:rgba(23,19,16,.14);flex:1;"></span>
+  </div>
+  <p style="font-family:'Space Grotesk',sans-serif;font-size:13.5px;line-height:1.5;color:#3a332c;margin:-8px 0 22px;max-width:70ch;">Same wordmark, same coral palette — only the typeface changes, so you're judging the lettering itself. Each shown on light and dark with an Arabic lockup.</p>
+
+  <div style="display:grid;grid-template-columns:repeat(3,560px);gap:28px;margin-bottom:60px;">
+
+    <!-- ===== 4A ARCHIVO EXPANDED ===== -->
+    <section id="4a" style="background:#fffdfb;border:1px solid rgba(23,19,16,.08);border-radius:22px;padding:24px;display:flex;flex-direction:column;gap:16px;box-shadow:0 30px 60px -45px rgba(23,19,16,.35);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(23,19,16,.5);margin-bottom:6px;">Option A · Archivo Expanded</div>
+          <h3 style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:23px;letter-spacing:-.01em;margin:0;color:#171310;">Wide Grotesk</h3>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:#171310;border:1px solid rgba(23,19,16,.18);border-radius:999px;padding:4px 10px;flex:none;">4A</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#FBF1EC;"><div style="font-family:'Archivo Expanded',sans-serif;font-weight:800;font-size:32px;letter-spacing:-.02em;color:#171310;">Serve<span style="color:#F0522B;">OS</span></div></div>
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#1A0F0A;"><div style="font-family:'Archivo Expanded',sans-serif;font-weight:800;font-size:32px;letter-spacing:-.02em;color:#FDFBF7;">Serve<span style="color:#F0522B;">OS</span></div></div>
+      </div>
+      <div dir="rtl" style="font-family:'IBM Plex Sans Arabic',sans-serif;font-weight:600;font-size:22px;color:#171310;text-align:right;">سيرف أو إس</div>
+      <p style="font-family:'Space Grotesk',sans-serif;font-size:13.5px;line-height:1.5;color:#3a332c;margin:0;">Wide, engineered, confident — reads as infrastructure. The most “operating system” of the three.</p>
+      <div style="border-top:1px solid rgba(23,19,16,.08);padding-top:14px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(23,19,16,.5);">Archivo Expanded 800 · Plex Arabic</div>
+    </section>
+
+    <!-- ===== 4B BRICOLAGE ===== -->
+    <section id="4b" style="background:#fffdfb;border:1px solid rgba(23,19,16,.08);border-radius:22px;padding:24px;display:flex;flex-direction:column;gap:16px;box-shadow:0 30px 60px -45px rgba(23,19,16,.35);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(23,19,16,.5);margin-bottom:6px;">Option B · Bricolage Grotesque</div>
+          <h3 style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:23px;letter-spacing:-.01em;margin:0;color:#171310;">Warm Grotesk</h3>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:#171310;border:1px solid rgba(23,19,16,.18);border-radius:999px;padding:4px 10px;flex:none;">4B</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#FBF1EC;"><div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:40px;letter-spacing:-.03em;color:#171310;">Serve<span style="color:#F0522B;">OS</span></div></div>
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#1A0F0A;"><div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:40px;letter-spacing:-.03em;color:#FDFBF7;">Serve<span style="color:#F0522B;">OS</span></div></div>
+      </div>
+      <div dir="rtl" style="font-family:'IBM Plex Sans Arabic',sans-serif;font-weight:600;font-size:22px;color:#171310;text-align:right;">سيرف أو إس</div>
+      <p style="font-family:'Space Grotesk',sans-serif;font-size:13.5px;line-height:1.5;color:#3a332c;margin:0;">Characterful and contemporary — warm and human without losing the tech edge. The friendliest of the three.</p>
+      <div style="border-top:1px solid rgba(23,19,16,.08);padding-top:14px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(23,19,16,.5);">Bricolage Grotesque 700 · Plex Arabic</div>
+    </section>
+
+    <!-- ===== 4C INSTRUMENT SERIF ===== -->
+    <section id="4c" style="background:#fffdfb;border:1px solid rgba(23,19,16,.08);border-radius:22px;padding:24px;display:flex;flex-direction:column;gap:16px;box-shadow:0 30px 60px -45px rgba(23,19,16,.35);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(23,19,16,.5);margin-bottom:6px;">Option C · Instrument Serif</div>
+          <h3 style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:23px;letter-spacing:-.01em;margin:0;color:#171310;">Premium Serif</h3>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:#171310;border:1px solid rgba(23,19,16,.18);border-radius:999px;padding:4px 10px;flex:none;">4C</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#FBF1EC;"><div style="font-family:'Instrument Serif',serif;font-weight:400;font-size:50px;letter-spacing:0;color:#171310;">Serve<span style="color:#F0522B;font-style:italic;">OS</span></div></div>
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#1A0F0A;"><div style="font-family:'Instrument Serif',serif;font-weight:400;font-size:50px;letter-spacing:0;color:#FDFBF7;">Serve<span style="color:#F0522B;font-style:italic;">OS</span></div></div>
+      </div>
+      <div dir="rtl" style="font-family:'IBM Plex Sans Arabic',sans-serif;font-weight:600;font-size:22px;color:#171310;text-align:right;">سيرف أو إس</div>
+      <p style="font-family:'Space Grotesk',sans-serif;font-size:13.5px;line-height:1.5;color:#3a332c;margin:0;">High-contrast serif with an italic “OS” — premium and hospitable, a signature more than a logo.</p>
+      <div style="border-top:1px solid rgba(23,19,16,.08);padding-top:14px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(23,19,16,.5);">Instrument Serif · Plex Arabic</div>
+    </section>
+
+  </div>
+
+  <!-- ===== ROUND 03 LABEL ===== -->
+  <div style="display:flex;align-items:center;gap:14px;margin:8px 0 22px;">
+    <span style="font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:#171310;font-weight:500;">Round 03 — Connected × coral</span>
+    <span style="height:1px;background:rgba(23,19,16,.14);flex:1;"></span>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(3,560px);gap:28px;margin-bottom:60px;">
+    <section id="3a" style="background:#fffdfb;border:1px solid rgba(23,19,16,.08);border-radius:22px;padding:24px;display:flex;flex-direction:column;gap:16px;box-shadow:0 30px 60px -45px rgba(23,19,16,.35);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(23,19,16,.5);margin-bottom:6px;">2C mark · 2F palette</div>
+          <h3 style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:23px;letter-spacing:-.01em;margin:0;color:#171310;">Connected</h3>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:#171310;border:1px solid rgba(23,19,16,.18);border-radius:999px;padding:4px 10px;flex:none;">3A</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#FBF1EC;"><svg style="width:116px;height:116px;display:block;color:#F0522B;"><use href="#mk-node"></use></svg></div>
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#1A0F0A;"><svg style="width:116px;height:116px;display:block;color:#FDFBF7;"><use href="#mk-node"></use></svg></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px;padding-top:2px;">
+        <svg style="width:36px;height:36px;display:block;color:#F0522B;"><use href="#mk-node"></use></svg>
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:23px;letter-spacing:-.01em;color:#171310;">Serve<span style="color:#F0522B;">OS</span></div>
+      </div>
+      <sc-if value="{{ showArabic }}" hint-placeholder-val="{{ true }}">
+        <div dir="rtl" style="font-family:'IBM Plex Sans Arabic',sans-serif;font-size:14px;color:rgba(23,19,16,.55);text-align:right;">سيرف أو إس — نظام التشغيل لعملك</div>
+      </sc-if>
+      <sc-if value="{{ showFavicons }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;align-items:center;gap:14px;padding:12px;background:rgba(23,19,16,.03);border-radius:12px;">
+          <div style="width:48px;height:48px;border-radius:12px;background:#F0522B;display:grid;place-items:center;"><svg style="width:34px;height:34px;color:#fff;"><use href="#mk-node"></use></svg></div>
+          <div style="width:16px;height:16px;border-radius:5px;background:#F0522B;display:grid;place-items:center;"><svg style="width:13px;height:13px;color:#fff;"><use href="#mk-node"></use></svg></div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(23,19,16,.5);">16&nbsp;px favicon — three linked nodes</div>
+        </div>
+      </sc-if>
+      <p style="font-family:'Space Grotesk',sans-serif;font-size:13.5px;line-height:1.5;color:#3a332c;margin:0;">Three points — sell, process, learn — wired into one loop, now in the warm coral palette. Connected system, hospitable tone.</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid rgba(23,19,16,.08);padding-top:14px;">
+        <div style="display:flex;gap:6px;"><span style="width:14px;height:14px;border-radius:50%;background:#F0522B;"></span><span style="width:14px;height:14px;border-radius:50%;background:#1A0F0A;"></span><span style="width:14px;height:14px;border-radius:50%;background:#FBF1EC;border:1px solid rgba(23,19,16,.12);"></span></div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(23,19,16,.5);">Space Grotesk · Plex Arabic</div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ===== ROUND 02 LABEL ===== -->
+  <div style="display:flex;align-items:center;gap:14px;margin:8px 0 22px;">
+    <span style="font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:#171310;font-weight:500;">Round 02 — Built for SMEs</span>
+    <span style="height:1px;background:rgba(23,19,16,.14);flex:1;"></span>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(3,560px);gap:28px;margin-bottom:60px;">
+
+    <!-- ===== 2A POWER ===== -->
+    <section id="2a" style="background:#fffdfb;border:1px solid rgba(23,19,16,.08);border-radius:22px;padding:24px;display:flex;flex-direction:column;gap:16px;box-shadow:0 30px 60px -45px rgba(23,19,16,.35);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(23,19,16,.5);margin-bottom:6px;">07 · System / OS cue</div>
+          <h3 style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:23px;letter-spacing:-.01em;margin:0;color:#171310;">System On</h3>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:#171310;border:1px solid rgba(23,19,16,.18);border-radius:999px;padding:4px 10px;flex:none;">2A</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#EAF7F5;"><svg style="width:112px;height:112px;display:block;color:#0FB5A6;"><use href="#mk-power"></use></svg></div>
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#08201E;"><svg style="width:112px;height:112px;display:block;color:#FDFBF7;"><use href="#mk-power"></use></svg></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px;padding-top:2px;">
+        <svg style="width:34px;height:34px;display:block;color:#0FB5A6;"><use href="#mk-power"></use></svg>
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:23px;letter-spacing:-.01em;color:#171310;">Serve<span style="color:#0FB5A6;">OS</span></div>
+      </div>
+      <sc-if value="{{ showArabic }}" hint-placeholder-val="{{ true }}">
+        <div dir="rtl" style="font-family:'IBM Plex Sans Arabic',sans-serif;font-size:14px;color:rgba(23,19,16,.55);text-align:right;">سيرف أو إس — نظام التشغيل لعملك</div>
+      </sc-if>
+      <sc-if value="{{ showFavicons }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;align-items:center;gap:14px;padding:12px;background:rgba(23,19,16,.03);border-radius:12px;">
+          <div style="width:48px;height:48px;border-radius:12px;background:#0FB5A6;display:grid;place-items:center;"><svg style="width:32px;height:32px;color:#fff;"><use href="#mk-power"></use></svg></div>
+          <div style="width:16px;height:16px;border-radius:5px;background:#0FB5A6;display:grid;place-items:center;"><svg style="width:12px;height:12px;color:#fff;"><use href="#mk-power"></use></svg></div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(23,19,16,.5);">16&nbsp;px favicon — the most universal “on”</div>
+        </div>
+      </sc-if>
+      <p style="font-family:'Space Grotesk',sans-serif;font-size:13.5px;line-height:1.5;color:#3a332c;margin:0;">The power symbol, reclaimed. One tap and the whole operation — ordering, POS, insight — comes online. Instantly legible in any market.</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid rgba(23,19,16,.08);padding-top:14px;">
+        <div style="display:flex;gap:6px;"><span style="width:14px;height:14px;border-radius:50%;background:#0FB5A6;"></span><span style="width:14px;height:14px;border-radius:50%;background:#08201E;"></span><span style="width:14px;height:14px;border-radius:50%;background:#EAF7F5;border:1px solid rgba(23,19,16,.12);"></span></div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(23,19,16,.5);">Space Grotesk · Plex Arabic</div>
+      </div>
+    </section>
+
+    <!-- ===== 2B LAYERS ===== -->
+    <section id="2b" style="background:#fffdfb;border:1px solid rgba(23,19,16,.08);border-radius:22px;padding:24px;display:flex;flex-direction:column;gap:16px;box-shadow:0 30px 60px -45px rgba(23,19,16,.35);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(23,19,16,.5);margin-bottom:6px;">08 · Backbone / structure</div>
+          <h3 style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:23px;letter-spacing:-.01em;margin:0;color:#171310;">The Stack</h3>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:#171310;border:1px solid rgba(23,19,16,.18);border-radius:999px;padding:4px 10px;flex:none;">2B</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#EFEEFC;"><svg style="width:116px;height:116px;display:block;color:#4F46E5;"><use href="#mk-stack"></use></svg></div>
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#0E0C22;"><svg style="width:116px;height:116px;display:block;color:#FDFBF7;"><use href="#mk-stack"></use></svg></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px;padding-top:2px;">
+        <svg style="width:36px;height:36px;display:block;color:#4F46E5;"><use href="#mk-stack"></use></svg>
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:23px;letter-spacing:-.01em;color:#171310;">Serve<span style="color:#4F46E5;">OS</span></div>
+      </div>
+      <sc-if value="{{ showArabic }}" hint-placeholder-val="{{ true }}">
+        <div dir="rtl" style="font-family:'IBM Plex Sans Arabic',sans-serif;font-size:14px;color:rgba(23,19,16,.55);text-align:right;">سيرف أو إس — نظام التشغيل لعملك</div>
+      </sc-if>
+      <sc-if value="{{ showFavicons }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;align-items:center;gap:14px;padding:12px;background:rgba(23,19,16,.03);border-radius:12px;">
+          <div style="width:48px;height:48px;border-radius:12px;background:#4F46E5;display:grid;place-items:center;"><svg style="width:34px;height:34px;color:#fff;"><use href="#mk-stack"></use></svg></div>
+          <div style="width:16px;height:16px;border-radius:5px;background:#4F46E5;display:grid;place-items:center;"><svg style="width:13px;height:13px;color:#fff;"><use href="#mk-stack"></use></svg></div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(23,19,16,.5);">16&nbsp;px favicon — reads as “layers” tiny</div>
+        </div>
+      </sc-if>
+      <p style="font-family:'Space Grotesk',sans-serif;font-size:13.5px;line-height:1.5;color:#3a332c;margin:0;">Ordering, payments and intelligence as three stacked layers — the literal backbone a business runs on. Says “system” at a glance.</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid rgba(23,19,16,.08);padding-top:14px;">
+        <div style="display:flex;gap:6px;"><span style="width:14px;height:14px;border-radius:50%;background:#4F46E5;"></span><span style="width:14px;height:14px;border-radius:50%;background:#0E0C22;"></span><span style="width:14px;height:14px;border-radius:50%;background:#EFEEFC;border:1px solid rgba(23,19,16,.12);"></span></div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(23,19,16,.5);">Space Grotesk · Plex Arabic</div>
+      </div>
+    </section>
+
+    <!-- ===== 2C NODE ===== -->
+    <section id="2c" style="background:#fffdfb;border:1px solid rgba(23,19,16,.08);border-radius:22px;padding:24px;display:flex;flex-direction:column;gap:16px;box-shadow:0 30px 60px -45px rgba(23,19,16,.35);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(23,19,16,.5);margin-bottom:6px;">09 · Network / connection</div>
+          <h3 style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:23px;letter-spacing:-.01em;margin:0;color:#171310;">Connected</h3>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:#171310;border:1px solid rgba(23,19,16,.18);border-radius:999px;padding:4px 10px;flex:none;">2C</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#FBF3E3;"><svg style="width:116px;height:116px;display:block;color:#F59E0B;"><use href="#mk-node"></use></svg></div>
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#1E1706;"><svg style="width:116px;height:116px;display:block;color:#FDFBF7;"><use href="#mk-node"></use></svg></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px;padding-top:2px;">
+        <svg style="width:36px;height:36px;display:block;color:#F59E0B;"><use href="#mk-node"></use></svg>
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:23px;letter-spacing:-.01em;color:#171310;">Serve<span style="color:#D9880A;">OS</span></div>
+      </div>
+      <sc-if value="{{ showArabic }}" hint-placeholder-val="{{ true }}">
+        <div dir="rtl" style="font-family:'IBM Plex Sans Arabic',sans-serif;font-size:14px;color:rgba(23,19,16,.55);text-align:right;">سيرف أو إس — نظام التشغيل لعملك</div>
+      </sc-if>
+      <sc-if value="{{ showFavicons }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;align-items:center;gap:14px;padding:12px;background:rgba(23,19,16,.03);border-radius:12px;">
+          <div style="width:48px;height:48px;border-radius:12px;background:#F59E0B;display:grid;place-items:center;"><svg style="width:34px;height:34px;color:#fff;"><use href="#mk-node"></use></svg></div>
+          <div style="width:16px;height:16px;border-radius:5px;background:#F59E0B;display:grid;place-items:center;"><svg style="width:13px;height:13px;color:#fff;"><use href="#mk-node"></use></svg></div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(23,19,16,.5);">16&nbsp;px favicon — three linked nodes</div>
+        </div>
+      </sc-if>
+      <p style="font-family:'Space Grotesk',sans-serif;font-size:13.5px;line-height:1.5;color:#3a332c;margin:0;">Three points — sell, process, learn — wired into one loop. A small business finally running as a single connected system.</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid rgba(23,19,16,.08);padding-top:14px;">
+        <div style="display:flex;gap:6px;"><span style="width:14px;height:14px;border-radius:50%;background:#F59E0B;"></span><span style="width:14px;height:14px;border-radius:50%;background:#1E1706;"></span><span style="width:14px;height:14px;border-radius:50%;background:#FBF3E3;border:1px solid rgba(23,19,16,.12);"></span></div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(23,19,16,.5);">Space Grotesk · Plex Arabic</div>
+      </div>
+    </section>
+
+    <!-- ===== 2D FOCUS ===== -->
+    <section id="2d" style="background:#fffdfb;border:1px solid rgba(23,19,16,.08);border-radius:22px;padding:24px;display:flex;flex-direction:column;gap:16px;box-shadow:0 30px 60px -45px rgba(23,19,16,.35);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(23,19,16,.5);margin-bottom:6px;">10 · Intelligence / focus</div>
+          <h3 style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:23px;letter-spacing:-.01em;margin:0;color:#171310;">In Focus</h3>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:#171310;border:1px solid rgba(23,19,16,.18);border-radius:999px;padding:4px 10px;flex:none;">2D</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#FCEBF2;"><svg style="width:116px;height:116px;display:block;color:#E5347D;"><use href="#mk-aperture"></use></svg></div>
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#200912;"><svg style="width:116px;height:116px;display:block;color:#FDFBF7;"><use href="#mk-aperture"></use></svg></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px;padding-top:2px;">
+        <svg style="width:36px;height:36px;display:block;color:#E5347D;"><use href="#mk-aperture"></use></svg>
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:23px;letter-spacing:-.01em;color:#171310;">Serve<span style="color:#E5347D;">OS</span></div>
+      </div>
+      <sc-if value="{{ showArabic }}" hint-placeholder-val="{{ true }}">
+        <div dir="rtl" style="font-family:'IBM Plex Sans Arabic',sans-serif;font-size:14px;color:rgba(23,19,16,.55);text-align:right;">سيرف أو إس — نظام التشغيل لعملك</div>
+      </sc-if>
+      <sc-if value="{{ showFavicons }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;align-items:center;gap:14px;padding:12px;background:rgba(23,19,16,.03);border-radius:12px;">
+          <div style="width:48px;height:48px;border-radius:12px;background:#E5347D;display:grid;place-items:center;"><svg style="width:34px;height:34px;color:#fff;"><use href="#mk-aperture"></use></svg></div>
+          <div style="width:16px;height:16px;border-radius:5px;background:#E5347D;display:grid;place-items:center;"><svg style="width:13px;height:13px;color:#fff;"><use href="#mk-aperture"></use></svg></div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(23,19,16,.5);">16&nbsp;px favicon — a clean reticle</div>
+        </div>
+      </sc-if>
+      <p style="font-family:'Space Grotesk',sans-serif;font-size:13.5px;line-height:1.5;color:#3a332c;margin:0;">A focus reticle: the AI keeping the whole business in frame and locking onto what matters. Precision, not noise.</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid rgba(23,19,16,.08);padding-top:14px;">
+        <div style="display:flex;gap:6px;"><span style="width:14px;height:14px;border-radius:50%;background:#E5347D;"></span><span style="width:14px;height:14px;border-radius:50%;background:#200912;"></span><span style="width:14px;height:14px;border-radius:50%;background:#FCEBF2;border:1px solid rgba(23,19,16,.12);"></span></div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(23,19,16,.5);">Space Grotesk · Plex Arabic</div>
+      </div>
+    </section>
+
+    <!-- ===== 2E PROMPT ===== -->
+    <section id="2e" style="background:#fffdfb;border:1px solid rgba(23,19,16,.08);border-radius:22px;padding:24px;display:flex;flex-direction:column;gap:16px;box-shadow:0 30px 60px -45px rgba(23,19,16,.35);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(23,19,16,.5);margin-bottom:6px;">11 · Wildcard / terminal</div>
+          <h3 style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:23px;letter-spacing:-.01em;margin:0;color:#171310;">Command</h3>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:#171310;border:1px solid rgba(23,19,16,.18);border-radius:999px;padding:4px 10px;flex:none;">2E</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#F1F7E6;"><svg style="width:118px;height:118px;display:block;color:#6FB300;"><use href="#mk-prompt"></use></svg></div>
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#12160A;"><svg style="width:118px;height:118px;display:block;color:#A6E22E;"><use href="#mk-prompt"></use></svg></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px;padding-top:2px;">
+        <svg style="width:36px;height:36px;display:block;color:#6FB300;"><use href="#mk-prompt"></use></svg>
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:23px;letter-spacing:-.01em;color:#171310;">Serve<span style="color:#6FB300;">OS</span></div>
+      </div>
+      <sc-if value="{{ showArabic }}" hint-placeholder-val="{{ true }}">
+        <div dir="rtl" style="font-family:'IBM Plex Sans Arabic',sans-serif;font-size:14px;color:rgba(23,19,16,.55);text-align:right;">سيرف أو إس — نظام التشغيل لعملك</div>
+      </sc-if>
+      <sc-if value="{{ showFavicons }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;align-items:center;gap:14px;padding:12px;background:rgba(23,19,16,.03);border-radius:12px;">
+          <div style="width:48px;height:48px;border-radius:12px;background:#12160A;display:grid;place-items:center;"><svg style="width:32px;height:32px;color:#A6E22E;"><use href="#mk-prompt"></use></svg></div>
+          <div style="width:16px;height:16px;border-radius:5px;background:#12160A;display:grid;place-items:center;"><svg style="width:12px;height:12px;color:#A6E22E;"><use href="#mk-prompt"></use></svg></div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(23,19,16,.5);">16&nbsp;px favicon — a prompt on dark</div>
+        </div>
+      </sc-if>
+      <p style="font-family:'Space Grotesk',sans-serif;font-size:13.5px;line-height:1.5;color:#3a332c;margin:0;">A command prompt with a blinking cursor — the operating system made visible. Techy, alive, unmistakably “OS.”</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid rgba(23,19,16,.08);padding-top:14px;">
+        <div style="display:flex;gap:6px;"><span style="width:14px;height:14px;border-radius:50%;background:#6FB300;"></span><span style="width:14px;height:14px;border-radius:50%;background:#12160A;"></span><span style="width:14px;height:14px;border-radius:50%;background:#F1F7E6;border:1px solid rgba(23,19,16,.12);"></span></div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(23,19,16,.5);">Space Grotesk · Plex Arabic</div>
+      </div>
+    </section>
+
+    <!-- ===== 2F WORDMARK LOWERCASE ===== -->
+    <section id="2f" style="background:#fffdfb;border:1px solid rgba(23,19,16,.08);border-radius:22px;padding:24px;display:flex;flex-direction:column;gap:16px;box-shadow:0 30px 60px -45px rgba(23,19,16,.35);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(23,19,16,.5);margin-bottom:6px;">12 · Wordmark — lowercase</div>
+          <h3 style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:23px;letter-spacing:-.01em;margin:0;color:#171310;">Lowercase / LED</h3>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:#171310;border:1px solid rgba(23,19,16,.18);border-radius:999px;padding:4px 10px;flex:none;">2F</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#FBF1EC;"><div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:32px;letter-spacing:-.03em;color:#171310;display:flex;align-items:flex-end;">serve<span style="color:#F0522B;">os</span><span style="width:8px;height:8px;border-radius:50%;background:#F0522B;margin-left:7px;margin-bottom:6px;"></span></div></div>
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#1A0F0A;"><div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:32px;letter-spacing:-.03em;color:#FDFBF7;display:flex;align-items:flex-end;">serve<span style="color:#F0522B;">os</span><span style="width:8px;height:8px;border-radius:50%;background:#F0522B;margin-left:7px;margin-bottom:6px;"></span></div></div>
+      </div>
+      <div style="padding-top:2px;">
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:22px;letter-spacing:-.03em;color:#171310;display:inline-flex;align-items:flex-end;">serve<span style="color:#F0522B;">os</span><span style="width:6px;height:6px;border-radius:50%;background:#F0522B;margin-left:5px;margin-bottom:5px;"></span></div>
+      </div>
+      <sc-if value="{{ showArabic }}" hint-placeholder-val="{{ true }}">
+        <div dir="rtl" style="font-family:'IBM Plex Sans Arabic',sans-serif;font-size:14px;color:rgba(23,19,16,.55);text-align:right;">سيرف أو إس — نظام التشغيل لعملك</div>
+      </sc-if>
+      <sc-if value="{{ showFavicons }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;align-items:center;gap:14px;padding:12px;background:rgba(23,19,16,.03);border-radius:12px;">
+          <div style="width:48px;height:48px;border-radius:12px;background:#F0522B;display:grid;place-items:center;"><div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:26px;color:#fff;line-height:1;">s</div></div>
+          <div style="width:16px;height:16px;border-radius:5px;background:#F0522B;display:grid;place-items:center;"><div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:10px;color:#fff;line-height:1;">s</div></div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(23,19,16,.5);">16&nbsp;px favicon — lowercase “s”</div>
+        </div>
+      </sc-if>
+      <p style="font-family:'Space Grotesk',sans-serif;font-size:13.5px;line-height:1.5;color:#3a332c;margin:0;">A quieter lowercase wordmark with a single “system-on” dot. Approachable and modern — a tool a small team actually lives in.</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid rgba(23,19,16,.08);padding-top:14px;">
+        <div style="display:flex;gap:6px;"><span style="width:14px;height:14px;border-radius:50%;background:#F0522B;"></span><span style="width:14px;height:14px;border-radius:50%;background:#1A0F0A;"></span><span style="width:14px;height:14px;border-radius:50%;background:#FBF1EC;border:1px solid rgba(23,19,16,.12);"></span></div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(23,19,16,.5);">Space Grotesk · Plex Arabic</div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- ===== ROUND 01 LABEL ===== -->
+  <div style="display:flex;align-items:center;gap:14px;margin:8px 0 22px;">
+    <span style="font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:rgba(23,19,16,.55);font-weight:500;">Round 01 — Initial routes</span>
+    <span style="height:1px;background:rgba(23,19,16,.14);flex:1;"></span>
+  </div>
+
+  <!-- ============ GRID ============ -->
+  <div style="display:grid;grid-template-columns:repeat(3,560px);gap:28px;">
+
+    <!-- ===== 01 MONOGRAM ===== -->
+    <section id="1a" style="background:#fffdfb;border:1px solid rgba(23,19,16,.08);border-radius:22px;padding:24px;display:flex;flex-direction:column;gap:16px;box-shadow:0 30px 60px -45px rgba(23,19,16,.35);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(23,19,16,.5);margin-bottom:6px;">01 · Monogram / Lettermark</div>
+          <h3 style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:23px;letter-spacing:-.01em;margin:0;color:#171310;">The System Tile</h3>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:#171310;border:1px solid rgba(23,19,16,.18);border-radius:999px;padding:4px 10px;flex:none;">1A</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#FCF6F2;"><svg style="width:118px;height:118px;display:block;color:#FF5A36;"><use href="#mk-mono"></use></svg></div>
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#16110D;"><svg style="width:118px;height:118px;display:block;color:#FDFBF7;"><use href="#mk-mono"></use></svg></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px;padding-top:2px;">
+        <svg style="width:34px;height:34px;display:block;color:#FF5A36;"><use href="#mk-mono"></use></svg>
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:23px;letter-spacing:-.01em;color:#171310;">Serve<span style="color:#FF5A36;">OS</span></div>
+      </div>
+      <sc-if value="{{ showArabic }}" hint-placeholder-val="{{ true }}">
+        <div dir="rtl" style="font-family:'IBM Plex Sans Arabic',sans-serif;font-size:14px;color:rgba(23,19,16,.55);text-align:right;">سيرف أو إس — نظام التشغيل لعملك</div>
+      </sc-if>
+      <sc-if value="{{ showFavicons }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;align-items:center;gap:14px;padding:12px;background:rgba(23,19,16,.03);border-radius:12px;">
+          <div style="width:48px;height:48px;border-radius:12px;background:#FF5A36;display:grid;place-items:center;"><svg width="34" height="34" viewBox="0 0 100 100"><text x="50" y="74" text-anchor="middle" font-family="'Space Grotesk',sans-serif" font-weight="700" font-size="78" fill="#fff">S</text></svg></div>
+          <div style="width:16px;height:16px;border-radius:5px;background:#FF5A36;display:grid;place-items:center;"><svg width="12" height="12" viewBox="0 0 100 100"><text x="50" y="74" text-anchor="middle" font-family="'Space Grotesk',sans-serif" font-weight="700" font-size="78" fill="#fff">S</text></svg></div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(23,19,16,.5);">16&nbsp;px favicon — the tile <em>is</em> the letter</div>
+        </div>
+      </sc-if>
+      <p style="font-family:'Space Grotesk',sans-serif;font-size:13.5px;line-height:1.5;color:#3a332c;margin:0;">A single S carved out of a rounded system-tile — the app icon and the letter are the same object. Solid, ownable, unmistakable at any size.</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid rgba(23,19,16,.08);padding-top:14px;">
+        <div style="display:flex;gap:6px;"><span style="width:14px;height:14px;border-radius:50%;background:#FF5A36;"></span><span style="width:14px;height:14px;border-radius:50%;background:#16110D;"></span><span style="width:14px;height:14px;border-radius:50%;background:#FCF6F2;border:1px solid rgba(23,19,16,.12);"></span></div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(23,19,16,.5);">Space Grotesk · Plex Arabic</div>
+      </div>
+    </section>
+
+    <!-- ===== 02 FLOW ===== -->
+    <section id="1b" style="background:#fffdfb;border:1px solid rgba(23,19,16,.08);border-radius:22px;padding:24px;display:flex;flex-direction:column;gap:16px;box-shadow:0 30px 60px -45px rgba(23,19,16,.35);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(23,19,16,.5);margin-bottom:6px;">02 · Flow / Movement</div>
+          <h3 style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:23px;letter-spacing:-.01em;margin:0;color:#171310;">Three Currents</h3>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:#171310;border:1px solid rgba(23,19,16,.18);border-radius:999px;padding:4px 10px;flex:none;">1B</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#EFF3FC;"><svg style="width:120px;height:120px;display:block;color:#2E6BFF;"><use href="#mk-flow"></use></svg></div>
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#0C111C;"><svg style="width:120px;height:120px;display:block;color:#FDFBF7;"><use href="#mk-flow"></use></svg></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px;padding-top:2px;">
+        <svg style="width:38px;height:38px;display:block;color:#2E6BFF;"><use href="#mk-flow"></use></svg>
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:23px;letter-spacing:-.01em;color:#171310;">Serve<span style="color:#2E6BFF;">OS</span></div>
+      </div>
+      <sc-if value="{{ showArabic }}" hint-placeholder-val="{{ true }}">
+        <div dir="rtl" style="font-family:'IBM Plex Sans Arabic',sans-serif;font-size:14px;color:rgba(23,19,16,.55);text-align:right;">سيرف أو إس — نظام التشغيل لعملك</div>
+      </sc-if>
+      <sc-if value="{{ showFavicons }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;align-items:center;gap:14px;padding:12px;background:rgba(23,19,16,.03);border-radius:12px;">
+          <div style="width:48px;height:48px;border-radius:12px;background:#2E6BFF;display:grid;place-items:center;"><svg style="width:34px;height:34px;color:#fff;"><use href="#mk-flow"></use></svg></div>
+          <div style="width:16px;height:16px;border-radius:5px;background:#2E6BFF;display:grid;place-items:center;"><svg style="width:13px;height:13px;color:#fff;"><use href="#mk-flow"></use></svg></div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(23,19,16,.5);">16&nbsp;px favicon — three strokes still read</div>
+        </div>
+      </sc-if>
+      <p style="font-family:'Space Grotesk',sans-serif;font-size:13.5px;line-height:1.5;color:#3a332c;margin:0;">Three currents moving in sync — orders in, sales through, insight out. The mark is literally service in motion.</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid rgba(23,19,16,.08);padding-top:14px;">
+        <div style="display:flex;gap:6px;"><span style="width:14px;height:14px;border-radius:50%;background:#2E6BFF;"></span><span style="width:14px;height:14px;border-radius:50%;background:#0C111C;"></span><span style="width:14px;height:14px;border-radius:50%;background:#EFF3FC;border:1px solid rgba(23,19,16,.12);"></span></div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(23,19,16,.5);">Space Grotesk · Plex Arabic</div>
+      </div>
+    </section>
+
+    <!-- ===== 03 INTELLIGENCE ===== -->
+    <section id="1c" style="background:#fffdfb;border:1px solid rgba(23,19,16,.08);border-radius:22px;padding:24px;display:flex;flex-direction:column;gap:16px;box-shadow:0 30px 60px -45px rgba(23,19,16,.35);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(23,19,16,.5);margin-bottom:6px;">03 · Intelligence / Signal</div>
+          <h3 style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:23px;letter-spacing:-.01em;margin:0;color:#171310;">Room Pulse</h3>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:#171310;border:1px solid rgba(23,19,16,.18);border-radius:999px;padding:4px 10px;flex:none;">1C</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#F3F0FD;"><svg style="width:122px;height:122px;display:block;color:#6E4BFF;"><use href="#mk-pulse"></use></svg></div>
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#110D1C;"><svg style="width:122px;height:122px;display:block;color:#FDFBF7;"><use href="#mk-pulse"></use></svg></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px;padding-top:2px;">
+        <svg style="width:38px;height:38px;display:block;color:#6E4BFF;"><use href="#mk-pulse"></use></svg>
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:23px;letter-spacing:-.01em;color:#171310;">Serve<span style="color:#6E4BFF;">OS</span></div>
+      </div>
+      <sc-if value="{{ showArabic }}" hint-placeholder-val="{{ true }}">
+        <div dir="rtl" style="font-family:'IBM Plex Sans Arabic',sans-serif;font-size:14px;color:rgba(23,19,16,.55);text-align:right;">سيرف أو إس — نظام التشغيل لعملك</div>
+      </sc-if>
+      <sc-if value="{{ showFavicons }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;align-items:center;gap:14px;padding:12px;background:rgba(23,19,16,.03);border-radius:12px;">
+          <div style="width:48px;height:48px;border-radius:12px;background:#6E4BFF;display:grid;place-items:center;"><svg style="width:36px;height:36px;color:#fff;"><use href="#mk-pulse"></use></svg></div>
+          <div style="width:16px;height:16px;border-radius:5px;background:#6E4BFF;display:grid;place-items:center;"><svg style="width:14px;height:14px;color:#fff;"><use href="#mk-pulse"></use></svg></div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(23,19,16,.5);">16&nbsp;px favicon — one clean spike</div>
+        </div>
+      </sc-if>
+      <p style="font-family:'Space Grotesk',sans-serif;font-size:13.5px;line-height:1.5;color:#3a332c;margin:0;">A live pulse reading the room. The spike is the moment the AI turns activity into a decision the owner can act on.</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid rgba(23,19,16,.08);padding-top:14px;">
+        <div style="display:flex;gap:6px;"><span style="width:14px;height:14px;border-radius:50%;background:#6E4BFF;"></span><span style="width:14px;height:14px;border-radius:50%;background:#110D1C;"></span><span style="width:14px;height:14px;border-radius:50%;background:#F3F0FD;border:1px solid rgba(23,19,16,.12);"></span></div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(23,19,16,.5);">Space Grotesk · Plex Arabic</div>
+      </div>
+    </section>
+
+    <!-- ===== 04 WORDMARK ===== -->
+    <section id="1d" style="background:#fffdfb;border:1px solid rgba(23,19,16,.08);border-radius:22px;padding:24px;display:flex;flex-direction:column;gap:16px;box-shadow:0 30px 60px -45px rgba(23,19,16,.35);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(23,19,16,.5);margin-bottom:6px;">04 · Wordmark — no symbol</div>
+          <h3 style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:23px;letter-spacing:-.01em;margin:0;color:#171310;">Set in Type</h3>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:#171310;border:1px solid rgba(23,19,16,.18);border-radius:999px;padding:4px 10px;flex:none;">1D</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#F8F3EC;"><div style="font-family:'Archivo Expanded',sans-serif;font-weight:800;font-size:29px;letter-spacing:-.02em;color:#171310;display:flex;align-items:center;gap:7px;">Serve<span style="color:#1F8A5B;border:2.5px solid #1F8A5B;border-radius:7px;padding:0 6px;">OS</span></div></div>
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#14110C;"><div style="font-family:'Archivo Expanded',sans-serif;font-weight:800;font-size:29px;letter-spacing:-.02em;color:#FDFBF7;display:flex;align-items:center;gap:7px;">Serve<span style="color:#38D08C;border:2.5px solid #38D08C;border-radius:7px;padding:0 6px;">OS</span></div></div>
+      </div>
+      <div style="padding-top:2px;">
+        <div style="font-family:'Archivo Expanded',sans-serif;font-weight:800;font-size:22px;letter-spacing:-.02em;color:#171310;display:flex;align-items:center;gap:6px;">Serve<span style="color:#1F8A5B;border:2px solid #1F8A5B;border-radius:6px;padding:0 5px;">OS</span></div>
+      </div>
+      <sc-if value="{{ showArabic }}" hint-placeholder-val="{{ true }}">
+        <div dir="rtl" style="font-family:'IBM Plex Sans Arabic',sans-serif;font-size:14px;color:rgba(23,19,16,.55);text-align:right;">سيرف أو إس — نظام التشغيل لعملك</div>
+      </sc-if>
+      <sc-if value="{{ showFavicons }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;align-items:center;gap:14px;padding:12px;background:rgba(23,19,16,.03);border-radius:12px;">
+          <div style="width:48px;height:48px;border-radius:12px;background:#1F8A5B;display:grid;place-items:center;"><div style="font-family:'Archivo Expanded',sans-serif;font-weight:800;font-size:26px;color:#fff;line-height:1;">S</div></div>
+          <div style="width:16px;height:16px;border-radius:5px;background:#1F8A5B;display:grid;place-items:center;"><div style="font-family:'Archivo Expanded',sans-serif;font-weight:800;font-size:10px;color:#fff;line-height:1;">S</div></div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(23,19,16,.5);">16&nbsp;px favicon — the S from the wordmark</div>
+        </div>
+      </sc-if>
+      <p style="font-family:'Space Grotesk',sans-serif;font-size:13.5px;line-height:1.5;color:#3a332c;margin:0;">No symbol needed. Confident wide lettering with a boxed “OS” — the whole operation, set in type. Premium and quietly technical.</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid rgba(23,19,16,.08);padding-top:14px;">
+        <div style="display:flex;gap:6px;"><span style="width:14px;height:14px;border-radius:50%;background:#1F8A5B;"></span><span style="width:14px;height:14px;border-radius:50%;background:#14110C;"></span><span style="width:14px;height:14px;border-radius:50%;background:#F8F3EC;border:1px solid rgba(23,19,16,.12);"></span></div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(23,19,16,.5);">Archivo Expanded · Plex Arabic</div>
+      </div>
+    </section>
+
+    <!-- ===== 05 HOSPITALITY ===== -->
+    <section id="1e" style="background:#fffdfb;border:1px solid rgba(23,19,16,.08);border-radius:22px;padding:24px;display:flex;flex-direction:column;gap:16px;box-shadow:0 30px 60px -45px rgba(23,19,16,.35);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(23,19,16,.5);margin-bottom:6px;">05 · Hospitality, reimagined</div>
+          <h3 style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:23px;letter-spacing:-.01em;margin:0;color:#171310;">The Open Arch</h3>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:#171310;border:1px solid rgba(23,19,16,.18);border-radius:999px;padding:4px 10px;flex:none;">1E</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#FBF3E5;"><svg style="width:120px;height:120px;display:block;color:#E8A33D;"><use href="#mk-arch"></use></svg></div>
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#1A1509;"><svg style="width:120px;height:120px;display:block;color:#FDFBF7;"><use href="#mk-arch"></use></svg></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px;padding-top:2px;">
+        <svg style="width:36px;height:36px;display:block;color:#E8A33D;"><use href="#mk-arch"></use></svg>
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:23px;letter-spacing:-.01em;color:#171310;">Serve<span style="color:#C9852B;">OS</span></div>
+      </div>
+      <sc-if value="{{ showArabic }}" hint-placeholder-val="{{ true }}">
+        <div dir="rtl" style="font-family:'IBM Plex Sans Arabic',sans-serif;font-size:14px;color:rgba(23,19,16,.55);text-align:right;">سيرف أو إس — نظام التشغيل لعملك</div>
+      </sc-if>
+      <sc-if value="{{ showFavicons }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;align-items:center;gap:14px;padding:12px;background:rgba(23,19,16,.03);border-radius:12px;">
+          <div style="width:48px;height:48px;border-radius:12px;background:#E8A33D;display:grid;place-items:center;"><svg style="width:34px;height:34px;color:#fff;"><use href="#mk-arch"></use></svg></div>
+          <div style="width:16px;height:16px;border-radius:5px;background:#E8A33D;display:grid;place-items:center;"><svg style="width:13px;height:13px;color:#fff;"><use href="#mk-arch"></use></svg></div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(23,19,16,.5);">16&nbsp;px favicon — a doorway, not a plate</div>
+        </div>
+      </sc-if>
+      <p style="font-family:'Space Grotesk',sans-serif;font-size:13.5px;line-height:1.5;color:#3a332c;margin:0;">An open arch — the threshold you’re welcomed through, with a warm light waiting inside. Hospitality without a single fork, plate, or hat.</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid rgba(23,19,16,.08);padding-top:14px;">
+        <div style="display:flex;gap:6px;"><span style="width:14px;height:14px;border-radius:50%;background:#E8A33D;"></span><span style="width:14px;height:14px;border-radius:50%;background:#1A1509;"></span><span style="width:14px;height:14px;border-radius:50%;background:#FBF3E5;border:1px solid rgba(23,19,16,.12);"></span></div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(23,19,16,.5);">Space Grotesk · Plex Arabic</div>
+      </div>
+    </section>
+
+    <!-- ===== 06 WILDCARD ===== -->
+    <section id="1f" style="background:#fffdfb;border:1px solid rgba(23,19,16,.08);border-radius:22px;padding:24px;display:flex;flex-direction:column;gap:16px;box-shadow:0 30px 60px -45px rgba(23,19,16,.35);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(23,19,16,.5);margin-bottom:6px;">06 · Wildcard</div>
+          <h3 style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:23px;letter-spacing:-.01em;margin:0;color:#171310;">Signal / S·O·S</h3>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:#171310;border:1px solid rgba(23,19,16,.18);border-radius:999px;padding:4px 10px;flex:none;">1F</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#FCEEF5;"><svg style="width:112px;height:112px;display:block;color:#FF3D8B;"><use href="#mk-morse"></use></svg></div>
+        <div style="border-radius:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;background:#1B0E15;"><svg style="width:112px;height:112px;display:block;color:#FDFBF7;"><use href="#mk-morse"></use></svg></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px;padding-top:2px;">
+        <svg style="width:34px;height:34px;display:block;color:#FF3D8B;"><use href="#mk-morse"></use></svg>
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:23px;letter-spacing:-.01em;color:#171310;">Serve<span style="color:#FF3D8B;">OS</span></div>
+      </div>
+      <sc-if value="{{ showArabic }}" hint-placeholder-val="{{ true }}">
+        <div dir="rtl" style="font-family:'IBM Plex Sans Arabic',sans-serif;font-size:14px;color:rgba(23,19,16,.55);text-align:right;">سيرف أو إس — نظام التشغيل لعملك</div>
+      </sc-if>
+      <sc-if value="{{ showFavicons }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;align-items:center;gap:14px;padding:12px;background:rgba(23,19,16,.03);border-radius:12px;">
+          <div style="width:48px;height:48px;border-radius:12px;background:#FF3D8B;display:grid;place-items:center;"><svg width="34" height="14" viewBox="0 0 100 30"><g fill="#fff"><rect x="8" y="9" width="22" height="12" rx="6"></rect><rect x="39" y="9" width="22" height="12" rx="6"></rect><rect x="70" y="9" width="22" height="12" rx="6"></rect></g></svg></div>
+          <div style="width:16px;height:16px;border-radius:5px;background:#FF3D8B;display:grid;place-items:center;"><svg width="12" height="5" viewBox="0 0 100 30"><g fill="#fff"><rect x="8" y="9" width="22" height="12" rx="6"></rect><rect x="39" y="9" width="22" height="12" rx="6"></rect><rect x="70" y="9" width="22" height="12" rx="6"></rect></g></svg></div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(23,19,16,.5);">16&nbsp;px favicon — simplified to the “O” dashes</div>
+        </div>
+      </sc-if>
+      <p style="font-family:'Space Grotesk',sans-serif;font-size:13.5px;line-height:1.5;color:#3a332c;margin:0;">S·O·S in Morse. The name is hidden inside the mark, and it signals exactly what we are: the system that always has your back.</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid rgba(23,19,16,.08);padding-top:14px;">
+        <div style="display:flex;gap:6px;"><span style="width:14px;height:14px;border-radius:50%;background:#FF3D8B;"></span><span style="width:14px;height:14px;border-radius:50%;background:#1B0E15;"></span><span style="width:14px;height:14px;border-radius:50%;background:#FCEEF5;border:1px solid rgba(23,19,16,.12);"></span></div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(23,19,16,.5);">Space Grotesk · Plex Arabic</div>
+      </div>
+    </section>
+
+  </div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;showFavicons&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Display&quot;},&quot;showArabic&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Display&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      showFavicons: this.props.showFavicons ?? true,
+      showArabic: this.props.showArabic ?? true,
+    };
+  }
+}
+</script>
+</body>
+</html>
