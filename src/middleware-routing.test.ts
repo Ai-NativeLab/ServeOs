@@ -16,6 +16,9 @@ describe("classifyHost", () => {
   it("routes the bare root to marketing", () => {
     expect(classifyHost("serveos.localhost", root)).toEqual({ surface: "marketing" });
   });
+  it("routes the www host to marketing", () => {
+    expect(classifyHost("www.serveos.localhost", root)).toEqual({ surface: "marketing" });
+  });
   it("strips a port before classifying", () => {
     expect(classifyHost("app.serveos.localhost:3000", root)).toEqual({ surface: "dashboard" });
   });
