@@ -1,9 +1,12 @@
+"use client";
 import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LogoMark } from "@/components/brand/LogoMark";
+import { useLang } from "./LangProvider";
 
 export function MarketingHero() {
+  const { t } = useLang();
   return (
     <section
       id="hero"
@@ -40,22 +43,21 @@ export function MarketingHero() {
       <div className="relative mx-auto max-w-3xl">
         <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-[#2DD4C4]/30 bg-[#2DD4C4]/10 px-4 py-1.5 font-mono text-xs uppercase tracking-[0.14em] text-[#5EEBDD]">
           <span className="size-1.5 rounded-full bg-[#5EEBDD] motion-safe:animate-pulse" />
-          QR menu · WhatsApp · Web ordering
+          {t.hero.badge}
         </div>
 
         <h1 className="font-display text-[clamp(2.5rem,6vw,6rem)] font-extrabold leading-[0.98] tracking-tight text-[#FFF8F4]">
-          Your menu, online. <span className="text-[#FF7A54]">Orders, everywhere.</span>
+          {t.hero.headlineLead} <span className="text-[#FF7A54]">{t.hero.headlineHighlight}</span>
         </h1>
 
-        <p className="mt-6 max-w-[40ch] text-lg text-[#FBF1EC]/90 sm:text-2xl">
-          Customers order by scanning a table QR, messaging WhatsApp, or your own ordering page —
-          no app to install. It all lands in one dashboard, synced with your POS and stock.
+        <p className="mt-6 max-w-[46ch] text-lg text-[#FBF1EC]/90 sm:text-2xl">
+          {t.hero.subhead}
         </p>
 
         <div className="mt-10 flex flex-wrap items-center gap-4">
           <Button asChild size="lg" className="shadow-[0_20px_44px_-18px_rgba(240,82,43,0.9)]">
             <Link href="/register">
-              Get Started <ArrowRight className="size-4" />
+              {t.hero.getStarted} <ArrowRight className="size-4 rtl:-scale-x-100" />
             </Link>
           </Button>
           <Button
@@ -64,15 +66,15 @@ export function MarketingHero() {
             variant="outline"
             className="border-[#FBF1EC]/35 bg-transparent text-[#FBF1EC] hover:bg-white/5 hover:text-[#FBF1EC]"
           >
-            <Link href="/login">Sign in</Link>
+            <Link href="/login">{t.hero.signIn}</Link>
           </Button>
         </div>
 
         <div className="mt-8 flex flex-wrap items-center gap-2 text-sm text-[#FBF1EC]/70">
           <span className="text-[#5EEBDD]">●</span>
-          <span>No hardware lock-in</span>
+          <span>{t.hero.trustNoLockIn}</span>
           <span aria-hidden="true">·</span>
-          <span>English, Spanish, Arabic</span>
+          <span>{t.hero.trustLanguages}</span>
         </div>
       </div>
     </section>
