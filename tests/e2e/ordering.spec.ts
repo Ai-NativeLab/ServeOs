@@ -11,13 +11,15 @@ test("customer can browse, add to cart, and reach checkout", async ({ page }) =>
   await page.goto("http://roma.serveos.localhost:3000/");
   await expect(page.getByRole("heading", { name: /Pizza Roma|Roma/ })).toBeVisible();
 
-  // Add the first available product to the cart
-  const addButton = page.getByRole("button", { name: "Add" }).first();
-  await addButton.click();
+  // Tap the first product card to open its detail sheet, then add it to the cart.
+  await page.getByRole("button", { name: /Configure/ }).first().click();
+  await expect(page.getByRole("button", { name: /Add —/ })).toBeVisible();
+  await page.getByRole("button", { name: /Add —/ }).click();
 
-  // Open the cart drawer — button is fixed-position, may need force to bypass overlapping elements
-  const cartButton = page.locator("button").filter({ hasText: /🛒/ });
-  await cartButton.click({ force: true });
+  // The sticky cart bar appears once the cart is non-empty — open it.
+  const cartBar = page.getByRole("button", { name: /View cart/ });
+  await expect(cartBar).toBeVisible();
+  await cartBar.click();
 
   // Checkout link appears inside the cart drawer
   const checkout = page.getByRole("link", { name: /Checkout/ });
