@@ -14,6 +14,7 @@ import { MarketingFeatures } from "./_components/marketing/Features";
 import { MarketingHowItWorks } from "./_components/marketing/HowItWorks";
 import { MarketingCtaBand } from "./_components/marketing/CtaBand";
 import { MarketingFooter } from "./_components/marketing/Footer";
+import { LangProvider } from "./_components/marketing/LangProvider";
 
 export default async function Home({
   searchParams,
@@ -83,13 +84,15 @@ export default async function Home({
   }
 
   return (
-    <div className="min-h-screen">
-      <MarketingHeader />
-      <MarketingHero />
-      <MarketingFeatures />
-      <MarketingHowItWorks />
-      <MarketingCtaBand />
-      <MarketingFooter />
-    </div>
+    <LangProvider>
+      <div className="min-h-screen">
+        <MarketingHeader />
+        <MarketingHero />
+        <MarketingFeatures />
+        <MarketingHowItWorks />
+        <MarketingCtaBand />
+        <MarketingFooter />
+      </div>
+    </LangProvider>
   );
 }
