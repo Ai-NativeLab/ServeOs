@@ -10,11 +10,13 @@ export type StaffMember = {
 };
 export type CreateStaffInput = { name: string; email?: string; phone?: string; password: string; roleKey: StaffRoleKey };
 
-async function getOrCreateTenantRole(tenantId: string, key: StaffRoleKey): Promise<{ id: string }> {
-  const [existing] = await db.select().from(roles).where(and(eq(roles.tenantId, tenantId), eq(roles.key, key))).limit(1);
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function getOrCreateTenantRole(tx: Tx, tenantId: string, key: StaffRoleKey): Promise<{ id: string }> {
+  const [existing] = await tx.select().from(roles).where(and(eq(roles.tenantId, tenantId), eq(roles.key, key))).limit(1);
   if (existing) return existing;
   const name = key === "manager" ? "Manager" : "Staff";
-  const [created] = await db.insert(roles).values({ tenantId, key, name }).returning();
+  const [created] = await tx.insert(roles).values({ tenantId, key, name }).returning();
   return created;
 }
 
@@ -41,27 +43,31 @@ export async function createStaff(tenantId: string, input: CreateStaffInput): Pr
     phone ? eq(users.phone, phone) : null,
   ].filter((c): c is NonNullable<typeof c> => c !== null);
 
-  const [existing] = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(and(eq(users.tenantId, tenantId), or(...contactConditions)))
-    .limit(1);
-  if (existing) throw new StaffContactTakenError(email ?? phone!);
+  return db.transaction(async (tx) => {
+    const [existing] = await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(and(eq(users.tenantId, tenantId), or(...contactConditions)))
+      .limit(1);
+    if (existing) throw new StaffContactTakenError(email ?? phone!);
 
-  const passwordHash = await hashPassword(input.password);
-  const role = await getOrCreateTenantRole(tenantId, input.roleKey);
+    const passwordHash = await hashPassword(input.password);
+    const role = await getOrCreateTenantRole(tx, tenantId, input.roleKey);
 
-  const [user] = await db.insert(users).values({ tenantId, name: input.name, email, phone, passwordHash }).returning();
-  await db.insert(userRoles).values({ userId: user.id, roleId: role.id });
-  return user;
+    const [user] = await tx.insert(users).values({ tenantId, name: input.name, email, phone, passwordHash }).returning();
+    await tx.insert(userRoles).values({ userId: user.id, roleId: role.id });
+    return user;
+  });
 }
 
 export async function setStaffRole(tenantId: string, userId: string, roleKey: StaffRoleKey): Promise<void> {
-  const [target] = await db.select().from(users).where(and(eq(users.id, userId), eq(users.tenantId, tenantId))).limit(1);
-  if (!target) throw new Error("Staff member not found");
-  const role = await getOrCreateTenantRole(tenantId, roleKey);
-  await db.delete(userRoles).where(eq(userRoles.userId, userId));
-  await db.insert(userRoles).values({ userId, roleId: role.id });
+  await db.transaction(async (tx) => {
+    const [target] = await tx.select().from(users).where(and(eq(users.id, userId), eq(users.tenantId, tenantId))).limit(1);
+    if (!target) throw new Error("Staff member not found");
+    const role = await getOrCreateTenantRole(tx, tenantId, roleKey);
+    await tx.delete(userRoles).where(eq(userRoles.userId, userId));
+    await tx.insert(userRoles).values({ userId, roleId: role.id });
+  });
 }
 
 export async function deactivateStaff(tenantId: string, userId: string): Promise<void> {
