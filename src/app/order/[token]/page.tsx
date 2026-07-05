@@ -1,6 +1,8 @@
 import { headers } from "next/headers";
 import { getTenantBySlug } from "@/server/tenancy";
 import { getOrderByToken } from "@/server/ordering/service";
+import { getWhatsappNumber } from "@/server/tenancy/settings";
+import { buildOrderWhatsappMessage, whatsappChatLink } from "@/lib/whatsapp";
 import { StatusPoller } from "./StatusPoller";
 
 const STEPS_DELIVERY = ["pending", "confirmed", "preparing", "ready", "out_for_delivery", "completed"];
@@ -16,6 +18,7 @@ export default async function OrderStatusPage({ params }: { params: Promise<{ to
   const order = tenant ? await getOrderByToken(tenant.id, token) : null;
   if (!order) return <main style={{ padding: 32, fontFamily: "system-ui" }}><h1>Order not found</h1></main>;
 
+  const whatsappNumber = tenant ? await getWhatsappNumber(tenant.id) : null;
   const steps = order.fulfillmentType === "delivery" ? STEPS_DELIVERY : STEPS_PICKUP;
 
   return (
@@ -27,6 +30,28 @@ export default async function OrderStatusPage({ params }: { params: Promise<{ to
         {order.items.map((it) => <div key={it.id}>{it.quantity}× {it.nameEn}</div>)}
         <div style={{ fontWeight: 700, marginTop: 6 }}>Total {Number(order.total).toFixed(2)}</div>
       </div>
+      {whatsappNumber && (
+        <a
+          href={whatsappChatLink(
+            whatsappNumber,
+            buildOrderWhatsappMessage({
+              orderNumber: order.orderNumber,
+              fulfillmentType: order.fulfillmentType,
+              items: order.items.map((it) => ({ quantity: it.quantity, nameEn: it.nameEn })),
+              total: Number(order.total).toFixed(2),
+            }),
+          )}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            display: "inline-block", marginTop: 16, padding: "10px 16px",
+            background: "#25D366", color: "#fff", borderRadius: 8,
+            textDecoration: "none", fontWeight: 600, fontSize: 14,
+          }}
+        >
+          Send order via WhatsApp
+        </a>
+      )}
     </main>
   );
 }
