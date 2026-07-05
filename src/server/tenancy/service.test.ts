@@ -46,10 +46,12 @@ describe("tenancy service", () => {
     const t = await createTenant({ slug: "profile-edit", name: "Old Name", country: "EG" });
     const updated = await updateTenantProfile(t.id, {
       name: "New Name", logoUrl: "https://example.com/logo.png",
+      coverImageUrl: "https://example.com/cover.jpg",
       primaryColor: "#123456", defaultLocale: "en", timezone: "Africa/Cairo",
     });
     expect(updated.name).toBe("New Name");
     expect(updated.logoUrl).toBe("https://example.com/logo.png");
+    expect(updated.coverImageUrl).toBe("https://example.com/cover.jpg");
     expect(updated.primaryColor).toBe("#123456");
     expect(updated.defaultLocale).toBe("en");
     // slug/country/currency are not part of UpdateTenantProfileInput — untouched.

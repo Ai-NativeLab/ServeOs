@@ -19,6 +19,7 @@ export const tenants = pgTable("tenants", {
   timezone: text("timezone").notNull().default("Africa/Cairo"),
   customDomain: text("custom_domain").unique(),
   logoUrl: text("logo_url"),
+  coverImageUrl: text("cover_image_url"),
   primaryColor: text("primary_color").notNull().default("#0F172A"),
   theme: text("theme").notNull().default("default"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
