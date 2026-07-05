@@ -8,6 +8,7 @@ export async function updateTenantProfileAction(formData: FormData) {
   await updateTenantProfile(tenantId, {
     name: String(formData.get("name") || "").trim(),
     logoUrl: String(formData.get("logoUrl") || "").trim() || null,
+    coverImageUrl: String(formData.get("coverImageUrl") || "").trim() || null,
     primaryColor: String(formData.get("primaryColor") || "#0F172A"),
     defaultLocale: String(formData.get("defaultLocale") || "ar"),
     timezone: String(formData.get("timezone") || "Africa/Cairo"),
