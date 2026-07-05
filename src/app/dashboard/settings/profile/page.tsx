@@ -30,6 +30,11 @@ export default async function BusinessProfilePage() {
             <Input id="logoUrl" name="logoUrl" type="url" defaultValue={tenant.logoUrl ?? ""} placeholder="https://..." />
           </div>
           <div className="grid gap-1.5">
+            <Label htmlFor="coverImageUrl">Cover photo URL</Label>
+            <Input id="coverImageUrl" name="coverImageUrl" type="url" defaultValue={tenant.coverImageUrl ?? ""} placeholder="https://..." />
+            <p className="text-xs text-muted-foreground">Shown as the banner image at the top of your storefront.</p>
+          </div>
+          <div className="grid gap-1.5">
             <Label htmlFor="primaryColor">Primary color</Label>
             <div className="flex items-center gap-2">
               <input
