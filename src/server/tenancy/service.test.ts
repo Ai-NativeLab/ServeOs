@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { db } from "@/db/client";
 import { tenants } from "./schema";
-import { resolveTenantByHost, createTenant, isTenantServable } from "./service";
+import { resolveTenantByHost, createTenant, isTenantServable, updateTenantProfile } from "./service";
 
 describe("tenancy service", () => {
   it("creates a tenant with defaults", async () => {
@@ -40,6 +40,21 @@ describe("tenancy service", () => {
     expect(subdomainFromHost("www.serveos.localhost", "serveos.localhost")).toBeNull();
     expect(subdomainFromHost("a.b.serveos.localhost", "serveos.localhost")).toBeNull();
     expect(subdomainFromHost("ROMA.serveos.localhost", "serveos.localhost")).toBe("roma");
+  });
+
+  it("updateTenantProfile updates only the whitelisted fields", async () => {
+    const t = await createTenant({ slug: "profile-edit", name: "Old Name", country: "EG" });
+    const updated = await updateTenantProfile(t.id, {
+      name: "New Name", logoUrl: "https://example.com/logo.png",
+      primaryColor: "#123456", defaultLocale: "en", timezone: "Africa/Cairo",
+    });
+    expect(updated.name).toBe("New Name");
+    expect(updated.logoUrl).toBe("https://example.com/logo.png");
+    expect(updated.primaryColor).toBe("#123456");
+    expect(updated.defaultLocale).toBe("en");
+    // slug/country/currency are not part of UpdateTenantProfileInput — untouched.
+    expect(updated.slug).toBe("profile-edit");
+    expect(updated.country).toBe("EG");
   });
 });
 

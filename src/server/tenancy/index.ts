@@ -6,6 +6,8 @@ export {
   getTenantBySlug,
   getTenantById,
   isTenantServable,
+  updateTenantProfile,
+  type UpdateTenantProfileInput,
 } from "./service";
 export { getTenantSettings, setVatRate, getVatRate, defaultVatRate, getWhatsappNumber, setWhatsappNumber, type TenantSettingsData } from "./settings";
 export { InvalidWhatsappNumberError } from "./errors";

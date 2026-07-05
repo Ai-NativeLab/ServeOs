@@ -16,6 +16,17 @@ export async function createTenant(
   return row;
 }
 
+export type UpdateTenantProfileInput = Partial<
+  Pick<Tenant, "name" | "logoUrl" | "primaryColor" | "defaultLocale" | "timezone">
+>;
+
+/** tenants is a control table → plain db, same as createTenant. */
+export async function updateTenantProfile(tenantId: string, input: UpdateTenantProfileInput): Promise<Tenant> {
+  const [row] = await db.update(tenants).set(input).where(eq(tenants.id, tenantId)).returning();
+  if (!row) throw new Error(`Tenant not found: ${tenantId}`);
+  return row;
+}
+
 /** Extracts the subdomain slug from a host, or null if it's the root / reserved host. */
 export function subdomainFromHost(host: string, rootDomain: string): string | null {
   const h = host.split(":")[0].toLowerCase();
