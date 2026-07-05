@@ -1,6 +1,7 @@
 "use client";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
+import { toastMessageFor } from "@/lib/errors-client";
 
 export function ToastForm({
   action, successMessage, className, children,
@@ -17,8 +18,8 @@ export function ToastForm({
         try {
           await action(formData);
           toast.success(successMessage);
-        } catch {
-          toast.error("Something went wrong. Please try again.");
+        } catch (err) {
+          toast.error(toastMessageFor(err));
         }
       }}
     >
