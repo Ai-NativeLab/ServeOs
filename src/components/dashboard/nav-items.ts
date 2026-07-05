@@ -13,7 +13,7 @@ export function dashboardNavItems(roleKeys: RoleKey[]): NavItem[] {
   if (has("menu:manage")) items.push({ label: "Menu", href: "/dashboard/menu", icon: "utensils" });
   if (has("menu:manage")) items.push({ label: "Branches", href: "/dashboard/branches", icon: "store" });
   if (has("menu:manage")) items.push({ label: "Banners", href: "/dashboard/banners", icon: "image" });
-  if (has("fulfillment:manage")) items.push({ label: "Settings", href: "/dashboard/fulfillment", icon: "settings" });
+  if (has("fulfillment:manage")) items.push({ label: "Settings", href: "/dashboard/settings", icon: "settings" });
 
   return items;
 }

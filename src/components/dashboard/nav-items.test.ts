@@ -12,6 +12,11 @@ describe("dashboardNavItems", () => {
     expect(labels).toEqual(["Home", "Orders", "Menu", "Branches", "Banners", "Settings"]);
   });
 
+  it("points Settings at the new settings hub", () => {
+    const settings = dashboardNavItems(["owner"]).find((i) => i.label === "Settings");
+    expect(settings?.href).toBe("/dashboard/settings");
+  });
+
   it("gives managers the full nav (Home through Settings)", () => {
     const labels = dashboardNavItems(["manager"]).map((i) => i.label);
     expect(labels).toContain("Home");
