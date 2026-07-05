@@ -1,13 +1,13 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Receipt, Utensils, Store, Image, Settings } from "lucide-react";
+import { Home, Receipt, Utensils, Store, Image, Settings, BarChart3 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { LogoMark } from "@/components/brand/LogoMark";
 import type { NavItem } from "./nav-items";
 
 const ICONS: Record<string, React.ComponentType<{ className?: string; strokeWidth?: number }>> = {
-  home: Home, receipt: Receipt, utensils: Utensils, store: Store, image: Image, settings: Settings,
+  home: Home, analytics: BarChart3, receipt: Receipt, utensils: Utensils, store: Store, image: Image, settings: Settings,
 };
 
 export function Sidebar({ items, restaurantName }: { items: NavItem[]; restaurantName: string }) {

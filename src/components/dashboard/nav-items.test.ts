@@ -9,7 +9,7 @@ describe("dashboardNavItems", () => {
 
   it("shows owners the full nav including Home and Settings", () => {
     const labels = dashboardNavItems(["owner"]).map((i) => i.label);
-    expect(labels).toEqual(["Home", "Orders", "Menu", "Branches", "Banners", "Settings"]);
+    expect(labels).toEqual(["Home", "Analytics", "Orders", "Menu", "Branches", "Banners", "Settings"]);
   });
 
   it("points Settings at the new settings hub", () => {
