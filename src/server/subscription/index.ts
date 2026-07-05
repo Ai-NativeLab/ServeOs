@@ -7,5 +7,5 @@ export {
   type PlanLimits,
   type PlanFeatures,
 } from "./schema";
-export { startTrial, transition, getActiveSubscription, getPlanForTenant } from "./service";
+export { startTrial, transition, getActiveSubscription, getPlanForTenant, listPlans } from "./service";
 export { seedDefaultPlans, DEFAULT_PLANS } from "./plans.seed";

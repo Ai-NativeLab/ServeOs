@@ -5,7 +5,7 @@ import { seedDefaultPlans } from "@/server/subscription/plans.seed";
 import { startTrial } from "@/server/subscription/service";
 import { createBranch, updateBranchOrdering } from "@/server/branches/service";
 import { createCategory, createProduct, updateProduct } from "@/server/catalog/service";
-import { placeOrder, getOrderByToken, getOrder, listOrders, transitionStatus, markPaid, pendingOrderCount } from "./service";
+import { placeOrder, getOrderByToken, getOrder, listOrders, transitionStatus, markPaid, pendingOrderCount, ordersThisMonthCount } from "./service";
 import { InvalidTransitionError } from "./errors";
 
 async function setup(slug: string) {
@@ -67,5 +67,10 @@ describe("orders queries + transitions", () => {
     const list = await listOrders(t.id, {});
     expect(list).toHaveLength(1);
     expect(await pendingOrderCount(t.id)).toBe(1);
+  });
+
+  it("ordersThisMonthCount counts orders placed in the current billing period", async () => {
+    const { t } = await setup("o8");
+    expect(await ordersThisMonthCount(t.id)).toBe(1);
   });
 });

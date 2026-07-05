@@ -9,5 +9,9 @@ export {
   updateTenantProfile,
   type UpdateTenantProfileInput,
 } from "./service";
-export { getTenantSettings, setVatRate, getVatRate, defaultVatRate, getWhatsappNumber, setWhatsappNumber, type TenantSettingsData } from "./settings";
+export {
+  getTenantSettings, setVatRate, getVatRate, defaultVatRate,
+  getWhatsappNumber, setWhatsappNumber, requestPlanUpgrade, getUpgradeRequest,
+  type TenantSettingsData,
+} from "./settings";
 export { InvalidWhatsappNumberError } from "./errors";

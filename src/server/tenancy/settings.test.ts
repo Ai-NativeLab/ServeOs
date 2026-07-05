@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { db } from "@/db/client";
 import { tenants } from "./schema";
-import { getVatRate, setVatRate, getTenantSettings, getWhatsappNumber, setWhatsappNumber } from "./settings";
+import { getVatRate, setVatRate, getTenantSettings, getWhatsappNumber, setWhatsappNumber, requestPlanUpgrade, getUpgradeRequest } from "./settings";
 import { InvalidWhatsappNumberError } from "./errors";
 
 async function makeTenant(slug: string, country = "EG") {
@@ -54,5 +54,20 @@ describe("tenant WhatsApp settings", () => {
     await setWhatsappNumber(t.id, "+201234567890");
     expect(await getVatRate(t.id)).toBe(12);
     expect(await getWhatsappNumber(t.id)).toBe("+201234567890");
+  });
+});
+
+describe("tenant plan upgrade requests", () => {
+  it("has no upgrade request by default", async () => {
+    const t = await makeTenant("upgrade-default");
+    expect(await getUpgradeRequest(t.id)).toBeNull();
+  });
+
+  it("records the requested plan and a timestamp", async () => {
+    const t = await makeTenant("upgrade-request");
+    await requestPlanUpgrade(t.id, "pro");
+    const req = await getUpgradeRequest(t.id);
+    expect(req?.planKey).toBe("pro");
+    expect(typeof req?.requestedAt).toBe("string");
   });
 });

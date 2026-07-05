@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { requireFeature, incrementUsage } from "@/server/entitlements/service";
 import { getVatRate } from "@/server/tenancy/settings";
@@ -195,6 +195,15 @@ export function toOrderRow(o: Order): OrderRow {
 export async function pendingOrderCount(tenantId: string): Promise<number> {
   const [row] = await withTenant(tenantId, (tx) =>
     tx.select({ c: sql<number>`COUNT(*)` }).from(orders).where(eq(orders.status, "pending")),
+  );
+  return Number(row.c);
+}
+
+export async function ordersThisMonthCount(tenantId: string): Promise<number> {
+  const now = new Date();
+  const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const [row] = await withTenant(tenantId, (tx) =>
+    tx.select({ c: sql<number>`COUNT(*)` }).from(orders).where(gte(orders.placedAt, periodStart)),
   );
   return Number(row.c);
 }

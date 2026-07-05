@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { db } from "@/db/client";
 import { tenants } from "@/server/tenancy/schema";
 import { seedDefaultPlans } from "./plans.seed";
-import { startTrial, transition, getActiveSubscription } from "./service";
+import { startTrial, transition, getActiveSubscription, listPlans } from "./service";
 
 async function tenant() {
   const [t] = await db.insert(tenants).values({ slug: "t", name: "T", country: "EG" }).returning();
@@ -32,5 +32,11 @@ describe("subscription service", () => {
     const t = await tenant();
     await startTrial(t.id, "basic");
     expect((await getActiveSubscription(t.id))?.tenantId).toBe(t.id);
+  });
+
+  it("listPlans returns all seeded plans ordered by price", async () => {
+    await seedDefaultPlans();
+    const all = await listPlans();
+    expect(all.map((p) => p.key)).toEqual(["basic", "pro", "enterprise"]);
   });
 });

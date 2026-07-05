@@ -57,3 +57,7 @@ export async function getPlanForTenant(tenantId: string) {
     .limit(1);
   return row?.plan ?? null;
 }
+
+export async function listPlans() {
+  return db.select().from(plans).orderBy(plans.priceMonthly);
+}

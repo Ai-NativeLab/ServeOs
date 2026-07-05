@@ -62,3 +62,12 @@ export async function setWhatsappNumber(tenantId: string, number: string | null)
   }
   await patchTenantSettings(tenantId, { whatsappNumber: number ?? undefined });
 }
+
+export async function requestPlanUpgrade(tenantId: string, planKey: string): Promise<void> {
+  await patchTenantSettings(tenantId, { upgradeRequest: { planKey, requestedAt: new Date().toISOString() } });
+}
+
+export async function getUpgradeRequest(tenantId: string): Promise<TenantSettingsData["upgradeRequest"] | null> {
+  const settings = await getTenantSettings(tenantId);
+  return settings.upgradeRequest ?? null;
+}
