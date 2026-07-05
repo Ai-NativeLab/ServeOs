@@ -9,6 +9,7 @@ import { onboardingSteps } from "@/lib/onboarding";
 import { orderStatusMeta } from "@/lib/order-status";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { CheckCircle2, Circle } from "lucide-react";
 
 export default async function DashboardHome() {
@@ -73,6 +74,14 @@ export default async function DashboardHome() {
           </Card>
         ))}
       </div>
+
+      <Card className="p-5 mt-6">
+        <h2 className="eyebrow text-primary mb-2">Go live</h2>
+        <p className="text-sm text-muted-foreground mb-3">Share your menu with customers — get your storefront link and a printable QR code.</p>
+        <Link href="/dashboard/publish">
+          <Button variant="outline">Publish your menu</Button>
+        </Link>
+      </Card>
     </>
   );
 }
