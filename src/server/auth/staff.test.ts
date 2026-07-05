@@ -29,6 +29,14 @@ describe("staff management", () => {
     ).rejects.toBeInstanceOf(StaffContactTakenError);
   });
 
+  it("rejects a duplicate phone even when a different email is also submitted", async () => {
+    const t = await makeTenant("staff-dup-phone");
+    await createStaff(t.id, { name: "Nour", phone: "01000000001", password: "pass1234", roleKey: "staff" });
+    await expect(
+      createStaff(t.id, { name: "Karim", email: "new@roma.com", phone: "01000000001", password: "pass1234", roleKey: "staff" }),
+    ).rejects.toBeInstanceOf(StaffContactTakenError);
+  });
+
   it("changes a staff member's role", async () => {
     const t = await makeTenant("staff-role");
     const user = await createStaff(t.id, { name: "Nour", email: "role@roma.com", password: "pass1234", roleKey: "staff" });

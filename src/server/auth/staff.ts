@@ -1,4 +1,4 @@
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, ne, or } from "drizzle-orm";
 import { db } from "@/db/client";
 import { users, roles, userRoles, sessions, type User } from "./schema";
 import { hashPassword } from "./password";
@@ -36,10 +36,15 @@ export async function createStaff(tenantId: string, input: CreateStaffInput): Pr
   const phone = input.phone?.trim() || null;
   if (!email && !phone) throw new Error("Staff member needs an email or phone");
 
+  const contactConditions = [
+    email ? eq(users.email, email) : null,
+    phone ? eq(users.phone, phone) : null,
+  ].filter((c): c is NonNullable<typeof c> => c !== null);
+
   const [existing] = await db
     .select({ id: users.id })
     .from(users)
-    .where(and(eq(users.tenantId, tenantId), email ? eq(users.email, email) : eq(users.phone, phone!)))
+    .where(and(eq(users.tenantId, tenantId), or(...contactConditions)))
     .limit(1);
   if (existing) throw new StaffContactTakenError(email ?? phone!);
 
