@@ -6,6 +6,7 @@ import { listCategories } from "@/server/catalog/service";
 import { createProductAction } from "../actions";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { SubmitButton } from "@/components/dashboard/SubmitButton";
+import { ImageInput } from "@/components/dashboard/ImageInput";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -55,6 +56,10 @@ export default async function NewProductPage({ searchParams }: { searchParams: P
           <div className="grid gap-1.5 max-w-48">
             <Label htmlFor="basePrice">Base price</Label>
             <Input id="basePrice" name="basePrice" type="number" step="0.01" min="0" required />
+          </div>
+          <div className="grid gap-1.5">
+            <Label>Product image</Label>
+            <ImageInput name="imageUrl" type="product" aspect="square" />
           </div>
           <div><SubmitButton>Create product</SubmitButton></div>
         </form>

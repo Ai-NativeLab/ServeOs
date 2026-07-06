@@ -3,6 +3,7 @@ import { getTenantById } from "@/server/tenancy";
 import { updateTenantProfileAction } from "./actions";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { ToastForm } from "@/components/dashboard/ToastForm";
+import { ImageInput } from "@/components/dashboard/ImageInput";
 import { SubmitButton } from "@/components/dashboard/SubmitButton";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -26,12 +27,12 @@ export default async function BusinessProfilePage() {
             <Input id="name" name="name" defaultValue={tenant.name} required />
           </div>
           <div className="grid gap-1.5">
-            <Label htmlFor="logoUrl">Logo URL</Label>
-            <Input id="logoUrl" name="logoUrl" type="url" defaultValue={tenant.logoUrl ?? ""} placeholder="https://..." />
+            <Label>Logo</Label>
+            <ImageInput name="logoUrl" type="logo" defaultValue={tenant.logoUrl} aspect="square" />
           </div>
           <div className="grid gap-1.5">
-            <Label htmlFor="coverImageUrl">Cover photo URL</Label>
-            <Input id="coverImageUrl" name="coverImageUrl" type="url" defaultValue={tenant.coverImageUrl ?? ""} placeholder="https://..." />
+            <Label>Cover photo</Label>
+            <ImageInput name="coverImageUrl" type="cover" defaultValue={tenant.coverImageUrl} aspect="wide" />
             <p className="text-xs text-muted-foreground">Shown as the banner image at the top of your storefront.</p>
           </div>
           <div className="grid gap-1.5">

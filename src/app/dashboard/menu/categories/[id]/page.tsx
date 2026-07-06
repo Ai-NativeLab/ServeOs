@@ -7,6 +7,7 @@ import { listCategories } from "@/server/catalog/service";
 import { updateCategoryAction } from "../actions";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { SubmitButton } from "@/components/dashboard/SubmitButton";
+import { ImageInput } from "@/components/dashboard/ImageInput";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -36,6 +37,10 @@ export default async function EditCategoryPage({ params }: { params: Promise<{ i
               <Label htmlFor="nameAr">Name (AR)</Label>
               <Input id="nameAr" name="nameAr" defaultValue={cat.nameAr} required dir="rtl" />
             </div>
+          </div>
+          <div className="grid gap-1.5">
+            <Label>Category image</Label>
+            <ImageInput name="imageUrl" type="category" defaultValue={cat.imageUrl} aspect="square" />
           </div>
           <div><SubmitButton>Save changes</SubmitButton></div>
         </form>
