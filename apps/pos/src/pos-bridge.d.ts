@@ -1,4 +1,8 @@
+import type { PosBridge } from "../electron/preload";
+
 export {};
 declare global {
-  interface Window { pos: { ping: () => string } }
+  interface Window {
+    pos: PosBridge;
+  }
 }
