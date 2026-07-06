@@ -75,13 +75,20 @@ export async function redeemPairingCode(
 
 export async function resolveDevice(
   token: string,
-): Promise<{ deviceId: string; tenantId: string; branchId: string } | null> {
+): Promise<{ deviceId: string; tenantId: string; branchId: string; createdByUserId: string } | null> {
   const [device] = await db
-    .select({ id: posDevices.id, tenantId: posDevices.tenantId, branchId: posDevices.branchId })
+    .select({
+      id: posDevices.id,
+      tenantId: posDevices.tenantId,
+      branchId: posDevices.branchId,
+      createdByUserId: posDevices.createdByUserId,
+    })
     .from(posDevices)
     .where(and(eq(posDevices.token, token), isNull(posDevices.revokedAt)))
     .limit(1);
-  return device ? { deviceId: device.id, tenantId: device.tenantId, branchId: device.branchId } : null;
+  return device
+    ? { deviceId: device.id, tenantId: device.tenantId, branchId: device.branchId, createdByUserId: device.createdByUserId }
+    : null;
 }
 
 export async function listDevices(tenantId: string): Promise<PosDevice[]> {

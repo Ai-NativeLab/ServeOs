@@ -7,7 +7,7 @@ import { PosAuthError } from "./errors";
  */
 export async function requirePosDevice(
   req: Request,
-): Promise<{ deviceId: string; tenantId: string; branchId: string }> {
+): Promise<{ deviceId: string; tenantId: string; branchId: string; createdByUserId: string }> {
   const auth = req.headers.get("authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
   const device = token ? await resolveDevice(token) : null;
