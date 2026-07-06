@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { PairScreen } from "./screens/PairScreen";
+import { LoginScreen } from "./screens/LoginScreen";
 import { OrderScreen } from "./screens/OrderScreen";
 import { OrdersQueue } from "./screens/OrdersQueue";
 
@@ -23,7 +23,7 @@ export function App() {
 
   if (!paired) {
     return (
-      <PairScreen
+      <LoginScreen
         onPaired={(name) => {
           setBranchName(name);
           setPaired(true);

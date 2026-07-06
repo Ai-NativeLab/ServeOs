@@ -84,6 +84,30 @@ export class PosMain {
     return { branchName: d.branchName };
   }
 
+  async login(
+    slug: string,
+    email: string,
+    password: string,
+    branchId?: string,
+  ): Promise<{ status: "branch_required"; branches: { id: string; name: string }[] } | { status: "paired"; branchName: string }> {
+    const res = await fetch(`${this.baseUrl}/api/pos/v1/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slug, email, password, branchId }),
+    });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(err.error ?? `Login failed (${res.status})`);
+    }
+    const d = (await res.json()) as
+      | { status: "branch_required"; branches: { id: string; name: string }[] }
+      | { status: "paired"; deviceToken: string; tenantId: string; branchId: string; branchName: string };
+    if (d.status === "branch_required") return { status: "branch_required", branches: d.branches };
+    this.device = { token: d.deviceToken, tenantId: d.tenantId, branchId: d.branchId, branchName: d.branchName };
+    this.persist();
+    return { status: "paired", branchName: d.branchName };
+  }
+
   async getMenu(): Promise<{ json: string; syncedAt: string } | null> {
     if (!this.device) return null;
     const res = await fetch(`${this.baseUrl}/api/pos/v1/catalog`, { headers: this.authHeaders() });

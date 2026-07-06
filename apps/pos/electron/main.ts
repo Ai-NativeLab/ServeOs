@@ -27,6 +27,8 @@ app.whenReady().then(() => {
   ipcMain.handle("pos:isPaired", () => posMain?.isPaired() ?? false);
   ipcMain.handle("pos:branchName", () => posMain?.branchName() ?? "");
   ipcMain.handle("pos:pair", (_e, code: string) => posMain!.pair(code));
+  ipcMain.handle("pos:login", (_e, slug: string, email: string, password: string, branchId?: string) =>
+    posMain!.login(slug, email, password, branchId));
   ipcMain.handle("pos:getMenu", () => posMain!.getMenu());
   ipcMain.handle("pos:submitOrder", (_e, draft) => posMain!.submitOrder(draft));
   ipcMain.handle("pos:getOrders", () => posMain!.getOrders());

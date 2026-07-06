@@ -13,3 +13,11 @@ export class PosAuthError extends Error {
     this.name = "PosAuthError";
   }
 }
+
+/** Thrown when POS login fails (wrong restaurant, email, password, or inactive user). */
+export class PosLoginError extends Error {
+  constructor(message = "Wrong restaurant, email, or password") {
+    super(message);
+    this.name = "PosLoginError";
+  }
+}

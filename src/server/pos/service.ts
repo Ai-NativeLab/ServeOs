@@ -3,8 +3,16 @@ import { and, eq, gt, isNull, desc } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { branches } from "@/server/branches/schema";
+import { users } from "@/server/auth/schema";
+import { verifyPassword } from "@/server/auth/password";
+import { getTenantBySlug } from "@/server/tenancy";
 import { posDevices, posPairingCodes, type PosDevice } from "./schema";
-import { PosPairingError } from "./errors";
+import { PosPairingError, PosLoginError } from "./errors";
+
+export type PosBranch = { id: string; name: string };
+export type PosLoginResult =
+  | { status: "branch_required"; branches: PosBranch[] }
+  | { status: "paired"; deviceToken: string; tenantId: string; branchId: string; branchName: string };
 
 const PAIRING_CODE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -71,6 +79,58 @@ export async function redeemPairingCode(
   await db.update(posPairingCodes).set({ usedAt: new Date() }).where(eq(posPairingCodes.id, pairing.id));
 
   return { deviceToken, tenantId: pairing.tenantId, branchId: pairing.branchId, branchName: branch.name };
+}
+
+/**
+ * Authenticates a staff member by restaurant slug + email + password and mints
+ * a POS device token bound to a branch. If the restaurant has more than one
+ * active branch and none was chosen yet, returns `branch_required` with the
+ * list so the client can show a one-time picker and call again with `branchId`.
+ */
+export async function loginForPos(
+  slug: string,
+  email: string,
+  password: string,
+  branchId: string | null,
+): Promise<PosLoginResult> {
+  const tenant = await getTenantBySlug(slug);
+  if (!tenant) throw new PosLoginError();
+
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(and(eq(users.tenantId, tenant.id), eq(users.email, email)))
+    .limit(1);
+  if (!user?.passwordHash || user.status !== "active" || !(await verifyPassword(password, user.passwordHash))) {
+    throw new PosLoginError();
+  }
+
+  // branches enforce RLS, so the lookup must run inside the tenant's context.
+  const branchRows = await withTenant(tenant.id, (tx) =>
+    tx.select({ id: branches.id, name: branches.name })
+      .from(branches)
+      .where(and(eq(branches.tenantId, tenant.id), eq(branches.isActive, true)))
+      .orderBy(branches.sortOrder),
+  );
+  if (branchRows.length === 0) throw new PosLoginError("This restaurant has no active branches");
+
+  const chosen = branchId
+    ? branchRows.find((b) => b.id === branchId)
+    : branchRows.length === 1
+      ? branchRows[0]
+      : null;
+  if (!chosen) return { status: "branch_required", branches: branchRows };
+
+  const deviceToken = generateDeviceToken();
+  await db.insert(posDevices).values({
+    tenantId: tenant.id,
+    branchId: chosen.id,
+    token: deviceToken,
+    label: `${user.name} · ${chosen.name}`,
+    createdByUserId: user.id,
+  });
+
+  return { status: "paired", deviceToken, tenantId: tenant.id, branchId: chosen.id, branchName: chosen.name };
 }
 
 export async function resolveDevice(
