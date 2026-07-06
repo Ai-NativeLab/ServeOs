@@ -7,35 +7,55 @@ type LangContextValue = { locale: Locale; setLocale: (l: Locale) => void; t: Mar
 const LangContext = createContext<LangContextValue | null>(null);
 const STORAGE_KEY = "serveos.marketing.locale";
 
+function readSavedLocale(): Locale | null {
+  try {
+    const saved = window.localStorage.getItem(STORAGE_KEY);
+    return saved === "ar" || saved === "en" ? saved : null;
+  } catch {
+    return null;
+  }
+}
+
 export function LangProvider({ children }: { children: React.ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>("en");
 
   // Hydrate the saved preference after mount (localStorage is client-only, so
   // the server always renders English; a returning Arabic visitor flips on mount).
   useEffect(() => {
-    const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (saved === "ar" || saved === "en") setLocaleState(saved);
+    const saved = readSavedLocale();
+    if (saved) setLocaleState(saved);
   }, []);
 
-  // Reflect the locale on <html> so direction and language are correct for the
-  // whole marketing page. Restore on unmount so navigating to other surfaces
-  // (dashboard/storefront) isn't left in a stale direction.
+  // Capture the page's original <html> dir/lang once and restore them when the
+  // marketing page unmounts — App Router keeps <html> mounted across client
+  // navigation, so a stale rtl/ar would otherwise leak into other surfaces.
   useEffect(() => {
     const el = document.documentElement;
     const prevDir = el.getAttribute("dir");
     const prevLang = el.getAttribute("lang");
-    el.setAttribute("dir", locale === "ar" ? "rtl" : "ltr");
-    el.setAttribute("lang", locale);
     return () => {
       if (prevDir) el.setAttribute("dir", prevDir);
       else el.removeAttribute("dir");
       el.setAttribute("lang", prevLang ?? "en");
     };
+  }, []);
+
+  // Reflect the current locale on <html> so direction and language are correct
+  // for the whole marketing page.
+  useEffect(() => {
+    const el = document.documentElement;
+    el.setAttribute("dir", locale === "ar" ? "rtl" : "ltr");
+    el.setAttribute("lang", locale);
   }, [locale]);
 
   function setLocale(l: Locale) {
     setLocaleState(l);
-    window.localStorage.setItem(STORAGE_KEY, l);
+    try {
+      window.localStorage.setItem(STORAGE_KEY, l);
+    } catch {
+      // Storage may be unavailable (private mode, disabled); the toggle still
+      // works for this session, it just won't persist.
+    }
   }
 
   return (
