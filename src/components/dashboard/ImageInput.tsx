@@ -8,6 +8,9 @@ import { Input } from "@/components/ui/input";
 
 type UploadType = "product" | "category" | "banner" | "logo" | "cover";
 
+const MAX_BYTES = 5 * 1024 * 1024; // keep in sync with the /api/media-upload route
+const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+
 export function ImageInput({
   name,
   type,
@@ -26,14 +29,32 @@ export function ImageInput({
   const fileRef = useRef<HTMLInputElement>(null);
 
   async function handleFile(file: File) {
+    if (!ACCEPTED_TYPES.includes(file.type)) {
+      toast.error("Unsupported image format (use JPG, PNG, WebP, or GIF)");
+      return;
+    }
+    if (file.size > MAX_BYTES) {
+      toast.error("Image is too large (max 5 MB). Please compress or resize it first.");
+      return;
+    }
     setUploading(true);
     try {
       const form = new FormData();
       form.set("type", type);
       form.set("file", file);
       const res = await fetch("/api/media-upload", { method: "POST", body: form });
-      const data = (await res.json()) as { url?: string; error?: string };
-      if (!res.ok || !data.url) throw new Error(data.error ?? "Upload failed");
+
+      // The server returns JSON, but proxies/limits can return plain text (e.g. a 413),
+      // so parse defensively rather than assuming JSON.
+      const raw = await res.text();
+      let data: { url?: string; error?: string } = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch {
+        data = { error: res.status === 413 ? "Image is too large to upload" : `Upload failed (${res.status})` };
+      }
+
+      if (!res.ok || !data.url) throw new Error(data.error ?? `Upload failed (${res.status})`);
       setValue(data.url);
       toast.success("Image uploaded");
     } catch (err) {
