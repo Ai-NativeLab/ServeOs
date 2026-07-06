@@ -15,8 +15,14 @@ export default async function DashboardLayout({ children }: { children: React.Re
     <div className="min-h-screen flex bg-background text-foreground">
       <Sidebar items={items} restaurantName={tenant?.name ?? "Restaurant"} />
       <div className="flex-1 flex flex-col min-w-0">
-        <Topbar userName={user.name} roleLabel={roleKeys[0] ?? "member"} pendingCount={pending} />
-        <main className="flex-1 p-6 max-w-5xl w-full mx-auto">{children}</main>
+        <Topbar
+          userName={user.name}
+          roleLabel={roleKeys[0] ?? "member"}
+          pendingCount={pending}
+          items={items}
+          restaurantName={tenant?.name ?? "Restaurant"}
+        />
+        <main className="flex-1 p-4 md:p-6 max-w-5xl w-full mx-auto">{children}</main>
       </div>
       <Toaster richColors position="top-right" />
     </div>

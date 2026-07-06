@@ -69,39 +69,70 @@ export default async function MenuPage() {
                 {catProds.length === 0 ? (
                   <p className="text-sm text-muted-foreground py-2">No products in this category yet.</p>
                 ) : (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="eyebrow w-14"></TableHead>
-                        <TableHead className="eyebrow">Product</TableHead>
-                        <TableHead className="eyebrow text-right">Price</TableHead>
-                        <TableHead className="eyebrow">Status</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
+                  <>
+                    {/* Mobile: stacked cards */}
+                    <ul className="md:hidden space-y-2">
                       {catProds.map((p) => (
-                        <TableRow key={p.id}>
-                          <TableCell>
+                        <li key={p.id}>
+                          <Link
+                            href={`/dashboard/menu/products/${p.id}`}
+                            className="flex items-center gap-3 rounded-lg border p-3"
+                          >
                             {p.imageUrl
                               ? /* eslint-disable-next-line @next/next/no-img-element */
-                                <img src={p.imageUrl} alt="" className="size-10 rounded-md object-cover" />
-                              : <span className="size-10 rounded-md bg-secondary grid place-items-center"><ImageIcon className="size-4 text-muted-foreground" strokeWidth={1.5} /></span>}
-                          </TableCell>
-                          <TableCell>
-                            <Link href={`/dashboard/menu/products/${p.id}`} className="font-medium text-ink hover:underline">{p.nameEn}</Link>
-                          </TableCell>
-                          <TableCell className="font-mono text-sm text-right">{Number(p.basePrice).toFixed(2)}</TableCell>
-                          <TableCell>
+                                <img src={p.imageUrl} alt="" className="size-12 rounded-md object-cover shrink-0" />
+                              : <span className="size-12 rounded-md bg-secondary grid place-items-center shrink-0"><ImageIcon className="size-4 text-muted-foreground" strokeWidth={1.5} /></span>}
+                            <div className="min-w-0 flex-1">
+                              <div className="font-medium text-ink truncate">{p.nameEn}</div>
+                              <div className="font-mono text-sm text-muted-foreground">{Number(p.basePrice).toFixed(2)}</div>
+                            </div>
                             <span className={p.isPublished
-                              ? "inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium bg-status-ready/15 text-status-ready-fg ring-1 ring-status-ready/30"
-                              : "inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium bg-secondary text-muted-foreground"}>
+                              ? "shrink-0 inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium bg-status-ready/15 text-status-ready-fg ring-1 ring-status-ready/30"
+                              : "shrink-0 inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium bg-secondary text-muted-foreground"}>
                               {p.isPublished ? "Published" : "Draft"}
                             </span>
-                          </TableCell>
-                        </TableRow>
+                          </Link>
+                        </li>
                       ))}
-                    </TableBody>
-                  </Table>
+                    </ul>
+
+                    {/* Desktop: table */}
+                    <div className="hidden md:block">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="eyebrow w-14"></TableHead>
+                            <TableHead className="eyebrow">Product</TableHead>
+                            <TableHead className="eyebrow text-right">Price</TableHead>
+                            <TableHead className="eyebrow">Status</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {catProds.map((p) => (
+                            <TableRow key={p.id}>
+                              <TableCell>
+                                {p.imageUrl
+                                  ? /* eslint-disable-next-line @next/next/no-img-element */
+                                    <img src={p.imageUrl} alt="" className="size-10 rounded-md object-cover" />
+                                  : <span className="size-10 rounded-md bg-secondary grid place-items-center"><ImageIcon className="size-4 text-muted-foreground" strokeWidth={1.5} /></span>}
+                              </TableCell>
+                              <TableCell>
+                                <Link href={`/dashboard/menu/products/${p.id}`} className="font-medium text-ink hover:underline">{p.nameEn}</Link>
+                              </TableCell>
+                              <TableCell className="font-mono text-sm text-right">{Number(p.basePrice).toFixed(2)}</TableCell>
+                              <TableCell>
+                                <span className={p.isPublished
+                                  ? "inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium bg-status-ready/15 text-status-ready-fg ring-1 ring-status-ready/30"
+                                  : "inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium bg-secondary text-muted-foreground"}>
+                                  {p.isPublished ? "Published" : "Draft"}
+                                </span>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </>
                 )}
 
                 <Button asChild variant="outline" size="sm" className="mt-3">
