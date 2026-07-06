@@ -76,3 +76,24 @@
   --sidebar-border: rgba(255, 255, 255, 0.14);
   --sidebar-ring: #f0522b;
 }
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #receipt,
+  #receipt * {
+    visibility: visible;
+  }
+  #receipt {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    border: none;
+    box-shadow: none;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
