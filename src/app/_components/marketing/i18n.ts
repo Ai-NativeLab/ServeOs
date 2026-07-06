@@ -1,11 +1,11 @@
 import type { FeatureIconId } from "@/components/brand/FeatureIcon";
+import type { Locale } from "@/shared/errors";
 
-export type Locale = "en" | "ar";
+export type { Locale };
 
 type FeatureCopy = Record<FeatureIconId, { title: string; description: string }>;
 
 export type MarketingCopy = {
-  dir: "ltr" | "rtl";
   header: { features: string; howItWorks: string; signIn: string; getStarted: string };
   hero: {
     badge: string;
@@ -21,11 +21,10 @@ export type MarketingCopy = {
   how: { eyebrow: string; heading: string; steps: { title: string; description: string }[] };
   cta: { headlineLead: string; headlineHighlight: string; getStarted: string };
   footer: { copyright: string };
-  toggle: { toArabic: string; toEnglish: string };
+  toggle: { toArabic: string; toEnglish: string; ariaToArabic: string; ariaToEnglish: string };
 };
 
 const en: MarketingCopy = {
-  dir: "ltr",
   header: { features: "Features", howItWorks: "How it works", signIn: "Sign in", getStarted: "Get Started" },
   hero: {
     badge: "QR menu · WhatsApp · Web ordering",
@@ -83,11 +82,15 @@ const en: MarketingCopy = {
     getStarted: "Get Started",
   },
   footer: { copyright: "© 2026 ServeOS" },
-  toggle: { toArabic: "العربية", toEnglish: "English" },
+  toggle: {
+    toArabic: "العربية",
+    toEnglish: "English",
+    ariaToArabic: "التبديل إلى العربية",
+    ariaToEnglish: "Switch to English",
+  },
 };
 
 const ar: MarketingCopy = {
-  dir: "rtl",
   header: { features: "المميزات", howItWorks: "كيف تعمل", signIn: "تسجيل الدخول", getStarted: "ابدأ الآن" },
   hero: {
     badge: "قائمة QR · واتساب · طلب عبر الويب",
@@ -145,7 +148,12 @@ const ar: MarketingCopy = {
     getStarted: "ابدأ الآن",
   },
   footer: { copyright: "© 2026 ServeOS" },
-  toggle: { toArabic: "العربية", toEnglish: "English" },
+  toggle: {
+    toArabic: "العربية",
+    toEnglish: "English",
+    ariaToArabic: "التبديل إلى العربية",
+    ariaToEnglish: "Switch to English",
+  },
 };
 
 export const marketingDict: Record<Locale, MarketingCopy> = { en, ar };

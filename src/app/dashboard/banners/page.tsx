@@ -6,6 +6,7 @@ import { createBannerAction, toggleBannerAction, deleteBannerAction } from "./ac
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { ToastForm } from "@/components/dashboard/ToastForm";
+import { ImageInput } from "@/components/dashboard/ImageInput";
 import { ConfirmActionButton } from "@/components/dashboard/ConfirmActionButton";
 import { SubmitButton } from "@/components/dashboard/SubmitButton";
 import { Card } from "@/components/ui/card";
@@ -71,8 +72,8 @@ export default async function BannersPage() {
         <h2 className="eyebrow text-primary mb-3">Add banner</h2>
         <ToastForm action={createBannerAction} successMessage="Banner added" className="grid gap-4">
           <div className="grid gap-1.5">
-            <Label htmlFor="imageUrl">Image URL</Label>
-            <Input id="imageUrl" name="imageUrl" required />
+            <Label>Banner image</Label>
+            <ImageInput name="imageUrl" type="banner" aspect="wide" required />
           </div>
           <div className="grid md:grid-cols-2 gap-4">
             <div className="grid gap-1.5">

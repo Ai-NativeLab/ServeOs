@@ -22,6 +22,7 @@ export async function createProductAction(formData: FormData) {
     basePrice: String(formData.get("basePrice")),
     descriptionEn: formData.get("descriptionEn") ? String(formData.get("descriptionEn")) : undefined,
     descriptionAr: formData.get("descriptionAr") ? String(formData.get("descriptionAr")) : undefined,
+    imageUrl: formData.get("imageUrl") ? String(formData.get("imageUrl")) : undefined,
   });
   revalidatePath("/dashboard/menu");
   redirect("/dashboard/menu");
@@ -36,6 +37,7 @@ export async function updateProductAction(productId: string, formData: FormData)
     basePrice: String(formData.get("basePrice")),
     descriptionEn: formData.get("descriptionEn") ? String(formData.get("descriptionEn")) : undefined,
     descriptionAr: formData.get("descriptionAr") ? String(formData.get("descriptionAr")) : undefined,
+    imageUrl: formData.get("imageUrl") ? String(formData.get("imageUrl")) : null,
     isPublished,
   });
   revalidatePath("/dashboard/menu");

@@ -11,6 +11,7 @@ export async function createCategoryAction(formData: FormData) {
     nameAr: String(formData.get("nameAr")),
     descriptionEn: formData.get("descriptionEn") ? String(formData.get("descriptionEn")) : undefined,
     descriptionAr: formData.get("descriptionAr") ? String(formData.get("descriptionAr")) : undefined,
+    imageUrl: formData.get("imageUrl") ? String(formData.get("imageUrl")) : undefined,
   });
   revalidatePath("/dashboard/menu");
   redirect("/dashboard/menu");
@@ -21,6 +22,7 @@ export async function updateCategoryAction(categoryId: string, formData: FormDat
   await updateCategory(tenantId, categoryId, {
     nameEn: String(formData.get("nameEn")),
     nameAr: String(formData.get("nameAr")),
+    imageUrl: formData.get("imageUrl") ? String(formData.get("imageUrl")) : null,
   });
   revalidatePath("/dashboard/menu");
   redirect("/dashboard/menu");

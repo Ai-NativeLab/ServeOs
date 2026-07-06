@@ -5,6 +5,7 @@ import { authorize } from "@/server/rbac/authorize";
 import { createCategoryAction } from "../actions";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { SubmitButton } from "@/components/dashboard/SubmitButton";
+import { ImageInput } from "@/components/dashboard/ImageInput";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -38,6 +39,10 @@ export default async function NewCategoryPage() {
               <Label htmlFor="descriptionAr">Description (AR)</Label>
               <Input id="descriptionAr" name="descriptionAr" dir="rtl" />
             </div>
+          </div>
+          <div className="grid gap-1.5">
+            <Label>Category image</Label>
+            <ImageInput name="imageUrl" type="category" aspect="square" />
           </div>
           <div><SubmitButton>Create category</SubmitButton></div>
         </form>

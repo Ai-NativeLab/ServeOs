@@ -10,6 +10,7 @@ import {
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { SubmitButton } from "@/components/dashboard/SubmitButton";
 import { ToastForm } from "@/components/dashboard/ToastForm";
+import { ImageInput } from "@/components/dashboard/ImageInput";
 import { ConfirmActionButton } from "@/components/dashboard/ConfirmActionButton";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -51,6 +52,10 @@ export default async function EditProductPage({ params }: { params: Promise<{ id
           <div className="grid gap-1.5 max-w-48">
             <Label htmlFor="basePrice">Base price</Label>
             <Input id="basePrice" name="basePrice" type="number" step="0.01" min="0" defaultValue={String(product.basePrice)} required />
+          </div>
+          <div className="grid gap-1.5">
+            <Label>Product image</Label>
+            <ImageInput name="imageUrl" type="product" defaultValue={product.imageUrl} aspect="square" />
           </div>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" name="isPublished" value="true" defaultChecked={product.isPublished} className="size-4 accent-(--color-primary)" />
