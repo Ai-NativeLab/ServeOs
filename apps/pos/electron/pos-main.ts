@@ -3,7 +3,9 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 
-const DEFAULT_BASE_URL = "https://app.serveos.com";
+// In dev (vite serving), default to the local backend; otherwise the
+// configured/placeholder production host. POS_API_URL always wins.
+const DEFAULT_BASE_URL = process.env.VITE_DEV_SERVER_URL ? "http://localhost:3000" : "https://app.serveos.com";
 
 type Device = { token: string; tenantId: string; branchId: string; branchName: string };
 
