@@ -9,6 +9,7 @@ export const SETTINGS_TABS: SettingsTab[] = [
   { label: "Fulfillment", href: "/dashboard/settings/fulfillment", permission: "fulfillment:manage" },
   { label: "Staff", href: "/dashboard/settings/staff", permission: "staff:invite" },
   { label: "Billing", href: "/dashboard/settings/billing", permission: "billing:manage" },
+  { label: "POS devices", href: "/dashboard/settings/pos-devices", permission: "tenant:manage" },
 ];
 
 export function visibleSettingsTabs(roleKeys: RoleKey[]): SettingsTab[] {
