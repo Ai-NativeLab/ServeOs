@@ -1,7 +1,7 @@
 import type { CartLine } from "../order/cart";
 
 export type ReceiptData = {
-  clientOrderId: string;
+  orderNumber: string;
   lines: CartLine[];
   total: number;
   timestamp: string;
@@ -19,7 +19,7 @@ export function Receipt({ data, onPrint, onNewOrder }: { data: ReceiptData; onPr
           <div className="my-3 border-t border-dashed border-border" />
           <div className="flex justify-between text-xs text-muted-foreground">
             <span>{new Date(data.timestamp).toLocaleString()}</span>
-            <span>#{data.clientOrderId.slice(0, 8)}</span>
+            <span>Order #{data.orderNumber}</span>
           </div>
           <div className="my-3 border-t border-dashed border-border" />
           <ul className="flex flex-col gap-1.5">

@@ -23,21 +23,16 @@ function createWindow() {
 
 app.whenReady().then(() => {
   posMain = new PosMain();
-  posMain.onState((state, pending) => {
-    win?.webContents.send("pos:state", state, pending);
-  });
 
   ipcMain.handle("pos:isPaired", () => posMain?.isPaired() ?? false);
-  ipcMain.handle("pos:pair", (_e, code: string) => posMain?.pair(code));
-  ipcMain.handle("pos:getMenu", () => posMain?.getMenu() ?? null);
-  ipcMain.handle("pos:submitOrder", (_e, draft) => posMain?.submitOrder(draft));
-  ipcMain.handle("pos:getTickets", () => posMain?.getTickets() ?? []);
+  ipcMain.handle("pos:branchName", () => posMain?.branchName() ?? "");
+  ipcMain.handle("pos:pair", (_e, code: string) => posMain!.pair(code));
+  ipcMain.handle("pos:getMenu", () => posMain!.getMenu());
+  ipcMain.handle("pos:submitOrder", (_e, draft) => posMain!.submitOrder(draft));
+  ipcMain.handle("pos:getOrders", () => posMain!.getOrders());
+  ipcMain.handle("pos:advanceOrder", (_e, orderId: string, toStatus: string) => posMain!.advanceOrder(orderId, toStatus));
 
   createWindow();
-
-  setInterval(() => {
-    void posMain?.tick();
-  }, 15000);
 });
 
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });

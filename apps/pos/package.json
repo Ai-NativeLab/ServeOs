@@ -9,7 +9,9 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run"
   },
-  "dependencies": {
+  "dependencies": {},
+  "optionalDependencies": {
+    "//": "Parked with the offline store in electron/_offline. Optional so a failed native build never blocks `npm install`.",
     "better-sqlite3": "^11.8.0"
   },
   "devDependencies": {

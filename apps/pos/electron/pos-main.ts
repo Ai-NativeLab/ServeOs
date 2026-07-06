@@ -1,70 +1,69 @@
 import { app, safeStorage } from "electron";
 import path from "node:path";
+import fs from "node:fs";
 import crypto from "node:crypto";
-import { openDb } from "./db";
-import { Store } from "./store";
-import { SyncEngine, type SyncState } from "./sync";
-import { createApiClient } from "./api";
 
 const DEFAULT_BASE_URL = "https://app.serveos.com";
 
-export interface OrderDraft {
-  lines: { productId: string; quantity: number; selectedOptionIds: string[] }[];
-  notes?: string;
-}
+type Device = { token: string; tenantId: string; branchId: string; branchName: string };
 
+export type OrderLine = { productId: string; quantity: number; selectedOptionIds: string[] };
+export type OrderDraft = { lines: OrderLine[]; notes?: string };
+export type OrderSummary = {
+  id: string;
+  orderNumber: number;
+  customerName: string;
+  fulfillmentType: "pickup" | "delivery";
+  total: string;
+  status: string;
+  paymentStatus: string;
+  placedAt: string;
+  source: "walkin" | "online";
+};
+
+/**
+ * Online-first POS glue: talks straight to the cloud backend. No local
+ * database — the offline store/sync engine lives (parked) in electron/_offline
+ * and can be reintroduced later behind this same surface.
+ */
 export class PosMain {
-  private store: Store;
-  private engine: SyncEngine;
-  private baseUrl: string;
+  private baseUrl = process.env.POS_API_URL || DEFAULT_BASE_URL;
+  private device: Device | null = null;
+  private readonly file = path.join(app.getPath("userData"), "pos-device.json");
 
   constructor() {
-    this.baseUrl = process.env.POS_API_URL || DEFAULT_BASE_URL;
-    const dbPath = path.join(app.getPath("userData"), "pos.sqlite");
-    this.store = new Store(openDb(dbPath));
-    this.engine = new SyncEngine(this.store, this.makeClient(), (state, pending) => {
-      this.stateCb?.(state, pending);
-    });
+    this.load();
   }
 
-  private stateCb: ((s: SyncState, pending: number) => void) | null = null;
-
-  private makeClient() {
-    return createApiClient(this.baseUrl, () => this.getToken());
-  }
-
-  private encryptToken(token: string): string {
+  private load(): void {
     try {
-      if (safeStorage.isEncryptionAvailable()) {
-        return safeStorage.encryptString(token).toString("base64");
-      }
+      const raw = fs.readFileSync(this.file);
+      const json = safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(raw) : raw.toString("utf8");
+      this.device = JSON.parse(json) as Device;
     } catch {
-      // fall through to plaintext
+      this.device = null;
     }
-    return `plain:${token}`;
   }
 
-  private decryptToken(stored: string | null): string | null {
-    if (!stored) return null;
-    if (stored.startsWith("plain:")) return stored.slice(6);
-    try {
-      if (safeStorage.isEncryptionAvailable()) {
-        return safeStorage.decryptString(Buffer.from(stored, "base64"));
-      }
-    } catch {
-      return null;
-    }
-    return null;
+  private persist(): void {
+    if (!this.device) return;
+    const json = JSON.stringify(this.device);
+    const data = safeStorage.isEncryptionAvailable()
+      ? safeStorage.encryptString(json)
+      : Buffer.from(json, "utf8");
+    fs.writeFileSync(this.file, data);
   }
 
-  private getToken(): string | null {
-    const dev = this.store.getDevice();
-    if (!dev || !dev.token) return null;
-    return this.decryptToken(dev.token);
+  private authHeaders(): Record<string, string> {
+    return { "Content-Type": "application/json", Authorization: `Bearer ${this.device?.token ?? ""}` };
   }
 
   isPaired(): boolean {
-    return this.getToken() != null && this.store.getDevice()?.branch_id != null;
+    return this.device !== null;
+  }
+
+  branchName(): string {
+    return this.device?.branchName ?? "";
   }
 
   async pair(code: string): Promise<{ branchName: string }> {
@@ -74,59 +73,62 @@ export class PosMain {
       body: JSON.stringify({ code }),
     });
     if (!res.ok) {
-      const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-      throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(err.error ?? `Pairing failed (${res.status})`);
     }
-    const data = (await res.json()) as {
-      deviceToken: string;
-      tenantId: string;
-      branchId: string;
-      branchName: string;
-    };
-    this.store.saveDevice({
-      token: this.encryptToken(data.deviceToken),
-      tenantId: data.tenantId,
-      branchId: data.branchId,
-      branchName: data.branchName,
-    });
-    return { branchName: data.branchName };
+    const d = (await res.json()) as { deviceToken: string; tenantId: string; branchId: string; branchName: string };
+    this.device = { token: d.deviceToken, tenantId: d.tenantId, branchId: d.branchId, branchName: d.branchName };
+    this.persist();
+    return { branchName: d.branchName };
   }
 
-  getMenu(): { json: string; syncedAt: string } | null {
-    return this.store.getCatalog();
+  async getMenu(): Promise<{ json: string; syncedAt: string } | null> {
+    if (!this.device) return null;
+    const res = await fetch(`${this.baseUrl}/api/pos/v1/catalog`, { headers: this.authHeaders() });
+    if (res.status === 401) {
+      this.unpair();
+      throw new Error("Device unpaired — please pair again");
+    }
+    if (!res.ok) throw new Error(`Menu fetch failed (${res.status})`);
+    const d = (await res.json()) as { menu: unknown; syncedAt: string };
+    return { json: JSON.stringify(d.menu), syncedAt: d.syncedAt };
   }
 
-  submitOrder(draft: OrderDraft): { clientOrderId: string } {
+  async submitOrder(draft: OrderDraft): Promise<{ orderNumber: string }> {
+    if (!this.device) throw new Error("Not paired");
     const clientOrderId = crypto.randomUUID();
-    this.store.enqueueOrder(clientOrderId, JSON.stringify(draft));
-    // Kick a flush in the background; do not block the renderer.
-    void this.engine.flush();
-    return { clientOrderId };
-  }
-
-  getTickets() {
-    return this.store.allTickets().map((t) => ({
-      client_order_id: t.client_order_id,
-      status: t.status,
-      order_number: t.order_number,
-    }));
-  }
-
-  onState(cb: (s: SyncState, pending: number) => void): void {
-    this.stateCb = cb;
-  }
-
-  async tick(): Promise<void> {
-    if (!this.isPaired()) return;
-    try {
-      await this.engine.pull();
-    } catch {
-      // pull() swallows network errors; non-network errors are surfaced via state
+    const res = await fetch(`${this.baseUrl}/api/pos/v1/orders`, {
+      method: "POST",
+      headers: this.authHeaders(),
+      body: JSON.stringify({ clientOrderId, lines: draft.lines, notes: draft.notes }),
+    });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(err.error ?? `Order failed (${res.status})`);
     }
-    try {
-      await this.engine.flush();
-    } catch {
-      // flush() never throws (errors handled per-order)
-    }
+    const d = (await res.json()) as { orderNumber: string };
+    return { orderNumber: d.orderNumber };
+  }
+
+  async getOrders(): Promise<OrderSummary[]> {
+    if (!this.device) return [];
+    const res = await fetch(`${this.baseUrl}/api/pos/v1/orders/list`, { headers: this.authHeaders() });
+    if (!res.ok) return [];
+    const d = (await res.json()) as { orders: OrderSummary[] };
+    return d.orders;
+  }
+
+  async advanceOrder(orderId: string, toStatus: string): Promise<void> {
+    if (!this.device) return;
+    await fetch(`${this.baseUrl}/api/pos/v1/orders/status`, {
+      method: "POST",
+      headers: this.authHeaders(),
+      body: JSON.stringify({ orderId, toStatus }),
+    });
+  }
+
+  unpair(): void {
+    this.device = null;
+    try { fs.unlinkSync(this.file); } catch { /* nothing to remove */ }
   }
 }

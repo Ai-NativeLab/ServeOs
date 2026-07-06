@@ -1,27 +1,36 @@
 import { contextBridge, ipcRenderer } from "electron";
 
+export type OrderSummary = {
+  id: string;
+  orderNumber: number;
+  customerName: string;
+  fulfillmentType: "pickup" | "delivery";
+  total: string;
+  status: string;
+  paymentStatus: string;
+  placedAt: string;
+  source: "walkin" | "online";
+};
+
 export interface PosBridge {
   isPaired(): Promise<boolean>;
+  branchName(): Promise<string>;
   pair(code: string): Promise<{ branchName: string }>;
   getMenu(): Promise<{ json: string; syncedAt: string } | null>;
   submitOrder(draft: {
     lines: { productId: string; quantity: number; selectedOptionIds: string[] }[];
     notes?: string;
-  }): Promise<{ clientOrderId: string }>;
-  getTickets(): Promise<
-    Array<{ client_order_id: string; status: string; order_number: string | null }>
-  >;
-  onState(cb: (s: "online" | "offline" | "syncing", pending: number) => void): void;
+  }): Promise<{ orderNumber: string }>;
+  getOrders(): Promise<OrderSummary[]>;
+  advanceOrder(orderId: string, toStatus: string): Promise<void>;
 }
 
 contextBridge.exposeInMainWorld("pos", {
   isPaired: () => ipcRenderer.invoke("pos:isPaired"),
+  branchName: () => ipcRenderer.invoke("pos:branchName"),
   pair: (code: string) => ipcRenderer.invoke("pos:pair", code),
   getMenu: () => ipcRenderer.invoke("pos:getMenu"),
-  submitOrder: (draft: Parameters<PosBridge["submitOrder"]>[0]) =>
-    ipcRenderer.invoke("pos:submitOrder", draft),
-  getTickets: () => ipcRenderer.invoke("pos:getTickets"),
-  onState: (cb: Parameters<PosBridge["onState"]>[0]) => {
-    ipcRenderer.on("pos:state", (_e, state, pending) => cb(state, pending));
-  },
+  submitOrder: (draft: Parameters<PosBridge["submitOrder"]>[0]) => ipcRenderer.invoke("pos:submitOrder", draft),
+  getOrders: () => ipcRenderer.invoke("pos:getOrders"),
+  advanceOrder: (orderId: string, toStatus: string) => ipcRenderer.invoke("pos:advanceOrder", orderId, toStatus),
 } satisfies PosBridge);

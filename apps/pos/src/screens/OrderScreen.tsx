@@ -9,7 +9,6 @@ import {
 } from "../order/menu";
 import { addLine, cartTotal, changeQty, removeLine, type CartLine } from "../order/cart";
 import { Receipt, type ReceiptData } from "./Receipt";
-import { TicketsPanel } from "./TicketsPanel";
 
 export function OrderScreen({ branchName }: { branchName: string }) {
   const [menu, setMenu] = useState<Menu | null>(null);
@@ -26,7 +25,6 @@ export function OrderScreen({ branchName }: { branchName: string }) {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<ReceiptData | null>(null);
-  const [ticketsKey, setTicketsKey] = useState(0);
 
   useEffect(() => {
     window.pos
@@ -105,13 +103,12 @@ export function OrderScreen({ branchName }: { branchName: string }) {
       };
       const res = await window.pos.submitOrder(draft);
       setReceipt({
-        clientOrderId: res.clientOrderId,
+        orderNumber: res.orderNumber,
         lines: [...cart],
         total: cartTotal(cart),
         timestamp: new Date().toISOString(),
       });
       setCart([]);
-      setTicketsKey((k) => k + 1);
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : "Failed to submit order");
     } finally {
@@ -236,8 +233,6 @@ export function OrderScreen({ branchName }: { branchName: string }) {
           >
             {submitting ? "Submitting…" : "Charge (cash)"}
           </button>
-
-          <TicketsPanel refreshKey={ticketsKey} />
         </aside>
       </div>
 
