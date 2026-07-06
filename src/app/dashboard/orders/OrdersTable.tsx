@@ -75,52 +75,87 @@ export function OrdersTable({ initial }: { initial: OrderRow[] }) {
           description={(EMPTY_STATE_COPY[filter] ?? EMPTY_STATE_COPY.all).description}
         />
       ) : (
-        <div className="rounded-xl border bg-card overflow-hidden">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="eyebrow">#</TableHead>
-                <TableHead className="eyebrow">Customer</TableHead>
-                <TableHead className="eyebrow">Type</TableHead>
-                <TableHead className="eyebrow text-right">Total</TableHead>
-                <TableHead className="eyebrow">Payment</TableHead>
-                <TableHead className="eyebrow">Status</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {visible.map((r) => (
-                <TableRow
-                  key={r.id}
-                  onClick={() => router.push(`/dashboard/orders/${r.id}`)}
-                  className={cn("cursor-pointer", r.status === "pending" && "bg-primary/5")}
+        <>
+          {/* Mobile: order cards */}
+          <ul className="md:hidden space-y-2">
+            {visible.map((r) => (
+              <li key={r.id}>
+                <Link
+                  href={`/dashboard/orders/${r.id}`}
+                  className={cn("block rounded-xl border bg-card p-3", r.status === "pending" && "bg-primary/5")}
                 >
-                  <TableCell className="font-mono text-sm">
-                    <Link
-                      href={`/dashboard/orders/${r.id}`}
-                      className="rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {r.orderNumber}
-                    </Link>
-                  </TableCell>
-                  <TableCell>{r.customerName}</TableCell>
-                  <TableCell>
-                    {r.fulfillmentType === "delivery"
-                      ? <span className="inline-flex items-center gap-1.5 text-sm"><Bike className="size-4" strokeWidth={1.5} />Delivery</span>
-                      : <span className="inline-flex items-center gap-1.5 text-sm"><ShoppingBag className="size-4" strokeWidth={1.5} />Pickup</span>}
-                  </TableCell>
-                  <TableCell className="font-mono text-sm text-right">{Number(r.total).toFixed(2)}</TableCell>
-                  <TableCell>
-                    <span className={cn("text-xs font-medium", r.paymentStatus === "paid" ? "text-status-ready-fg" : "text-status-danger-fg")}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-sm">{r.orderNumber}</span>
+                    <StatusBadge status={r.status} />
+                  </div>
+                  <div className="mt-1 flex items-center justify-between gap-2">
+                    <span className="text-sm text-ink truncate">{r.customerName}</span>
+                    <span className="font-mono text-sm">{Number(r.total).toFixed(2)}</span>
+                  </div>
+                  <div className="mt-1 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                    <span className="inline-flex items-center gap-1.5">
+                      {r.fulfillmentType === "delivery"
+                        ? <Bike className="size-3.5" strokeWidth={1.5} />
+                        : <ShoppingBag className="size-3.5" strokeWidth={1.5} />}
+                      {r.fulfillmentType === "delivery" ? "Delivery" : "Pickup"}
+                    </span>
+                    <span className={cn("font-medium", r.paymentStatus === "paid" ? "text-status-ready-fg" : "text-status-danger-fg")}>
                       {r.paymentStatus}
                     </span>
-                  </TableCell>
-                  <TableCell><StatusBadge status={r.status} /></TableCell>
+                  </div>
+                </Link>
+              </li>
+            ))}
+          </ul>
+
+          {/* Desktop: table */}
+          <div className="hidden md:block rounded-xl border bg-card overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="eyebrow">#</TableHead>
+                  <TableHead className="eyebrow">Customer</TableHead>
+                  <TableHead className="eyebrow">Type</TableHead>
+                  <TableHead className="eyebrow text-right">Total</TableHead>
+                  <TableHead className="eyebrow">Payment</TableHead>
+                  <TableHead className="eyebrow">Status</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+              </TableHeader>
+              <TableBody>
+                {visible.map((r) => (
+                  <TableRow
+                    key={r.id}
+                    onClick={() => router.push(`/dashboard/orders/${r.id}`)}
+                    className={cn("cursor-pointer", r.status === "pending" && "bg-primary/5")}
+                  >
+                    <TableCell className="font-mono text-sm">
+                      <Link
+                        href={`/dashboard/orders/${r.id}`}
+                        className="rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {r.orderNumber}
+                      </Link>
+                    </TableCell>
+                    <TableCell>{r.customerName}</TableCell>
+                    <TableCell>
+                      {r.fulfillmentType === "delivery"
+                        ? <span className="inline-flex items-center gap-1.5 text-sm"><Bike className="size-4" strokeWidth={1.5} />Delivery</span>
+                        : <span className="inline-flex items-center gap-1.5 text-sm"><ShoppingBag className="size-4" strokeWidth={1.5} />Pickup</span>}
+                    </TableCell>
+                    <TableCell className="font-mono text-sm text-right">{Number(r.total).toFixed(2)}</TableCell>
+                    <TableCell>
+                      <span className={cn("text-xs font-medium", r.paymentStatus === "paid" ? "text-status-ready-fg" : "text-status-danger-fg")}>
+                        {r.paymentStatus}
+                      </span>
+                    </TableCell>
+                    <TableCell><StatusBadge status={r.status} /></TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </>
       )}
     </div>
   );
