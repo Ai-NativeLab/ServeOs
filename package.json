@@ -18,7 +18,9 @@
     "pos:dev": "npm run dev -w pos",
     "pos:build": "npm run build -w pos",
     "pos:typecheck": "npm run typecheck -w pos",
-    "pos:test": "npm run test -w pos"
+    "pos:test": "npm run test -w pos",
+    "pos:demo:web": "DATABASE_URL=\"$(grep -E '^DATABASE_URL=' .env.test | cut -d= -f2-)\" ROOT_DOMAIN=\"$(grep -E '^ROOT_DOMAIN=' .env.test | cut -d= -f2-)\" next dev",
+    "pos:demo:code": "ENV_FILE=.env.test tsx scripts/pos-demo-seed.ts"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
