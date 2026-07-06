@@ -2,6 +2,7 @@
   "name": "serveos",
   "version": "0.1.0",
   "private": true,
+  "workspaces": ["apps/*"],
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -13,7 +14,11 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "db:migrate:test": "ENV_FILE=.env.test tsx scripts/migrate.ts",
     "db:seed": "tsx scripts/seed.ts",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "pos:dev": "npm run dev -w pos",
+    "pos:build": "npm run build -w pos",
+    "pos:typecheck": "npm run typecheck -w pos",
+    "pos:test": "npm run test -w pos"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
