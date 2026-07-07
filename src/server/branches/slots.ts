@@ -34,7 +34,10 @@ export function isBranchOrderableAt(branch: Branch, timeZone: string, at: Date):
 export function isWithinSchedulingHorizon(timeZone: string, now: Date, at: Date): boolean {
   const key = localDateKey(at, timeZone);
   const today = localDateKey(now, timeZone);
-  const tomorrow = localDateKey(new Date(now.getTime() + 24 * 60 * 60 * 1000), timeZone);
+  // Calendar-date increment (not +24h of real time): a DST fall-back day is
+  // 25 hours long, so a fixed-duration add can land on the same local date.
+  const [y, m, d] = today.split("-").map(Number);
+  const tomorrow = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
   return key === today || key === tomorrow;
 }
 

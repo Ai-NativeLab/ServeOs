@@ -60,6 +60,13 @@ describe("isWithinSchedulingHorizon", () => {
     expect(isWithinSchedulingHorizon(RIYADH, NOW, new Date("2026-07-08T18:00:00Z"))).toBe(true);
     expect(isWithinSchedulingHorizon(RIYADH, NOW, new Date("2026-07-09T10:00:00Z"))).toBe(false);
   });
+  it("keeps tomorrow in the horizon across a DST fall-back day", () => {
+    // 2026-11-01T04:00:00Z = 00:00 local in America/New_York on the 25-hour
+    // fall-back day; a fixed +24h would still be Nov 1 local.
+    const dstNow = new Date("2026-11-01T04:00:00Z");
+    expect(isWithinSchedulingHorizon("America/New_York", dstNow, new Date("2026-11-02T15:00:00Z"))).toBe(true);
+    expect(isWithinSchedulingHorizon("America/New_York", dstNow, new Date("2026-11-03T15:00:00Z"))).toBe(false);
+  });
 });
 
 describe("listSlots", () => {
