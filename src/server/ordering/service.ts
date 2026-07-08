@@ -3,12 +3,13 @@ import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { requireFeature, incrementUsage } from "@/server/entitlements/service";
 import { getVatRate } from "@/server/tenancy/settings";
-import { isBranchOrderable } from "@/server/branches/orderability";
+import { isBranchOrderableAt, isWithinSchedulingHorizon, MIN_LEAD_MINUTES } from "@/server/branches/slots";
+import { getTenantById } from "@/server/tenancy";
 import { branches, deliveryAreas } from "@/server/branches/schema";
 import { products, modifierGroups, modifierOptions, branchProductAvailability } from "@/server/catalog/schema";
 import { orders, orderItems, orderStatusEvents, type SelectedModifier, type Order, type OrderWithItems, type OrderDetail, type OrderStatus } from "./schema";
 import { canTransition } from "./state-machine";
-import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError } from "./errors";
+import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError } from "./errors";
 
 export type PlaceOrderLine = { productId: string; quantity: number; selectedOptionIds: string[] };
 export type PlaceOrderInput = {
@@ -19,6 +20,8 @@ export type PlaceOrderInput = {
   notes?: string;
   areaId?: string;
   addressText?: string;
+  /** ISO 8601. Absent/undefined = ASAP. */
+  scheduledFor?: string;
   lines: PlaceOrderLine[];
   now?: Date;
 };
@@ -37,11 +40,28 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
   const vatRate = await getVatRate(tenantId);
   const now = input.now ?? new Date();
 
+  const tenant = await getTenantById(tenantId);
+  if (!tenant) throw new OrderValidationError("unknown tenant");
+  const tz = tenant.timezone;
+
+  let scheduledFor: Date | null = null;
+  if (input.scheduledFor !== undefined) {
+    const at = new Date(input.scheduledFor);
+    if (Number.isNaN(at.getTime())) throw new InvalidScheduleError("unparseable");
+    if (at.getTime() < now.getTime() + MIN_LEAD_MINUTES * 60_000) throw new InvalidScheduleError("too_soon");
+    if (!isWithinSchedulingHorizon(tz, now, at)) throw new InvalidScheduleError("too_far");
+    scheduledFor = at;
+  }
+
   const result = await withTenant(tenantId, async (tx) => {
     // 1. Branch + orderability
     const [branch] = await tx.select().from(branches).where(eq(branches.id, input.branchId)).limit(1);
     if (!branch) throw new OrderValidationError("unknown branch");
-    if (!isBranchOrderable(branch, now)) throw new BranchNotAcceptingOrdersError();
+    if (scheduledFor) {
+      if (!isBranchOrderableAt(branch, tz, scheduledFor)) throw new InvalidScheduleError("closed_at_time");
+    } else if (!isBranchOrderableAt(branch, tz, now)) {
+      throw new BranchNotAcceptingOrdersError();
+    }
 
     // 2. Validate each line against the catalog; build snapshots.
     let subtotal = 0;
@@ -137,6 +157,7 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       deliveryAreaId, deliveryAreaNameSnapshot: deliveryAreaName, deliveryAddressText: deliveryAddress,
       subtotal: money(subtotal), vatRateSnapshot: money(vatRate), vatAmount: money(vatAmount), deliveryFee: money(deliveryFee), total: money(total),
       statusToken,
+      scheduledFor,
     }).returning();
 
     await tx.insert(orderItems).values(itemsToInsert.map((i) => ({ ...i, tenantId, orderId: order.id })));

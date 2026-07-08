@@ -28,6 +28,7 @@ export async function POST(req: NextRequest) {
     notes: typeof body.notes === "string" ? body.notes : undefined,
     areaId: typeof body.areaId === "string" ? body.areaId : undefined,
     addressText: typeof body.addressText === "string" ? body.addressText : undefined,
+    scheduledFor: typeof body.scheduledFor === "string" ? body.scheduledFor : undefined,
     lines: Array.isArray(body.lines)
       ? (body.lines as unknown[]).map((l): PlaceOrderLine => {
           const line = (l ?? {}) as Record<string, unknown>;
