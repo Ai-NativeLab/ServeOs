@@ -18,7 +18,7 @@ async function setup(slug: string) {
   const prod = await createProduct(t.id, { nameEn: "Pie", nameAr: "فطيرة", basePrice: "100", categoryId: cat.id });
   await updateProduct(t.id, prod.id, { isPublished: true });
   const order = await placeOrder(t.id, { branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1", lines: [{ productId: prod.id, quantity: 1, selectedOptionIds: [] }] });
-  return { t, branch, order };
+  return { t, branch, pizza: prod, order, userId: "00000000-0000-0000-0000-000000000001" };
 }
 
 describe("orders queries + transitions", () => {
@@ -72,5 +72,41 @@ describe("orders queries + transitions", () => {
   it("ordersThisMonthCount counts orders placed in the current billing period", async () => {
     const { t } = await setup("o8");
     expect(await ordersThisMonthCount(t.id)).toBe(1);
+  });
+
+  it("cancelOrderByToken cancels a pending order and records the event", async () => {
+    const { t, branch, pizza } = await setup("cx1");
+    const placed = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const { cancelOrderByToken, getOrder } = await import("./service");
+    const cancelled = await cancelOrderByToken(t.id, placed.statusToken);
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.cancelReason).toBe("cancelled_by_customer");
+    const detail = await getOrder(t.id, placed.orderId);
+    const evt = detail.events.find((e) => e.toStatus === "cancelled");
+    expect(evt).toBeDefined();
+    expect(evt!.changedByUserId).toBeNull();
+    expect(evt!.reason).toBe("cancelled_by_customer");
+  });
+
+  it("cancelOrderByToken rejects a non-pending order", async () => {
+    const { t, branch, pizza, userId } = await setup("cx2");
+    const { InvalidTransitionError } = await import("./errors");
+    const placed = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const { cancelOrderByToken, transitionStatus } = await import("./service");
+    await transitionStatus(t.id, placed.orderId, "confirmed", userId);
+    await expect(cancelOrderByToken(t.id, placed.statusToken)).rejects.toThrow(InvalidTransitionError);
+  });
+
+  it("cancelOrderByToken 404s an unknown token", async () => {
+    const { t } = await setup("cx3");
+    const { cancelOrderByToken } = await import("./service");
+    const { OrderNotFoundError } = await import("./errors");
+    await expect(cancelOrderByToken(t.id, "no-such-token")).rejects.toThrow(OrderNotFoundError);
   });
 });

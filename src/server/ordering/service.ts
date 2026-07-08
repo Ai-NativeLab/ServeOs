@@ -182,6 +182,28 @@ export async function getOrderByToken(tenantId: string, token: string): Promise<
   });
 }
 
+/** Customer-initiated cancel, authorised by possession of the status token.
+ * Policy: only while still `pending` — once the restaurant confirms, the
+ * customer escalates via phone/WhatsApp instead. Dashboard cancels keep their
+ * wider state-machine rights via transitionStatus. */
+export async function cancelOrderByToken(tenantId: string, token: string): Promise<Order> {
+  return withTenant(tenantId, async (tx) => {
+    const [order] = await tx.select().from(orders).where(eq(orders.statusToken, token)).limit(1);
+    if (!order) throw new OrderNotFoundError();
+    if (order.status !== "pending" || !canTransition(order.status, "cancelled", order.fulfillmentType)) {
+      throw new InvalidTransitionError(order.status, "cancelled");
+    }
+    const [updated] = await tx.update(orders)
+      .set({ status: "cancelled", cancelReason: "cancelled_by_customer", updatedAt: new Date() })
+      .where(eq(orders.id, order.id)).returning();
+    await tx.insert(orderStatusEvents).values({
+      tenantId, orderId: order.id, fromStatus: order.status, toStatus: "cancelled",
+      changedByUserId: null, reason: "cancelled_by_customer",
+    });
+    return updated;
+  });
+}
+
 export async function getOrder(tenantId: string, orderId: string): Promise<OrderDetail> {
   return withTenant(tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
