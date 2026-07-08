@@ -5,10 +5,13 @@ import { getActiveBanners } from "@/server/banners/service";
 import { listBranches } from "@/server/branches/service";
 import { hasFeature } from "@/server/entitlements/service";
 import { getBranchOpenState, isBranchOrderableAt } from "@/server/branches/slots";
+import { getWhatsappNumber } from "@/server/tenancy/settings";
 import { BranchSelector } from "./_components/BranchSelector";
 import { StorefrontMenu } from "./_components/StorefrontMenu";
 import { Hero } from "./_components/storefront/Hero";
 import { OpenStateBanner } from "./_components/storefront/OpenStateBanner";
+import { RecentOrderStrip } from "./_components/storefront/RecentOrderStrip";
+import { StorefrontFooter } from "./_components/storefront/StorefrontFooter";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { MarketingHeader } from "./_components/marketing/Header";
 import { MarketingHero } from "./_components/marketing/Hero";
@@ -46,11 +49,12 @@ export default async function Home({
 
     const { branch: branchId } = await searchParams;
 
-    const [banners, menu, branches, orderingEnabled] = await Promise.all([
+    const [banners, menu, branches, orderingEnabled, whatsappNumber] = await Promise.all([
       getActiveBanners(tenant.id),
       getPublishedMenu(tenant.id, branchId),
       listBranches(tenant.id),
       hasFeature(tenant.id, "online_ordering"),
+      getWhatsappNumber(tenant.id),
     ]);
 
     const activeBranch =
@@ -69,6 +73,8 @@ export default async function Home({
         <Hero name={tenant.name} logoUrl={tenant.logoUrl} coverImageUrl={tenant.coverImageUrl} primaryColor={tenant.primaryColor} />
 
         {openState && <OpenStateBanner state={openState} paused={paused} />}
+
+        <RecentOrderStrip slug={slug!} />
 
         {banners.length > 0 && (
           <section className="flex gap-3 overflow-x-auto px-4 py-4 sm:px-6">
@@ -102,6 +108,11 @@ export default async function Home({
             />
           )}
         </section>
+
+        <StorefrontFooter
+          branch={activeBranch ?? branches[0] ?? null}
+          whatsappNumber={whatsappNumber}
+        />
       </main>
     );
   }
