@@ -1,8 +1,23 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import {
+  AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogDescription, AlertDialogFooter,
+  AlertDialogCancel, AlertDialogAction,
+} from "@/components/ui/alert-dialog";
 
-export function StatusPoller({ token, slug, initialStatus, steps, terminal }: { token: string; slug: string; initialStatus: string; steps: string[]; terminal: string[] }) {
+export function StatusPoller({
+  token, slug, initialStatus, steps, terminal, cancellable,
+}: {
+  token: string;
+  slug: string;
+  initialStatus: string;
+  steps: string[];
+  terminal: string[];
+  cancellable: boolean;
+}) {
   const [status, setStatus] = useState(initialStatus);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const terminalRef = useRef(terminal);
 
   useEffect(() => {
@@ -20,21 +35,89 @@ export function StatusPoller({ token, slug, initialStatus, steps, terminal }: { 
     return () => clearInterval(id);
   }, [token, slug, status]);
 
+  async function cancel() {
+    setCancelError(null);
+    try {
+      const res = await fetch(`/api/orders/${token}/cancel?slug=${encodeURIComponent(slug)}`, { method: "POST" });
+      const data = await res.json();
+      if (res.ok) {
+        setStatus(data.status);
+      } else if (data.code === "invalid_transition") {
+        setCancelError("The restaurant has already confirmed this order — contact them directly to change it.");
+        // re-sync to the true status
+        const s = await fetch(`/api/orders/${token}/status?slug=${encodeURIComponent(slug)}`);
+        if (s.ok) setStatus((await s.json()).status);
+      } else {
+        setCancelError(data.error ?? "Couldn't cancel the order.");
+      }
+    } catch {
+      setCancelError("Network error — please try again.");
+    }
+  }
+
   const label = (s: string) => s.replace(/_/g, " ");
   const currentIdx = steps.indexOf(status);
-  const isCancelled = status === "cancelled" || status === "rejected";
+  const failed = status === "cancelled" || status === "rejected";
 
   return (
-    <div style={{ marginTop: 12 }}>
-      {isCancelled ? (
-        <div style={{ color: "#b91c1c", fontWeight: 700, textTransform: "capitalize" }}>{label(status)}</div>
+    <div className="mt-6">
+      {failed ? (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 font-sans font-semibold capitalize text-destructive">
+          {label(status)}
+        </div>
       ) : (
-        steps.map((s, i) => (
-          <div key={s} style={{ opacity: i <= currentIdx ? 1 : 0.4, fontWeight: i === currentIdx ? 700 : 400, textTransform: "capitalize", padding: "2px 0" }}>
-            {i < currentIdx ? "✅ " : i === currentIdx ? "🟣 " : "⚪ "}{label(s)}
-          </div>
-        ))
+        <ol className="space-y-0">
+          {steps.map((s, i) => (
+            <li key={s} className="flex items-start gap-3">
+              <span className="flex flex-col items-center">
+                <span
+                  className={`mt-0.5 size-3.5 rounded-full border-2 ${
+                    i < currentIdx
+                      ? "border-primary bg-primary"
+                      : i === currentIdx
+                        ? "border-primary bg-background"
+                        : "border-border bg-background"
+                  }`}
+                />
+                {i < steps.length - 1 && <span className={`h-5 w-0.5 ${i < currentIdx ? "bg-primary" : "bg-border"}`} />}
+              </span>
+              <span
+                className={`text-sm capitalize ${
+                  i === currentIdx ? "font-sans font-bold text-ink" : i < currentIdx ? "text-ink" : "text-muted-foreground"
+                }`}
+              >
+                {label(s)}
+              </span>
+            </li>
+          ))}
+        </ol>
       )}
+
+      {cancellable && status === "pending" && (
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <button
+              type="button"
+              className="mt-4 rounded-full border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/5"
+            >
+              Cancel order
+            </button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Cancel this order?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This can't be undone. You can only cancel while the restaurant hasn't confirmed yet.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Keep order</AlertDialogCancel>
+              <AlertDialogAction onClick={cancel}>Cancel order</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
+      {cancelError && <p className="mt-2 text-sm text-destructive">{cancelError}</p>}
     </div>
   );
 }
