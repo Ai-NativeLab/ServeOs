@@ -1,15 +1,16 @@
 "use client";
 import { useEffect, useState } from "react";
 import type { PublishedMenu } from "@/server/catalog/schema";
-import { addLine, loadCart, removeLine, cartSubtotal, type Cart } from "./cart";
+import { addLine, loadCart, setLineQuantity, cartSubtotal, type Cart } from "./cart";
 import { CategoryNav } from "./storefront/CategoryNav";
 import { ProductCard, type MenuProduct } from "./storefront/ProductCard";
 import { ProductSheet } from "./storefront/ProductSheet";
 import { CartBar } from "./storefront/CartBar";
 import { BranchPickSheet } from "./storefront/BranchPickSheet";
+import { CartDrawer } from "./storefront/CartDrawer";
 
 export function StorefrontMenu({
-  menu, branchId, slug, orderingEnabled, branches,
+  menu, branchId, slug, orderingEnabled, branches, currency, preorderOnly,
 }: {
   menu: PublishedMenu;
   branchId: string | null;
@@ -70,6 +71,7 @@ export function StorefrontMenu({
                 product={p}
                 interactive={orderingEnabled}
                 onOpen={() => (needsBranchPick ? setBranchPickFor(p.id) : setActiveProduct(p))}
+                currency={currency}
               />
             ))}
           </div>
@@ -83,6 +85,7 @@ export function StorefrontMenu({
             open={activeProduct !== null}
             onOpenChange={(open) => !open && setActiveProduct(null)}
             onAdd={add}
+            currency={currency}
           />
           <BranchPickSheet
             branches={branches}
@@ -90,66 +93,18 @@ export function StorefrontMenu({
             onOpenChange={(o) => !o && setBranchPickFor(null)}
             productId={branchPickFor}
           />
-          <CartBar count={itemCount} subtotal={cartSubtotal(cart.lines)} onOpen={() => setDrawerOpen(true)} />
-          {drawerOpen && (
-            <CartDrawer cart={cart} slug={slug} onClose={() => setDrawerOpen(false)} onRemove={(i) => setCart(removeLine(i))} />
-          )}
+          <CartBar count={itemCount} subtotal={cartSubtotal(cart.lines)} onOpen={() => setDrawerOpen(true)} currency={currency} />
+          <CartDrawer
+            cart={cart}
+            slug={slug}
+            currency={currency}
+            preorderOnly={preorderOnly}
+            open={drawerOpen}
+            onOpenChange={setDrawerOpen}
+            onSetQuantity={(i, q) => setCart(setLineQuantity(i, q))}
+          />
         </>
       )}
     </>
-  );
-}
-
-function CartDrawer({
-  cart, slug, onClose, onRemove,
-}: {
-  cart: Cart;
-  slug: string;
-  onClose: () => void;
-  onRemove: (i: number) => void;
-}) {
-  const subtotal = cartSubtotal(cart.lines);
-  return (
-    <div className="fixed inset-0 z-30 bg-black/40" onClick={onClose}>
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="absolute inset-y-0 right-0 flex w-[340px] max-w-[90vw] flex-col overflow-y-auto bg-card p-4"
-      >
-        <div className="flex items-center justify-between">
-          <h3 className="font-display text-lg font-bold text-ink">Your cart</h3>
-          <button onClick={onClose} className="text-2xl leading-none text-muted-foreground" aria-label="Close cart">
-            ×
-          </button>
-        </div>
-        {cart.lines.length === 0 && <p className="mt-4 text-sm text-muted-foreground">Cart is empty.</p>}
-        {cart.lines.map((l, i) => (
-          <div key={i} className="flex items-center justify-between border-b border-border py-2">
-            <div>
-              <div>{l.quantity}× {l.nameEn}</div>
-              {l.modifierSummaryEn && <div className="text-xs text-muted-foreground">{l.modifierSummaryEn}</div>}
-            </div>
-            <div className="text-right">
-              {(l.unitPrice * l.quantity).toFixed(2)}
-              <br />
-              <button onClick={() => onRemove(i)} className="text-xs text-destructive">
-                Remove
-              </button>
-            </div>
-          </div>
-        ))}
-        <div className="mt-3 flex justify-between font-bold text-ink">
-          <span>Subtotal</span>
-          <span>{subtotal.toFixed(2)}</span>
-        </div>
-        {cart.lines.length > 0 && (
-          <a
-            href={`/checkout?slug=${encodeURIComponent(slug)}${cart.branchId ? `&branch=${cart.branchId}` : ""}`}
-            className="mt-4 block rounded-md bg-primary p-3 text-center font-semibold text-primary-foreground"
-          >
-            Checkout →
-          </a>
-        )}
-      </div>
-    </div>
   );
 }

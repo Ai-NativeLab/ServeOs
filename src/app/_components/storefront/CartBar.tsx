@@ -1,6 +1,7 @@
 "use client";
+import { formatMoney } from "@/lib/money";
 
-export function CartBar({ count, subtotal, onOpen }: { count: number; subtotal: number; onOpen: () => void }) {
+export function CartBar({ count, subtotal, onOpen, currency }: { count: number; subtotal: number; onOpen: () => void; currency: string }) {
   if (count === 0) return null;
   return (
     <button
@@ -11,7 +12,7 @@ export function CartBar({ count, subtotal, onOpen }: { count: number; subtotal: 
       <span className="font-medium">
         View cart · {count} item{count > 1 ? "s" : ""}
       </span>
-      <span className="font-display font-bold">{subtotal.toFixed(2)} →</span>
+      <span className="font-display font-bold">{formatMoney(subtotal, currency)} →</span>
     </button>
   );
 }

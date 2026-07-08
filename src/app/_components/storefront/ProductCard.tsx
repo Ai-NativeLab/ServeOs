@@ -1,14 +1,16 @@
 "use client";
 import type { PublishedMenu } from "@/server/catalog/schema";
+import { formatMoney } from "@/lib/money";
 
 export type MenuProduct = PublishedMenu["categories"][number]["products"][number];
 
 export function ProductCard({
-  product, interactive, onOpen,
+  product, interactive, onOpen, currency,
 }: {
   product: MenuProduct;
   interactive: boolean;
   onOpen: () => void;
+  currency: string;
 }) {
   return (
     <button
@@ -34,7 +36,7 @@ export function ProductCard({
         <span className="font-sans font-semibold text-ink">{product.nameEn}</span>
         <span dir="rtl" className="text-sm text-muted-foreground">{product.nameAr}</span>
         <div className="mt-auto flex items-center justify-between pt-2">
-          <span className="font-display font-bold text-ink">{product.effectivePrice.toFixed(2)}</span>
+          <span className="font-display font-bold text-ink">{formatMoney(product.effectivePrice, currency)}</span>
           {interactive && (
             <span className="inline-flex size-8 items-center justify-center rounded-full bg-primary text-lg leading-none text-primary-foreground">
               +

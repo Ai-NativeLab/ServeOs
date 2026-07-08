@@ -2,15 +2,17 @@
 import { useEffect, useState } from "react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
+import { formatMoney } from "@/lib/money";
 import type { MenuProduct } from "./ProductCard";
 
 export function ProductSheet({
-  product, open, onOpenChange, onAdd,
+  product, open, onOpenChange, onAdd, currency,
 }: {
   product: MenuProduct | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onAdd: (product: MenuProduct, optionIds: string[], quantity: number) => void;
+  currency: string;
 }) {
   const [selected, setSelected] = useState<string[]>([]);
   const [quantity, setQuantity] = useState(1);
@@ -78,7 +80,7 @@ export function ProductSheet({
                       {o.nameEn}
                     </span>
                     {Number(o.priceDelta) > 0 && (
-                      <span className="text-muted-foreground">+{Number(o.priceDelta).toFixed(2)}</span>
+                      <span className="text-muted-foreground">+{formatMoney(Number(o.priceDelta), currency)}</span>
                     )}
                   </label>
                 ))}
@@ -104,7 +106,7 @@ export function ProductSheet({
             }}
             className="flex-1"
           >
-            Add — {total.toFixed(2)}
+            Add — {formatMoney(total, currency)}
           </Button>
         </div>
       </SheetContent>
