@@ -193,9 +193,15 @@ export async function cancelOrderByToken(tenantId: string, token: string): Promi
     if (order.status !== "pending" || !canTransition(order.status, "cancelled", order.fulfillmentType)) {
       throw new InvalidTransitionError(order.status, "cancelled");
     }
+    // The status guard in the WHERE makes the UPDATE itself the serialization
+    // point: under READ COMMITTED it re-evaluates against the latest committed
+    // row version after any blocking writer commits, so exactly one concurrent
+    // writer wins and the loser sees no row.
     const [updated] = await tx.update(orders)
       .set({ status: "cancelled", cancelReason: "cancelled_by_customer", updatedAt: new Date() })
-      .where(eq(orders.id, order.id)).returning();
+      .where(and(eq(orders.id, order.id), eq(orders.status, "pending")))
+      .returning();
+    if (!updated) throw new InvalidTransitionError(order.status, "cancelled");
     await tx.insert(orderStatusEvents).values({
       tenantId, orderId: order.id, fromStatus: order.status, toStatus: "cancelled",
       changedByUserId: null, reason: "cancelled_by_customer",
@@ -257,9 +263,12 @@ export async function transitionStatus(tenantId: string, orderId: string, to: Or
     if (!order) throw new OrderNotFoundError();
     if (!canTransition(order.status, to, order.fulfillmentType)) throw new InvalidTransitionError(order.status, to);
     const setCancel = (to === "cancelled" || to === "rejected") && reason ? { cancelReason: reason } : {};
+    // Guarded UPDATE serializes against concurrent writers (see cancelOrderByToken).
     const [updated] = await tx.update(orders)
       .set({ status: to, updatedAt: new Date(), ...setCancel })
-      .where(eq(orders.id, orderId)).returning();
+      .where(and(eq(orders.id, orderId), eq(orders.status, order.status)))
+      .returning();
+    if (!updated) throw new InvalidTransitionError(order.status, to);
     await tx.insert(orderStatusEvents).values({ tenantId, orderId, fromStatus: order.status, toStatus: to, changedByUserId: userId, reason: reason ?? null });
     return updated;
   });
