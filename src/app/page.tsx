@@ -4,9 +4,11 @@ import { getPublishedMenu } from "@/server/catalog/service";
 import { getActiveBanners } from "@/server/banners/service";
 import { listBranches } from "@/server/branches/service";
 import { hasFeature } from "@/server/entitlements/service";
+import { getBranchOpenState, isBranchOrderableAt } from "@/server/branches/slots";
 import { BranchSelector } from "./_components/BranchSelector";
 import { StorefrontMenu } from "./_components/StorefrontMenu";
 import { Hero } from "./_components/storefront/Hero";
+import { OpenStateBanner } from "./_components/storefront/OpenStateBanner";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { MarketingHeader } from "./_components/marketing/Header";
 import { MarketingHero } from "./_components/marketing/Hero";
@@ -51,9 +53,22 @@ export default async function Home({
       hasFeature(tenant.id, "online_ordering"),
     ]);
 
+    const activeBranch =
+      branches.length === 1 ? branches[0] : (branches.find((b) => b.id === branchId) ?? null);
+    const now = new Date();
+    const openState = activeBranch ? getBranchOpenState(activeBranch, tenant.timezone, now) : null;
+    const paused = activeBranch ? !activeBranch.isActive || !activeBranch.acceptingOrders : false;
+    const branchSummaries = branches.map((b) => ({
+      id: b.id,
+      name: b.name,
+      open: isBranchOrderableAt(b, tenant.timezone, now),
+    }));
+
     return (
       <main className="min-h-screen bg-background">
         <Hero name={tenant.name} logoUrl={tenant.logoUrl} coverImageUrl={tenant.coverImageUrl} primaryColor={tenant.primaryColor} />
+
+        {openState && <OpenStateBanner state={openState} paused={paused} />}
 
         {banners.length > 0 && (
           <section className="flex gap-3 overflow-x-auto px-4 py-4 sm:px-6">
@@ -76,7 +91,15 @@ export default async function Home({
           {menu.categories.length === 0 ? (
             <EmptyState title="Menu coming soon" description="This restaurant hasn't published a menu yet." />
           ) : (
-            <StorefrontMenu menu={menu} branchId={branchId ?? null} slug={slug!} orderingEnabled={orderingEnabled} />
+            <StorefrontMenu
+              menu={menu}
+              branchId={activeBranch?.id ?? null}
+              slug={slug!}
+              orderingEnabled={orderingEnabled && !paused}
+              preorderOnly={openState !== null && !openState.open && !paused}
+              branches={branchSummaries}
+              currency={tenant.currency}
+            />
           )}
         </section>
       </main>

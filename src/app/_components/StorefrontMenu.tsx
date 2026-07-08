@@ -6,18 +6,24 @@ import { CategoryNav } from "./storefront/CategoryNav";
 import { ProductCard, type MenuProduct } from "./storefront/ProductCard";
 import { ProductSheet } from "./storefront/ProductSheet";
 import { CartBar } from "./storefront/CartBar";
+import { BranchPickSheet } from "./storefront/BranchPickSheet";
 
 export function StorefrontMenu({
-  menu, branchId, slug, orderingEnabled,
+  menu, branchId, slug, orderingEnabled, branches,
 }: {
   menu: PublishedMenu;
   branchId: string | null;
   slug: string;
   orderingEnabled: boolean;
+  preorderOnly: boolean;
+  branches: { id: string; name: string; open: boolean }[];
+  currency: string;
 }) {
   const [cart, setCart] = useState<Cart>({ branchId: null, lines: [] });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [activeProduct, setActiveProduct] = useState<MenuProduct | null>(null);
+  const [branchPickFor, setBranchPickFor] = useState<string | null>(null);
+  const needsBranchPick = branchId === null && branches.length > 1;
 
   useEffect(() => {
     const onChange = () => setCart(loadCart());
@@ -25,6 +31,17 @@ export function StorefrontMenu({
     window.addEventListener("serveos-cart-changed", onChange);
     return () => window.removeEventListener("serveos-cart-changed", onChange);
   }, []);
+
+  useEffect(() => {
+    const wanted = new URLSearchParams(window.location.search).get("product");
+    if (!wanted) return;
+    const product = menu.categories.flatMap((c) => c.products).find((p) => p.id === wanted);
+    if (product) setActiveProduct(product);
+    const params = new URLSearchParams(window.location.search);
+    params.delete("product");
+    const qs = params.toString();
+    window.history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
+  }, [menu]);
 
   function add(p: MenuProduct, optionIds: string[], quantity: number) {
     const deltas = p.modifierGroups.flatMap((g) => g.options).filter((o) => optionIds.includes(o.id)).reduce((s, o) => s + Number(o.priceDelta), 0);
@@ -48,7 +65,12 @@ export function StorefrontMenu({
           </h2>
           <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
             {cat.products.map((p) => (
-              <ProductCard key={p.id} product={p} interactive={orderingEnabled} onOpen={() => setActiveProduct(p)} />
+              <ProductCard
+                key={p.id}
+                product={p}
+                interactive={orderingEnabled}
+                onOpen={() => (needsBranchPick ? setBranchPickFor(p.id) : setActiveProduct(p))}
+              />
             ))}
           </div>
         </div>
@@ -61,6 +83,12 @@ export function StorefrontMenu({
             open={activeProduct !== null}
             onOpenChange={(open) => !open && setActiveProduct(null)}
             onAdd={add}
+          />
+          <BranchPickSheet
+            branches={branches}
+            open={branchPickFor !== null}
+            onOpenChange={(o) => !o && setBranchPickFor(null)}
+            productId={branchPickFor}
           />
           <CartBar count={itemCount} subtotal={cartSubtotal(cart.lines)} onOpen={() => setDrawerOpen(true)} />
           {drawerOpen && (
