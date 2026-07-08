@@ -234,11 +234,16 @@ export async function listOrders(tenantId: string, opts: ListOrdersOpts): Promis
 }
 
 /** The compact order shape the dashboard list (SSR + polling endpoint) renders. */
-export type OrderRow = Pick<Order, "id" | "orderNumber" | "customerName" | "fulfillmentType" | "total" | "status" | "paymentStatus">;
+export type OrderRow = Pick<Order, "id" | "orderNumber" | "customerName" | "fulfillmentType" | "total" | "status" | "paymentStatus"> & {
+  scheduledFor: string | null;
+};
 
 export function toOrderRow(o: Order): OrderRow {
   const { id, orderNumber, customerName, fulfillmentType, total, status, paymentStatus } = o;
-  return { id, orderNumber, customerName, fulfillmentType, total, status, paymentStatus };
+  return {
+    id, orderNumber, customerName, fulfillmentType, total, status, paymentStatus,
+    scheduledFor: o.scheduledFor ? o.scheduledFor.toISOString() : null,
+  };
 }
 
 export async function pendingOrderCount(tenantId: string): Promise<number> {
