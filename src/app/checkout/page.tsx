@@ -66,9 +66,11 @@ export default async function CheckoutPage({
             To keep that test passing, "Checkout" is the <h1> here and the tenant
             name is a <p> styled as the brief's h1 was. Task 12 may reconcile this
             further when the full e2e suite is rebuilt. */}
-        <h1 className="eyebrow text-muted-foreground">Checkout</h1>
-        <p className="mt-1 font-display text-2xl font-extrabold text-ink">{tenant.name}</p>
-        <p className="text-sm text-muted-foreground">{branch.name}</p>
+        <header className="border-b border-border pb-4">
+          <h1 className="eyebrow text-muted-foreground">Checkout</h1>
+          <p className="mt-1 font-display text-2xl font-extrabold text-ink">{tenant.name}</p>
+          <p className="text-sm text-muted-foreground">{branch.name}</p>
+        </header>
         <CheckoutForm
           slug={slug}
           branchId={branch.id}

@@ -139,13 +139,13 @@ export function CheckoutForm({
 
   if (branchMismatch) {
     return (
-      <div className="mt-6 rounded-xl border border-border bg-card p-4">
+      <div className="card-lift mt-6 rounded-2xl border border-border bg-card p-5">
         <p className="text-sm text-ink">
-          Your cart was built for a different branch than <strong>{branchName}</strong>.
+          Your cart was built for a different branch than <strong className="font-semibold">{branchName}</strong>.
         </p>
         <a
           href={`/checkout?slug=${encodeURIComponent(slug)}&branch=${cart.branchId}`}
-          className="mt-3 inline-block rounded-full bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground"
+          className="mt-4 inline-flex rounded-full bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-all hover:bg-primary/90 active:scale-[0.98]"
         >
           Continue with your cart's branch →
         </a>
@@ -153,16 +153,16 @@ export function CheckoutForm({
     );
   }
 
-  const pill = (active: boolean) =>
-    `flex-1 rounded-full border px-4 py-2.5 text-sm font-semibold transition-colors ${
-      active ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card text-ink"
+  const segment = (active: boolean) =>
+    `flex-1 rounded-full px-4 py-2 text-sm font-semibold transition-colors disabled:pointer-events-none disabled:opacity-40 ${
+      active ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-ink"
     }`;
 
   return (
     <div className="mt-6 space-y-6">
-      <div className="flex gap-2">
+      <div className="flex gap-1 rounded-full bg-muted p-1">
         {(["delivery", "pickup"] as const).map((f) => (
-          <button key={f} type="button" onClick={() => setFulfillment(f)} className={`${pill(fulfillment === f)} capitalize`}>
+          <button key={f} type="button" onClick={() => setFulfillment(f)} className={`${segment(fulfillment === f)} capitalize`}>
             {f}
           </button>
         ))}
@@ -170,20 +170,27 @@ export function CheckoutForm({
 
       <div>
         <div className="eyebrow text-muted-foreground">When</div>
-        <div className="mt-2 flex gap-2">
-          <button type="button" disabled={!openNow} onClick={() => setWhen("asap")} className={`${pill(when === "asap")} disabled:opacity-50`}>
+        <div className="mt-2 flex gap-1 rounded-full bg-muted p-1">
+          <button type="button" disabled={!openNow} onClick={() => setWhen("asap")} className={segment(when === "asap")}>
             ASAP{!openNow && " (closed)"}
           </button>
-          <button type="button" disabled={slots.length === 0} onClick={() => setWhen("scheduled")} className={`${pill(when === "scheduled")} disabled:opacity-50`}>
+          <button type="button" disabled={slots.length === 0} onClick={() => setWhen("scheduled")} className={segment(when === "scheduled")}>
             Schedule
           </button>
         </div>
         {when === "scheduled" && slots.length > 0 && (
           <div className="mt-3">
             {hasTomorrow && (
-              <div className="flex gap-2">
+              <div className="inline-flex gap-1 rounded-full bg-muted p-1">
                 {(["Today", "Tomorrow"] as const).map((d) => (
-                  <button key={d} type="button" onClick={() => setSlotDay(d)} className={pill(slotDay === d)}>
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => setSlotDay(d)}
+                    className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                      slotDay === d ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-ink"
+                    }`}
+                  >
                     {d}
                   </button>
                 ))}
@@ -196,8 +203,10 @@ export function CheckoutForm({
                   type="button"
                   data-testid="slot"
                   onClick={() => setSlotIso(s.iso)}
-                  className={`rounded-full border px-3 py-1.5 font-mono text-xs transition-colors ${
-                    slotIso === s.iso ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card text-ink"
+                  className={`rounded-full border px-3 py-1.5 font-mono text-xs font-medium transition-colors ${
+                    slotIso === s.iso
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border bg-card text-ink hover:border-primary/40"
                   }`}
                 >
                   {s.label.split(" ")[1]}
@@ -212,7 +221,7 @@ export function CheckoutForm({
         )}
       </div>
 
-      <div className="space-y-3">
+      <div className="card-lift space-y-3 rounded-2xl border border-border bg-card p-4">
         <div className="grid gap-1.5">
           <Label htmlFor="co-name">Name</Label>
           <Input id="co-name" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
@@ -229,7 +238,7 @@ export function CheckoutForm({
                 id="co-area"
                 value={areaId}
                 onChange={(e) => setAreaId(e.target.value)}
-                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
               >
                 <option value="">Select area…</option>
                 {areas.map((a) => (
@@ -252,32 +261,34 @@ export function CheckoutForm({
         </div>
       </div>
 
-      <div className="rounded-xl border border-border bg-card p-4">
-        {cart.lines.map((l, i) => (
-          <div key={i} className="flex justify-between py-1 text-sm">
-            <span className="text-ink">{l.quantity}× {l.nameEn}</span>
-            <span className="font-mono">{formatMoney(l.unitPrice * l.quantity, currency)}</span>
-          </div>
-        ))}
-        <div className="mt-2 space-y-1 border-t border-border pt-2 text-sm">
+      <div className="card-lift rounded-2xl border border-border bg-card p-4">
+        <div className="divide-y divide-border">
+          {cart.lines.map((l, i) => (
+            <div key={i} className="flex justify-between py-2 text-sm">
+              <span className="text-ink">{l.quantity}× {l.nameEn}</span>
+              <span className="font-mono text-ink">{formatMoney(l.unitPrice * l.quantity, currency)}</span>
+            </div>
+          ))}
+        </div>
+        <div className="mt-2 space-y-1.5 border-t border-border pt-3 text-sm">
           <Row label="Subtotal" value={formatMoney(subtotal, currency)} />
           <Row label={`VAT ${vatRate}%`} value={formatMoney(vat, currency)} />
           {fulfillment === "delivery" && <Row label="Delivery" value={formatMoney(deliveryFee, currency)} />}
           <Row label="Total" value={formatMoney(total, currency)} bold />
         </div>
         {minShortfall > 0 && (
-          <p className="mt-2 text-sm font-medium text-destructive">
+          <p className="mt-3 rounded-lg bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive">
             Add {formatMoney(minShortfall, currency)} more to reach this area's minimum order.
           </p>
         )}
       </div>
 
-      {error && <p className="text-sm font-medium text-destructive">{error}</p>}
+      {error && <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive">{error}</p>}
 
       <Button
         onClick={submit}
         disabled={submitting || !name || !phone || minShortfall > 0}
-        className="w-full rounded-full py-6 text-base"
+        className="card-lift w-full rounded-full py-6 text-base transition-all active:scale-[0.98]"
       >
         {submitting ? "Placing…" : `Place order (Cash) — ${formatMoney(total, currency)}`}
       </Button>
