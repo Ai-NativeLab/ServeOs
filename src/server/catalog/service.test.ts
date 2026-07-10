@@ -104,6 +104,15 @@ describe("catalog: products", () => {
     await deleteProduct(t.id, prod.id);
     expect(await listProducts(t.id)).toHaveLength(0);
   });
+
+  it("createProduct defaults isFeatured false; updateProduct can set it", async () => {
+    const t = await makeTenant("feat1");
+    const cat = await createCategory(t.id, { nameEn: "C", nameAr: "ج" });
+    const p = await createProduct(t.id, { nameEn: "X", nameAr: "س", basePrice: "50", categoryId: cat.id });
+    expect(p.isFeatured).toBe(false);
+    const updated = await updateProduct(t.id, p.id, { isFeatured: true });
+    expect(updated.isFeatured).toBe(true);
+  });
 });
 
 describe("catalog: modifier groups and options", () => {

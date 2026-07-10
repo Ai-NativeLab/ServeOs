@@ -25,6 +25,7 @@ export const products = pgTable("products", {
   descriptionAr: text("description_ar"),
   basePrice: numeric("base_price").notNull(),
   imageUrl: text("image_url"),
+  isFeatured: boolean("is_featured").notNull().default(false),
   isPublished: boolean("is_published").notNull().default(false),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -91,6 +92,8 @@ export interface PublishedMenu {
       descriptionAr: string | null;
       effectivePrice: number;
       imageUrl: string | null;
+      isFeatured: boolean;
+      createdAt: string;
       modifierGroups: ModifierGroupWithOptions[];
     }>;
   }>;

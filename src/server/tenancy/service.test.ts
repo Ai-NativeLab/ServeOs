@@ -58,6 +58,13 @@ describe("tenancy service", () => {
     expect(updated.slug).toBe("profile-edit");
     expect(updated.country).toBe("EG");
   });
+
+  it("updateTenantProfile persists tagline and cuisine", async () => {
+    const t = await createTenant({ slug: "tl1", name: "T", country: "EG" });
+    const updated = await updateTenantProfile(t.id, { tagline: "Wood-fired", cuisine: "Italian" });
+    expect(updated.tagline).toBe("Wood-fired");
+    expect(updated.cuisine).toBe("Italian");
+  });
 });
 
 describe("isTenantServable", () => {
