@@ -2,10 +2,12 @@ import { headers } from "next/headers";
 import { getTenantBySlug, isTenantServable } from "@/server/tenancy";
 import { getPublishedMenu } from "@/server/catalog/service";
 import { getActiveBanners } from "@/server/banners/service";
-import { listBranches } from "@/server/branches/service";
+import { listBranches, listDeliveryAreas } from "@/server/branches/service";
 import { hasFeature } from "@/server/entitlements/service";
 import { getBranchOpenState, isBranchOrderableAt } from "@/server/branches/slots";
 import { getWhatsappNumber } from "@/server/tenancy/settings";
+import { getPopularProductIds } from "@/server/catalog/popular";
+import { formatMoney } from "@/lib/money";
 import { BranchSelector } from "./_components/BranchSelector";
 import { StorefrontMenu } from "./_components/StorefrontMenu";
 import { Hero } from "./_components/storefront/Hero";
@@ -49,12 +51,13 @@ export default async function Home({
 
     const { branch: branchId } = await searchParams;
 
-    const [banners, menu, branches, orderingEnabled, whatsappNumber] = await Promise.all([
+    const [banners, menu, branches, orderingEnabled, whatsappNumber, popularSet] = await Promise.all([
       getActiveBanners(tenant.id),
       getPublishedMenu(tenant.id, branchId),
       listBranches(tenant.id),
       hasFeature(tenant.id, "online_ordering"),
       getWhatsappNumber(tenant.id),
+      getPopularProductIds(tenant.id),
     ]);
 
     const activeBranch =
@@ -68,9 +71,48 @@ export default async function Home({
       open: isBranchOrderableAt(b, tenant.timezone, now),
     }));
 
+    const areas = activeBranch ? await listDeliveryAreas(tenant.id, activeBranch.id) : [];
+    const activeAreas = areas.filter((a) => a.isActive);
+
+    const openLabel = !openState
+      ? undefined
+      : openState.open
+        ? `Open${openState.closesAt ? ` · closes ${openState.closesAt}` : ""}`
+        : `Closed${openState.opensAt ? ` · opens ${openState.opensAt}` : ""}`;
+
+    const etaMinutesList = activeAreas
+      .map((a) => a.etaMinutes)
+      .filter((m): m is number => m !== null);
+    const etaLabel =
+      etaMinutesList.length === 0
+        ? undefined
+        : (() => {
+            const min = Math.min(...etaMinutesList);
+            const max = Math.max(...etaMinutesList);
+            return min === max ? `~${min} min` : `~${min}–${max} min`;
+          })();
+
+    const minOrderAmounts = activeAreas
+      .map((a) => Number(a.minOrderAmount))
+      .filter((n) => n > 0);
+    const minOrderLabel =
+      minOrderAmounts.length === 0
+        ? undefined
+        : `Min ${formatMoney(Math.min(...minOrderAmounts), tenant.currency)}`;
+
     return (
       <main className="min-h-screen bg-background">
-        <Hero name={tenant.name} logoUrl={tenant.logoUrl} coverImageUrl={tenant.coverImageUrl} primaryColor={tenant.primaryColor} />
+        <Hero
+          name={tenant.name}
+          logoUrl={tenant.logoUrl}
+          coverImageUrl={tenant.coverImageUrl}
+          tagline={tenant.tagline}
+          cuisine={tenant.cuisine}
+          area={activeBranch?.address ?? null}
+          openLabel={openLabel}
+          etaLabel={etaLabel}
+          minOrderLabel={minOrderLabel}
+        />
 
         {openState && <OpenStateBanner state={openState} paused={paused} />}
 
@@ -105,6 +147,7 @@ export default async function Home({
               preorderOnly={openState !== null && !openState.open && !paused}
               branches={branchSummaries}
               currency={tenant.currency}
+              popularIds={[...popularSet]}
             />
           )}
         </section>

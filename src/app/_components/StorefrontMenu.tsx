@@ -10,7 +10,7 @@ import { BranchPickSheet } from "./storefront/BranchPickSheet";
 import { CartDrawer } from "./storefront/CartDrawer";
 
 export function StorefrontMenu({
-  menu, branchId, slug, orderingEnabled, branches, currency, preorderOnly,
+  menu, branchId, slug, orderingEnabled, branches, currency, preorderOnly, popularIds,
 }: {
   menu: PublishedMenu;
   branchId: string | null;
@@ -19,6 +19,7 @@ export function StorefrontMenu({
   preorderOnly: boolean;
   branches: { id: string; name: string; open: boolean }[];
   currency: string;
+  popularIds: string[];
 }) {
   const [cart, setCart] = useState<Cart>({ branchId: null, lines: [] });
   const [drawerOpen, setDrawerOpen] = useState(false);
