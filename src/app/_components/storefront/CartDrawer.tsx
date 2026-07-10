@@ -17,53 +17,59 @@ export function CartDrawer({
   const subtotal = cartSubtotal(cart.lines);
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent>
-        <SheetHeader>
-          <SheetTitle>Your cart</SheetTitle>
-        </SheetHeader>
+      <SheetContent className="flex flex-col gap-0">
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle>Your cart</SheetTitle>
+          </SheetHeader>
 
-        {cart.lines.length === 0 && (
-          <p className="mt-4 text-sm text-muted-foreground">Cart is empty.</p>
-        )}
+          {cart.lines.length === 0 && (
+            <p className="mt-4 text-sm text-muted-foreground">Cart is empty.</p>
+          )}
 
-        {cart.lines.map((l, i) => (
-          <div key={`${l.productId}-${l.selectedOptionIds.join(".")}`} className="flex items-center justify-between gap-3 border-b border-border py-3">
-            <div className="min-w-0">
-              <div className="truncate font-sans font-semibold text-ink">{l.nameEn}</div>
-              {l.modifierSummaryEn && (
-                <div className="truncate text-xs text-muted-foreground">{l.modifierSummaryEn}</div>
-              )}
-              <div className="mt-1.5 inline-flex items-center gap-3 rounded-full border border-border px-2.5 py-1">
-                <button type="button" onClick={() => onSetQuantity(i, l.quantity - 1)} className="text-base leading-none" aria-label={`Decrease ${l.nameEn}`}>−</button>
-                <span className="w-4 text-center text-sm">{l.quantity}</span>
-                <button type="button" onClick={() => onSetQuantity(i, l.quantity + 1)} className="text-base leading-none" aria-label={`Increase ${l.nameEn}`}>+</button>
+          <div className="mt-2 flex flex-col divide-y divide-border">
+            {cart.lines.map((l, i) => (
+              <div key={`${l.productId}-${l.selectedOptionIds.join(".")}`} className="flex items-center justify-between gap-3 py-4">
+                <div className="min-w-0">
+                  <div className="truncate font-sans font-semibold text-ink">{l.nameEn}</div>
+                  {l.modifierSummaryEn && (
+                    <div className="truncate text-xs text-muted-foreground">{l.modifierSummaryEn}</div>
+                  )}
+                  <div className="mt-2 inline-flex items-center gap-3 rounded-full border border-border px-3 py-1">
+                    <button type="button" onClick={() => onSetQuantity(i, l.quantity - 1)} className="text-base leading-none text-ink transition-colors hover:text-primary" aria-label={`Decrease ${l.nameEn}`}>−</button>
+                    <span className="w-4 text-center text-sm font-medium text-ink">{l.quantity}</span>
+                    <button type="button" onClick={() => onSetQuantity(i, l.quantity + 1)} className="text-base leading-none text-ink transition-colors hover:text-primary" aria-label={`Increase ${l.nameEn}`}>+</button>
+                  </div>
+                </div>
+                <div className="shrink-0 text-right font-display font-bold text-ink">
+                  {formatMoney(l.unitPrice * l.quantity, currency)}
+                </div>
               </div>
-            </div>
-            <div className="shrink-0 text-right font-display font-bold text-ink">
-              {formatMoney(l.unitPrice * l.quantity, currency)}
-            </div>
+            ))}
           </div>
-        ))}
-
-        <div className="mt-4 flex justify-between font-display font-bold text-ink">
-          <span>Subtotal</span>
-          <span>{formatMoney(subtotal, currency)}</span>
         </div>
 
-        {preorderOnly && cart.lines.length > 0 && (
-          <p className="mt-2 text-xs text-muted-foreground">
-            The restaurant is closed right now — you'll pick a time at checkout.
-          </p>
-        )}
+        <div className="-mx-6 -mb-6 mt-4 flex-none border-t border-border bg-card px-6 py-4">
+          <div className="flex justify-between font-display font-bold text-ink">
+            <span>Subtotal</span>
+            <span>{formatMoney(subtotal, currency)}</span>
+          </div>
 
-        {cart.lines.length > 0 && (
-          <a
-            href={`/checkout?slug=${encodeURIComponent(slug)}${cart.branchId ? `&branch=${cart.branchId}` : ""}`}
-            className="mt-4 block rounded-full bg-primary p-3 text-center font-sans font-semibold text-primary-foreground"
-          >
-            Checkout →
-          </a>
-        )}
+          {preorderOnly && cart.lines.length > 0 && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              The restaurant is closed right now — you'll pick a time at checkout.
+            </p>
+          )}
+
+          {cart.lines.length > 0 && (
+            <a
+              href={`/checkout?slug=${encodeURIComponent(slug)}${cart.branchId ? `&branch=${cart.branchId}` : ""}`}
+              className="card-lift mt-4 block rounded-full bg-primary p-3.5 text-center font-sans font-semibold text-primary-foreground transition-all hover:bg-primary/90 active:scale-[0.98]"
+            >
+              Checkout →
+            </a>
+          )}
+        </div>
       </SheetContent>
     </Sheet>
   );
