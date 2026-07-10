@@ -58,6 +58,8 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+  --shadow-card: 0 4px 16px -10px rgba(26, 15, 10, 0.28);
+  --shadow-card-hover: 0 12px 30px -14px rgba(26, 15, 10, 0.38);
 }
 
 :root {
@@ -113,6 +115,75 @@
   font-weight: 500;
   letter-spacing: 0.16em;
   text-transform: uppercase;
+}
+
+@utility card-lift {
+  box-shadow: var(--shadow-card);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .card-lift {
+    transition: box-shadow 0.2s ease, transform 0.2s ease;
+  }
+}
+
+@utility sf-img {
+  object-fit: cover;
+  border-radius: var(--radius);
+  box-shadow: inset 0 0 0 1px var(--border);
+  background: var(--secondary);
+}
+
+@utility sf-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(6px);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 100px;
+}
+@utility sf-chip-solid {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--card);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 100px;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+@utility sf-badge {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 500;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  padding: 3px 8px;
+  border-radius: 100px;
+}
+@utility sf-badge-soft {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 500;
+  background: var(--accent);
+  color: #a2331c;
+  padding: 3px 8px;
+  border-radius: 100px;
 }
 
 /* Marketing hero decorative animations (motion-safe only — see MarketingHero.tsx) */
