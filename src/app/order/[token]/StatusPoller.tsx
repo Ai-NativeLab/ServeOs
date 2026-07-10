@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { Check } from "lucide-react";
 import {
   AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader,
   AlertDialogTitle, AlertDialogDescription, AlertDialogFooter,
@@ -62,35 +63,53 @@ export function StatusPoller({
   return (
     <div className="mt-6">
       {failed ? (
-        <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 font-sans font-semibold capitalize text-destructive">
+        <div className="card-lift rounded-2xl border border-destructive/30 bg-destructive/5 px-4 py-3.5 text-center font-sans font-semibold capitalize text-destructive">
           {label(status)}
         </div>
       ) : (
-        <ol className="space-y-0">
-          {steps.map((s, i) => (
-            <li key={s} className="flex items-start gap-3">
-              <span className="flex flex-col items-center">
-                <span
-                  className={`mt-0.5 size-3.5 rounded-full border-2 ${
-                    i < currentIdx
-                      ? "border-primary bg-primary"
-                      : i === currentIdx
-                        ? "border-primary bg-background"
-                        : "border-border bg-background"
-                  }`}
-                />
-                {i < steps.length - 1 && <span className={`h-5 w-0.5 ${i < currentIdx ? "bg-primary" : "bg-border"}`} />}
-              </span>
-              <span
-                className={`text-sm capitalize ${
-                  i === currentIdx ? "font-sans font-bold text-ink" : i < currentIdx ? "text-ink" : "text-muted-foreground"
-                }`}
-              >
-                {label(s)}
-              </span>
-            </li>
-          ))}
-        </ol>
+        <div className="card-lift rounded-2xl border border-border bg-card p-5">
+          <ol className="space-y-0">
+            {steps.map((s, i) => {
+              const isDone = i < currentIdx;
+              const isCurrent = i === currentIdx;
+              const isLast = i === steps.length - 1;
+              return (
+                <li key={s} className="relative flex gap-3 pb-6 last:pb-0">
+                  {!isLast && (
+                    <span
+                      aria-hidden
+                      className={`absolute left-[9px] top-5 -bottom-1 w-0.5 transition-colors ${
+                        isDone ? "bg-primary" : "bg-border"
+                      }`}
+                    />
+                  )}
+                  <span
+                    className={`relative z-10 mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors ${
+                      isDone
+                        ? "border-primary bg-primary"
+                        : isCurrent
+                          ? "border-primary bg-background ring-4 ring-primary/15"
+                          : "border-border bg-background"
+                    }`}
+                  >
+                    {isDone ? (
+                      <Check className="size-3 text-primary-foreground" strokeWidth={3} />
+                    ) : isCurrent ? (
+                      <span className="size-2 rounded-full bg-primary" />
+                    ) : null}
+                  </span>
+                  <span
+                    className={`text-sm capitalize ${
+                      isCurrent ? "font-display font-bold text-ink" : isDone ? "text-ink" : "text-muted-foreground"
+                    }`}
+                  >
+                    {label(s)}
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
       )}
 
       {cancellable && status === "pending" && (

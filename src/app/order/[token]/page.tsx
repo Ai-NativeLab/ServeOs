@@ -1,4 +1,5 @@
 import { headers } from "next/headers";
+import { Clock, MessageCircle } from "lucide-react";
 import { getTenantBySlug } from "@/server/tenancy";
 import { getOrderByToken } from "@/server/ordering/service";
 import { getWhatsappNumber } from "@/server/tenancy/settings";
@@ -49,15 +50,24 @@ export default async function OrderStatusPage({ params }: { params: Promise<{ to
   return (
     <main className="min-h-screen bg-background px-4 py-8 sm:px-6">
       <div className="mx-auto max-w-md">
-        <div className="eyebrow text-muted-foreground">{tenant.name}</div>
-        <h1 className="mt-1 font-display text-2xl font-extrabold text-ink">Order #{order.orderNumber}</h1>
-        <p className="text-sm text-muted-foreground">
-          Placed {formatDayTime(order.placedAt, tenant.timezone)}
-        </p>
+        <header className="border-b border-border pb-5">
+          <div className="eyebrow text-muted-foreground">{tenant.name}</div>
+          <h1 className="mt-1 font-display text-3xl font-extrabold tracking-tight text-ink">
+            Order #{order.orderNumber}
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Placed {formatDayTime(order.placedAt, tenant.timezone)}
+          </p>
+        </header>
 
         {order.scheduledFor && (
-          <div className="mt-3 rounded-xl bg-primary/10 px-4 py-2.5 text-sm font-semibold text-ink">
-            Scheduled for {formatDayTime(order.scheduledFor, tenant.timezone)}
+          <div className="mt-4 flex items-center gap-3 rounded-2xl border border-primary/15 bg-primary/10 px-4 py-3">
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
+              <Clock className="size-4" strokeWidth={1.75} />
+            </span>
+            <p className="text-sm font-semibold text-ink">
+              Scheduled for {formatDayTime(order.scheduledFor, tenant.timezone)}
+            </p>
           </div>
         )}
 
@@ -70,9 +80,9 @@ export default async function OrderStatusPage({ params }: { params: Promise<{ to
           cancellable={order.status === "pending"}
         />
 
-        <section className="mt-6 rounded-xl border border-border bg-card p-4">
+        <section className="card-lift mt-6 rounded-2xl border border-border bg-card p-5">
           <div className="eyebrow text-muted-foreground">Receipt</div>
-          <div className="mt-2 space-y-2">
+          <div className="mt-3 space-y-2">
             {order.items.map((it) => (
               <div key={it.id} className="flex justify-between gap-3 text-sm">
                 <div>
@@ -87,7 +97,7 @@ export default async function OrderStatusPage({ params }: { params: Promise<{ to
               </div>
             ))}
           </div>
-          <div className="mt-3 space-y-1 border-t border-border pt-2 text-sm text-muted-foreground">
+          <div className="mt-3 space-y-1.5 border-t border-border pt-3 text-sm text-muted-foreground">
             <div className="flex justify-between"><span>Subtotal</span><span className="font-mono">{formatMoney(Number(order.subtotal), currency)}</span></div>
             <div className="flex justify-between"><span>VAT {Number(order.vatRateSnapshot)}%</span><span className="font-mono">{formatMoney(Number(order.vatAmount), currency)}</span></div>
             {order.fulfillmentType === "delivery" && (
@@ -99,18 +109,18 @@ export default async function OrderStatusPage({ params }: { params: Promise<{ to
           </div>
         </section>
 
-        <section className="mt-4 rounded-xl border border-border bg-card p-4 text-sm">
+        <section className="card-lift mt-4 rounded-2xl border border-border bg-card p-5 text-sm">
           <div className="eyebrow text-muted-foreground">
             {order.fulfillmentType === "delivery" ? "Delivery" : "Pickup"}
           </div>
           {order.fulfillmentType === "delivery" ? (
-            <p className="mt-1 text-ink">
+            <p className="mt-1.5 text-ink">
               {order.deliveryAreaNameSnapshot}
               {eta ? ` · ~${eta} min` : ""}
               {order.deliveryAddressText && <><br /><span className="text-muted-foreground">{order.deliveryAddressText}</span></>}
             </p>
           ) : (
-            <p className="mt-1 text-ink">
+            <p className="mt-1.5 text-ink">
               {branch?.name ?? "Branch"}
               {branch?.address && <><br /><span className="text-muted-foreground">{branch.address}</span></>}
             </p>
@@ -131,8 +141,9 @@ export default async function OrderStatusPage({ params }: { params: Promise<{ to
             )}
             target="_blank"
             rel="noopener noreferrer"
-            className="mt-4 inline-block rounded-full bg-[#25D366] px-5 py-2.5 text-sm font-semibold text-white"
+            className="card-lift mt-5 inline-flex items-center gap-2 rounded-full bg-[#25D366] px-5 py-2.5 text-sm font-semibold text-white transition-all hover:brightness-95 active:scale-[0.98]"
           >
+            <MessageCircle className="size-4" strokeWidth={2} />
             Send order via WhatsApp
           </a>
         )}
