@@ -8,6 +8,9 @@ import { ProductSheet } from "./storefront/ProductSheet";
 import { CartBar } from "./storefront/CartBar";
 import { BranchPickSheet } from "./storefront/BranchPickSheet";
 import { CartDrawer } from "./storefront/CartDrawer";
+import { SectionHeader } from "./storefront/SectionHeader";
+import { FeaturedCard } from "./storefront/FeaturedCard";
+import { isNewProduct } from "@/lib/product-badges";
 
 export function StorefrontMenu({
   menu, branchId, slug, orderingEnabled, branches, currency, preorderOnly, popularIds,
@@ -60,24 +63,37 @@ export function StorefrontMenu({
     <>
       <CategoryNav categories={menu.categories.map((c) => ({ id: c.id, nameEn: c.nameEn }))} />
 
-      {menu.categories.map((cat) => (
-        <div key={cat.id} id={`category-${cat.id}`} className="scroll-mt-32 py-6">
-          <h2 className="font-display text-xl font-bold text-ink">
-            {cat.nameEn} <span className="font-sans text-base font-normal text-muted-foreground">/ {cat.nameAr}</span>
-          </h2>
-          <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-            {cat.products.map((p) => (
-              <ProductCard
-                key={p.id}
-                product={p}
-                interactive={orderingEnabled}
-                onOpen={() => (needsBranchPick ? setBranchPickFor(p.id) : setActiveProduct(p))}
-                currency={currency}
-              />
-            ))}
+      {menu.categories.map((cat) => {
+        const featured = cat.products.find((p) => p.isFeatured) ?? null;
+        const rest = cat.products.filter((p) => p.id !== featured?.id);
+        return (
+          <div key={cat.id} id={`category-${cat.id}`} className="scroll-mt-32 py-6">
+            <SectionHeader eyebrow={cat.nameAr} title={cat.nameEn} count={cat.products.length} />
+            {featured && (
+              <div className="mt-4">
+                <FeaturedCard
+                  product={featured}
+                  currency={currency}
+                  interactive={orderingEnabled}
+                  onOpen={() => (needsBranchPick ? setBranchPickFor(featured.id) : setActiveProduct(featured))}
+                />
+              </div>
+            )}
+            <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+              {rest.map((p) => (
+                <ProductCard
+                  key={p.id}
+                  product={p}
+                  interactive={orderingEnabled}
+                  onOpen={() => (needsBranchPick ? setBranchPickFor(p.id) : setActiveProduct(p))}
+                  currency={currency}
+                  badge={popularIds.includes(p.id) ? "popular" : isNewProduct(p.createdAt) ? "new" : null}
+                />
+              ))}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
 
       {orderingEnabled && (
         <>
