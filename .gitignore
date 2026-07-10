@@ -49,3 +49,6 @@ next-env.d.ts
 /.adham-ai/
 
 .worktrees/
+
+# Superpowers scratch (SDD ledger, brainstorm mockups)
+.superpowers/
