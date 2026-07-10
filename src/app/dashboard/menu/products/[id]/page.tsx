@@ -61,6 +61,10 @@ export default async function EditProductPage({ params }: { params: Promise<{ id
             <input type="checkbox" name="isPublished" value="true" defaultChecked={product.isPublished} className="size-4 accent-(--color-primary)" />
             Published — visible on your storefront
           </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" name="isFeatured" value="true" defaultChecked={product.isFeatured} className="size-4 accent-(--color-primary)" />
+            Featured — highlighted on your storefront
+          </label>
           <div><SubmitButton>Save changes</SubmitButton></div>
         </form>
       </Card>

@@ -27,6 +27,14 @@ export default async function BusinessProfilePage() {
             <Input id="name" name="name" defaultValue={tenant.name} required />
           </div>
           <div className="grid gap-1.5">
+            <Label htmlFor="tagline">Tagline</Label>
+            <Input id="tagline" name="tagline" defaultValue={tenant.tagline ?? ""} />
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="cuisine">Cuisine</Label>
+            <Input id="cuisine" name="cuisine" defaultValue={tenant.cuisine ?? ""} />
+          </div>
+          <div className="grid gap-1.5">
             <Label>Logo</Label>
             <ImageInput name="logoUrl" type="logo" defaultValue={tenant.logoUrl} aspect="square" />
           </div>

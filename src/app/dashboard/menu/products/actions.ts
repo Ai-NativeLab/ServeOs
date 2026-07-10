@@ -31,6 +31,7 @@ export async function createProductAction(formData: FormData) {
 export async function updateProductAction(productId: string, formData: FormData) {
   const { tenantId } = await requireMenuPermission();
   const isPublished = formData.get("isPublished") === "true";
+  const isFeatured = formData.get("isFeatured") === "true";
   await updateProduct(tenantId, productId, {
     nameEn: String(formData.get("nameEn")),
     nameAr: String(formData.get("nameAr")),
@@ -39,6 +40,7 @@ export async function updateProductAction(productId: string, formData: FormData)
     descriptionAr: formData.get("descriptionAr") ? String(formData.get("descriptionAr")) : undefined,
     imageUrl: formData.get("imageUrl") ? String(formData.get("imageUrl")) : null,
     isPublished,
+    isFeatured,
   });
   revalidatePath("/dashboard/menu");
   redirect(`/dashboard/menu/products/${productId}`);
