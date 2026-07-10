@@ -177,7 +177,7 @@ async function main() {
           }
           if (["Pizza", "Pasta", "Drinks"].includes(entry.cat.nameEn)) {
             const g = await upsertModifierGroup(romaTenant.id, p.id, { nameEn: "Size", nameAr: "الحجم", required: true, minSelections: 1, maxSelections: 1 });
-            await upsertModifierOption(romaTenant.id, g.id, { nameEn: "Regular", nameAr: "عادي", priceDelta: "0" });
+            await upsertModifierOption(romaTenant.id, g.id, { nameEn: "Regular", nameAr: "عادي", priceDelta: "0", isDefault: true });
             await upsertModifierOption(romaTenant.id, g.id, { nameEn: "Large", nameAr: "كبير", priceDelta: "35" });
           }
         }
