@@ -194,6 +194,7 @@ export function CheckoutForm({
                 <button
                   key={s.iso}
                   type="button"
+                  data-testid="slot"
                   onClick={() => setSlotIso(s.iso)}
                   className={`rounded-full border px-3 py-1.5 font-mono text-xs transition-colors ${
                     slotIso === s.iso ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card text-ink"
