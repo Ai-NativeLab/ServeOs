@@ -24,10 +24,10 @@ export function RecentOrderStrip({ slug }: { slug: string }) {
         <a
           key={o.token}
           href={`/order/${o.token}`}
-          className="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-2.5 text-sm shadow-sm transition-shadow hover:shadow-md"
+          className="card-lift flex items-center justify-between gap-3 rounded-full border border-border bg-card px-4 py-2.5 text-sm hover:shadow-[var(--shadow-card-hover)]"
         >
           <span className="font-sans font-semibold text-ink">Your order · #{o.orderNumber}</span>
-          <span className="text-muted-foreground">{o.status ?? "view"} →</span>
+          <span className="capitalize text-muted-foreground">{(o.status ?? "view").replace(/_/g, " ")} →</span>
         </a>
       ))}
     </div>
