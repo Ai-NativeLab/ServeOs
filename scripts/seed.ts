@@ -231,7 +231,7 @@ async function main() {
 
   // ── Sample orders (a couple across statuses) ────────────────────────────────
   {
-    const { listProducts } = await import("../src/server/catalog/service");
+    const { listProducts, getProduct } = await import("../src/server/catalog/service");
     const { listBranches, listDeliveryAreas } = await import("../src/server/branches/service");
     const { placeOrder, transitionStatus, listOrders } = await import("../src/server/ordering/service");
 
@@ -245,12 +245,20 @@ async function main() {
       const now = new Date(); now.setHours(14, 0, 0, 0);
       const areas = await listDeliveryAreas(romaTenant.id, branch.id);
 
+      // Products may carry required modifier groups (e.g. Size). Select each
+      // required group's default (or first) option so placeOrder validation passes.
+      const full = await getProduct(romaTenant.id, published.id);
+      const requiredDefaults = full.modifierGroups
+        .filter((g) => g.required)
+        .map((g) => (g.options.find((o) => o.isDefault) ?? g.options[0])?.id)
+        .filter((id): id is string => Boolean(id));
+
       if (areas[0]) {
         const o1 = await placeOrder(romaTenant.id, {
           branchId: branch.id, fulfillmentType: "delivery",
           customerName: "Ahmed Samir", customerPhone: "01000000001",
           areaId: areas[0].id, addressText: "12 St., Apt 4",
-          lines: [{ productId: published.id, quantity: 2, selectedOptionIds: [] }],
+          lines: [{ productId: published.id, quantity: 2, selectedOptionIds: requiredDefaults }],
           now,
         });
         await transitionStatus(romaTenant.id, o1.orderId, "confirmed", admin.id);
@@ -261,7 +269,7 @@ async function main() {
       await placeOrder(romaTenant.id, {
         branchId: branch.id, fulfillmentType: "pickup",
         customerName: "Sara Hassan", customerPhone: "01000000002",
-        lines: [{ productId: published.id, quantity: 1, selectedOptionIds: [] }],
+        lines: [{ productId: published.id, quantity: 1, selectedOptionIds: requiredDefaults }],
         now,
       });
     }
