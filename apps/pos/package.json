@@ -9,9 +9,9 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run"
   },
+  "//": "better-sqlite3 is parked with the offline store in electron/_offline; kept optional so a failed native build never blocks `npm install`. (Note lives at top level — npm rejects a '//' comment key inside a dependencies object with EINVALIDPACKAGENAME, which breaks install/CI and Vercel deploys.)",
   "dependencies": {},
   "optionalDependencies": {
-    "//": "Parked with the offline store in electron/_offline. Optional so a failed native build never blocks `npm install`.",
     "better-sqlite3": "^11.8.0"
   },
   "devDependencies": {
