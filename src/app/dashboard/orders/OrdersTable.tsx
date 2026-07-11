@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Bike, ShoppingBag } from "lucide-react";
 import type { OrderRow } from "@/server/ordering/service";
 import { cn } from "@/lib/utils";
+import { formatDayTime } from "@/lib/datetime";
 import { StatusBadge } from "@/components/dashboard/StatusBadge";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -38,7 +39,16 @@ const EMPTY_STATE_COPY: Record<string, { title: string; description: string }> =
   },
 };
 
-export function OrdersTable({ initial }: { initial: OrderRow[] }) {
+function ScheduledChip({ iso, timezone }: { iso: string | null; timezone: string }) {
+  if (!iso) return null;
+  return (
+    <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-ink">
+      Scheduled · {formatDayTime(new Date(iso), timezone)}
+    </span>
+  );
+}
+
+export function OrdersTable({ initial, timezone }: { initial: OrderRow[]; timezone: string }) {
   const [rows, setRows] = useState<OrderRow[]>(initial);
   const [filter, setFilter] = useState<string>("all");
   const router = useRouter();
@@ -103,6 +113,7 @@ export function OrdersTable({ initial }: { initial: OrderRow[] }) {
                       {r.paymentStatus}
                     </span>
                   </div>
+                  <ScheduledChip iso={r.scheduledFor} timezone={timezone} />
                 </Link>
               </li>
             ))}
@@ -139,9 +150,12 @@ export function OrdersTable({ initial }: { initial: OrderRow[] }) {
                     </TableCell>
                     <TableCell>{r.customerName}</TableCell>
                     <TableCell>
-                      {r.fulfillmentType === "delivery"
-                        ? <span className="inline-flex items-center gap-1.5 text-sm"><Bike className="size-4" strokeWidth={1.5} />Delivery</span>
-                        : <span className="inline-flex items-center gap-1.5 text-sm"><ShoppingBag className="size-4" strokeWidth={1.5} />Pickup</span>}
+                      <div className="space-y-0.5">
+                        {r.fulfillmentType === "delivery"
+                          ? <span className="inline-flex items-center gap-1.5 text-sm"><Bike className="size-4" strokeWidth={1.5} />Delivery</span>
+                          : <span className="inline-flex items-center gap-1.5 text-sm"><ShoppingBag className="size-4" strokeWidth={1.5} />Pickup</span>}
+                        <ScheduledChip iso={r.scheduledFor} timezone={timezone} />
+                      </div>
                     </TableCell>
                     <TableCell className="font-mono text-sm text-right">{Number(r.total).toFixed(2)}</TableCell>
                     <TableCell>

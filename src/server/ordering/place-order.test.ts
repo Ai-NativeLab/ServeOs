@@ -122,4 +122,80 @@ describe("placeOrder", () => {
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(BranchNotAcceptingOrdersError);
   });
+
+  it("persists a valid scheduledFor", async () => {
+    const { t, branch, pizza } = await setup("po-sched1");
+    const scheduled = new Date(Date.now() + 2 * 60 * 60 * 1000); // +2h
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      scheduledFor: scheduled.toISOString(),
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const { getOrderByToken } = await import("./service");
+    const order = await getOrderByToken(t.id, res.statusToken);
+    expect(order?.scheduledFor).not.toBeNull();
+    expect(Math.abs(order!.scheduledFor!.getTime() - scheduled.getTime())).toBeLessThan(1000);
+  });
+
+  it("rejects a scheduledFor under the minimum lead", async () => {
+    const { t, branch, pizza } = await setup("po-sched2");
+    const { InvalidScheduleError } = await import("./errors");
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      scheduledFor: new Date(Date.now() + 10 * 60 * 1000).toISOString(), // +10min < 30min lead
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(InvalidScheduleError);
+  });
+
+  it("rejects a scheduledFor beyond today+tomorrow", async () => {
+    const { t, branch, pizza } = await setup("po-sched3");
+    const { InvalidScheduleError } = await import("./errors");
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      scheduledFor: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(), // +3 days
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(InvalidScheduleError);
+  });
+
+  it("rejects an unparseable scheduledFor", async () => {
+    const { t, branch, pizza } = await setup("po-sched4");
+    const { InvalidScheduleError } = await import("./errors");
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      scheduledFor: "not-a-date",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(InvalidScheduleError);
+  });
+
+  it("rejects a scheduledFor when the branch is closed at that time, but allows a pre-order while closed now", async () => {
+    const { t, branch, pizza } = await setup("po-sched5");
+    const { InvalidScheduleError } = await import("./errors");
+    // Open 10:00–23:00 every day (tenant tz Africa/Cairo, the default).
+    await updateBranchOrdering(t.id, branch.id, {
+      acceptingOrders: true,
+      openingHours: Array.from({ length: 7 }, (_, day) => ({ day, open: "10:00", close: "23:00", closed: false })),
+    });
+    const { listSlots } = await import("@/server/branches/slots");
+    const { getBranch } = await import("@/server/branches/service");
+    const b = await getBranch(t.id, branch.id);
+    const slots = listSlots(b, "Africa/Cairo", new Date());
+    // A valid slot exists regardless of current wall-clock (today or tomorrow):
+    expect(slots.length).toBeGreaterThan(0);
+    const ok = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      scheduledFor: slots[0].toISOString(),
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    expect(ok.orderNumber).toBe(1);
+    // Tomorrow 01:00 UTC = 04:00 Cairo — inside the horizon, outside the
+    // 10:00–23:00 hours. (setUTCDate(getUTCDate()+1) rolls months correctly.)
+    const closedAt = new Date();
+    closedAt.setUTCDate(closedAt.getUTCDate() + 1);
+    closedAt.setUTCHours(1, 0, 0, 0);
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      scheduledFor: closedAt.toISOString(),
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(InvalidScheduleError);
+  });
 });

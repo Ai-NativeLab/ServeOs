@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowLeft, Bike, ShoppingBag, StickyNote } from "lucide-react";
+import { ArrowLeft, Bike, Clock, ShoppingBag, StickyNote } from "lucide-react";
 import { requireOrdersPermission } from "../../orders-permission";
 import { getOrder } from "@/server/ordering/service";
 import { nextStatuses } from "@/server/ordering/state-machine";
@@ -11,6 +11,8 @@ import { ConfirmActionButton } from "@/components/dashboard/ConfirmActionButton"
 import { SubmitButton } from "@/components/dashboard/SubmitButton";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { formatDayTime } from "@/lib/datetime";
+import { getTenantById } from "@/server/tenancy";
 
 const STATUS_LABEL: Record<string, string> = {
   confirmed: "Confirm", preparing: "Start preparing", ready: "Mark ready",
@@ -22,6 +24,7 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
   const { id } = await params;
   const { tenantId } = await requireOrdersPermission();
   const order = await getOrder(tenantId, id);
+  const tenant = await getTenantById(tenantId);
   const actions = nextStatuses(order.status, order.fulfillmentType);
   const advance = actions.filter((to) => to !== "cancelled" && to !== "rejected");
   const danger = actions.filter((to) => to === "cancelled" || to === "rejected");
@@ -48,6 +51,12 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
                 ? <><Bike className="size-4" strokeWidth={1.5} />Delivery — {order.deliveryAreaNameSnapshot ?? ""}{order.deliveryAddressText ? `, ${order.deliveryAddressText}` : ""}</>
                 : <><ShoppingBag className="size-4" strokeWidth={1.5} />Pickup</>}
             </div>
+            {order.scheduledFor && (
+              <div className="flex items-center gap-2 text-sm font-medium text-ink">
+                <Clock className="size-4" strokeWidth={1.5} />
+                Scheduled — {formatDayTime(order.scheduledFor, tenant?.timezone ?? "Africa/Cairo")}
+              </div>
+            )}
             <div>
               Cash ·{" "}
               <span className={cn("font-medium", order.paymentStatus === "paid" ? "text-status-ready-fg" : "text-status-danger-fg")}>

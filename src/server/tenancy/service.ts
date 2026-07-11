@@ -17,7 +17,7 @@ export async function createTenant(
 }
 
 export type UpdateTenantProfileInput = Partial<
-  Pick<Tenant, "name" | "logoUrl" | "coverImageUrl" | "primaryColor" | "defaultLocale" | "timezone">
+  Pick<Tenant, "name" | "logoUrl" | "coverImageUrl" | "primaryColor" | "defaultLocale" | "timezone" | "tagline" | "cuisine">
 >;
 
 /** tenants is a control table → plain db, same as createTenant. */

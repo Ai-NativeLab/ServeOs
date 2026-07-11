@@ -35,6 +35,7 @@ export const orders = pgTable("orders", {
   deliveryFee: numeric("delivery_fee").notNull().default("0"),
   total: numeric("total").notNull(),
   statusToken: text("status_token").notNull().unique(),
+  scheduledFor: timestamp("scheduled_for", { withTimezone: true }),
   cancelReason: text("cancel_reason"),
   placedAt: timestamp("placed_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

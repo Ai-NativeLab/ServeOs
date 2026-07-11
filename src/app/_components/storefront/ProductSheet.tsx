@@ -2,15 +2,17 @@
 import { useEffect, useState } from "react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
+import { formatMoney } from "@/lib/money";
 import type { MenuProduct } from "./ProductCard";
 
 export function ProductSheet({
-  product, open, onOpenChange, onAdd,
+  product, open, onOpenChange, onAdd, currency,
 }: {
   product: MenuProduct | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onAdd: (product: MenuProduct, optionIds: string[], quantity: number) => void;
+  currency: string;
 }) {
   const [selected, setSelected] = useState<string[]>([]);
   const [quantity, setQuantity] = useState(1);
@@ -43,57 +45,80 @@ export function ProductSheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent>
+      <SheetContent className="flex flex-col gap-0">
         {product.imageUrl && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={product.imageUrl}
-            alt={product.nameEn}
-            className="-mx-6 -mt-6 mb-2 h-48 w-[calc(100%+3rem)] object-cover sm:rounded-t-2xl"
-          />
+          <div className="relative mb-4 aspect-[16/10] w-full flex-none">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={product.imageUrl}
+              alt={product.nameEn}
+              loading="lazy"
+              width={800}
+              height={500}
+              className="sf-img h-full w-full"
+            />
+          </div>
         )}
-        <SheetHeader>
-          <SheetTitle>{product.nameEn}</SheetTitle>
-          {product.descriptionEn && <SheetDescription>{product.descriptionEn}</SheetDescription>}
-        </SheetHeader>
 
-        {product.modifierGroups.map((g) => {
-          const ids = g.options.map((o) => o.id);
-          return (
-            <div key={g.id} className="mt-2">
-              <div className="eyebrow text-muted-foreground">
-                {g.nameEn}
-                {g.required ? " · required" : ""}
-              </div>
-              <div className="mt-2 flex flex-col gap-2">
-                {g.options.map((o) => (
-                  <label key={o.id} className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm">
-                    <span className="flex items-center gap-2">
-                      <input
-                        type={g.maxSelections === 1 ? "radio" : "checkbox"}
-                        name={`${product.id}-${g.id}`}
-                        checked={selected.includes(o.id)}
-                        onChange={() => toggle(g.maxSelections, ids, o.id)}
-                      />
-                      {o.nameEn}
-                    </span>
-                    {Number(o.priceDelta) > 0 && (
-                      <span className="text-muted-foreground">+{Number(o.priceDelta).toFixed(2)}</span>
-                    )}
-                  </label>
-                ))}
-              </div>
-            </div>
-          );
-        })}
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle className="text-xl sm:text-2xl">{product.nameEn}</SheetTitle>
+            {product.descriptionEn && <SheetDescription>{product.descriptionEn}</SheetDescription>}
+          </SheetHeader>
 
-        <div className="mt-4 flex items-center gap-3">
-          <div className="inline-flex items-center gap-3 rounded-full border border-border px-3 py-1.5">
-            <button type="button" onClick={() => setQuantity((q) => Math.max(1, q - 1))} className="text-lg leading-none" aria-label="Decrease quantity">
+          {product.modifierGroups.map((g) => {
+            const ids = g.options.map((o) => o.id);
+            return (
+              <div key={g.id} className="mt-5">
+                <div className="flex items-baseline justify-between">
+                  <span className="eyebrow text-ink">{g.nameEn}</span>
+                  <span className="text-xs font-medium text-muted-foreground">
+                    {g.required ? "Required" : "Optional"}
+                  </span>
+                </div>
+                <div className="mt-2 flex flex-col gap-2">
+                  {g.options.map((o) => {
+                    const isSelected = selected.includes(o.id);
+                    return (
+                      <label
+                        key={o.id}
+                        className={`flex cursor-pointer items-center justify-between rounded-xl border px-3.5 py-2.5 text-sm transition-colors ${
+                          isSelected
+                            ? "border-primary bg-accent/60"
+                            : "border-border bg-card hover:border-primary/40"
+                        }`}
+                      >
+                        <span className="flex items-center gap-2.5">
+                          <input
+                            type={g.maxSelections === 1 ? "radio" : "checkbox"}
+                            name={`${product.id}-${g.id}`}
+                            checked={isSelected}
+                            onChange={() => toggle(g.maxSelections, ids, o.id)}
+                            className="accent-primary"
+                          />
+                          <span className={isSelected ? "font-medium text-ink" : "text-ink"}>{o.nameEn}</span>
+                        </span>
+                        {Number(o.priceDelta) > 0 && (
+                          <span className={isSelected ? "font-medium text-primary" : "text-muted-foreground"}>
+                            +{formatMoney(Number(o.priceDelta), currency)}
+                          </span>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="-mx-6 -mb-6 mt-5 flex flex-none items-center gap-3 border-t border-border bg-card px-6 py-4">
+          <div className="inline-flex items-center gap-4 rounded-full border border-border px-4 py-2">
+            <button type="button" onClick={() => setQuantity((q) => Math.max(1, q - 1))} className="text-lg leading-none text-ink transition-colors hover:text-primary" aria-label="Decrease quantity">
               −
             </button>
-            <span className="w-4 text-center">{quantity}</span>
-            <button type="button" onClick={() => setQuantity((q) => q + 1)} className="text-lg leading-none" aria-label="Increase quantity">
+            <span className="w-4 text-center font-display font-semibold text-ink">{quantity}</span>
+            <button type="button" onClick={() => setQuantity((q) => q + 1)} className="text-lg leading-none text-ink transition-colors hover:text-primary" aria-label="Increase quantity">
               +
             </button>
           </div>
@@ -102,9 +127,9 @@ export function ProductSheet({
               onAdd(product, selected, quantity);
               onOpenChange(false);
             }}
-            className="flex-1"
+            className="flex-1 rounded-full"
           >
-            Add — {total.toFixed(2)}
+            Add — {formatMoney(total, currency)}
           </Button>
         </div>
       </SheetContent>

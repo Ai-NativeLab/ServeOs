@@ -75,7 +75,7 @@ export async function deleteCategory(tenantId: string, categoryId: string): Prom
 
 // ── products ─────────────────────────────────────────────────────────────────
 
-export type CreateProductInput = Pick<NewProduct, "nameEn" | "nameAr" | "descriptionEn" | "descriptionAr" | "basePrice" | "imageUrl" | "sortOrder" | "categoryId">;
+export type CreateProductInput = Pick<NewProduct, "nameEn" | "nameAr" | "descriptionEn" | "descriptionAr" | "basePrice" | "imageUrl" | "sortOrder" | "categoryId" | "isFeatured">;
 export type UpdateProductInput = Partial<CreateProductInput & { isPublished: boolean }>;
 
 export async function listProducts(tenantId: string, categoryId?: string): Promise<Product[]> {
@@ -261,6 +261,7 @@ export async function getPublishedMenu(tenantId: string, branchId?: string): Pro
           descriptionAr: products.descriptionAr,
           basePrice: products.basePrice,
           imageUrl: products.imageUrl,
+          isFeatured: products.isFeatured,
           isPublished: products.isPublished,
           sortOrder: products.sortOrder,
           createdAt: products.createdAt,
@@ -293,6 +294,7 @@ export async function getPublishedMenu(tenantId: string, branchId?: string): Pro
         descriptionAr: r.descriptionAr,
         basePrice: r.bpaPriceOverride ?? r.basePrice,
         imageUrl: r.imageUrl,
+        isFeatured: r.isFeatured,
         isPublished: r.isPublished,
         sortOrder: r.sortOrder,
         createdAt: r.createdAt,
@@ -327,6 +329,8 @@ export async function getPublishedMenu(tenantId: string, branchId?: string): Pro
         descriptionAr: p.descriptionAr,
         effectivePrice: Number(p.basePrice),
         imageUrl: p.imageUrl,
+        isFeatured: p.isFeatured,
+        createdAt: p.createdAt.toISOString(),
         modifierGroups: groupsByProduct[p.id] ?? [],
         categoryId: p.categoryId,
       })),

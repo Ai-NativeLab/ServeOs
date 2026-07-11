@@ -52,3 +52,16 @@ export class OrderNotFoundError extends DomainError {
     return locale === "ar" ? "الطلب غير موجود" : "Order not found";
   }
 }
+
+export class InvalidScheduleError extends DomainError {
+  readonly code = "invalid_schedule";
+  constructor(public readonly detail: "unparseable" | "too_soon" | "too_far" | "closed_at_time") {
+    super(`Invalid schedule: ${detail}`);
+    this.name = "InvalidScheduleError";
+  }
+  messageFor(locale: Locale): string {
+    return locale === "ar"
+      ? "هذا الموعد غير متاح — يرجى اختيار وقت آخر"
+      : "That time isn't available — please pick another time";
+  }
+}

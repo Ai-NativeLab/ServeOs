@@ -3,12 +3,13 @@ import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { requireFeature, incrementUsage } from "@/server/entitlements/service";
 import { getVatRate } from "@/server/tenancy/settings";
-import { isBranchOrderable } from "@/server/branches/orderability";
+import { isBranchOrderableAt, isWithinSchedulingHorizon, MIN_LEAD_MINUTES } from "@/server/branches/slots";
+import { getTenantById } from "@/server/tenancy";
 import { branches, deliveryAreas } from "@/server/branches/schema";
 import { products, modifierGroups, modifierOptions, branchProductAvailability } from "@/server/catalog/schema";
 import { orders, orderItems, orderStatusEvents, type SelectedModifier, type Order, type OrderWithItems, type OrderDetail, type OrderStatus } from "./schema";
 import { canTransition } from "./state-machine";
-import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError } from "./errors";
+import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError } from "./errors";
 
 export type PlaceOrderLine = { productId: string; quantity: number; selectedOptionIds: string[] };
 export type PlaceOrderInput = {
@@ -19,6 +20,8 @@ export type PlaceOrderInput = {
   notes?: string;
   areaId?: string;
   addressText?: string;
+  /** ISO 8601. Absent/undefined = ASAP. */
+  scheduledFor?: string;
   lines: PlaceOrderLine[];
   now?: Date;
 };
@@ -37,11 +40,28 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
   const vatRate = await getVatRate(tenantId);
   const now = input.now ?? new Date();
 
+  const tenant = await getTenantById(tenantId);
+  if (!tenant) throw new OrderValidationError("unknown tenant");
+  const tz = tenant.timezone;
+
+  let scheduledFor: Date | null = null;
+  if (input.scheduledFor !== undefined) {
+    const at = new Date(input.scheduledFor);
+    if (Number.isNaN(at.getTime())) throw new InvalidScheduleError("unparseable");
+    if (at.getTime() < now.getTime() + MIN_LEAD_MINUTES * 60_000) throw new InvalidScheduleError("too_soon");
+    if (!isWithinSchedulingHorizon(tz, now, at)) throw new InvalidScheduleError("too_far");
+    scheduledFor = at;
+  }
+
   const result = await withTenant(tenantId, async (tx) => {
     // 1. Branch + orderability
     const [branch] = await tx.select().from(branches).where(eq(branches.id, input.branchId)).limit(1);
     if (!branch) throw new OrderValidationError("unknown branch");
-    if (!isBranchOrderable(branch, now)) throw new BranchNotAcceptingOrdersError();
+    if (scheduledFor) {
+      if (!isBranchOrderableAt(branch, tz, scheduledFor)) throw new InvalidScheduleError("closed_at_time");
+    } else if (!isBranchOrderableAt(branch, tz, now)) {
+      throw new BranchNotAcceptingOrdersError();
+    }
 
     // 2. Validate each line against the catalog; build snapshots.
     let subtotal = 0;
@@ -137,6 +157,7 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       deliveryAreaId, deliveryAreaNameSnapshot: deliveryAreaName, deliveryAddressText: deliveryAddress,
       subtotal: money(subtotal), vatRateSnapshot: money(vatRate), vatAmount: money(vatAmount), deliveryFee: money(deliveryFee), total: money(total),
       statusToken,
+      scheduledFor,
     }).returning();
 
     await tx.insert(orderItems).values(itemsToInsert.map((i) => ({ ...i, tenantId, orderId: order.id })));
@@ -158,6 +179,34 @@ export async function getOrderByToken(tenantId: string, token: string): Promise<
     if (!order) return null;
     const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, order.id));
     return { ...order, items };
+  });
+}
+
+/** Customer-initiated cancel, authorised by possession of the status token.
+ * Policy: only while still `pending` — once the restaurant confirms, the
+ * customer escalates via phone/WhatsApp instead. Dashboard cancels keep their
+ * wider state-machine rights via transitionStatus. */
+export async function cancelOrderByToken(tenantId: string, token: string): Promise<Order> {
+  return withTenant(tenantId, async (tx) => {
+    const [order] = await tx.select().from(orders).where(eq(orders.statusToken, token)).limit(1);
+    if (!order) throw new OrderNotFoundError();
+    if (order.status !== "pending" || !canTransition(order.status, "cancelled", order.fulfillmentType)) {
+      throw new InvalidTransitionError(order.status, "cancelled");
+    }
+    // The status guard in the WHERE makes the UPDATE itself the serialization
+    // point: under READ COMMITTED it re-evaluates against the latest committed
+    // row version after any blocking writer commits, so exactly one concurrent
+    // writer wins and the loser sees no row.
+    const [updated] = await tx.update(orders)
+      .set({ status: "cancelled", cancelReason: "cancelled_by_customer", updatedAt: new Date() })
+      .where(and(eq(orders.id, order.id), eq(orders.status, "pending")))
+      .returning();
+    if (!updated) throw new InvalidTransitionError(order.status, "cancelled");
+    await tx.insert(orderStatusEvents).values({
+      tenantId, orderId: order.id, fromStatus: order.status, toStatus: "cancelled",
+      changedByUserId: null, reason: "cancelled_by_customer",
+    });
+    return updated;
   });
 }
 
@@ -185,11 +234,16 @@ export async function listOrders(tenantId: string, opts: ListOrdersOpts): Promis
 }
 
 /** The compact order shape the dashboard list (SSR + polling endpoint) renders. */
-export type OrderRow = Pick<Order, "id" | "orderNumber" | "customerName" | "fulfillmentType" | "total" | "status" | "paymentStatus">;
+export type OrderRow = Pick<Order, "id" | "orderNumber" | "customerName" | "fulfillmentType" | "total" | "status" | "paymentStatus"> & {
+  scheduledFor: string | null;
+};
 
 export function toOrderRow(o: Order): OrderRow {
   const { id, orderNumber, customerName, fulfillmentType, total, status, paymentStatus } = o;
-  return { id, orderNumber, customerName, fulfillmentType, total, status, paymentStatus };
+  return {
+    id, orderNumber, customerName, fulfillmentType, total, status, paymentStatus,
+    scheduledFor: o.scheduledFor ? o.scheduledFor.toISOString() : null,
+  };
 }
 
 export async function pendingOrderCount(tenantId: string): Promise<number> {
@@ -214,9 +268,12 @@ export async function transitionStatus(tenantId: string, orderId: string, to: Or
     if (!order) throw new OrderNotFoundError();
     if (!canTransition(order.status, to, order.fulfillmentType)) throw new InvalidTransitionError(order.status, to);
     const setCancel = (to === "cancelled" || to === "rejected") && reason ? { cancelReason: reason } : {};
+    // Guarded UPDATE serializes against concurrent writers (see cancelOrderByToken).
     const [updated] = await tx.update(orders)
       .set({ status: to, updatedAt: new Date(), ...setCancel })
-      .where(eq(orders.id, orderId)).returning();
+      .where(and(eq(orders.id, orderId), eq(orders.status, order.status)))
+      .returning();
+    if (!updated) throw new InvalidTransitionError(order.status, to);
     await tx.insert(orderStatusEvents).values({ tenantId, orderId, fromStatus: order.status, toStatus: to, changedByUserId: userId, reason: reason ?? null });
     return updated;
   });
