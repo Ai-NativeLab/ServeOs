@@ -32,3 +32,14 @@ export class InvalidModifierRulesError extends DomainError {
     return locale === "ar" ? "قواعد الاختيار غير صالحة" : "Invalid selection rules";
   }
 }
+
+export class InvalidVariantError extends DomainError {
+  readonly code = "invalid_variant";
+  constructor() {
+    super("Invalid product variant");
+    this.name = "InvalidVariantError";
+  }
+  messageFor(locale: Locale): string {
+    return locale === "ar" ? "خيار المنتج غير متاح" : "That product option is unavailable";
+  }
+}

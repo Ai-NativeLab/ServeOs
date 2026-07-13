@@ -228,3 +228,82 @@ describe("placeOrder", () => {
     expect(order.total).toBe("125.40");
   });
 });
+
+async function setupRetail(slug: string) {
+  const [t] = await db.insert(tenants).values({ slug, name: "R", country: "EG", vertical: "retail" }).returning();
+  await seedDefaultPlans();
+  await startTrial(t.id, "pro");
+  const branch = await createBranch(t.id, { name: "Main" });
+  await updateBranchOrdering(t.id, branch.id, { acceptingOrders: true, openingHours: [] });
+  const cat = await createCategory(t.id, { nameEn: "Hinges", nameAr: "مفصلات" });
+  const hinge = await createProduct(t.id, { nameEn: "Hinge", nameAr: "مفصلة", basePrice: "50", categoryId: cat.id });
+  await updateProduct(t.id, hinge.id, { isPublished: true });
+  const { upsertVariant } = await import("@/server/catalog/variants");
+  const v35 = await upsertVariant(t.id, hinge.id, { nameEn: "35mm", nameAr: "٣٥مم", price: "55", stockQuantity: 2 });
+  return { t, branch, hinge, v35 };
+}
+
+describe("placeOrder retail variants + stock", () => {
+  it("prices a variant line from the DB and snapshots the variant name", async () => {
+    const { t, branch, hinge, v35 } = await setupRetail("rv1");
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: hinge.id, variantId: v35.id, quantity: 2, selectedOptionIds: [] }],
+    });
+    const { getOrder } = await import("./service");
+    const order = await getOrder(t.id, res.orderId);
+    expect(order.subtotal).toBe("110.00"); // 2 × 55, NOT basePrice 50
+    expect(order.items[0].variantNameEn).toBe("35mm");
+    expect(order.items[0].variantId).toBe(v35.id);
+  });
+
+  it("decrements stock and rejects when insufficient", async () => {
+    const { t, branch, hinge, v35 } = await setupRetail("rv2");
+    const { OutOfStockError } = await import("./errors");
+    await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: hinge.id, variantId: v35.id, quantity: 2, selectedOptionIds: [] }],
+    }); // stock now 0
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "B", customerPhone: "2",
+      lines: [{ productId: hinge.id, variantId: v35.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(OutOfStockError);
+  });
+
+  it("exactly one of two concurrent orders for the last unit succeeds", async () => {
+    const { t, branch, hinge } = await setupRetail("rv3");
+    const { upsertVariant } = await import("@/server/catalog/variants");
+    const last = await upsertVariant(t.id, hinge.id, { nameEn: "40mm", nameAr: "٤٠مم", price: "60", stockQuantity: 1 });
+    const attempt = (name: string) => placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: name, customerPhone: "1",
+      lines: [{ productId: hinge.id, variantId: last.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const results = await Promise.allSettled([attempt("A"), attempt("B")]);
+    const ok = results.filter((r) => r.status === "fulfilled");
+    const failed = results.filter((r) => r.status === "rejected");
+    expect(ok.length).toBe(1);
+    expect(failed.length).toBe(1);
+  });
+
+  it("rejects an unknown or inactive variant", async () => {
+    const { t, branch, hinge } = await setupRetail("rv4");
+    const { InvalidVariantError } = await import("@/server/catalog/errors");
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: hinge.id, variantId: "00000000-0000-0000-0000-000000000000", quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(InvalidVariantError);
+  });
+
+  it("restocks on customer cancel", async () => {
+    const { t, branch, hinge, v35 } = await setupRetail("rv5");
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: hinge.id, variantId: v35.id, quantity: 2, selectedOptionIds: [] }],
+    });
+    const { cancelOrderByToken } = await import("./service");
+    await cancelOrderByToken(t.id, res.statusToken);
+    const { listVariants } = await import("@/server/catalog/variants");
+    const [v] = await listVariants(t.id, hinge.id);
+    expect(v.stockQuantity).toBe(2); // back to full
+  });
+});

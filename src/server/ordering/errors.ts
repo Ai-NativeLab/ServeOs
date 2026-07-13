@@ -65,3 +65,14 @@ export class InvalidScheduleError extends DomainError {
       : "That time isn't available — please pick another time";
   }
 }
+
+export class OutOfStockError extends DomainError {
+  readonly code = "out_of_stock";
+  constructor(readonly productNameEn: string, readonly productNameAr: string) {
+    super(`Out of stock: ${productNameEn}`);
+    this.name = "OutOfStockError";
+  }
+  messageFor(locale: Locale): string {
+    return locale === "ar" ? `"${this.productNameAr}" غير متوفر بالكمية المطلوبة` : `"${this.productNameEn}" doesn't have enough stock`;
+  }
+}

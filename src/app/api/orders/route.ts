@@ -34,6 +34,7 @@ export async function POST(req: NextRequest) {
           const line = (l ?? {}) as Record<string, unknown>;
           return {
             productId: String(line.productId ?? ""),
+            variantId: typeof line.variantId === "string" ? line.variantId : undefined,
             quantity: Number(line.quantity),
             selectedOptionIds: Array.isArray(line.selectedOptionIds)
               ? (line.selectedOptionIds as unknown[]).map(String)
