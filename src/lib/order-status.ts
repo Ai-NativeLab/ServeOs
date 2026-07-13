@@ -16,6 +16,11 @@ const MAP: Record<OrderStatus, OrderStatusMeta> = {
   cancelled: { label: "Cancelled", badgeClass: badge("danger") },
 };
 
-export function orderStatusMeta(status: OrderStatus): OrderStatusMeta {
-  return MAP[status] ?? { label: String(status), badgeClass: badge("completed") };
+export type StatusLabelOverrides = { preparing?: string; ready?: string };
+
+export function orderStatusMeta(status: OrderStatus, overrides?: StatusLabelOverrides): OrderStatusMeta {
+  const base = MAP[status] ?? { label: String(status), badgeClass: badge("completed") };
+  if (status === "preparing" && overrides?.preparing) return { ...base, label: overrides.preparing };
+  if (status === "ready" && overrides?.ready) return { ...base, label: overrides.ready };
+  return base;
 }

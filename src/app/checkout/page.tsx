@@ -1,5 +1,5 @@
 import { headers } from "next/headers";
-import { getTenantBySlug, isTenantServable, getVatRate } from "@/server/tenancy";
+import { getTenantBySlug, isTenantServable, getCheckoutPricing } from "@/server/tenancy";
 import { listBranches } from "@/server/branches/service";
 import { getBranchOpenState, listSlots, localDateKey } from "@/server/branches/slots";
 import { formatSlotLabel } from "@/lib/datetime";
@@ -32,7 +32,7 @@ export default async function CheckoutPage({
     );
   }
 
-  const [branches, vatRate] = await Promise.all([listBranches(tenant.id), getVatRate(tenant.id)]);
+  const [branches, pricing] = await Promise.all([listBranches(tenant.id), getCheckoutPricing(tenant.id)]);
   // No silent fallback: resolve only an explicit ?branch= or the single branch.
   const branch =
     branches.length === 1 ? branches[0] : (branches.find((b) => b.id === branchParam) ?? null);
@@ -75,7 +75,7 @@ export default async function CheckoutPage({
           slug={slug}
           branchId={branch.id}
           branchName={branch.name}
-          vatRate={vatRate}
+          pricing={pricing}
           currency={tenant.currency}
           openNow={openState.open && branch.isActive && branch.acceptingOrders}
           slots={slots}
