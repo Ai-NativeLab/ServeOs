@@ -2,15 +2,33 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make ServeOS vertical-aware: a typed vertical registry (restaurant + retail) drives storefront template choice, terminology, capability-gated catalog behavior (variants + stock for retail), and vertical-aware checkout adjustments (VAT + service charge), per the approved spec `docs/superpowers/specs/2026-07-13-vertical-storefront-templates-design.md`.
+**Goal:** Make ServeOS vertical-aware: a typed vertical registry (restaurant, retail, pharmacy, timber) drives storefront template choice, terminology, capability-gated catalog behavior (variants + stock for shop verticals), and vertical-aware checkout adjustments (VAT + service charge), per the approved spec `docs/superpowers/specs/2026-07-13-vertical-storefront-templates-design.md` (see its Revision 2).
 
-**Architecture:** A pure (no-DB) `src/server/verticals/` registry exports descriptors; `tenants.vertical` (pg enum) selects one. Shared services branch on **capabilities only** — never on vertical names. The storefront page becomes a dispatcher rendering `MenuTemplate` (today's storefront, extracted verbatim) or the new `ShopTemplate`. One pure function `computeOrderTotals` in `src/lib/` is the single money computation, used by `placeOrder` server-side and by checkout for display.
+**Architecture:** A pure (no-DB) `src/server/verticals/` registry exports descriptors; the merged `tenants.vertical` pg enum selects one. Shared services branch on **capabilities only** — never on vertical names. The storefront routes per vertical through the merged `StorefrontShell` wrappers; shop verticals swap the catalog slot for the new shop UI. One pure function `computeOrderTotals` in `src/lib/` is the single money computation, used by `placeOrder` server-side and by checkout for display.
 
 **Tech Stack:** Next.js 16 App Router (async `headers()`/`params` — follow existing codebase patterns, NOT training data; see `AGENTS.md`), Drizzle + Supabase Postgres with FORCE RLS via `withTenant()`, Vitest (integration tests hit the `serveos_test` DB), Playwright.
 
+## Revision 2 (2026-07-14)
+
+The branch is rebased onto `origin/main`, which now contains the merged multi-vertical
+scaffold (`vertical` enum + `tenants.vertical` column via `0014_melodic_polaris`,
+`registerTenant` + register picker with tests, per-vertical template routing over
+`StorefrontShell`, `src/server/tenancy/verticals.ts`). Tasks 1, 2, 8, 9, and 11 are
+revised in place to build on it. Renames relative to the original text everywhere: the
+vertical type is **`VerticalId`** with values `restaurant | retail | pharmacy | timber`
+(the name `VerticalKey` must not appear anywhere; no new `tenant_vertical` enum); onboarding's entry point is
+**`registerTenant`**. Pharmacy and timber are shop-template verticals with retail-like
+capabilities in v1 (their prescription / cut-to-order domains stay out of scope).
+
 ## Global Constraints
 
-- Branch: `feat/vertical-storefront-templates` (already created; spec committed there).
+- Branch: `feat/vertical-storefront-templates`, rebased onto origin/main's scaffold.
+- **Single source of truth:** `src/server/verticals/` absorbs and deletes
+  `src/server/tenancy/verticals.ts`, preserving its export names (`VERTICAL_IDS`,
+  `VERTICAL_ACCENTS`, `VERTICAL_STOREFRONT_COPY`, `selectStorefrontTemplate`,
+  `VerticalId`, `VerticalStorefrontCopy`) as derivations of the descriptors. No file may
+  define vertical facts outside the registry (the marketing landing's
+  `src/app/_components/marketing/verticals.ts` is landing copy, not behavior, and stays).
 - Shared services must branch on `capabilities.<flag>`, never `tenant.vertical === "..."`. Only the registry, the storefront dispatcher, and dashboard template dispatch may mention vertical keys.
 - Existing restaurant tenants must see **zero behavior change**: `vertical` defaults to `restaurant`, `track_stock` defaults to `false`, checkout pricing defaults preserve today's totals (VAT on, exclusive, no service charge).
 - All new tenant-scoped tables get `tenant_id` + ENABLE/FORCE ROW LEVEL SECURITY + the standard isolation policy (copy the exact SQL shape from `drizzle/0007_bitter_mandarin.sql`).
@@ -22,8 +40,8 @@
 ## File Structure (what exists / what's new)
 
 ```
-src/server/verticals/            NEW pure module: types.ts, registry.ts, errors.ts, index.ts
-src/server/tenancy/schema.ts     MODIFY: tenant_vertical enum + tenants.vertical
+src/server/verticals/            NEW single source of truth: types.ts, registry.ts, errors.ts, index.ts
+src/server/tenancy/verticals.ts  DELETE (absorbed); call sites re-pointed (+ its test absorbed)
 src/server/tenancy/settings.ts   MODIFY: vatEnabled/pricesIncludeVat/serviceChargeRate + getCheckoutPricing
 src/server/catalog/schema.ts     MODIFY: products cols; NEW product_variants table
 src/server/catalog/variants.ts   NEW: variant CRUD + stock setters (capability-gated)
@@ -34,25 +52,24 @@ src/server/ordering/service.ts   MODIFY: computeOrderTotals use; variant lines; 
 src/server/ordering/errors.ts    MODIFY: OutOfStockError
 src/lib/order-totals.ts          NEW pure totals function (client-safe)
 src/app/_components/cart.ts      MODIFY: variant-aware CartLine + merge
-src/app/_components/templates/menu/MenuTemplate.tsx   NEW (extraction of page.tsx storefront JSX)
-src/app/_components/templates/shop/ShopTemplate.tsx   NEW (retail RSC)
-src/app/_components/templates/shop/ShopBrowser.tsx    NEW (client: search/grid/sheet/cart)
-src/app/_components/templates/shop/ShopProductCard.tsx NEW
-src/app/_components/templates/shop/RetailProductSheet.tsx NEW
-src/app/page.tsx                 MODIFY: becomes vertical dispatcher
+src/app/_components/storefront/templates/StorefrontShell.tsx  MODIFY: catalog slot
+src/app/_components/storefront/templates/{Retail,Pharmacy,Timber}Storefront.tsx MODIFY: shop catalog
+src/app/_components/storefront/templates/shop/ShopBrowser.tsx NEW (client: search/grid/sheet/cart)
+src/app/_components/storefront/templates/shop/ShopProductCard.tsx NEW
+src/app/_components/storefront/templates/shop/RetailProductSheet.tsx NEW
+src/app/_components/storefront/templates/shop/shop-search.ts NEW (+ test)
+src/app/page.tsx                 MODIFY: terms-driven empty states (routing already merged)
 src/app/checkout/page.tsx        MODIFY: pass CheckoutPricing
 src/app/checkout/CheckoutForm.tsx MODIFY: totals breakdown, variant lines, out-of-stock error
 src/app/api/orders/route.ts      MODIFY: variantId in line allowlist
 src/lib/order-status.ts          MODIFY: label overrides for pack/collect language
 src/app/order/[token]/page.tsx   MODIFY: vertical status labels
-src/server/onboarding/service.ts MODIFY: vertical in RegisterInput
-src/app/register/{page,actions}.tsx MODIFY: business-type picker
 src/server/platform/* + src/app/admin/page.tsx MODIFY: show vertical in queue
 src/components/dashboard/nav-items.ts MODIFY: catalog label param
 src/app/dashboard/layout.tsx     MODIFY: pass vertical terms
 src/app/dashboard/menu/products/[id]/page.tsx MODIFY: capability-adaptive form + variants editor
 src/app/dashboard/menu/products/actions.ts MODIFY: retail fields + variant actions
-src/app/dashboard/menu/page.tsx  MODIFY: stock quick-adjust (retail)
+src/app/dashboard/menu/page.tsx  MODIFY: stock quick-adjust (shop verticals)
 src/app/dashboard/settings/tabs.ts + settings/taxes/* NEW tab
 src/app/dashboard/page.tsx       MODIFY: storefront QR card
 scripts/seed-retail-showcase.ts  NEW retail demo tenant
@@ -61,34 +78,41 @@ tests/e2e/shop.spec.ts           NEW shop smoke
 
 ---
 
-### Task 1: Verticals registry module (pure, no DB)
+### Task 1 (REVISED): Unified verticals registry — absorbs `src/server/tenancy/verticals.ts`
 
 **Files:**
 - Create: `src/server/verticals/types.ts`
 - Create: `src/server/verticals/registry.ts`
 - Create: `src/server/verticals/errors.ts`
 - Create: `src/server/verticals/index.ts`
+- Delete: `src/server/tenancy/verticals.ts` and `src/server/tenancy/verticals.test.ts` (their content is absorbed)
+- Modify: every importer of `@/server/tenancy/verticals` — find them with `grep -rl "tenancy/verticals" src/ scripts/ --include="*.ts*"` (expected: `src/server/onboarding/service.ts`, `src/server/onboarding/service.test.ts`, `src/app/register/actions.ts`, `src/app/register/RegisterForm.tsx`, `src/app/page.tsx`, `src/app/_components/storefront/templates/StorefrontShell.tsx` and the four wrapper templates) — change the import path to `@/server/verticals`; no other change, the export names are preserved.
 - Test: `src/server/verticals/registry.test.ts`
 
 **Interfaces:**
 - Consumes: `DomainError`, `Locale` from `@/shared/errors` (exists).
-- Produces (used by later tasks): `VerticalKey`, `VerticalCapabilities`, `VerticalTerms`, `VerticalDescriptor`, `AdjustmentKind`; `getVerticalDescriptor(key: VerticalKey): VerticalDescriptor`; `getCapabilities(key: VerticalKey): VerticalCapabilities`; `getVerticalTerms(key: VerticalKey): VerticalTerms`; `requireCapability(key: VerticalKey, cap: keyof VerticalCapabilities): void` (throws `CapabilityNotEnabledError`); `VERTICAL_KEYS: VerticalKey[]`.
+- Produces (used by later tasks): `VerticalId` (4 values), `VERTICAL_IDS`, `VerticalCapabilities`, `VerticalTerms`, `VerticalDescriptor`, `AdjustmentKind`; `getVerticalDescriptor(key: VerticalId)`; `getCapabilities(key: VerticalId)`; `getVerticalTerms(key: VerticalId)`; `requireCapability(key: VerticalId, cap: keyof VerticalCapabilities): void` (throws `CapabilityNotEnabledError`).
+- Compat (preserved for the merged scaffold's call sites): `VERTICAL_ACCENTS`, `VERTICAL_STOREFRONT_COPY`, `VerticalStorefrontCopy`, `selectStorefrontTemplate` — all **derived from the descriptors**, never hand-maintained.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test** — this absorbs the assertions of the deleted `src/server/tenancy/verticals.test.ts` (accents distinct, WhatsApp restaurant-only, template fallback) so no coverage is lost:
 
 ```ts
 // src/server/verticals/registry.test.ts
 import { describe, it, expect } from "vitest";
-import { VERTICAL_KEYS, getVerticalDescriptor, getCapabilities, getVerticalTerms, requireCapability } from "./registry";
+import {
+  VERTICAL_IDS, getVerticalDescriptor, getCapabilities, getVerticalTerms, requireCapability,
+  VERTICAL_ACCENTS, VERTICAL_STOREFRONT_COPY, selectStorefrontTemplate, type VerticalId,
+} from "./registry";
 import { CapabilityNotEnabledError } from "./errors";
 
 describe("vertical registry", () => {
   it("defines a complete descriptor for every vertical (fails when a vertical is half-added)", () => {
-    expect(VERTICAL_KEYS).toEqual(["restaurant", "retail"]);
-    for (const key of VERTICAL_KEYS) {
+    expect(VERTICAL_IDS).toEqual(["restaurant", "retail", "pharmacy", "timber"]);
+    for (const key of VERTICAL_IDS) {
       const d = getVerticalDescriptor(key);
       expect(d.key).toBe(key);
       expect(["menu", "shop"]).toContain(d.storefront.template);
+      expect(d.accent).toMatch(/^#[0-9A-Fa-f]{6}$/);
       // every terminology label has non-empty en + ar
       for (const [term, label] of Object.entries(d.terminology)) {
         expect(label.en, `${key}.${term}.en`).toBeTruthy();
@@ -106,20 +130,40 @@ describe("vertical registry", () => {
     expect(getVerticalDescriptor("restaurant").storefront.template).toBe("menu");
   });
 
-  it("retail: variants/stock on, modifiers off, shop template", () => {
-    const caps = getCapabilities("retail");
-    expect(caps).toEqual({ modifiers: false, variants: true, stockTracking: true, serviceCharge: false });
-    expect(getVerticalDescriptor("retail").storefront.template).toBe("shop");
+  it("retail, pharmacy, timber: variants/stock on, modifiers off, shop template", () => {
+    for (const key of ["retail", "pharmacy", "timber"] as VerticalId[]) {
+      const caps = getCapabilities(key);
+      expect(caps, key).toEqual({ modifiers: false, variants: true, stockTracking: true, serviceCharge: false });
+      expect(getVerticalDescriptor(key).storefront.template, key).toBe("shop");
+    }
   });
 
   it("terminology differs where it matters", () => {
     expect(getVerticalTerms("restaurant").catalogNoun.en).toBe("Menu");
     expect(getVerticalTerms("retail").catalogNoun.en).toBe("Products");
+    expect(getVerticalTerms("timber").storefrontHeading.en).toBe("Yard");
   });
 
   it("requireCapability throws a typed error for a disabled capability", () => {
     expect(() => requireCapability("retail", "modifiers")).toThrow(CapabilityNotEnabledError);
     expect(() => requireCapability("restaurant", "modifiers")).not.toThrow();
+  });
+
+  // ── absorbed from src/server/tenancy/verticals.test.ts ──
+  it("defines the four trades with distinct accents", () => {
+    expect(new Set(Object.values(VERTICAL_ACCENTS)).size).toBe(4);
+  });
+
+  it("only the restaurant shows the WhatsApp CTA", () => {
+    (Object.keys(VERTICAL_STOREFRONT_COPY) as VerticalId[]).forEach((v) => {
+      expect(VERTICAL_STOREFRONT_COPY[v].showWhatsapp).toBe(v === "restaurant");
+    });
+  });
+
+  it("selectStorefrontTemplate falls back to restaurant for unknown values", () => {
+    expect(selectStorefrontTemplate("retail")).toBe("retail");
+    expect(selectStorefrontTemplate(null)).toBe("restaurant");
+    expect(selectStorefrontTemplate("bogus" as VerticalId)).toBe("restaurant");
   });
 });
 ```
@@ -133,7 +177,8 @@ Expected: FAIL — cannot resolve `./registry`.
 
 ```ts
 // src/server/verticals/types.ts
-export type VerticalKey = "restaurant" | "retail";
+export const VERTICAL_IDS = ["restaurant", "retail", "pharmacy", "timber"] as const;
+export type VerticalId = (typeof VERTICAL_IDS)[number];
 
 export type VerticalCapabilities = {
   modifiers: boolean;
@@ -145,25 +190,35 @@ export type VerticalCapabilities = {
 export type LocalizedLabel = { en: string; ar: string };
 
 export type VerticalTerms = {
-  businessNoun: LocalizedLabel;      // "restaurant" / "store"
-  catalogNoun: LocalizedLabel;       // dashboard nav: "Menu" / "Products"
-  businessTypeLabel: LocalizedLabel; // "Cuisine" / "Store type"
+  businessNoun: LocalizedLabel;      // "restaurant" / "store" / "pharmacy" / "yard"
+  catalogNoun: LocalizedLabel;       // dashboard nav: "Menu" / "Products" / "Products" / "Yard"
+  storefrontHeading: LocalizedLabel; // storefront section: "Menu" / "Shop" / "Shop" / "Yard"
+  businessTypeLabel: LocalizedLabel; // "Cuisine" / "Store type" / "Store type" / "Yard type"
   notFoundTitle: LocalizedLabel;     // storefront: unknown slug
   gettingReadyBody: LocalizedLabel;  // storefront: tenant not servable
-  emptyCatalogTitle: LocalizedLabel; // "Menu coming soon" / "Products coming soon"
+  emptyCatalogTitle: LocalizedLabel; // "Menu coming soon" / "Catalog coming soon" / ...
   emptyCatalogBody: LocalizedLabel;
-  statusPreparing: LocalizedLabel;   // "Being prepared" / "Being packed"
+  statusPreparing: LocalizedLabel;   // "Preparing" / "Being packed"
   statusReady: LocalizedLabel;       // "Ready" / "Ready for collection"
 };
 
 export type AdjustmentKind = "vat" | "service_charge";
 
 export type VerticalDescriptor = {
-  key: VerticalKey;
+  key: VerticalId;
+  accent: string; // hex, shared with the marketing landing tokens
   capabilities: VerticalCapabilities;
   terminology: VerticalTerms;
-  storefront: { template: "menu" | "shop" };
+  storefront: { template: "menu" | "shop"; showWhatsapp: boolean };
   checkout: { adjustments: AdjustmentKind[] };
+};
+
+/** Compat shape consumed by the merged StorefrontShell (derived, never hand-written). */
+export type VerticalStorefrontCopy = {
+  menuHeading: string;
+  showWhatsapp: boolean;
+  emptyMenuTitle: string;
+  emptyMenuDesc: string;
 };
 ```
 
@@ -185,111 +240,180 @@ export class CapabilityNotEnabledError extends DomainError {
 
 ```ts
 // src/server/verticals/registry.ts
-import type { VerticalCapabilities, VerticalDescriptor, VerticalKey, VerticalTerms } from "./types";
+import { VERTICAL_IDS, type VerticalCapabilities, type VerticalDescriptor, type VerticalId, type VerticalStorefrontCopy, type VerticalTerms } from "./types";
 import { CapabilityNotEnabledError } from "./errors";
 
 const restaurant: VerticalDescriptor = {
   key: "restaurant",
+  accent: "#F0522B",
   capabilities: { modifiers: true, variants: false, stockTracking: false, serviceCharge: true },
   terminology: {
     businessNoun: { en: "restaurant", ar: "مطعم" },
     catalogNoun: { en: "Menu", ar: "القائمة" },
+    storefrontHeading: { en: "Menu", ar: "القائمة" },
     businessTypeLabel: { en: "Cuisine", ar: "نوع المطبخ" },
     notFoundTitle: { en: "Restaurant not found", ar: "المطعم غير موجود" },
     gettingReadyBody: { en: "This restaurant is getting ready. Check back soon!", ar: "المطعم قيد التجهيز، عد قريباً!" },
+    // Empty-catalog copy must stay byte-identical to the merged
+    // VERTICAL_STOREFRONT_COPY values — the storefront shell renders it today.
     emptyCatalogTitle: { en: "Menu coming soon", ar: "القائمة قريباً" },
     emptyCatalogBody: { en: "This restaurant hasn't published a menu yet.", ar: "لم ينشر هذا المطعم قائمته بعد." },
-    // Must equal the current storefront labels in src/lib/order-status.ts —
+    // Must equal the current labels in src/lib/order-status.ts —
     // restaurant tenants see byte-identical status copy after this change.
     statusPreparing: { en: "Preparing", ar: "قيد التحضير" },
     statusReady: { en: "Ready", ar: "جاهز" },
   },
-  storefront: { template: "menu" },
+  storefront: { template: "menu", showWhatsapp: true },
   checkout: { adjustments: ["vat", "service_charge"] },
 };
 
 const retail: VerticalDescriptor = {
   key: "retail",
+  accent: "#2DD4C4",
   capabilities: { modifiers: false, variants: true, stockTracking: true, serviceCharge: false },
   terminology: {
     businessNoun: { en: "store", ar: "متجر" },
     catalogNoun: { en: "Products", ar: "المنتجات" },
+    storefrontHeading: { en: "Shop", ar: "المتجر" },
     businessTypeLabel: { en: "Store type", ar: "نوع المتجر" },
     notFoundTitle: { en: "Store not found", ar: "المتجر غير موجود" },
     gettingReadyBody: { en: "This store is getting ready. Check back soon!", ar: "المتجر قيد التجهيز، عد قريباً!" },
-    emptyCatalogTitle: { en: "Products coming soon", ar: "المنتجات قريباً" },
-    emptyCatalogBody: { en: "This store hasn't published any products yet.", ar: "لم ينشر هذا المتجر منتجاته بعد." },
+    emptyCatalogTitle: { en: "Catalog coming soon", ar: "الكتالوج قريباً" },
+    emptyCatalogBody: { en: "This shop hasn't published its catalog yet.", ar: "لم ينشر هذا المتجر كتالوجه بعد." },
     statusPreparing: { en: "Being packed", ar: "قيد التجهيز" },
     statusReady: { en: "Ready for collection", ar: "جاهز للاستلام" },
   },
-  storefront: { template: "shop" },
+  storefront: { template: "shop", showWhatsapp: false },
   checkout: { adjustments: ["vat"] },
 };
 
-const REGISTRY: Record<VerticalKey, VerticalDescriptor> = { restaurant, retail };
+const pharmacy: VerticalDescriptor = {
+  key: "pharmacy",
+  accent: "#38D08C",
+  capabilities: { modifiers: false, variants: true, stockTracking: true, serviceCharge: false },
+  terminology: {
+    businessNoun: { en: "pharmacy", ar: "صيدلية" },
+    catalogNoun: { en: "Products", ar: "المنتجات" },
+    storefrontHeading: { en: "Shop", ar: "المتجر" },
+    businessTypeLabel: { en: "Store type", ar: "نوع المتجر" },
+    notFoundTitle: { en: "Pharmacy not found", ar: "الصيدلية غير موجودة" },
+    gettingReadyBody: { en: "This pharmacy is getting ready. Check back soon!", ar: "الصيدلية قيد التجهيز، عد قريباً!" },
+    emptyCatalogTitle: { en: "Catalog coming soon", ar: "الكتالوج قريباً" },
+    emptyCatalogBody: { en: "This pharmacy hasn't published its catalog yet.", ar: "لم تنشر هذه الصيدلية كتالوجها بعد." },
+    statusPreparing: { en: "Being packed", ar: "قيد التجهيز" },
+    statusReady: { en: "Ready for collection", ar: "جاهز للاستلام" },
+  },
+  storefront: { template: "shop", showWhatsapp: false },
+  checkout: { adjustments: ["vat"] },
+};
 
-export const VERTICAL_KEYS = Object.keys(REGISTRY) as VerticalKey[];
+const timber: VerticalDescriptor = {
+  key: "timber",
+  accent: "#E8A33D",
+  capabilities: { modifiers: false, variants: true, stockTracking: true, serviceCharge: false },
+  terminology: {
+    businessNoun: { en: "yard", ar: "منشرة" },
+    catalogNoun: { en: "Yard", ar: "المخزون" },
+    storefrontHeading: { en: "Yard", ar: "المخزون" },
+    businessTypeLabel: { en: "Yard type", ar: "نوع المنشرة" },
+    notFoundTitle: { en: "Yard not found", ar: "المنشرة غير موجودة" },
+    gettingReadyBody: { en: "This yard is getting ready. Check back soon!", ar: "المنشرة قيد التجهيز، عد قريباً!" },
+    emptyCatalogTitle: { en: "Yard list coming soon", ar: "قائمة المخزون قريباً" },
+    emptyCatalogBody: { en: "This yard hasn't published its stock list yet.", ar: "لم تنشر هذه المنشرة قائمة مخزونها بعد." },
+    statusPreparing: { en: "Being packed", ar: "قيد التجهيز" },
+    statusReady: { en: "Ready for collection", ar: "جاهز للاستلام" },
+  },
+  storefront: { template: "shop", showWhatsapp: false },
+  checkout: { adjustments: ["vat"] },
+};
 
-export function getVerticalDescriptor(key: VerticalKey): VerticalDescriptor {
+const REGISTRY: Record<VerticalId, VerticalDescriptor> = { restaurant, retail, pharmacy, timber };
+
+export { VERTICAL_IDS };
+
+export function getVerticalDescriptor(key: VerticalId): VerticalDescriptor {
   return REGISTRY[key];
 }
-export function getCapabilities(key: VerticalKey): VerticalCapabilities {
+export function getCapabilities(key: VerticalId): VerticalCapabilities {
   return REGISTRY[key].capabilities;
 }
-export function getVerticalTerms(key: VerticalKey): VerticalTerms {
+export function getVerticalTerms(key: VerticalId): VerticalTerms {
   return REGISTRY[key].terminology;
 }
 /** Throws CapabilityNotEnabledError when the vertical lacks the capability. */
-export function requireCapability(key: VerticalKey, capability: keyof VerticalCapabilities): void {
+export function requireCapability(key: VerticalId, capability: keyof VerticalCapabilities): void {
   if (!REGISTRY[key].capabilities[capability]) throw new CapabilityNotEnabledError(capability);
+}
+
+// ── compat exports for the merged scaffold (derived from descriptors) ─────────
+
+export const VERTICAL_ACCENTS: Record<VerticalId, string> = Object.fromEntries(
+  VERTICAL_IDS.map((k) => [k, REGISTRY[k].accent]),
+) as Record<VerticalId, string>;
+
+export const VERTICAL_STOREFRONT_COPY: Record<VerticalId, VerticalStorefrontCopy> = Object.fromEntries(
+  VERTICAL_IDS.map((k) => {
+    const d = REGISTRY[k];
+    return [k, {
+      menuHeading: d.terminology.storefrontHeading.en,
+      showWhatsapp: d.storefront.showWhatsapp,
+      emptyMenuTitle: d.terminology.emptyCatalogTitle.en,
+      emptyMenuDesc: d.terminology.emptyCatalogBody.en,
+    }];
+  }),
+) as Record<VerticalId, VerticalStorefrontCopy>;
+
+/** Resolve the storefront template for a tenant's vertical. Unknown → restaurant. */
+export function selectStorefrontTemplate(vertical: VerticalId | null | undefined): VerticalId {
+  return vertical && (VERTICAL_IDS as readonly string[]).includes(vertical) ? vertical : "restaurant";
 }
 ```
 
 ```ts
 // src/server/verticals/index.ts
-export type { VerticalKey, VerticalCapabilities, VerticalTerms, VerticalDescriptor, AdjustmentKind, LocalizedLabel } from "./types";
-export { VERTICAL_KEYS, getVerticalDescriptor, getCapabilities, getVerticalTerms, requireCapability } from "./registry";
+export {
+  VERTICAL_IDS,
+  type VerticalId, type VerticalCapabilities, type VerticalTerms, type VerticalDescriptor,
+  type AdjustmentKind, type LocalizedLabel, type VerticalStorefrontCopy,
+} from "./types";
+export {
+  getVerticalDescriptor, getCapabilities, getVerticalTerms, requireCapability,
+  VERTICAL_ACCENTS, VERTICAL_STOREFRONT_COPY, selectStorefrontTemplate,
+} from "./registry";
 export { CapabilityNotEnabledError } from "./errors";
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 3b: Re-point call sites and delete the absorbed module** — run `grep -rl "tenancy/verticals" src/ scripts/ --include="*.ts" --include="*.tsx"`, change each import path to `@/server/verticals` (export names are identical, so nothing else changes), then `git rm src/server/tenancy/verticals.ts src/server/tenancy/verticals.test.ts`. Re-run the grep — it must return nothing.
+
+- [ ] **Step 4: Run the registry test, then the full suite**
 
 Run: `npm run test -- src/server/verticals/registry.test.ts`
-Expected: PASS (5 tests).
+Expected: PASS (8 tests).
+Then: `npx tsc --noEmit && npm run test`
+Expected: PASS — the merged scaffold's tests (onboarding, platform, marketing e2e excluded here) still pass against the re-pointed imports.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/server/verticals
-git commit -m "feat(verticals): pure vertical registry with capabilities, terminology, checkout adjustments"
+git add -A src/server/verticals src/server/tenancy src/server/onboarding src/app
+git commit -m "feat(verticals): unified registry (capabilities+terms+checkout) absorbing tenancy/verticals as single source of truth"
 ```
 
 ---
 
-### Task 2: Schema — tenants.vertical, product_variants, retail/order columns + RLS migration
+### Task 2 (REVISED): Schema — product_variants, retail/order columns + RLS migration
 
 **Files:**
-- Modify: `src/server/tenancy/schema.ts`
 - Modify: `src/server/catalog/schema.ts`
 - Modify: `src/server/ordering/schema.ts`
 - Create: `drizzle/00XX_*.sql` (generated, then edited to append RLS)
 - Test: `src/server/catalog/variants-rls.test.ts`
 
 **Interfaces:**
-- Consumes: nothing new.
-- Produces: `tenants.vertical` column (`"restaurant" | "retail"`, default `restaurant`); `productVariants` table + `ProductVariant`/`NewProductVariant` types; `products.brand/sku/stockQuantity/trackStock`; `orders.serviceChargeAmount` (nullable numeric); `orderItems.variantId/variantNameEn/variantNameAr` (nullable).
+- Consumes: the merged `tenants.vertical` column (enum `vertical`, 4 values, default `restaurant` — already in `0014_melodic_polaris.sql`; do NOT create any tenant enum/column here).
+- Produces: `productVariants` table + `ProductVariant`/`NewProductVariant` types; `products.brand/sku/stockQuantity/trackStock`; `orders.serviceChargeAmount` (nullable numeric); `orderItems.variantId/variantNameEn/variantNameAr` (nullable).
 
-- [ ] **Step 1: Add `vertical` to tenants** — in `src/server/tenancy/schema.ts`, add after the `tenantStatus` enum:
-
-```ts
-export const tenantVertical = pgEnum("tenant_vertical", ["restaurant", "retail"]);
-```
-
-and inside the `tenants` table definition, after `theme`:
-
-```ts
-  vertical: tenantVertical("vertical").notNull().default("restaurant"),
-```
+- [ ] **Step 1: (removed — `tenants.vertical` already merged via the scaffold's migration)**
 
 - [ ] **Step 2: Add retail columns + product_variants to catalog** — in `src/server/catalog/schema.ts`, inside `products` after `imageUrl`:
 
@@ -339,9 +463,9 @@ and inside `orderItems` after `productId`:
 - [ ] **Step 4: Generate the migration**
 
 Run: `npm run db:generate`
-Expected: a new file `drizzle/0014_<name>.sql` containing `CREATE TYPE "tenant_vertical"`, `ALTER TABLE "tenants" ADD COLUMN "vertical"`, `CREATE TABLE "product_variants"`, and the ALTERs for products/orders/order_items.
+Expected: a new file `drizzle/0015_<name>.sql` containing `CREATE TABLE "product_variants"` and the ALTERs for products/orders/order_items (NO tenants changes — those shipped in 0014).
 
-- [ ] **Step 5: Append RLS to the generated migration** — open the new `drizzle/0014_*.sql` and append at the end (exact shape as `drizzle/0007_bitter_mandarin.sql`):
+- [ ] **Step 5: Append RLS to the generated migration** — open the new `drizzle/0015_*.sql` and append at the end (exact shape as `drizzle/0007_bitter_mandarin.sql`):
 
 ```sql
 --> statement-breakpoint
@@ -410,8 +534,8 @@ Expected: PASS — all existing tests unaffected (new columns are nullable/defau
 - [ ] **Step 10: Commit**
 
 ```bash
-git add src/server/tenancy/schema.ts src/server/catalog/schema.ts src/server/ordering/schema.ts drizzle src/server/catalog/variants-rls.test.ts
-git commit -m "feat(schema): tenants.vertical, product_variants (RLS), retail product cols, order variant/service-charge cols"
+git add src/server/catalog/schema.ts src/server/ordering/schema.ts drizzle src/server/catalog/variants-rls.test.ts
+git commit -m "feat(schema): product_variants (RLS), retail product cols, order variant/service-charge cols"
 ```
 ---
 
@@ -425,7 +549,7 @@ git commit -m "feat(schema): tenants.vertical, product_variants (RLS), retail pr
 - Test: `src/server/catalog/variants.test.ts`
 
 **Interfaces:**
-- Consumes: `requireCapability`, `VerticalKey` from `@/server/verticals`; `getTenantById` from `@/server/tenancy`; `withTenant`; `productVariants`, `ProductVariant` from `./schema` (Task 2).
+- Consumes: `requireCapability`, `VerticalId` from `@/server/verticals`; `getTenantById` from `@/server/tenancy`; `withTenant`; `productVariants`, `ProductVariant` from `./schema` (Task 2).
 - Produces: `VariantInput = { id?: string; nameEn: string; nameAr: string; sku?: string | null; price: string; stockQuantity?: number | null; isActive?: boolean; sortOrder?: number }`; `listVariants(tenantId, productId): Promise<ProductVariant[]>`; `upsertVariant(tenantId, productId, input): Promise<ProductVariant>`; `deleteVariant(tenantId, variantId): Promise<void>`; `setProductStock(tenantId, productId, qty: number | null)`; `setVariantStock(tenantId, variantId, qty: number | null)`; extended `CreateProductInput`/`UpdateProductInput` including `brand/sku/trackStock/stockQuantity`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -491,7 +615,7 @@ Expected: FAIL — cannot resolve `./variants`.
 import { and, eq } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { getTenantById } from "@/server/tenancy";
-import { requireCapability, type VerticalKey } from "@/server/verticals";
+import { requireCapability, type VerticalId } from "@/server/verticals";
 import { productVariants, type ProductVariant } from "./schema";
 import { ProductNotFoundError } from "./errors";
 
@@ -509,7 +633,7 @@ export type VariantInput = {
 async function requireTenantCapability(tenantId: string, cap: "variants" | "stockTracking"): Promise<void> {
   const tenant = await getTenantById(tenantId);
   if (!tenant) throw new ProductNotFoundError();
-  requireCapability(tenant.vertical as VerticalKey, cap);
+  requireCapability(tenant.vertical as VerticalId, cap);
 }
 
 export async function listVariants(tenantId: string, productId: string): Promise<ProductVariant[]> {
@@ -568,12 +692,12 @@ Stock semantics note (consistent across publish + ordering): `trackStock && stoc
 - [ ] **Step 4: Gate modifiers + extend product inputs in `service.ts`**
 
 In `src/server/catalog/service.ts`:
-1. Add imports: `import { getTenantById } from "@/server/tenancy";` and `import { requireCapability, type VerticalKey } from "@/server/verticals";`
+1. Add imports: `import { getTenantById } from "@/server/tenancy";` and `import { requireCapability, type VerticalId } from "@/server/verticals";`
 2. At the top of `upsertModifierGroup` (before validation), add:
 
 ```ts
   const tenant = await getTenantById(tenantId);
-  if (tenant) requireCapability(tenant.vertical as VerticalKey, "modifiers");
+  if (tenant) requireCapability(tenant.vertical as VerticalId, "modifiers");
 ```
 
 3. Extend the input types (retail fields ride along; undefined keys are no-ops for restaurants):
@@ -845,13 +969,13 @@ export type TenantSettingsData = {
 };
 ```
 
-2. Add (imports: `import { getCapabilities } from "@/server/verticals/registry";` and `import type { VerticalKey } from "@/server/verticals/types";` — import from the concrete files, not the barrel, to keep this file cycle-free, plus `import type { CheckoutPricing } from "@/lib/order-totals";`):
+2. Add (imports: `import { getCapabilities } from "@/server/verticals/registry";` and `import type { VerticalId } from "@/server/verticals/types";` — import from the concrete files, not the barrel, to keep this file cycle-free, plus `import type { CheckoutPricing } from "@/lib/order-totals";`):
 
 ```ts
 export async function getCheckoutPricing(tenantId: string): Promise<CheckoutPricing> {
   const settings = await getTenantSettings(tenantId);
   const [t] = await db.select({ country: tenants.country, vertical: tenants.vertical }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
-  const caps = getCapabilities((t?.vertical ?? "restaurant") as VerticalKey);
+  const caps = getCapabilities((t?.vertical ?? "restaurant") as VerticalId);
   return {
     vatEnabled: settings.vatEnabled ?? true,
     vatRate: typeof settings.vatRate === "number" ? settings.vatRate : defaultVatRate(t?.country ?? "EG"),
@@ -1087,7 +1211,7 @@ export type PlaceOrderLine = { productId: string; variantId?: string; quantity: 
 ```ts
 import { products, modifierGroups, modifierOptions, branchProductAvailability, productVariants } from "@/server/catalog/schema";
 import { InvalidVariantError } from "@/server/catalog/errors";
-import { getCapabilities, type VerticalKey } from "@/server/verticals";
+import { getCapabilities, type VerticalId } from "@/server/verticals";
 import { OutOfStockError } from "./errors"; // add to existing errors import
 import { gte, isNull, or } from "drizzle-orm"; // add to existing drizzle import
 ```
@@ -1095,7 +1219,7 @@ import { gte, isNull, or } from "drizzle-orm"; // add to existing drizzle import
 2. After `const tenant = await getTenantById(tenantId);` add:
 
 ```ts
-  const caps = getCapabilities(tenant.vertical as VerticalKey);
+  const caps = getCapabilities(tenant.vertical as VerticalId);
 ```
 
 3. Extend `itemsToInsert`'s element type with `variantId: string | null; variantNameEn: string | null; variantNameAr: string | null;`.
@@ -1174,7 +1298,7 @@ async function restockOrderItems(tx: Parameters<Parameters<typeof withTenant>[1]
 ```
 
 Call it in **both** cancel paths, after the guarded status UPDATE succeeded (so restock happens exactly once):
-- `cancelOrderByToken`: load tenant capabilities before `withTenant` (`const tenant = await getTenantById(tenantId); const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalKey);`), then after the `if (!updated) throw ...` line: `await restockOrderItems(tx, order.id, caps);`
+- `cancelOrderByToken`: load tenant capabilities before `withTenant` (`const tenant = await getTenantById(tenantId); const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalId);`), then after the `if (!updated) throw ...` line: `await restockOrderItems(tx, order.id, caps);`
 - `transitionStatus`: same capability load; after the guarded update succeeds and only when `to === "cancelled" || to === "rejected"`: `await restockOrderItems(tx, orderId, caps);`
 
 - [ ] **Step 6: Accept `variantId` at the API boundary** — in `src/app/api/orders/route.ts`, in the line mapping add:
@@ -1277,116 +1401,69 @@ git commit -m "feat(cart): variant-aware line identity"
 
 ---
 
-### Task 8: Extract MenuTemplate; page.tsx becomes the vertical dispatcher
+### Task 8 (REVISED): Registry terms drive the storefront empty states
+
+The merged scaffold already extracted the restaurant storefront (`RestaurantStorefront` over `StorefrontShell`) and dispatches per vertical in `page.tsx` via `selectStorefrontTemplate`. The shell's empty-catalog copy already flows from `VERTICAL_STOREFRONT_COPY`, which Task 1 turned into a descriptor derivation. What remains: the two hardcoded pre-template empty states in `page.tsx`.
 
 **Files:**
-- Create: `src/app/_components/templates/menu/MenuTemplate.tsx`
 - Modify: `src/app/page.tsx`
 - Verify: `npm run test:e2e -- tests/e2e/menu.spec.ts` unchanged and green
 
 **Interfaces:**
-- Consumes: `getVerticalDescriptor`, `getVerticalTerms`, `VerticalKey` (Task 1); `Tenant` from `@/server/tenancy`.
-- Produces: `MenuTemplate({ tenant, slug, branchId }: { tenant: Tenant; slug: string; branchId?: string })` — an async RSC that owns ALL restaurant storefront data loading + JSX. `page.tsx` keeps only: surface/slug resolution, tenant lookup, servable check, terminology-driven empty states, template dispatch.
+- Consumes: `getVerticalTerms`, `selectStorefrontTemplate`, `VerticalId` from `@/server/verticals` (Task 1).
 
-This is a **pure extraction** — no visual change. The e2e smoke passing unmodified is the acceptance gate.
-
-- [ ] **Step 1: Create `MenuTemplate.tsx`** — move everything in `src/app/page.tsx` from the `const { branch: branchId } = await searchParams;` line (line 52) through the closing `</main>` of the storefront branch (line 160) into:
-
-```tsx
-// src/app/_components/templates/menu/MenuTemplate.tsx
-import type { Tenant } from "@/server/tenancy";
-// ...move the storefront-related imports from page.tsx here verbatim:
-// getPublishedMenu, getActiveBanners, listBranches, listDeliveryAreas, hasFeature,
-// getBranchOpenState, isBranchOrderableAt, getWhatsappNumber, getPopularProductIds,
-// formatMoney, BranchSelector, StorefrontMenu, Hero, OpenStateBanner,
-// RecentOrderStrip, StorefrontFooter, EmptyState
-import { getVerticalTerms, type VerticalKey } from "@/server/verticals";
-
-export async function MenuTemplate({ tenant, slug, branchId }: { tenant: Tenant; slug: string; branchId?: string }) {
-  const terms = getVerticalTerms(tenant.vertical as VerticalKey);
-  // body: EXACTLY the code from page.tsx lines 54–160, with two substitutions:
-  //   1. `branchId` comes from the prop (searchParams stays in page.tsx)
-  //   2. the empty-menu EmptyState uses terms:
-  //      <EmptyState title={terms.emptyCatalogTitle.en} description={terms.emptyCatalogBody.en} />
-  //   (all imports adjusted from "./_components/..." to "../.." relative paths or "@/app/_components/...")
-}
-```
-
-Adjust component import paths (`../../storefront/Hero` etc. — the file sits two levels deeper than `page.tsx`; prefer `@/app/...` absolute imports to avoid fragile relatives).
-
-- [ ] **Step 2: Rewrite `page.tsx` as the dispatcher**
+- [ ] **Step 1: Terms-driven empty states** — in `src/app/page.tsx`'s storefront branch:
+1. The unknown-slug branch has no tenant row, so it keeps a neutral title — change `<EmptyState title="Store not found" />` to `<EmptyState title="Not found" />`.
+2. The not-servable branch knows the tenant; replace the hardcoded `description="This store is getting ready. Check back soon!"` with:
 
 ```tsx
-// src/app/page.tsx — storefront branch becomes:
-import { getVerticalDescriptor, getVerticalTerms, type VerticalKey } from "@/server/verticals";
-import { MenuTemplate } from "./_components/templates/menu/MenuTemplate";
-
-  if (surface === "storefront" && slug) {
-    const tenant = await getTenantBySlug(slug);
-    if (!tenant) {
-      return (
-        <main className="grid min-h-screen place-items-center bg-background p-6">
-          <EmptyState title="Not found" />
-        </main>
-      );
-    }
-    const terms = getVerticalTerms(tenant.vertical as VerticalKey);
-    if (!isTenantServable(tenant)) {
-      return (
-        <main className="grid min-h-screen place-items-center bg-background p-6">
-          <EmptyState title={tenant.name} description={terms.gettingReadyBody.en} />
-        </main>
-      );
-    }
-    const { branch: branchId } = await searchParams;
-    const descriptor = getVerticalDescriptor(tenant.vertical as VerticalKey);
-    // Task 9 adds: if (descriptor.storefront.template === "shop") return <ShopTemplate ... />;
-    void descriptor;
-    return <MenuTemplate tenant={tenant} slug={slug} branchId={branchId} />;
-  }
+    const terms = getVerticalTerms(selectStorefrontTemplate(tenant.vertical as VerticalId));
+    // ...
+    <EmptyState title={tenant.name} description={terms.gettingReadyBody.en} />
 ```
 
-Note: the unknown-slug branch can't use vertical terms (no tenant row), so it uses the neutral `"Not found"`. The marketing branch of `page.tsx` stays untouched. Remove the imports that moved to `MenuTemplate.tsx`.
+(`selectStorefrontTemplate` doubles as the safe VerticalId normalizer — reuse it rather than casting blindly.) Import both from `@/server/verticals`.
 
-- [ ] **Step 3: Typecheck + unit suite**
+- [ ] **Step 2: Typecheck + unit suite**
 
 Run: `npx tsc --noEmit && npm run test`
 Expected: PASS.
 
-- [ ] **Step 4: Regression-verify the storefront e2e (unmodified spec)**
+- [ ] **Step 3: Regression-verify the storefront e2e (unmodified spec)**
 
 Run: `npm run test:e2e -- tests/e2e/menu.spec.ts`
-Expected: PASS without touching `tests/e2e/menu.spec.ts` — proof the extraction changed nothing. (Requires the dev DB seeded with `roma`: `npm run db:seed` if not.)
+Expected: PASS without touching the spec. (Requires the dev DB seeded with `roma`: `npm run db:seed` if not.)
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add src/app/page.tsx src/app/_components/templates/menu
-git commit -m "refactor(storefront): extract MenuTemplate; page.tsx dispatches by vertical"
+git add src/app/page.tsx
+git commit -m "feat(storefront): vertical terms drive pre-template empty states"
 ```
 
 ---
 
-### Task 9: ShopTemplate — retail storefront
+### Task 9 (REVISED): Shop catalog UI inside the merged per-vertical templates
 
 **Files:**
-- Create: `src/app/_components/templates/shop/ShopTemplate.tsx`
-- Create: `src/app/_components/templates/shop/ShopBrowser.tsx`
-- Create: `src/app/_components/templates/shop/ShopProductCard.tsx`
-- Create: `src/app/_components/templates/shop/RetailProductSheet.tsx`
-- Create: `src/app/_components/templates/shop/shop-search.ts` + test `shop-search.test.ts`
-- Modify: `src/app/page.tsx` (add shop dispatch branch)
+- Create: `src/app/_components/storefront/templates/shop/ShopBrowser.tsx`
+- Create: `src/app/_components/storefront/templates/shop/ShopProductCard.tsx`
+- Create: `src/app/_components/storefront/templates/shop/RetailProductSheet.tsx`
+- Create: `src/app/_components/storefront/templates/shop/shop-search.ts` + test `shop-search.test.ts`
+- Modify: `src/app/_components/storefront/templates/StorefrontShell.tsx` (optional catalog slot)
+- Modify: `src/app/_components/storefront/templates/RetailStorefront.tsx`, `PharmacyStorefront.tsx`, `TimberStorefront.tsx` (pass the shop catalog into the slot)
 
 **Interfaces:**
-- Consumes: `PublishedMenu` with `brand/inStock/variants` (Task 4); cart with variants (Task 7); shared components `Hero`, `OpenStateBanner`, `RecentOrderStrip`, `BranchSelector`, `CartBar`, `CartDrawer`, `BranchPickSheet`, `StorefrontFooter`, `EmptyState`; `MenuProduct` type from `@/app/_components/storefront/ProductCard`.
-- Produces: `ShopTemplate({ tenant, slug, branchId })` — same signature as `MenuTemplate`; `filterCatalog(categories, query)` pure search helper.
+- Consumes: `PublishedMenu` with `brand/inStock/variants` (Task 4); cart with variants (Task 7); the merged `StorefrontShell` + `StorefrontTemplateProps`; shared components `CartBar`, `CartDrawer`, `BranchPickSheet`, `SectionHeader`; `MenuProduct` type from `@/app/_components/storefront/ProductCard`.
+- Produces: `filterCatalog(categories, query)` pure search helper; `StorefrontShell` gains `catalog?: React.ReactNode` — when undefined it renders its existing `StorefrontMenu` block unchanged, so the restaurant template is untouched; the three shop-vertical wrappers pass `<ShopBrowser …/>`.
+- Routing: `page.tsx` already dispatches to the wrappers via `selectStorefrontTemplate` — no dispatch work here.
 
 Design language: reuse the existing premium tokens (`sf-img`, `card-lift`, `eyebrow`, `font-display` — see `src/app/globals.css` and existing storefront components). Retail DNA per the spec: search-first, category-sectioned dense grid, brand eyebrow, stock badges, variant picker. Out-of-stock items stay visible but unpurchasable.
 
 - [ ] **Step 1: Pure search helper + failing test**
 
 ```ts
-// src/app/_components/templates/shop/shop-search.ts
+// src/app/_components/storefront/templates/shop/shop-search.ts
 import type { PublishedMenu } from "@/server/catalog/schema";
 
 type Categories = PublishedMenu["categories"];
@@ -1407,7 +1484,7 @@ export function filterCatalog(categories: Categories, query: string): Categories
 ```
 
 ```ts
-// src/app/_components/templates/shop/shop-search.test.ts
+// src/app/_components/storefront/templates/shop/shop-search.test.ts
 import { describe, it, expect } from "vitest";
 import { filterCatalog } from "./shop-search";
 
@@ -1440,12 +1517,12 @@ describe("filterCatalog", () => {
 });
 ```
 
-Run: `npm run test -- src/app/_components/templates/shop/shop-search.test.ts` → FAIL (module missing) → create the helper → PASS.
+Run: `npm run test -- src/app/_components/storefront/templates/shop/shop-search.test.ts` → FAIL (module missing) → create the helper → PASS.
 
 - [ ] **Step 2: `ShopProductCard`**
 
 ```tsx
-// src/app/_components/templates/shop/ShopProductCard.tsx
+// src/app/_components/storefront/templates/shop/ShopProductCard.tsx
 "use client";
 import { formatMoney } from "@/lib/money";
 import type { MenuProduct } from "@/app/_components/storefront/ProductCard";
@@ -1505,7 +1582,7 @@ export function ShopProductCard({
 - [ ] **Step 3: `RetailProductSheet`** — variant picker instead of modifier groups:
 
 ```tsx
-// src/app/_components/templates/shop/RetailProductSheet.tsx
+// src/app/_components/storefront/templates/shop/RetailProductSheet.tsx
 "use client";
 import { useEffect, useState } from "react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
@@ -1617,7 +1694,7 @@ export function RetailProductSheet({
 - [ ] **Step 4: `ShopBrowser`** — the client shell (search + grid + sheet + cart), mirroring `StorefrontMenu.tsx`'s wiring exactly:
 
 ```tsx
-// src/app/_components/templates/shop/ShopBrowser.tsx
+// src/app/_components/storefront/templates/shop/ShopBrowser.tsx
 "use client";
 import { useEffect, useState } from "react";
 import type { PublishedMenu } from "@/server/catalog/schema";
@@ -1738,28 +1815,68 @@ export function ShopBrowser({
 }
 ```
 
-- [ ] **Step 5: `ShopTemplate`** — the RSC. Copy `MenuTemplate.tsx` and change ONLY: drop `getPopularProductIds` (no popular strip in v1 shop), render `<ShopBrowser ...>` instead of `<StorefrontMenu ...>` (same props minus `popularIds`), and use the retail empty state (`terms.emptyCatalogTitle/Body` come from the tenant's vertical automatically). Everything else (Hero, OpenStateBanner, RecentOrderStrip, banners strip, BranchSelector, StorefrontFooter, eta/min-order labels) stays identical — shared primitives, not forks.
-
-- [ ] **Step 6: Add the dispatch branch** — in `src/app/page.tsx` replace the `void descriptor;` line from Task 8 with:
+- [ ] **Step 5: Catalog slot in `StorefrontShell`** — read the shell first; it currently renders `<StorefrontMenu …/>` (or the empty state) inside its catalog section. Add an optional prop and use it:
 
 ```tsx
-    if (descriptor.storefront.template === "shop") {
-      return <ShopTemplate tenant={tenant} slug={slug} branchId={branchId} />;
-    }
+export type StorefrontTemplateProps = {
+  // ...existing fields unchanged...
+  /** Shop verticals inject their catalog UI here; undefined = restaurant menu. */
+  catalog?: React.ReactNode;
+};
 ```
 
-and import `ShopTemplate`.
+In the shell body, where the catalog section renders, keep the existing empty-state branch (`menu.categories.length === 0 → EmptyState(config.emptyMenuTitle/Desc)`) and change only the non-empty branch:
+
+```tsx
+          {props.catalog ?? (
+            <StorefrontMenu
+              /* the exact existing props — do not change them */
+            />
+          )}
+```
+
+- [ ] **Step 6: Shop wrappers pass the catalog** — update the three shop-vertical wrappers identically (retail shown; pharmacy/timber differ only in their `VERTICAL_ACCENTS`/`VERTICAL_STOREFRONT_COPY` keys, which they already reference):
+
+```tsx
+// src/app/_components/storefront/templates/RetailStorefront.tsx
+import { StorefrontShell, type StorefrontTemplateProps } from "./StorefrontShell";
+import { VERTICAL_ACCENTS, VERTICAL_STOREFRONT_COPY } from "@/server/verticals";
+import { ShopBrowser } from "./shop/ShopBrowser";
+
+export function RetailStorefront(props: Omit<StorefrontTemplateProps, "accent" | "config" | "catalog">) {
+  return (
+    <StorefrontShell
+      {...props}
+      accent={VERTICAL_ACCENTS.retail}
+      config={VERTICAL_STOREFRONT_COPY.retail}
+      catalog={
+        <ShopBrowser
+          menu={props.menu}
+          branchId={props.activeBranch?.id ?? null}
+          slug={props.slug}
+          orderingEnabled={props.orderingEnabled && !props.paused}
+          preorderOnly={props.openState !== null && !props.openState.open && !props.paused}
+          branches={props.branchSummaries}
+          currency={props.tenant.currency}
+        />
+      }
+    />
+  );
+}
+```
+
+(Verify the exact prop names against the shell's `StorefrontTemplateProps` — `orderingEnabled`/`paused`/`openState`/`branchSummaries` all exist there; mirror how the shell itself computes the same values for `StorefrontMenu`.)
 
 - [ ] **Step 7: Verify**
 
 Run: `npx tsc --noEmit && npm run test && npm run test:e2e -- tests/e2e/menu.spec.ts`
-Expected: all PASS (shop e2e comes with the seed in Task 15).
+Expected: all PASS — restaurant storefront unchanged (slot defaults to `StorefrontMenu`); shop e2e comes with the seed in Task 15.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/app/_components/templates/shop src/app/page.tsx
-git commit -m "feat(storefront): retail ShopTemplate — search, dense grid, stock badges, variant picker"
+git add src/app/_components/storefront/templates
+git commit -m "feat(storefront): shop catalog UI (search, dense grid, stock badges, variant picker) in retail/pharmacy/timber templates"
 ```
 
 ---
@@ -1857,8 +1974,8 @@ Extend `src/lib/order-status.test.ts` with:
 - [ ] **Step 4: Tracking page** — in `src/app/order/[token]/page.tsx`, the page already loads the tenant to render the order; derive overrides and pass them wherever `statusLabel` (or the timeline component) is used:
 
 ```ts
-import { getVerticalTerms, type VerticalKey } from "@/server/verticals";
-const terms = getVerticalTerms(tenant.vertical as VerticalKey);
+import { getVerticalTerms, type VerticalId } from "@/server/verticals";
+const terms = getVerticalTerms(tenant.vertical as VerticalId);
 const statusOverrides = { preparing: terms.statusPreparing.en, ready: terms.statusReady.en };
 ```
 
@@ -1878,68 +1995,35 @@ git commit -m "feat(checkout): totals breakdown from computeOrderTotals, variant
 ```
 ---
 
-### Task 11: Registration vertical picker + admin queue shows vertical
+### Task 11 (REVISED): Admin queue shows the vertical
+
+Registration is DONE — the merged scaffold ships `registerTenant` with a required, validated `vertical`, the 4-card register picker, and tests covering persistence + rejection of invalid values. Do not touch onboarding or the register page. What remains is surfacing the vertical to the platform admin.
 
 **Files:**
-- Modify: `src/server/onboarding/service.ts`
-- Modify: `src/app/register/actions.ts`
-- Modify: `src/app/register/page.tsx`
 - Modify: `src/server/platform/` (the service behind `listPendingApplications` — read it first)
 - Modify: `src/app/admin/page.tsx`
-- Test: extend `src/server/onboarding/service.test.ts`
+- Test: extend `src/server/platform/service.test.ts`
 
 **Interfaces:**
-- Consumes: `tenants.vertical` (Task 2), `VerticalKey` (Task 1).
-- Produces: `RegisterInput` gains `vertical?: VerticalKey` (default `"restaurant"`); `listPendingApplications()` rows gain `vertical: string`.
+- Consumes: the merged `tenants.vertical`; `registerTenant` (in tests).
+- Produces: `listPendingApplications()` rows gain `vertical: string`.
 
-- [ ] **Step 1: Write the failing test** — append to `src/server/onboarding/service.test.ts` (mirror its existing registration test setup):
+- [ ] **Step 1: Write the failing test** — append to `src/server/platform/service.test.ts` (mirror its existing setup, which already registers tenants via `registerTenant`):
 
 ```ts
-  it("registers a retail tenant when vertical is given, defaults to restaurant otherwise", async () => {
-    const r1 = await registerRestaurant({
-      restaurantName: "Nobio Hardware", slug: "onb-retail", country: "EG",
-      ownerName: "O", email: "o@onb-retail.com", password: "secret123", vertical: "retail",
-    });
-    const [t1] = await db.select().from(tenants).where(eq(tenants.id, r1.tenantId)).limit(1);
-    expect(t1.vertical).toBe("retail");
-
-    const r2 = await registerRestaurant({
-      restaurantName: "Roma 2", slug: "onb-resto", country: "EG",
-      ownerName: "O", email: "o@onb-resto.com", password: "secret123",
-    });
-    const [t2] = await db.select().from(tenants).where(eq(tenants.id, r2.tenantId)).limit(1);
-    expect(t2.vertical).toBe("restaurant");
+  it("pending applications include the tenant vertical", async () => {
+    const { tenantId } = await registerTenant({ restaurantName: "Wood & Co", slug: "adm-timber", country: "EG", ownerName: "O", email: "o@adm-timber.com", password: "x", vertical: "timber" });
+    const pending = await listPendingApplications();
+    const row = pending.find((p) => p.tenantId === tenantId);
+    expect(row?.vertical).toBe("timber");
   });
 ```
 
-Run: `npm run test -- src/server/onboarding` → FAIL (`vertical` not in `RegisterInput`).
+Run: `npm run test -- src/server/platform` → FAIL (`vertical` not on the row type).
 
-- [ ] **Step 2: Implement in `src/server/onboarding/service.ts`**
-1. `import type { VerticalKey } from "@/server/verticals";`
-2. `RegisterInput` gains `vertical?: VerticalKey;`
-3. The tenants insert gains `vertical: input.vertical ?? "restaurant",`
+- [ ] **Step 2: Implement** — in the platform service, add `vertical` to `listPendingApplications`'s selected fields (the query already joins `tenants`; select `tenants.vertical`) and to its returned row type. Run the test again → PASS.
 
-Run the test again → PASS.
-
-- [ ] **Step 3: Wire the form** — in `src/app/register/actions.ts` add to the `registerRestaurant` call:
-
-```ts
-    vertical: String(formData.get("vertical")) === "retail" ? "retail" : "restaurant",
-```
-
-In `src/app/register/page.tsx`: change the heading `Create your restaurant` → `Create your business`, and add a business-type field as the FIRST form field (reuse the existing `labelStyle`/`inputStyle` consts):
-
-```tsx
-          <label style={{ display: "grid" }}>
-            <span style={labelStyle}>Business type</span>
-            <select name="vertical" defaultValue="restaurant" style={inputStyle}>
-              <option value="restaurant">Restaurant</option>
-              <option value="retail">Retail store</option>
-            </select>
-          </label>
-```
-
-- [ ] **Step 4: Admin queue** — read the platform service file that implements `listPendingApplications` (`src/server/platform/`, exported from its `index.ts`). Add `vertical` to its selected/returned fields (join already includes the tenant; select `tenants.vertical`). Then in `src/app/admin/page.tsx` render it in the list item:
+- [ ] **Step 3: Render the chip** — in `src/app/admin/page.tsx`:
 
 ```tsx
             <strong>{p.tenantName}</strong> — {p.slug}.serveos.com
@@ -1948,16 +2032,16 @@ In `src/app/register/page.tsx`: change the heading `Create your restaurant` → 
 
 Also update the `<h1>Pending restaurants</h1>` → `<h1>Pending applications</h1>`.
 
-- [ ] **Step 5: Verify**
+- [ ] **Step 4: Verify**
 
-Run: `npx tsc --noEmit && npm run test -- src/server/onboarding src/server/platform`
+Run: `npx tsc --noEmit && npm run test -- src/server/platform`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add src/server/onboarding src/app/register src/server/platform src/app/admin
-git commit -m "feat(onboarding): business-type picker sets tenant vertical; admin queue shows it"
+git add src/server/platform src/app/admin
+git commit -m "feat(admin): pending-application queue shows the tenant vertical"
 ```
 
 ---
@@ -1973,7 +2057,7 @@ git commit -m "feat(onboarding): business-type picker sets tenant vertical; admi
 - Create: `src/app/dashboard/menu/products/[id]/VariantsEditor.tsx` (server-rendered card, forms post to actions)
 
 **Interfaces:**
-- Consumes: `getVerticalTerms`, `getCapabilities`, `VerticalKey` (Task 1); `listVariants`, `upsertVariant`, `deleteVariant`, `setProductStock` (Task 3); extended `UpdateProductInput` (Task 3).
+- Consumes: `getVerticalTerms`, `getCapabilities`, `VerticalId` (Task 1); `listVariants`, `upsertVariant`, `deleteVariant`, `setProductStock` (Task 3); extended `UpdateProductInput` (Task 3).
 - Produces: `dashboardNavItems(roleKeys: RoleKey[], catalogLabel?: string)`; server actions `upsertVariantAction(productId, formData)`, `deleteVariantAction(productId, variantId)`, `setProductStockAction(productId, formData)`.
 
 - [ ] **Step 1: Nav label** — in `src/components/dashboard/nav-items.ts`:
@@ -1987,9 +2071,9 @@ and the menu entry becomes `items.push({ label: catalogLabel, href: "/dashboard/
 In `src/app/dashboard/layout.tsx`:
 
 ```ts
-import { getVerticalTerms, type VerticalKey } from "@/server/verticals";
+import { getVerticalTerms, type VerticalId } from "@/server/verticals";
 // after tenant loads:
-const terms = getVerticalTerms((tenant?.vertical ?? "restaurant") as VerticalKey);
+const terms = getVerticalTerms((tenant?.vertical ?? "restaurant") as VerticalId);
 const items = dashboardNavItems(roleKeys, terms.catalogNoun.en);
 ```
 
@@ -2103,12 +2187,12 @@ export function VariantsEditor({ productId, variants }: { productId: string; var
 
 ```ts
 import { getTenantById } from "@/server/tenancy";
-import { getCapabilities, type VerticalKey } from "@/server/verticals";
+import { getCapabilities, type VerticalId } from "@/server/verticals";
 import { listVariants } from "@/server/catalog";
 import { VariantsEditor } from "./VariantsEditor";
 // in the component body, after requireDashboardUser:
 const tenant = await getTenantById(ctx.tenantId);
-const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalKey);
+const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalId);
 const variants = caps.variants ? await listVariants(ctx.tenantId, id) : [];
 ```
 
@@ -2197,13 +2281,13 @@ import { revalidatePath } from "next/cache";
 import { requireDashboardUser } from "@/server/auth/dashboard-context";
 import { authorize } from "@/server/rbac/authorize";
 import { getTenantById, setVatEnabled, setVatRate, setPricesIncludeVat, setServiceChargeRate } from "@/server/tenancy";
-import { getCapabilities, type VerticalKey } from "@/server/verticals";
+import { getCapabilities, type VerticalId } from "@/server/verticals";
 
 export async function saveTaxSettingsAction(formData: FormData) {
   const { tenantId, roleKeys } = await requireDashboardUser();
   authorize(roleKeys, "fulfillment:manage");
   const tenant = await getTenantById(tenantId);
-  const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalKey);
+  const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalId);
 
   await setVatEnabled(tenantId, formData.get("vatEnabled") === "true");
   const rate = Number(formData.get("vatRate"));
@@ -2225,7 +2309,7 @@ export async function saveTaxSettingsAction(formData: FormData) {
 import { requireDashboardUser } from "@/server/auth/dashboard-context";
 import { authorize } from "@/server/rbac/authorize";
 import { getTenantById, getCheckoutPricing } from "@/server/tenancy";
-import { getCapabilities, type VerticalKey } from "@/server/verticals";
+import { getCapabilities, type VerticalId } from "@/server/verticals";
 import { saveTaxSettingsAction } from "./actions";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { SubmitButton } from "@/components/dashboard/SubmitButton";
@@ -2238,7 +2322,7 @@ export default async function TaxesSettingsPage() {
   const ctx = await requireDashboardUser();
   authorize(ctx.roleKeys, "fulfillment:manage");
   const tenant = await getTenantById(ctx.tenantId);
-  const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalKey);
+  const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalId);
   const pricing = await getCheckoutPricing(ctx.tenantId);
 
   return (
@@ -2503,7 +2587,7 @@ git commit -m "feat(seed): nobio retail showcase tenant + shop template e2e smok
 
 **Files:**
 - Create: `tests/e2e/storefront-responsive.spec.ts`
-- Modify (as the audit finds issues): `src/app/_components/templates/shop/*`, `src/app/_components/storefront/*`, `src/app/checkout/CheckoutForm.tsx`, `src/app/globals.css`
+- Modify (as the audit finds issues): `src/app/_components/storefront/templates/shop/*`, `src/app/_components/storefront/*`, `src/app/checkout/CheckoutForm.tsx`, `src/app/globals.css`
 
 **Interfaces:** none new — this is a verification-driven polish pass. Tests define "done".
 
@@ -2632,7 +2716,8 @@ git commit -m "polish(storefront): mobile responsiveness pass for menu + shop te
 | §4 Storefront (dispatch, menu extraction, shop template, QR) | 8, 9, 14 |
 | §5 Cart/checkout/ordering (variant lines, DB pricing, state machine untouched) | 6, 7, 10 |
 | §6 Taxes & adjustments (computeOrderTotals, settings, snapshots, dashboard) | 5, 13 |
-| §7 Dashboard & onboarding (terms, adaptive form, stock adjust, registration, admin, seed) | 11, 12, 15 |
+| §7 Dashboard & onboarding (terms, adaptive form, stock adjust, admin, seed; registration shipped by the merged scaffold) | 11, 12, 15 |
+| Spec Revision 2 (4 verticals, single registry absorbing tenancy/verticals, shell catalog slot) | 1, 8, 9, 11 |
 | §8 Errors (OutOfStock, InvalidVariant, CapabilityNotEnabled, migration safety) | 1, 2, 3, 6 |
 | §9 Testing (registry completeness, RLS, race, restaurant-regression e2e, totals) | every task; race in 6, regression e2e in 8/15 |
 | Mobile UI/UX & responsiveness (user addition, 2026-07-13) | 16 |

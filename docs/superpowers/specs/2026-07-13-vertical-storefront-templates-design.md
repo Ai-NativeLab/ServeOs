@@ -1,8 +1,38 @@
 # Vertical Storefront Templates — Design
 
-**Date:** 2026-07-13
-**Status:** Approved (brainstorming complete)
+**Date:** 2026-07-13 (Revision 2: 2026-07-14)
+**Status:** Approved (brainstorming complete; revised to build on the scaffold merged to main)
 **Scope of this delivery:** vertical framework + restaurant migration + retail vertical
+
+## Revision 2 (2026-07-14): building on the merged multi-vertical scaffold
+
+A presentation-layer scaffold for this same feature was merged to `main` on 2026-07-13
+(`8e03152..4911703`, spec at `docs/ailab/specs/2026-07-13-multi-vertical-storefront-design.md`).
+This spec now **builds on it** instead of duplicating it. Deltas to the sections below:
+
+- **Four verticals, not two:** `restaurant | retail | pharmacy | timber` (the merged
+  `vertical` pg enum). Wherever this spec says `"restaurant" | "retail"`, read all four.
+  The type is named **`VerticalId`** (the merged name), not `VerticalKey`.
+- **Pharmacy and timber in v1** are shop-template verticals with retail-like capabilities
+  (variants + stock, no modifiers, no service charge, no WhatsApp CTA). Their unique
+  domains (prescriptions; cut-to-order) remain later phases, per §10.
+- **Single source of truth:** `src/server/verticals/` absorbs the merged
+  `src/server/tenancy/verticals.ts` (accents, storefront copy, `selectStorefrontTemplate`)
+  into the capability registry. The old module is deleted and its call sites re-pointed;
+  its exports (`VERTICAL_IDS`, `VERTICAL_ACCENTS`, `VERTICAL_STOREFRONT_COPY`,
+  `selectStorefrontTemplate`) are preserved as derivations of the descriptors so the
+  merged storefront shell keeps working. Descriptors additionally gain `accent: string`
+  and `storefront.showWhatsapp: boolean` (adopting the merged per-vertical choices), and
+  terminology gains `storefrontHeading` (Menu / Shop / Shop / Yard) distinct from the
+  dashboard `catalogNoun`.
+- **Already shipped by the scaffold (removed from this spec's remaining scope):**
+  `tenants.vertical` column + migration; registration vertical picker + validated
+  `registerTenant` (renamed from `registerRestaurant`); storefront template routing in
+  `page.tsx` via per-vertical wrapper components over a shared `StorefrontShell`.
+- **Template architecture:** the shop experience plugs into the merged structure — the
+  `RetailStorefront` / `PharmacyStorefront` / `TimberStorefront` wrappers render the shop
+  catalog UI inside `StorefrontShell` (which gains a catalog slot), rather than the
+  parallel `templates/menu|shop` directories originally described in §4.
 
 ## 1. Problem & Goal
 
