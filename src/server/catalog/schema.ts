@@ -114,6 +114,9 @@ export interface PublishedMenu {
       descriptionAr: string | null;
       effectivePrice: number;
       imageUrl: string | null;
+      brand: string | null;
+      inStock: boolean;
+      variants: Array<{ id: string; nameEn: string; nameAr: string; price: number; inStock: boolean }>;
       isFeatured: boolean;
       createdAt: string;
       modifierGroups: ModifierGroupWithOptions[];

@@ -9,6 +9,7 @@ import {
   modifierGroups,
   modifierOptions,
   branchProductAvailability,
+  productVariants,
   type Category,
   type NewCategory,
   type Product,
@@ -333,6 +334,13 @@ export async function getPublishedMenu(tenantId: string, branchId?: string): Pro
     const groupsWithOpts: ModifierGroupWithOptions[] = groups.map((g) => ({ ...g, options: optsByGroup[g.id] ?? [] }));
     const groupsByProduct = groupBy(groupsWithOpts, (g) => g.productId);
 
+    const variantRows = productIds.length > 0
+      ? await tx.select().from(productVariants)
+          .where(and(inArray(productVariants.productId, productIds), eq(productVariants.isActive, true)))
+          .orderBy(productVariants.sortOrder)
+      : [];
+    const variantsByProduct = groupBy(variantRows, (v) => v.productId);
+
     const prodsByCat = groupBy(
       prodRows.map((p) => ({
         id: p.id,
@@ -342,6 +350,17 @@ export async function getPublishedMenu(tenantId: string, branchId?: string): Pro
         descriptionAr: p.descriptionAr,
         effectivePrice: Number(p.basePrice),
         imageUrl: p.imageUrl,
+        brand: p.brand,
+        variants: (variantsByProduct[p.id] ?? []).map((v) => ({
+          id: v.id, nameEn: v.nameEn, nameAr: v.nameAr,
+          price: Number(v.price),
+          inStock: v.stockQuantity === null || v.stockQuantity > 0,
+        })),
+        inStock: (variantsByProduct[p.id] ?? []).length > 0
+          ? (variantsByProduct[p.id] ?? []).some((v) => v.stockQuantity === null || v.stockQuantity > 0)
+          : p.trackStock
+            ? (p.stockQuantity ?? 0) > 0
+            : true,
         isFeatured: p.isFeatured,
         createdAt: p.createdAt.toISOString(),
         modifierGroups: groupsByProduct[p.id] ?? [],
