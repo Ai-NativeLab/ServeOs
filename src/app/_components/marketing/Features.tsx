@@ -1,45 +1,40 @@
 "use client";
-import { FeatureIcon, FeatureIconSprite, type FeatureIconId } from "@/components/brand/FeatureIcon";
 import { useLang } from "./LangProvider";
-
-const FEATURES: { id: FeatureIconId; tone: "coral" | "teal" }[] = [
-  { id: "ic-qr", tone: "coral" },
-  { id: "ic-chat", tone: "coral" },
-  { id: "ic-table", tone: "coral" },
-  { id: "ic-pos", tone: "coral" },
-  { id: "ic-inventory", tone: "teal" },
-  { id: "ic-analytics", tone: "teal" },
-];
+import { useVertical } from "./VerticalProvider";
 
 export function MarketingFeatures() {
   const { t } = useLang();
+  const { id, v, accent, shared } = useVertical();
+
   return (
     <section id="features" className="mx-auto max-w-6xl px-6 py-24">
-      <FeatureIconSprite />
-
       <div className="mb-12 max-w-2xl">
-        <p className="eyebrow text-primary">{t.features.eyebrow}</p>
-        <h2 className="mt-2 font-display text-3xl font-bold text-ink sm:text-4xl">
-          {t.features.heading}
-        </h2>
+        <p className="eyebrow" style={{ color: accent }}>
+          {t.features.eyebrow}
+        </p>
+        <h2 className="font-display mt-2 text-3xl font-bold text-ink sm:text-4xl">{t.features.heading}</h2>
       </div>
 
-      <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
-        {FEATURES.map((f) => {
-          const copy = t.features.items[f.id];
+      <div key={id} className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
+        {v.features.map((f) => {
+          const Icon = f.icon;
           return (
-            <div key={f.id} className="rounded-xl border bg-card p-6">
+            <div key={f.title} className="flex h-full flex-col rounded-xl border bg-card p-6">
               <div
-                className={
-                  f.tone === "coral"
-                    ? "mb-4 grid size-12 place-items-center rounded-lg bg-accent text-primary"
-                    : "mb-4 grid size-12 place-items-center rounded-lg bg-[#DBF3F0] text-[#0FB5A6]"
-                }
+                className="mb-4 grid size-12 place-items-center rounded-lg"
+                style={{ backgroundColor: `${accent}1F`, color: accent }}
               >
-                <FeatureIcon id={f.id} className="size-6" />
+                <Icon className="size-6" strokeWidth={1.75} />
               </div>
-              <h3 className="font-display text-lg font-bold text-ink">{copy.title}</h3>
-              <p className="mt-1.5 text-sm text-muted-foreground">{copy.description}</p>
+              <div className="flex items-start justify-between gap-2">
+                <h3 className="font-display text-lg font-bold text-ink">{f.title}</h3>
+                {f.roadmap && (
+                  <span className="mt-0.5 shrink-0 rounded-full border border-border bg-muted px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+                    {shared.soon}
+                  </span>
+                )}
+              </div>
+              <p className="mt-1.5 text-sm text-muted-foreground">{f.description}</p>
             </div>
           );
         })}

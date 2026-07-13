@@ -2,79 +2,84 @@
 import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { LogoMark } from "@/components/brand/LogoMark";
 import { useLang } from "./LangProvider";
+import { useVertical } from "./VerticalProvider";
+import { VerticalSwitcher } from "./VerticalSwitcher";
+import { TicketCard } from "./TicketCard";
 
 export function MarketingHero() {
   const { t } = useLang();
+  const { v, accent, shared } = useVertical();
+
   return (
     <section
       id="hero"
-      className="relative overflow-hidden bg-[#17100B] px-6 py-28 text-[#FBF1EC] sm:py-36"
+      className="relative overflow-hidden bg-[#14120F] px-6 py-20 text-[#F7F4F1] sm:py-28"
     >
+      {/* A hairline rule grid reads as counter/yard/shelf rather than as decoration, and a
+          single accent wash lifts the docket off the background. */}
       <div aria-hidden="true" className="pointer-events-none absolute inset-0">
-        <div className="absolute -left-40 -top-56 size-[75rem] rounded-full bg-[radial-gradient(circle_at_center,#FF5E34_0%,rgba(240,82,43,0.55)_34%,rgba(240,82,43,0)_66%)] motion-safe:animate-[drift1_22s_ease-in-out_infinite]" />
-        <div className="absolute -bottom-64 -right-36 size-[72rem] rounded-full bg-[radial-gradient(circle_at_center,#F0522B_0%,rgba(210,63,28,0.5)_36%,rgba(210,63,28,0)_68%)] motion-safe:animate-[drift2_26s_ease-in-out_infinite]" />
-        <div className="absolute right-[6%] top-[44%] size-[40rem] rounded-full bg-[radial-gradient(circle_at_center,rgba(45,212,196,0.5)_0%,rgba(15,181,166,0)_62%)] motion-safe:animate-[drift3_20s_ease-in-out_infinite]" />
-        <div className="absolute -bottom-32 left-[8%] h-[32rem] w-[47rem] rounded-full bg-[radial-gradient(circle_at_center,rgba(216,204,190,0.28)_0%,rgba(216,204,190,0)_60%)]" />
-
-        <svg viewBox="0 0 1920 1080" preserveAspectRatio="none" className="absolute inset-0 h-full w-full">
-          <g fill="none" stroke="#2DD4C4" strokeWidth={2} strokeLinecap="round" opacity={0.55}>
-            <path d="M-40 210 C 320 120, 520 300, 860 220" strokeDasharray="7 16" className="motion-safe:animate-[dash_9s_linear_infinite]" />
-            <path d="M1960 320 C 1600 250, 1420 430, 1120 330" strokeDasharray="6 18" className="motion-safe:animate-[dash_11s_linear_infinite]" />
-            <path d="M1960 780 C 1560 700, 1440 900, 1080 820" strokeDasharray="7 16" className="motion-safe:animate-[dash_10s_linear_infinite]" />
-            <path d="M-40 900 C 280 820, 500 980, 820 900" strokeDasharray="6 18" className="motion-safe:animate-[dash_13s_linear_infinite]" />
-          </g>
-          <g fill="#5EEBDD">
-            <circle cx={860} cy={220} r={5} className="motion-safe:animate-[pulse-node_3.2s_ease-in-out_infinite]" />
-            <circle cx={1120} cy={330} r={5} className="motion-safe:animate-[pulse-node_3.8s_ease-in-out_infinite_0.6s]" />
-            <circle cx={1080} cy={820} r={5} className="motion-safe:animate-[pulse-node_3.4s_ease-in-out_infinite_1.1s]" />
-            <circle cx={820} cy={900} r={5} className="motion-safe:animate-[pulse-node_4s_ease-in-out_infinite_0.3s]" />
-          </g>
-        </svg>
-
-        <LogoMark className="absolute right-[8%] top-24 hidden size-40 text-[#FFB496]/15 lg:block motion-safe:animate-[floaty_9s_ease-in-out_infinite]" />
-        <LogoMark className="absolute bottom-24 left-[7%] hidden size-32 text-[#5EEBDD]/15 lg:block motion-safe:animate-[floaty_11s_ease-in-out_infinite_1.2s]" />
-
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_46%_54%_at_42%_52%,rgba(20,13,9,0.72)_0%,rgba(20,13,9,0.35)_45%,rgba(20,13,9,0)_78%)]" />
-        <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(20,13,9,0.4)_0%,rgba(20,13,9,0)_18%,rgba(20,13,9,0)_82%,rgba(20,13,9,0.35)_100%)]" />
+        <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(255,255,255,0.04)_1px,transparent_1px)] bg-[size:88px_100%]" />
+        {/* -end-32 (not -right-32) so the wash tracks the docket when the page flips to RTL. */}
+        <div
+          className="absolute -end-32 top-0 size-[46rem] rounded-full opacity-25 blur-3xl transition-colors duration-500 motion-reduce:transition-none"
+          style={{ backgroundColor: accent }}
+        />
+        <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(20,18,15,0.55)_0%,rgba(20,18,15,0.2)_40%,rgba(20,18,15,0.85)_100%)]" />
       </div>
 
-      <div className="relative mx-auto max-w-3xl">
-        <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-[#2DD4C4]/30 bg-[#2DD4C4]/10 px-4 py-1.5 font-mono text-xs uppercase tracking-[0.14em] text-[#5EEBDD]">
-          <span className="size-1.5 rounded-full bg-[#5EEBDD] motion-safe:animate-pulse" />
-          {t.hero.badge}
-        </div>
+      <div className="relative mx-auto grid max-w-6xl items-center gap-14 lg:grid-cols-[1.15fr_1fr] lg:gap-16">
+        <div>
+          <VerticalSwitcher />
 
-        <h1 className="font-display text-[clamp(2.5rem,6vw,6rem)] font-extrabold leading-[0.98] tracking-tight text-[#FFF8F4]">
-          {t.hero.headlineLead} <span className="text-[#FF7A54]">{t.hero.headlineHighlight}</span>
-        </h1>
-
-        <p className="mt-6 max-w-[46ch] text-lg text-[#FBF1EC]/90 sm:text-2xl">
-          {t.hero.subhead}
-        </p>
-
-        <div className="mt-10 flex flex-wrap items-center gap-4">
-          <Button asChild size="lg" className="shadow-[0_20px_44px_-18px_rgba(240,82,43,0.9)]">
-            <Link href="/register">
-              {t.hero.getStarted} <ArrowRight className="size-4 rtl:-scale-x-100" />
-            </Link>
-          </Button>
-          <Button
-            asChild
-            size="lg"
-            variant="outline"
-            className="border-[#FBF1EC]/35 bg-transparent text-[#FBF1EC] hover:bg-white/5 hover:text-[#FBF1EC]"
+          <div
+            className="mt-8 inline-flex items-center gap-2 rounded-full border px-4 py-1.5 font-mono text-xs uppercase tracking-[0.14em]"
+            style={{ borderColor: `${accent}4D`, backgroundColor: `${accent}14`, color: accent }}
           >
-            <Link href="/login">{t.hero.signIn}</Link>
-          </Button>
+            <span className="size-1.5 rounded-full motion-safe:animate-pulse" style={{ backgroundColor: accent }} />
+            {v.badge}
+          </div>
+
+          <h1 className="font-display mt-6 text-[clamp(2.25rem,5vw,4rem)] font-extrabold leading-[1.03] tracking-tight text-[#FFFDFB]">
+            {v.headlineLead}{" "}
+            <span className="transition-colors duration-300 motion-reduce:transition-none" style={{ color: accent }}>
+              {shared.headlineHighlight}
+            </span>
+          </h1>
+
+          <p className="mt-6 max-w-[52ch] text-base text-[#F7F4F1]/80 sm:text-lg">{v.subhead}</p>
+
+          <div className="mt-9 flex flex-wrap items-center gap-4">
+            <Button
+              asChild
+              size="lg"
+              style={{ backgroundColor: accent, color: "#14120F" }}
+              className="font-semibold hover:opacity-90"
+            >
+              <Link href="/register">
+                {t.hero.getStarted} <ArrowRight className="size-4 rtl:-scale-x-100" />
+              </Link>
+            </Button>
+            <Button
+              asChild
+              size="lg"
+              variant="outline"
+              className="border-[#F7F4F1]/30 bg-transparent text-[#F7F4F1] hover:bg-white/5 hover:text-[#F7F4F1]"
+            >
+              <Link href="/login">{t.hero.signIn}</Link>
+            </Button>
+          </div>
+
+          <div className="mt-8 flex flex-wrap items-center gap-2 text-sm text-[#F7F4F1]/60">
+            <span style={{ color: accent }}>●</span>
+            <span>{t.hero.trustNoLockIn}</span>
+            <span aria-hidden="true">·</span>
+            <span>{t.hero.trustLanguages}</span>
+          </div>
         </div>
 
-        <div className="mt-8 flex flex-wrap items-center gap-2 text-sm text-[#FBF1EC]/70">
-          <span className="text-[#5EEBDD]">●</span>
-          <span>{t.hero.trustNoLockIn}</span>
-          <span aria-hidden="true">·</span>
-          <span>{t.hero.trustLanguages}</span>
+        <div className="mx-auto w-full max-w-sm lg:mx-0 lg:max-w-none">
+          <TicketCard />
         </div>
       </div>
     </section>

@@ -186,27 +186,9 @@
   border-radius: 100px;
 }
 
-/* Marketing hero decorative animations (motion-safe only — see MarketingHero.tsx) */
-@keyframes drift1 {
-  0%, 100% { transform: translate(0, 0) scale(1); }
-  50% { transform: translate(60px, -40px) scale(1.08); }
-}
-@keyframes drift2 {
-  0%, 100% { transform: translate(0, 0) scale(1); }
-  50% { transform: translate(-50px, 50px) scale(1.1); }
-}
-@keyframes drift3 {
-  0%, 100% { transform: translate(0, 0) scale(1); }
-  50% { transform: translate(30px, 40px) scale(1.06); }
-}
-@keyframes dash {
-  to { stroke-dashoffset: -400; }
-}
-@keyframes pulse-node {
-  0%, 100% { opacity: 0.35; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.5); }
-}
-@keyframes floaty {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-14px); }
+/* Marketing hero: the docket re-enters when the trade changes, so the switch reads
+   as the same card being re-filled rather than the page repainting. Motion-safe only. */
+@keyframes ticket-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
