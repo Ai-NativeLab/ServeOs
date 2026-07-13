@@ -30,6 +30,8 @@ export type StorefrontTemplateProps = {
   openLabel?: string | null;
   etaLabel?: string | null;
   minOrderLabel?: string | null;
+  /** Shop verticals inject their catalog UI here; undefined = restaurant menu. */
+  catalog?: React.ReactNode;
 };
 
 export function StorefrontShell(props: StorefrontTemplateProps) {
@@ -81,16 +83,18 @@ export function StorefrontShell(props: StorefrontTemplateProps) {
         {menu.categories.length === 0 ? (
           <EmptyState title={config.emptyMenuTitle} description={config.emptyMenuDesc} />
         ) : (
-          <StorefrontMenu
-            menu={menu}
-            branchId={activeBranch?.id ?? null}
-            slug={slug}
-            orderingEnabled={orderingEnabled && !paused}
-            preorderOnly={openState !== null && !openState.open && !paused}
-            branches={branchSummaries}
-            currency={tenant.currency}
-            popularIds={[...popularIds]}
-          />
+          props.catalog ?? (
+            <StorefrontMenu
+              menu={menu}
+              branchId={activeBranch?.id ?? null}
+              slug={slug}
+              orderingEnabled={orderingEnabled && !paused}
+              preorderOnly={openState !== null && !openState.open && !paused}
+              branches={branchSummaries}
+              currency={tenant.currency}
+              popularIds={[...popularIds]}
+            />
+          )
         )}
       </section>
 
