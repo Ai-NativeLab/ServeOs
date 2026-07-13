@@ -12,4 +12,12 @@ describe("tenants schema", () => {
       db.insert(tenants).values({ slug: "pizzaroma", name: "Dup", country: "EG" }),
     ).rejects.toThrow();
   });
+
+  it("defaults vertical to restaurant", async () => {
+    const [t] = await db
+      .insert(tenants)
+      .values({ slug: "vdef", name: "V Default", country: "EG" })
+      .returning();
+    expect(t.vertical).toBe("restaurant");
+  });
 });

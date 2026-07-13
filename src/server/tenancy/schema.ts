@@ -8,6 +8,8 @@ export const tenantStatus = pgEnum("tenant_status", [
   "rejected",
 ]);
 
+export const vertical = pgEnum("vertical", ["restaurant", "retail", "pharmacy", "timber"]);
+
 export const tenants = pgTable("tenants", {
   id: uuid("id").defaultRandom().primaryKey(),
   slug: text("slug").notNull().unique(),
@@ -24,6 +26,7 @@ export const tenants = pgTable("tenants", {
   cuisine: text("cuisine"),
   primaryColor: text("primary_color").notNull().default("#0F172A"),
   theme: text("theme").notNull().default("default"),
+  vertical: vertical("vertical").notNull().default("restaurant"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
