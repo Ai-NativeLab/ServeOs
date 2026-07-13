@@ -8,12 +8,11 @@ import { getBranchOpenState, isBranchOrderableAt } from "@/server/branches/slots
 import { getWhatsappNumber } from "@/server/tenancy/settings";
 import { getPopularProductIds } from "@/server/catalog/popular";
 import { formatMoney } from "@/lib/money";
-import { BranchSelector } from "./_components/BranchSelector";
-import { StorefrontMenu } from "./_components/StorefrontMenu";
-import { Hero } from "./_components/storefront/Hero";
-import { OpenStateBanner } from "./_components/storefront/OpenStateBanner";
-import { RecentOrderStrip } from "./_components/storefront/RecentOrderStrip";
-import { StorefrontFooter } from "./_components/storefront/StorefrontFooter";
+import { selectStorefrontTemplate } from "@/server/tenancy/verticals";
+import { RestaurantStorefront } from "./_components/storefront/templates/RestaurantStorefront";
+import { RetailStorefront } from "./_components/storefront/templates/RetailStorefront";
+import { PharmacyStorefront } from "./_components/storefront/templates/PharmacyStorefront";
+import { TimberStorefront } from "./_components/storefront/templates/TimberStorefront";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { MarketingHeader } from "./_components/marketing/Header";
 import { MarketingHero } from "./_components/marketing/Hero";
@@ -38,14 +37,14 @@ export default async function Home({
     if (!tenant) {
       return (
         <main className="grid min-h-screen place-items-center bg-background p-6">
-          <EmptyState title="Restaurant not found" />
+          <EmptyState title="Store not found" />
         </main>
       );
     }
     if (!isTenantServable(tenant)) {
       return (
         <main className="grid min-h-screen place-items-center bg-background p-6">
-          <EmptyState title={tenant.name} description="This restaurant is getting ready. Check back soon!" />
+          <EmptyState title={tenant.name} description="This store is getting ready. Check back soon!" />
         </main>
       );
     }
@@ -101,63 +100,39 @@ export default async function Home({
         ? undefined
         : `Min ${formatMoney(Math.min(...minOrderAmounts), tenant.currency)}`;
 
+    const resolvedVertical = selectStorefrontTemplate(tenant.vertical);
+    const Template = {
+      restaurant: RestaurantStorefront,
+      retail: RetailStorefront,
+      pharmacy: PharmacyStorefront,
+      timber: TimberStorefront,
+    }[resolvedVertical];
+
     return (
-      <main className="min-h-screen bg-background">
-        <Hero
-          name={tenant.name}
-          logoUrl={tenant.logoUrl}
-          coverImageUrl={tenant.coverImageUrl}
-          tagline={tenant.tagline}
-          cuisine={tenant.cuisine}
-          area={activeBranch?.address ?? null}
-          openLabel={openLabel}
-          etaLabel={etaLabel}
-          minOrderLabel={minOrderLabel}
-        />
-
-        {openState && <OpenStateBanner state={openState} paused={paused} />}
-
-        <RecentOrderStrip slug={slug!} />
-
-        {banners.length > 0 && (
-          <section className="flex gap-3 overflow-x-auto px-4 py-4 sm:px-6">
-            {banners.map((b) => (
-              <a key={b.id} href={b.linkUrl ?? "#"} className="shrink-0">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={b.imageUrl} alt={b.titleEn ?? ""} className="h-36 rounded-xl object-cover" />
-              </a>
-            ))}
-          </section>
-        )}
-
-        {branches.length > 1 && (
-          <section className="px-4 pb-2 sm:px-6">
-            <BranchSelector branches={branches} currentBranchId={branchId} />
-          </section>
-        )}
-
-        <section className="px-4 pb-32 sm:px-6">
-          {menu.categories.length === 0 ? (
-            <EmptyState title="Menu coming soon" description="This restaurant hasn't published a menu yet." />
-          ) : (
-            <StorefrontMenu
-              menu={menu}
-              branchId={activeBranch?.id ?? null}
-              slug={slug!}
-              orderingEnabled={orderingEnabled && !paused}
-              preorderOnly={openState !== null && !openState.open && !paused}
-              branches={branchSummaries}
-              currency={tenant.currency}
-              popularIds={[...popularSet]}
-            />
-          )}
-        </section>
-
-        <StorefrontFooter
-          branch={activeBranch ?? branches[0] ?? null}
-          whatsappNumber={whatsappNumber}
-        />
-      </main>
+      <Template
+        tenant={{
+          name: tenant.name,
+          logoUrl: tenant.logoUrl,
+          coverImageUrl: tenant.coverImageUrl,
+          tagline: tenant.tagline,
+          cuisine: tenant.cuisine,
+          currency: tenant.currency,
+        }}
+        banners={banners}
+        menu={menu}
+        branches={branches}
+        branchSummaries={branchSummaries}
+        activeBranch={activeBranch}
+        openState={openState}
+        paused={paused}
+        orderingEnabled={orderingEnabled}
+        slug={slug!}
+        popularIds={[...popularSet]}
+        whatsappNumber={whatsappNumber}
+        openLabel={openLabel}
+        etaLabel={etaLabel}
+        minOrderLabel={minOrderLabel}
+      />
     );
   }
 

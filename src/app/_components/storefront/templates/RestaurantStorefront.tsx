@@ -1,0 +1,12 @@
+import { StorefrontShell, type StorefrontTemplateProps } from "./StorefrontShell";
+import { VERTICAL_ACCENTS, VERTICAL_STOREFRONT_COPY } from "@/server/tenancy/verticals";
+
+export function RestaurantStorefront(props: Omit<StorefrontTemplateProps, "accent" | "config">) {
+  return (
+    <StorefrontShell
+      {...props}
+      accent={VERTICAL_ACCENTS.restaurant}
+      config={VERTICAL_STOREFRONT_COPY.restaurant}
+    />
+  );
+}
