@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { requireFeature, incrementUsage } from "@/server/entitlements/service";
-import { getVatRate } from "@/server/tenancy/settings";
+import { getCheckoutPricing } from "@/server/tenancy/settings";
+import { computeOrderTotals } from "@/lib/order-totals";
 import { isBranchOrderableAt, isWithinSchedulingHorizon, MIN_LEAD_MINUTES } from "@/server/branches/slots";
 import { getTenantById } from "@/server/tenancy";
 import { branches, deliveryAreas } from "@/server/branches/schema";
@@ -37,7 +38,7 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
   if (!input.customerName.trim() || !input.customerPhone.trim()) throw new OrderValidationError("missing customer details");
 
   await requireFeature(tenantId, "online_ordering");
-  const vatRate = await getVatRate(tenantId);
+  const pricing = await getCheckoutPricing(tenantId);
   const now = input.now ?? new Date();
 
   const tenant = await getTenantById(tenantId);
@@ -135,9 +136,8 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       deliveryAddress = input.addressText.trim();
     }
 
-    // 4. Totals
-    const vatAmount = subtotal * (vatRate / 100);
-    const total = subtotal + vatAmount + deliveryFee;
+    // 4. Totals — single source of money math (src/lib/order-totals.ts)
+    const totals = computeOrderTotals(pricing, subtotal, deliveryFee);
 
     // 5. Order number (per-tenant max+1). Acquire the per-tenant advisory lock
     // only now — after all validation I/O — so concurrent checkouts serialize
@@ -155,7 +155,12 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       fulfillmentType: input.fulfillmentType, status: "pending",
       customerName: input.customerName.trim(), customerPhone: input.customerPhone.trim(), notes: input.notes?.trim() || null,
       deliveryAreaId, deliveryAreaNameSnapshot: deliveryAreaName, deliveryAddressText: deliveryAddress,
-      subtotal: money(subtotal), vatRateSnapshot: money(vatRate), vatAmount: money(vatAmount), deliveryFee: money(deliveryFee), total: money(total),
+      subtotal: money(totals.subtotal),
+      vatRateSnapshot: money(totals.vatRate),
+      vatAmount: money(totals.vatAmount),
+      serviceChargeAmount: totals.serviceChargeAmount > 0 ? money(totals.serviceChargeAmount) : null,
+      deliveryFee: money(totals.deliveryFee),
+      total: money(totals.total),
       statusToken,
       scheduledFor,
     }).returning();

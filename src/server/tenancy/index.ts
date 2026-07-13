@@ -11,6 +11,7 @@ export {
 } from "./service";
 export {
   getTenantSettings, setVatRate, getVatRate, defaultVatRate,
+  getCheckoutPricing, setVatEnabled, setPricesIncludeVat, setServiceChargeRate,
   getWhatsappNumber, setWhatsappNumber, requestPlanUpgrade, getUpgradeRequest,
   type TenantSettingsData,
 } from "./settings";

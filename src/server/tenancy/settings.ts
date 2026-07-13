@@ -3,9 +3,15 @@ import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { tenants, tenantSettings } from "./schema";
 import { InvalidWhatsappNumberError } from "./errors";
+import { getCapabilities } from "@/server/verticals/registry";
+import type { VerticalId } from "@/server/verticals/types";
+import type { CheckoutPricing } from "@/lib/order-totals";
 
 export type TenantSettingsData = {
   vatRate?: number;
+  vatEnabled?: boolean;
+  pricesIncludeVat?: boolean;
+  serviceChargeRate?: number;
   whatsappNumber?: string;
   upgradeRequest?: { planKey: string; requestedAt: string };
 };
@@ -48,6 +54,31 @@ export async function getVatRate(tenantId: string): Promise<number> {
   if (typeof settings.vatRate === "number") return settings.vatRate;
   const [t] = await db.select({ country: tenants.country }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
   return defaultVatRate(t?.country ?? "EG");
+}
+
+export async function getCheckoutPricing(tenantId: string): Promise<CheckoutPricing> {
+  const settings = await getTenantSettings(tenantId);
+  const [t] = await db.select({ country: tenants.country, vertical: tenants.vertical }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+  const caps = getCapabilities((t?.vertical ?? "restaurant") as VerticalId);
+  return {
+    vatEnabled: settings.vatEnabled ?? true,
+    vatRate: typeof settings.vatRate === "number" ? settings.vatRate : defaultVatRate(t?.country ?? "EG"),
+    pricesIncludeVat: settings.pricesIncludeVat ?? false,
+    serviceChargeRate: caps.serviceCharge ? (settings.serviceChargeRate ?? 0) : 0,
+  };
+}
+
+export async function setVatEnabled(tenantId: string, enabled: boolean): Promise<void> {
+  await patchTenantSettings(tenantId, { vatEnabled: enabled });
+}
+
+export async function setPricesIncludeVat(tenantId: string, inclusive: boolean): Promise<void> {
+  await patchTenantSettings(tenantId, { pricesIncludeVat: inclusive });
+}
+
+export async function setServiceChargeRate(tenantId: string, rate: number | null): Promise<void> {
+  if (rate !== null && (Number.isNaN(rate) || rate < 0 || rate > 100)) throw new Error(`Invalid service charge rate: ${rate}`);
+  await patchTenantSettings(tenantId, { serviceChargeRate: rate ?? undefined });
 }
 
 export async function getWhatsappNumber(tenantId: string): Promise<string | null> {

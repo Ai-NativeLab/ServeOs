@@ -198,4 +198,33 @@ describe("placeOrder", () => {
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(InvalidScheduleError);
   });
+
+  it("keeps default totals identical to the legacy computation (VAT exclusive, no service charge)", async () => {
+    const { t, branch, pizza } = await setup("po-tot1");
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const { getOrder } = await import("./service");
+    const order = await getOrder(t.id, res.orderId);
+    expect(order.subtotal).toBe("100.00");
+    expect(order.vatAmount).toBe("14.00");     // EG default 14%
+    expect(order.serviceChargeAmount).toBeNull();
+    expect(order.total).toBe("114.00");
+  });
+
+  it("applies a configured service charge for a restaurant tenant", async () => {
+    const { t, branch, pizza } = await setup("po-tot2");
+    const { setServiceChargeRate } = await import("@/server/tenancy");
+    await setServiceChargeRate(t.id, 10);
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const { getOrder } = await import("./service");
+    const order = await getOrder(t.id, res.orderId);
+    expect(order.serviceChargeAmount).toBe("10.00");
+    expect(order.vatAmount).toBe("15.40"); // 14% of 110
+    expect(order.total).toBe("125.40");
+  });
 });
