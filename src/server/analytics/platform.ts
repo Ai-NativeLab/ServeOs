@@ -1,7 +1,6 @@
 // src/server/analytics/platform.ts
 import { sql } from "drizzle-orm";
 import { db } from "@/db/client";
-import { tenants } from "@/server/tenancy/schema";
 
 export type SignupPoint = { day: string; count: number };
 export async function getPlatformSignups(days: number): Promise<SignupPoint[]> {

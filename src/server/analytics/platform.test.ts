@@ -1,7 +1,5 @@
 // src/server/analytics/platform.test.ts
 import { describe, it, expect, beforeAll } from "vitest";
-import { db } from "@/db/client";
-import { tenants } from "@/server/tenancy/schema";
 import { seedDefaultPlans } from "@/server/subscription";
 import { registerTenant } from "@/server/onboarding/service";
 import {
