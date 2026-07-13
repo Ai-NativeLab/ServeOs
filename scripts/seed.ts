@@ -53,7 +53,7 @@ async function main() {
   const { tenants } = await import("../src/server/tenancy/schema");
   const { hashPassword } = await import("../src/server/auth/password");
   const { seedDefaultPlans } = await import("../src/server/subscription");
-  const { registerRestaurant } = await import("../src/server/onboarding");
+  const { registerTenant } = await import("../src/server/onboarding");
   const { approveTenant } = await import("../src/server/platform");
 
   await seedDefaultPlans();
@@ -74,13 +74,14 @@ async function main() {
   const demoSlug = "roma";
   let [romaTenant] = await db.select().from(tenants).where(eq(tenants.slug, demoSlug)).limit(1);
   if (!romaTenant) {
-    const demo = await registerRestaurant({
+    const demo = await registerTenant({
       restaurantName: "Pizza Roma",
       slug: demoSlug,
       country: "EG",
       ownerName: "Sam Adel",
       email: "owner@roma.com",
       password: "owner1234",
+      vertical: "restaurant",
     });
     await approveTenant(demo.tenantId, admin.id);
     [romaTenant] = await db.select().from(tenants).where(eq(tenants.slug, demoSlug)).limit(1);
