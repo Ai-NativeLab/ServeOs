@@ -25,11 +25,33 @@ export const products = pgTable("products", {
   descriptionAr: text("description_ar"),
   basePrice: numeric("base_price").notNull(),
   imageUrl: text("image_url"),
+  brand: text("brand"),
+  sku: text("sku"),
+  trackStock: boolean("track_stock").notNull().default(false),
+  stockQuantity: integer("stock_quantity"),
   isFeatured: boolean("is_featured").notNull().default(false),
   isPublished: boolean("is_published").notNull().default(false),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const productVariants = pgTable("product_variants", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  productId: uuid("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
+  nameEn: text("name_en").notNull(),
+  nameAr: text("name_ar").notNull(),
+  sku: text("sku"),
+  // Absolute price: a variant is a purchasable unit, not a delta on basePrice.
+  price: numeric("price").notNull(),
+  // null = not tracked (always purchasable).
+  stockQuantity: integer("stock_quantity"),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+});
+
+export type ProductVariant = typeof productVariants.$inferSelect;
+export type NewProductVariant = typeof productVariants.$inferInsert;
 
 export const modifierGroups = pgTable("modifier_groups", {
   id: uuid("id").defaultRandom().primaryKey(),
