@@ -1,6 +1,8 @@
 import { and, count, eq, inArray, isNull, or } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { checkQuota } from "@/server/entitlements/service";
+import { getTenantById } from "@/server/tenancy";
+import { requireCapability, type VerticalId } from "@/server/verticals";
 import {
   categories,
   products,
@@ -75,7 +77,7 @@ export async function deleteCategory(tenantId: string, categoryId: string): Prom
 
 // ── products ─────────────────────────────────────────────────────────────────
 
-export type CreateProductInput = Pick<NewProduct, "nameEn" | "nameAr" | "descriptionEn" | "descriptionAr" | "basePrice" | "imageUrl" | "sortOrder" | "categoryId" | "isFeatured">;
+export type CreateProductInput = Pick<NewProduct, "nameEn" | "nameAr" | "descriptionEn" | "descriptionAr" | "basePrice" | "imageUrl" | "sortOrder" | "categoryId" | "isFeatured" | "brand" | "sku" | "trackStock" | "stockQuantity">;
 export type UpdateProductInput = Partial<CreateProductInput & { isPublished: boolean }>;
 
 export async function listProducts(tenantId: string, categoryId?: string): Promise<Product[]> {
@@ -153,6 +155,9 @@ export type ModifierGroupInput = {
 };
 
 export async function upsertModifierGroup(tenantId: string, productId: string, input: ModifierGroupInput): Promise<ModifierGroup> {
+  const tenant = await getTenantById(tenantId);
+  if (tenant) requireCapability(tenant.vertical as VerticalId, "modifiers");
+
   if (input.minSelections > input.maxSelections) throw new InvalidModifierRulesError();
   if (input.required && input.minSelections < 1) throw new InvalidModifierRulesError();
 

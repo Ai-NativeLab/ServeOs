@@ -1,11 +1,14 @@
 export {
   categories,
   products,
+  productVariants,
   modifierGroups,
   modifierOptions,
   branchProductAvailability,
   type Category,
   type Product,
+  type ProductVariant,
+  type NewProductVariant,
   type ModifierGroup,
   type ModifierOption,
   type ModifierGroupWithOptions,
@@ -30,3 +33,4 @@ export {
   setBranchAvailability,
   getPublishedMenu,
 } from "./service";
+export { listVariants, upsertVariant, deleteVariant, setVariantStock, setProductStock, type VariantInput } from "./variants";
