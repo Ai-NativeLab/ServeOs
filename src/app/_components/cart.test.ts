@@ -55,3 +55,30 @@ describe("withLineQuantity", () => {
     expect(withLineQuantity(cart, 5, 2).lines).toHaveLength(1);
   });
 });
+
+describe("variant-aware merge", () => {
+  const line = (productId: string, variantId?: string): CartLine => ({
+    productId, variantId, variantNameEn: variantId ? "35mm" : undefined,
+    nameEn: "Hinge", nameAr: "مفصلة", quantity: 1, unitPrice: 55,
+    selectedOptionIds: [], modifierSummaryEn: "",
+  });
+
+  it("merges same product + same variant", () => {
+    const c1 = mergeLine({ branchId: null, lines: [] }, "b1", line("p1", "v1"));
+    const c2 = mergeLine(c1, "b1", line("p1", "v1"));
+    expect(c2.lines.length).toBe(1);
+    expect(c2.lines[0].quantity).toBe(2);
+  });
+
+  it("keeps different variants of the same product as separate lines", () => {
+    const c1 = mergeLine({ branchId: null, lines: [] }, "b1", line("p1", "v1"));
+    const c2 = mergeLine(c1, "b1", line("p1", "v2"));
+    expect(c2.lines.length).toBe(2);
+  });
+
+  it("keeps a variant line separate from a no-variant line (legacy cart compat)", () => {
+    const c1 = mergeLine({ branchId: null, lines: [] }, "b1", line("p1"));
+    const c2 = mergeLine(c1, "b1", line("p1", "v1"));
+    expect(c2.lines.length).toBe(2);
+  });
+});

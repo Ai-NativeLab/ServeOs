@@ -1,5 +1,7 @@
 export type CartLine = {
   productId: string;
+  variantId?: string;
+  variantNameEn?: string;
   nameEn: string;
   nameAr: string;
   quantity: number;
@@ -51,7 +53,10 @@ export function mergeLine(current: Cart, branchId: string | null, line: CartLine
     ? { branchId, lines: [] }
     : { branchId: branchId ?? current.branchId, lines: [...current.lines] };
   const i = cart.lines.findIndex(
-    (l) => l.productId === line.productId && sameOptions(l.selectedOptionIds, line.selectedOptionIds),
+    (l) =>
+      l.productId === line.productId &&
+      (l.variantId ?? null) === (line.variantId ?? null) &&
+      sameOptions(l.selectedOptionIds, line.selectedOptionIds),
   );
   if (i >= 0) cart.lines[i] = { ...cart.lines[i], quantity: cart.lines[i].quantity + line.quantity };
   else cart.lines.push(line);
