@@ -8,7 +8,7 @@ import { getBranchOpenState, isBranchOrderableAt } from "@/server/branches/slots
 import { getWhatsappNumber } from "@/server/tenancy/settings";
 import { getPopularProductIds } from "@/server/catalog/popular";
 import { formatMoney } from "@/lib/money";
-import { selectStorefrontTemplate } from "@/server/tenancy/verticals";
+import { selectStorefrontTemplate } from "@/server/verticals";
 import { RestaurantStorefront } from "./_components/storefront/templates/RestaurantStorefront";
 import { RetailStorefront } from "./_components/storefront/templates/RetailStorefront";
 import { PharmacyStorefront } from "./_components/storefront/templates/PharmacyStorefront";

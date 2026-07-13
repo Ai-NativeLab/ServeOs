@@ -5,7 +5,7 @@ import { users, roles, userRoles } from "@/server/auth/schema";
 import { hashPassword } from "@/server/auth/password";
 import { plans, subscriptions } from "@/server/subscription/schema";
 import { onboardingApplications } from "./schema";
-import { VERTICAL_IDS, type VerticalId } from "@/server/tenancy/verticals";
+import { VERTICAL_IDS, type VerticalId } from "@/server/verticals";
 
 export type RegisterInput = {
   restaurantName: string;

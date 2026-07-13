@@ -3,7 +3,7 @@ import type { Banner } from "@/server/banners/schema";
 import type { Branch } from "@/server/branches/schema";
 import type { BranchOpenState } from "@/server/branches/slots";
 import type { Tenant } from "@/server/tenancy/schema";
-import type { VerticalStorefrontCopy } from "@/server/tenancy/verticals";
+import type { VerticalStorefrontCopy } from "@/server/verticals";
 import { Hero } from "../Hero";
 import { OpenStateBanner } from "../OpenStateBanner";
 import { RecentOrderStrip } from "../RecentOrderStrip";

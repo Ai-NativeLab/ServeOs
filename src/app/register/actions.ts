@@ -2,7 +2,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { registerTenant } from "@/server/onboarding";
-import type { VerticalId } from "@/server/tenancy/verticals";
+import type { VerticalId } from "@/server/verticals";
 import { createSession } from "@/server/auth/session";
 import { SESSION_COOKIE } from "@/server/auth/current-user";
 
