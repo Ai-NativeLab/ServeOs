@@ -104,6 +104,9 @@ export default async function OrderStatusPage({ params }: { params: Promise<{ to
           <div className="mt-3 space-y-1.5 border-t border-border pt-3 text-sm text-muted-foreground">
             <div className="flex justify-between"><span>Subtotal</span><span className="font-mono">{formatMoney(Number(order.subtotal), currency)}</span></div>
             <div className="flex justify-between"><span>VAT {Number(order.vatRateSnapshot)}%</span><span className="font-mono">{formatMoney(Number(order.vatAmount), currency)}</span></div>
+            {order.serviceChargeAmount != null && Number(order.serviceChargeAmount) > 0 && (
+              <div className="flex justify-between"><span>Service charge</span><span className="font-mono">{formatMoney(Number(order.serviceChargeAmount), currency)}</span></div>
+            )}
             {order.fulfillmentType === "delivery" && (
               <div className="flex justify-between"><span>Delivery</span><span className="font-mono">{formatMoney(Number(order.deliveryFee), currency)}</span></div>
             )}
