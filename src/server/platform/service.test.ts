@@ -6,7 +6,7 @@ import { tenants } from "@/server/tenancy/schema";
 import { onboardingApplications } from "@/server/onboarding/schema";
 import { subscriptions } from "@/server/subscription/schema";
 import { auditLogs } from "./audit.schema";
-import { seedDefaultPlans, getPlanForTenant } from "@/server/subscription";
+import { seedDefaultPlans } from "@/server/subscription";
 import { registerTenant } from "@/server/onboarding";
 import { branches } from "@/server/branches/schema";
 import { products } from "@/server/catalog/schema";
@@ -76,8 +76,6 @@ describe("platform approval", () => {
 });
 
 describe("platform tenant + billing service", () => {
-  beforeAll(async () => { await seedDefaultPlans(); });
-
   it("lists, details, audits, and admin-bills a tenant", async () => {
     await seedDefaultPlans();
     const adminUser = await admin();
@@ -91,8 +89,6 @@ describe("platform tenant + billing service", () => {
     expect(detail?.plan?.key).toBe("basic");
     expect(detail?.branchCount).toBe(0);
 
-    const suspended = await db.select().from(tenants).where(eq(tenants.id, tenantId));
-    // suspend via existing fn then activate via new fn
     await activateTenant(tenantId, adminUser.id);
     const after = await getTenantDetail(tenantId);
     expect(after?.tenant.status).toBe("active");
