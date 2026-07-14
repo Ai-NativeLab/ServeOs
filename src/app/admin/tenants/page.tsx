@@ -6,7 +6,6 @@ import { PageHeader } from "@/components/dashboard/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 const STATUS_VARIANT: Record<string, React.ComponentProps<typeof Badge>["variant"]> = {
@@ -29,17 +28,14 @@ export default async function TenantsPage({
         <CardContent className="py-4 flex flex-wrap items-center gap-3">
           <form method="get" className="flex flex-wrap items-center gap-3">
             <Input name="q" defaultValue={q ?? ""} placeholder="Search name or slug" className="w-64" />
-            <Select name="status" defaultValue={status ?? "all"}>
-              <SelectTrigger className="w-44"><SelectValue placeholder="Status" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All statuses</SelectItem>
-                <SelectItem value="active">Active</SelectItem>
-                <SelectItem value="trial">Trial</SelectItem>
-                <SelectItem value="onboarding">Onboarding</SelectItem>
-                <SelectItem value="suspended">Suspended</SelectItem>
-                <SelectItem value="rejected">Rejected</SelectItem>
-              </SelectContent>
-            </Select>
+            <select name="status" defaultValue={status ?? "all"} className="h-9 rounded-md border border-input bg-transparent px-3 text-sm">
+              <option value="all">All statuses</option>
+              <option value="active">Active</option>
+              <option value="trial">Trial</option>
+              <option value="onboarding">Onboarding</option>
+              <option value="suspended">Suspended</option>
+              <option value="rejected">Rejected</option>
+            </select>
             <button type="submit" className="text-sm px-3 py-2 rounded-md bg-primary text-primary-foreground">Filter</button>
           </form>
         </CardContent>
