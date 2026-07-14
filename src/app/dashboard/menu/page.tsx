@@ -3,12 +3,18 @@ import { Plus, Pencil, ImageIcon } from "lucide-react";
 import { requireDashboardUser } from "@/server/auth/dashboard-context";
 import { authorize } from "@/server/rbac/authorize";
 import { listCategories, listProducts } from "@/server/catalog/service";
+import { getTenantById } from "@/server/tenancy";
+import { getCapabilities, selectStorefrontTemplate, type VerticalId } from "@/server/verticals";
 import { deleteCategoryAction } from "./categories/actions";
+import { setProductStockAction } from "./products/actions";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { ConfirmActionButton } from "@/components/dashboard/ConfirmActionButton";
+import { ToastForm } from "@/components/dashboard/ToastForm";
+import { SubmitButton } from "@/components/dashboard/SubmitButton";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -18,6 +24,8 @@ export default async function MenuPage() {
   authorize(ctx.roleKeys, "menu:manage");
   const cats = await listCategories(ctx.tenantId);
   const prods = await listProducts(ctx.tenantId);
+  const tenant = await getTenantById(ctx.tenantId);
+  const caps = getCapabilities(selectStorefrontTemplate(tenant?.vertical as VerticalId));
 
   return (
     <>
@@ -73,10 +81,10 @@ export default async function MenuPage() {
                     {/* Mobile: stacked cards */}
                     <ul className="md:hidden space-y-2">
                       {catProds.map((p) => (
-                        <li key={p.id}>
+                        <li key={p.id} className="rounded-lg border p-3">
                           <Link
                             href={`/dashboard/menu/products/${p.id}`}
-                            className="flex items-center gap-3 rounded-lg border p-3"
+                            className="flex items-center gap-3"
                           >
                             {p.imageUrl
                               ? /* eslint-disable-next-line @next/next/no-img-element */
@@ -92,6 +100,12 @@ export default async function MenuPage() {
                               {p.isPublished ? "Published" : "Draft"}
                             </span>
                           </Link>
+                          {caps.stockTracking && p.trackStock && (
+                            <ToastForm action={setProductStockAction.bind(null, p.id)} successMessage="Stock updated" className="flex items-center gap-1.5 mt-2 pl-[60px]">
+                              <Input name="stockQuantity" type="number" min="0" defaultValue={p.stockQuantity ?? ""} className="w-20 h-8" aria-label={`Stock for ${p.nameEn}`} />
+                              <SubmitButton variant="outline" size="sm">Set</SubmitButton>
+                            </ToastForm>
+                          )}
                         </li>
                       ))}
                     </ul>
@@ -104,6 +118,7 @@ export default async function MenuPage() {
                             <TableHead className="eyebrow w-14"></TableHead>
                             <TableHead className="eyebrow">Product</TableHead>
                             <TableHead className="eyebrow text-right">Price</TableHead>
+                            {caps.stockTracking && <TableHead className="eyebrow">Stock</TableHead>}
                             <TableHead className="eyebrow">Status</TableHead>
                           </TableRow>
                         </TableHeader>
@@ -120,6 +135,16 @@ export default async function MenuPage() {
                                 <Link href={`/dashboard/menu/products/${p.id}`} className="font-medium text-ink hover:underline">{p.nameEn}</Link>
                               </TableCell>
                               <TableCell className="font-mono text-sm text-right">{Number(p.basePrice).toFixed(2)}</TableCell>
+                              {caps.stockTracking && (
+                                <TableCell>
+                                  {p.trackStock && (
+                                    <ToastForm action={setProductStockAction.bind(null, p.id)} successMessage="Stock updated" className="flex items-center gap-1.5">
+                                      <Input name="stockQuantity" type="number" min="0" defaultValue={p.stockQuantity ?? ""} className="w-20 h-8" aria-label={`Stock for ${p.nameEn}`} />
+                                      <SubmitButton variant="outline" size="sm">Set</SubmitButton>
+                                    </ToastForm>
+                                  )}
+                                </TableCell>
+                              )}
                               <TableCell>
                                 <span className={p.isPublished
                                   ? "inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium bg-status-ready/15 text-status-ready-fg ring-1 ring-status-ready/30"

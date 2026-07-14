@@ -12,6 +12,7 @@ import {
   deleteModifierOption,
   setBranchAvailability,
 } from "@/server/catalog/service";
+import { upsertVariant, deleteVariant, setProductStock } from "@/server/catalog/variants";
 
 export async function createProductAction(formData: FormData) {
   const { tenantId } = await requireMenuPermission();
@@ -32,6 +33,8 @@ export async function updateProductAction(productId: string, formData: FormData)
   const { tenantId } = await requireMenuPermission();
   const isPublished = formData.get("isPublished") === "true";
   const isFeatured = formData.get("isFeatured") === "true";
+  const hasRetailFields = formData.has("retailFields");
+  const trackStock = formData.get("trackStock") === "true";
   await updateProduct(tenantId, productId, {
     nameEn: String(formData.get("nameEn")),
     nameAr: String(formData.get("nameAr")),
@@ -41,6 +44,16 @@ export async function updateProductAction(productId: string, formData: FormData)
     imageUrl: formData.get("imageUrl") ? String(formData.get("imageUrl")) : null,
     isPublished,
     isFeatured,
+    ...(hasRetailFields
+      ? {
+          brand: formData.get("brand") ? String(formData.get("brand")) : null,
+          sku: formData.get("sku") ? String(formData.get("sku")) : null,
+          trackStock,
+          stockQuantity: trackStock && formData.get("stockQuantity") !== null && formData.get("stockQuantity") !== ""
+            ? Number(formData.get("stockQuantity"))
+            : null,
+        }
+      : {}),
   });
   revalidatePath("/dashboard/menu");
   redirect(`/dashboard/menu/products/${productId}`);
@@ -98,4 +111,31 @@ export async function setBranchAvailabilityAction(
   const { tenantId } = await requireMenuPermission();
   await setBranchAvailability(tenantId, branchId, productId, available, priceOverride);
   revalidatePath(`/dashboard/menu/products/${productId}`);
+}
+
+export async function upsertVariantAction(productId: string, formData: FormData) {
+  const { tenantId } = await requireMenuPermission();
+  const stockRaw = formData.get("stockQuantity");
+  await upsertVariant(tenantId, productId, {
+    id: formData.get("id") ? String(formData.get("id")) : undefined,
+    nameEn: String(formData.get("nameEn")),
+    nameAr: String(formData.get("nameAr")),
+    sku: formData.get("sku") ? String(formData.get("sku")) : null,
+    price: String(formData.get("price")),
+    stockQuantity: stockRaw !== null && stockRaw !== "" ? Number(stockRaw) : null,
+  });
+  revalidatePath(`/dashboard/menu/products/${productId}`);
+}
+
+export async function deleteVariantAction(productId: string, variantId: string) {
+  const { tenantId } = await requireMenuPermission();
+  await deleteVariant(tenantId, variantId);
+  revalidatePath(`/dashboard/menu/products/${productId}`);
+}
+
+export async function setProductStockAction(productId: string, formData: FormData) {
+  const { tenantId } = await requireMenuPermission();
+  const raw = formData.get("stockQuantity");
+  await setProductStock(tenantId, productId, raw !== null && raw !== "" ? Number(raw) : null);
+  revalidatePath("/dashboard/menu");
 }
