@@ -37,6 +37,12 @@ describe("variants service", () => {
       .rejects.toThrow(CapabilityNotEnabledError);
   });
 
+  it("rejects deleteVariant for a restaurant tenant (capability gate)", async () => {
+    const { t } = await setup("var-del", "restaurant");
+    await expect(deleteVariant(t.id, "00000000-0000-0000-0000-000000000000"))
+      .rejects.toThrow(CapabilityNotEnabledError);
+  });
+
   it("rejects modifier groups for a retail tenant (capability gate)", async () => {
     const { t, prod } = await setup("var3", "retail");
     await expect(upsertModifierGroup(t.id, prod.id, { nameEn: "Extras", nameAr: "إضافات", required: false, minSelections: 0, maxSelections: 1 }))

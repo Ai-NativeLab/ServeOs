@@ -49,6 +49,7 @@ export async function upsertVariant(tenantId: string, productId: string, input: 
 }
 
 export async function deleteVariant(tenantId: string, variantId: string): Promise<void> {
+  await requireTenantCapability(tenantId, "variants");
   await withTenant(tenantId, (tx) =>
     tx.delete(productVariants).where(eq(productVariants.id, variantId)),
   );
