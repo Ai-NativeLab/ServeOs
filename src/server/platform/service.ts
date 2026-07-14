@@ -75,7 +75,7 @@ export type TenantRow = {
 
 export async function listTenants(opts: { status?: string; search?: string } = {}): Promise<TenantRow[]> {
   const conditions = [];
-  if (opts.status) conditions.push(eq(tenants.status, opts.status));
+  if (opts.status) conditions.push(sql`${tenants.status} = ${opts.status}`);
   if (opts.search) conditions.push(or(ilike(tenants.name, `%${opts.search}%`), ilike(tenants.slug, `%${opts.search}%`)));
   return db
     .select({
