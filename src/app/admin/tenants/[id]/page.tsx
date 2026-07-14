@@ -7,6 +7,8 @@ import { PageHeader } from "@/components/dashboard/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ConfirmActionButton } from "@/components/dashboard/ConfirmActionButton";
+import { cancelSubscriptionAction, forceActiveAction, markPaidAction, suspendTenantAction } from "./actions";
 
 export default async function TenantDetailPage({ params }: { params: Promise<{ id: string }> }) {
   await requireSuperAdmin();
@@ -34,6 +36,7 @@ export default async function TenantDetailPage({ params }: { params: Promise<{ i
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="audit">Audit</TabsTrigger>
+          <TabsTrigger value="billing">Billing</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview">
@@ -64,6 +67,57 @@ export default async function TenantDetailPage({ params }: { params: Promise<{ i
                   <span className="text-xs text-muted-foreground">{a.createdAt.toISOString().slice(0, 16).replace("T", " ")}</span>
                 </div>
               ))}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="billing">
+          <Card>
+            <CardHeader><CardTitle>Subscription & billing</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              <div className="text-sm space-y-1">
+                <div><span className="text-muted-foreground">Plan:</span> {plan ? `${plan.name} (${plan.priceMonthly} ${plan.currency}/mo)` : "—"}</div>
+                <div><span className="text-muted-foreground">Subscription status:</span> <Badge variant="outline">{subscription?.status ?? "none"}</Badge></div>
+                <div><span className="text-muted-foreground">Trial ends:</span> {subscription?.trialEndsAt ? subscription.trialEndsAt.toISOString().slice(0, 10) : "—"}</div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <ConfirmActionButton
+                  action={() => forceActiveAction(id)}
+                  label="Force active"
+                  title="Force subscription active"
+                  description="Set this tenant's subscription to active regardless of trial state."
+                  confirmLabel="Force active"
+                  variant="default"
+                  successMessage="Subscription set to active"
+                />
+                <ConfirmActionButton
+                  action={() => markPaidAction(id)}
+                  label="Mark paid"
+                  title="Mark as paid"
+                  description="Mark the latest open invoice paid and activate the subscription."
+                  confirmLabel="Mark paid"
+                  variant="default"
+                  successMessage="Marked paid"
+                />
+                <ConfirmActionButton
+                  action={() => cancelSubscriptionAction(id)}
+                  label="Cancel subscription"
+                  title="Cancel subscription"
+                  description="Cancel this tenant's subscription immediately."
+                  confirmLabel="Cancel"
+                  variant="destructive"
+                  successMessage="Subscription canceled"
+                />
+                <ConfirmActionButton
+                  action={() => suspendTenantAction(id)}
+                  label="Suspend tenant"
+                  title="Suspend tenant"
+                  description="Suspend this tenant. The storefront will stop serving."
+                  confirmLabel="Suspend"
+                  variant="destructive"
+                  successMessage="Tenant suspended"
+                />
+              </div>
             </CardContent>
           </Card>
         </TabsContent>
