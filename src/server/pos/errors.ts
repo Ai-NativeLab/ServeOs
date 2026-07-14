@@ -21,3 +21,19 @@ export class PosLoginError extends Error {
     this.name = "PosLoginError";
   }
 }
+
+/** Thrown when a cashier's credentials are wrong, or their session is missing/expired. */
+export class PosCashierError extends Error {
+  constructor(message = "Invalid cashier credentials") {
+    super(message);
+    this.name = "PosCashierError";
+  }
+}
+
+/** Thrown when the cashier lacks the permission the action requires. */
+export class PosForbiddenError extends Error {
+  constructor(public readonly permission: string) {
+    super(`Missing permission: ${permission}`);
+    this.name = "PosForbiddenError";
+  }
+}
