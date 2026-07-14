@@ -12,12 +12,13 @@ export default async function AdminQueue() {
   const pending = await listPendingApplications();
   return (
     <main style={{ padding: 48, fontFamily: "system-ui" }}>
-      <h1>Pending restaurants</h1>
+      <h1>Pending applications</h1>
       {pending.length === 0 && <p>No pending applications.</p>}
       <ul style={{ display: "grid", gap: 16, listStyle: "none", padding: 0 }}>
         {pending.map((p) => (
           <li key={p.applicationId} style={{ border: "1px solid #ddd", padding: 16 }}>
             <strong>{p.tenantName}</strong> — {p.slug}.serveos.com
+            <span style={{ marginLeft: 8, padding: "2px 8px", background: "#eef", borderRadius: 999, fontSize: 12 }}>{p.vertical}</span>
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
               <form action={approveAction}>
                 <input type="hidden" name="tenantId" value={p.tenantId} />
