@@ -18,7 +18,7 @@ export type OrderTotals = {
   total: number;
 };
 
-const round2 = (n: number) => Math.round(n * 100) / 100;
+export const round2 = (n: number) => Math.round(n * 100) / 100;
 
 export function computeOrderTotals(pricing: CheckoutPricing, subtotal: number, deliveryFee: number): OrderTotals {
   const sub = round2(subtotal);
@@ -35,4 +35,37 @@ export function computeOrderTotals(pricing: CheckoutPricing, subtotal: number, d
   }
   const vatAmount = round2(taxable * (pricing.vatRate / 100));
   return { subtotal: sub, serviceChargeAmount, vatRate: pricing.vatRate, vatAmount, vatIncludedInPrices: false, deliveryFee: fee, total: round2(taxable + vatAmount + fee) };
+}
+
+export type LineForTotals = { unitPrice: number; quantity: number; discountAmount?: number };
+export type CartTotals = OrderTotals & { discountAmount: number };
+
+/** A line's money after its own discount. Never negative. */
+export function computeLineTotal(line: LineForTotals): number {
+  const gross = round2(line.unitPrice * line.quantity);
+  return Math.max(0, round2(gross - round2(line.discountAmount ?? 0)));
+}
+
+/**
+ * The whole cart. Discounts reduce the taxable base, so they are applied
+ * BEFORE the service charge and VAT — computeOrderTotals is called exactly
+ * once, with the already-discounted subtotal. POS delivery fee is always 0.
+ */
+export function computeCartTotals(
+  pricing: CheckoutPricing,
+  lines: LineForTotals[],
+  orderDiscountAmount = 0,
+): CartTotals {
+  const gross = round2(lines.reduce((s, l) => s + computeLineTotal(l), 0));
+  const orderDiscount = Math.min(round2(orderDiscountAmount), gross);
+  const discounted = round2(gross - orderDiscount);
+
+  const lineDiscounts = round2(
+    lines.reduce((s, l) => s + Math.min(round2(l.discountAmount ?? 0), round2(l.unitPrice * l.quantity)), 0),
+  );
+
+  return {
+    ...computeOrderTotals(pricing, discounted, 0),
+    discountAmount: round2(lineDiscounts + orderDiscount),
+  };
 }
