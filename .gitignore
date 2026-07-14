@@ -52,3 +52,6 @@ next-env.d.ts
 
 # Superpowers scratch (SDD ledger, brainstorm mockups)
 .superpowers/
+
+# Embedded Claude worktrees (external repos)
+.claude/worktrees/
