@@ -29,7 +29,7 @@ export function ProductCard({
         {badge && <span className="absolute left-2 top-2"><Badge kind={badge} /></span>}
       </div>
       <div className="flex flex-1 flex-col p-3">
-        <h3 className="font-sans text-sm font-semibold leading-tight text-ink">{product.nameEn}</h3>
+        <h3 className="line-clamp-2 font-sans text-sm font-semibold leading-tight text-ink">{product.nameEn}</h3>
         <span dir="rtl" className="text-xs text-muted-foreground">{product.nameAr}</span>
         {product.descriptionEn && <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{product.descriptionEn}</p>}
         <div className="mt-auto flex items-center justify-between pt-2.5">

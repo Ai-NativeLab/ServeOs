@@ -88,6 +88,9 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
             <div className="border-t pt-2 mt-2 space-y-1 text-muted-foreground">
               <div className="flex justify-between"><span>Subtotal</span><span className="font-mono">{Number(order.subtotal).toFixed(2)}</span></div>
               <div className="flex justify-between"><span>VAT</span><span className="font-mono">{Number(order.vatAmount).toFixed(2)}</span></div>
+              {order.serviceChargeAmount != null && Number(order.serviceChargeAmount) > 0 && (
+                <div className="flex justify-between"><span>Service charge</span><span className="font-mono">{Number(order.serviceChargeAmount).toFixed(2)}</span></div>
+              )}
               <div className="flex justify-between"><span>Delivery</span><span className="font-mono">{Number(order.deliveryFee).toFixed(2)}</span></div>
               <div className="flex justify-between items-baseline text-ink pt-1">
                 <span className="font-medium">Total</span>

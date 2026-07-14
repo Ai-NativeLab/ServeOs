@@ -21,6 +21,7 @@ export default async function ApprovalsPage() {
               <TableRow>
                 <TableHead>Store</TableHead>
                 <TableHead>Slug</TableHead>
+                <TableHead>Vertical</TableHead>
                 <TableHead>Submitted</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
@@ -30,6 +31,7 @@ export default async function ApprovalsPage() {
                 <TableRow key={p.applicationId}>
                   <TableCell className="font-medium">{p.tenantName}</TableCell>
                   <TableCell>{p.slug}</TableCell>
+                  <TableCell><span className="inline-flex rounded-full bg-muted px-2 py-0.5 text-xs capitalize text-muted-foreground">{p.vertical}</span></TableCell>
                   <TableCell>{p.submittedAt ? p.submittedAt.toISOString().slice(0, 10) : "—"}</TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-2">
@@ -47,7 +49,7 @@ export default async function ApprovalsPage() {
                 </TableRow>
               ))}
               {pending.length === 0 && (
-                <TableRow><TableCell colSpan={4} className="text-center text-muted-foreground py-6">No pending applications.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-6">No pending applications.</TableCell></TableRow>
               )}
             </TableBody>
           </Table>

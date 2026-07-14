@@ -1,11 +1,15 @@
 import { describe, it, expect } from "vitest";
 import { db } from "@/db/client";
 import { tenants } from "./schema";
-import { getVatRate, setVatRate, getTenantSettings, getWhatsappNumber, setWhatsappNumber, requestPlanUpgrade, getUpgradeRequest } from "./settings";
+import {
+  getVatRate, setVatRate, getTenantSettings, getWhatsappNumber, setWhatsappNumber,
+  requestPlanUpgrade, getUpgradeRequest, getCheckoutPricing, setServiceChargeRate,
+} from "./settings";
 import { InvalidWhatsappNumberError } from "./errors";
+import type { VerticalId } from "@/server/verticals";
 
-async function makeTenant(slug: string, country = "EG") {
-  const [t] = await db.insert(tenants).values({ slug, name: "T", country }).returning();
+async function makeTenant(slug: string, country = "EG", vertical: VerticalId = "restaurant") {
+  const [t] = await db.insert(tenants).values({ slug, name: "T", country, vertical }).returning();
   return t;
 }
 
@@ -54,6 +58,45 @@ describe("tenant WhatsApp settings", () => {
     await setWhatsappNumber(t.id, "+201234567890");
     expect(await getVatRate(t.id)).toBe(12);
     expect(await getWhatsappNumber(t.id)).toBe("+201234567890");
+  });
+});
+
+describe("tenant checkout pricing", () => {
+  it("defaults for a restaurant tenant: VAT on at the country rate, prices exclusive, no service charge", async () => {
+    const t = await makeTenant("pricing-restaurant-defaults", "EG", "restaurant");
+    expect(await getCheckoutPricing(t.id)).toEqual({
+      vatEnabled: true,
+      vatRate: 14,
+      pricesIncludeVat: false,
+      serviceChargeRate: 0,
+    });
+  });
+
+  it("zeroes the service charge for a retail tenant even when a rate is stored (capability gate)", async () => {
+    const t = await makeTenant("pricing-retail-gated", "EG", "retail");
+    await setServiceChargeRate(t.id, 12);
+    const pricing = await getCheckoutPricing(t.id);
+    expect(pricing.serviceChargeRate).toBe(0);
+  });
+});
+
+describe("setServiceChargeRate validation", () => {
+  it("rejects a rate below 0", async () => {
+    const t = await makeTenant("sc-negative");
+    await expect(setServiceChargeRate(t.id, -1)).rejects.toThrow();
+  });
+
+  it("rejects a rate above 100", async () => {
+    const t = await makeTenant("sc-over-100");
+    await expect(setServiceChargeRate(t.id, 101)).rejects.toThrow();
+  });
+
+  it("clears the stored value when passed null", async () => {
+    const t = await makeTenant("sc-clear");
+    await setServiceChargeRate(t.id, 15);
+    expect((await getTenantSettings(t.id)).serviceChargeRate).toBe(15);
+    await setServiceChargeRate(t.id, null);
+    expect((await getTenantSettings(t.id)).serviceChargeRate).toBeUndefined();
   });
 });
 

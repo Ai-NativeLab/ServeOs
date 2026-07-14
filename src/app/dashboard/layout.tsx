@@ -1,6 +1,7 @@
 import { requireDashboardUser } from "@/server/auth/dashboard-context";
 import { getTenantById } from "@/server/tenancy";
 import { pendingOrderCount } from "@/server/ordering/service";
+import { getVerticalTerms, selectStorefrontTemplate, type VerticalId } from "@/server/verticals";
 import { dashboardNavItems } from "@/components/dashboard/nav-items";
 import { Sidebar } from "@/components/dashboard/Sidebar";
 import { Topbar } from "@/components/dashboard/Topbar";
@@ -9,7 +10,8 @@ import { Toaster } from "@/components/ui/sonner";
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { user, tenantId, roleKeys } = await requireDashboardUser();
   const [tenant, pending] = await Promise.all([getTenantById(tenantId), pendingOrderCount(tenantId)]);
-  const items = dashboardNavItems(roleKeys);
+  const terms = getVerticalTerms(selectStorefrontTemplate(tenant?.vertical as VerticalId));
+  const items = dashboardNavItems(roleKeys, terms.catalogNoun.en);
 
   return (
     <div className="min-h-screen flex bg-background text-foreground">

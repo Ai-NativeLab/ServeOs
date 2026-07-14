@@ -4,6 +4,7 @@ import { getTenantBySlug } from "@/server/tenancy";
 import { getOrderByToken } from "@/server/ordering/service";
 import { getWhatsappNumber } from "@/server/tenancy/settings";
 import { listBranches, listDeliveryAreas } from "@/server/branches/service";
+import { getVerticalTerms, selectStorefrontTemplate, type VerticalId } from "@/server/verticals";
 import { buildOrderWhatsappMessage, whatsappChatLink } from "@/lib/whatsapp";
 import { formatMoney } from "@/lib/money";
 import { formatDayTime } from "@/lib/datetime";
@@ -46,6 +47,8 @@ export default async function OrderStatusPage({ params }: { params: Promise<{ to
   const eta = areas.find((a) => a.id === order.deliveryAreaId)?.etaMinutes ?? null;
   const steps = order.fulfillmentType === "delivery" ? STEPS_DELIVERY : STEPS_PICKUP;
   const currency = tenant.currency;
+  const terms = getVerticalTerms(selectStorefrontTemplate(tenant.vertical as VerticalId));
+  const statusOverrides = { preparing: terms.statusPreparing.en, ready: terms.statusReady.en };
 
   return (
     <main className="min-h-screen bg-background px-4 py-8 sm:px-6">
@@ -78,6 +81,7 @@ export default async function OrderStatusPage({ params }: { params: Promise<{ to
           steps={steps}
           terminal={["completed", "rejected", "cancelled"]}
           cancellable={order.status === "pending"}
+          statusOverrides={statusOverrides}
         />
 
         <section className="card-lift mt-6 rounded-2xl border border-border bg-card p-5">
@@ -100,6 +104,9 @@ export default async function OrderStatusPage({ params }: { params: Promise<{ to
           <div className="mt-3 space-y-1.5 border-t border-border pt-3 text-sm text-muted-foreground">
             <div className="flex justify-between"><span>Subtotal</span><span className="font-mono">{formatMoney(Number(order.subtotal), currency)}</span></div>
             <div className="flex justify-between"><span>VAT {Number(order.vatRateSnapshot)}%</span><span className="font-mono">{formatMoney(Number(order.vatAmount), currency)}</span></div>
+            {order.serviceChargeAmount != null && Number(order.serviceChargeAmount) > 0 && (
+              <div className="flex justify-between"><span>Service charge</span><span className="font-mono">{formatMoney(Number(order.serviceChargeAmount), currency)}</span></div>
+            )}
             {order.fulfillmentType === "delivery" && (
               <div className="flex justify-between"><span>Delivery</span><span className="font-mono">{formatMoney(Number(order.deliveryFee), currency)}</span></div>
             )}

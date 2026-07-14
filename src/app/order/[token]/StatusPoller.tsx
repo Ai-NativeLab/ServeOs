@@ -6,9 +6,11 @@ import {
   AlertDialogTitle, AlertDialogDescription, AlertDialogFooter,
   AlertDialogCancel, AlertDialogAction,
 } from "@/components/ui/alert-dialog";
+import { orderStatusMeta, type StatusLabelOverrides } from "@/lib/order-status";
+import type { OrderStatus } from "@/server/ordering/schema";
 
 export function StatusPoller({
-  token, slug, initialStatus, steps, terminal, cancellable,
+  token, slug, initialStatus, steps, terminal, cancellable, statusOverrides,
 }: {
   token: string;
   slug: string;
@@ -16,6 +18,7 @@ export function StatusPoller({
   steps: string[];
   terminal: string[];
   cancellable: boolean;
+  statusOverrides?: StatusLabelOverrides;
 }) {
   const [status, setStatus] = useState(initialStatus);
   const [cancelError, setCancelError] = useState<string | null>(null);
@@ -56,7 +59,7 @@ export function StatusPoller({
     }
   }
 
-  const label = (s: string) => s.replace(/_/g, " ");
+  const label = (s: string) => orderStatusMeta(s as OrderStatus, statusOverrides).label;
   const currentIdx = steps.indexOf(status);
   const failed = status === "cancelled" || status === "rejected";
 

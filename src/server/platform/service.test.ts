@@ -73,6 +73,14 @@ describe("platform approval", () => {
     const logs = await db.select().from(auditLogs).where(eq(auditLogs.tenantId, fakeId));
     expect(logs).toHaveLength(0);
   });
+
+  it("pending applications include the tenant vertical", async () => {
+    await seedDefaultPlans();
+    const { tenantId } = await registerTenant({ restaurantName: "Wood & Co", slug: "adm-timber", country: "EG", ownerName: "O", email: "o@adm-timber.com", password: "x", vertical: "timber" });
+    const pending = await listPendingApplications();
+    const row = pending.find((p) => p.tenantId === tenantId);
+    expect(row?.vertical).toBe("timber");
+  });
 });
 
 describe("platform tenant + billing service", () => {

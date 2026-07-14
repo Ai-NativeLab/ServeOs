@@ -14,4 +14,11 @@ describe("orderStatusMeta", () => {
     expect(orderStatusMeta("mystery" as never).label).toBe("mystery");
     expect(orderStatusMeta("mystery" as never).badgeClass).toContain("status-completed");
   });
+
+  it("applies vertical overrides to preparing/ready labels only", () => {
+    expect(orderStatusMeta("preparing", { preparing: "Being packed" }).label).toBe("Being packed");
+    expect(orderStatusMeta("ready", { ready: "Ready for collection" }).label).toBe("Ready for collection");
+    expect(orderStatusMeta("pending", { preparing: "Being packed" }).label).toBe("Pending");
+    expect(orderStatusMeta("preparing").label).toBe("Preparing"); // no overrides = unchanged
+  });
 });

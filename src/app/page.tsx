@@ -8,7 +8,7 @@ import { getBranchOpenState, isBranchOrderableAt } from "@/server/branches/slots
 import { getWhatsappNumber } from "@/server/tenancy/settings";
 import { getPopularProductIds } from "@/server/catalog/popular";
 import { formatMoney } from "@/lib/money";
-import { selectStorefrontTemplate } from "@/server/tenancy/verticals";
+import { selectStorefrontTemplate, getVerticalTerms, type VerticalId } from "@/server/verticals";
 import { RestaurantStorefront } from "./_components/storefront/templates/RestaurantStorefront";
 import { RetailStorefront } from "./_components/storefront/templates/RetailStorefront";
 import { PharmacyStorefront } from "./_components/storefront/templates/PharmacyStorefront";
@@ -37,14 +37,15 @@ export default async function Home({
     if (!tenant) {
       return (
         <main className="grid min-h-screen place-items-center bg-background p-6">
-          <EmptyState title="Store not found" />
+          <EmptyState title="Not found" />
         </main>
       );
     }
     if (!isTenantServable(tenant)) {
+      const terms = getVerticalTerms(selectStorefrontTemplate(tenant.vertical as VerticalId));
       return (
         <main className="grid min-h-screen place-items-center bg-background p-6">
-          <EmptyState title={tenant.name} description="This store is getting ready. Check back soon!" />
+          <EmptyState title={tenant.name} description={terms.gettingReadyBody.en} />
         </main>
       );
     }

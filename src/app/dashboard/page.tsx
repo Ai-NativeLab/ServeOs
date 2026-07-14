@@ -100,6 +100,7 @@ export default async function DashboardHome() {
             </div>
 
             <div className="flex flex-col items-start md:items-center gap-3 md:pl-6 md:border-l md:border-border/60">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={storefrontShare.qrDataUrl}
                 alt="QR code linking to your storefront"

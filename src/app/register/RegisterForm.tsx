@@ -1,7 +1,7 @@
 "use client";
 import { useState, type CSSProperties } from "react";
 import { registerAction } from "./actions";
-import { VERTICAL_IDS, VERTICAL_ACCENTS, type VerticalId } from "@/server/tenancy/verticals";
+import { VERTICAL_IDS, VERTICAL_ACCENTS, type VerticalId } from "@/server/verticals";
 
 const NAME_LABEL: Record<VerticalId, string> = {
   restaurant: "Restaurant name",

@@ -6,7 +6,7 @@ import { users, roles, userRoles } from "@/server/auth/schema";
 import { onboardingApplications } from "./schema";
 import { seedDefaultPlans, getActiveSubscription } from "@/server/subscription";
 import { registerTenant } from "./service";
-import { type VerticalId } from "@/server/tenancy/verticals";
+import { type VerticalId } from "@/server/verticals";
 
 describe("registerTenant", () => {
   it("creates tenant, owner, owner role, trial subscription, and a pending application", async () => {

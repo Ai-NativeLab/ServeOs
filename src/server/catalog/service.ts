@@ -1,12 +1,15 @@
 import { and, count, eq, inArray, isNull, or } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { checkQuota } from "@/server/entitlements/service";
+import { getTenantById } from "@/server/tenancy";
+import { requireCapability, type VerticalId } from "@/server/verticals";
 import {
   categories,
   products,
   modifierGroups,
   modifierOptions,
   branchProductAvailability,
+  productVariants,
   type Category,
   type NewCategory,
   type Product,
@@ -75,7 +78,7 @@ export async function deleteCategory(tenantId: string, categoryId: string): Prom
 
 // ── products ─────────────────────────────────────────────────────────────────
 
-export type CreateProductInput = Pick<NewProduct, "nameEn" | "nameAr" | "descriptionEn" | "descriptionAr" | "basePrice" | "imageUrl" | "sortOrder" | "categoryId" | "isFeatured">;
+export type CreateProductInput = Pick<NewProduct, "nameEn" | "nameAr" | "descriptionEn" | "descriptionAr" | "basePrice" | "imageUrl" | "sortOrder" | "categoryId" | "isFeatured" | "brand" | "sku" | "trackStock" | "stockQuantity">;
 export type UpdateProductInput = Partial<CreateProductInput & { isPublished: boolean }>;
 
 export async function listProducts(tenantId: string, categoryId?: string): Promise<Product[]> {
@@ -153,6 +156,9 @@ export type ModifierGroupInput = {
 };
 
 export async function upsertModifierGroup(tenantId: string, productId: string, input: ModifierGroupInput): Promise<ModifierGroup> {
+  const tenant = await getTenantById(tenantId);
+  if (tenant) requireCapability(tenant.vertical as VerticalId, "modifiers");
+
   if (input.minSelections > input.maxSelections) throw new InvalidModifierRulesError();
   if (input.required && input.minSelections < 1) throw new InvalidModifierRulesError();
 
@@ -261,6 +267,10 @@ export async function getPublishedMenu(tenantId: string, branchId?: string): Pro
           descriptionAr: products.descriptionAr,
           basePrice: products.basePrice,
           imageUrl: products.imageUrl,
+          brand: products.brand,
+          sku: products.sku,
+          trackStock: products.trackStock,
+          stockQuantity: products.stockQuantity,
           isFeatured: products.isFeatured,
           isPublished: products.isPublished,
           sortOrder: products.sortOrder,
@@ -294,6 +304,10 @@ export async function getPublishedMenu(tenantId: string, branchId?: string): Pro
         descriptionAr: r.descriptionAr,
         basePrice: r.bpaPriceOverride ?? r.basePrice,
         imageUrl: r.imageUrl,
+        brand: r.brand,
+        sku: r.sku,
+        trackStock: r.trackStock,
+        stockQuantity: r.stockQuantity,
         isFeatured: r.isFeatured,
         isPublished: r.isPublished,
         sortOrder: r.sortOrder,
@@ -320,6 +334,13 @@ export async function getPublishedMenu(tenantId: string, branchId?: string): Pro
     const groupsWithOpts: ModifierGroupWithOptions[] = groups.map((g) => ({ ...g, options: optsByGroup[g.id] ?? [] }));
     const groupsByProduct = groupBy(groupsWithOpts, (g) => g.productId);
 
+    const variantRows = productIds.length > 0
+      ? await tx.select().from(productVariants)
+          .where(and(inArray(productVariants.productId, productIds), eq(productVariants.isActive, true)))
+          .orderBy(productVariants.sortOrder)
+      : [];
+    const variantsByProduct = groupBy(variantRows, (v) => v.productId);
+
     const prodsByCat = groupBy(
       prodRows.map((p) => ({
         id: p.id,
@@ -329,6 +350,17 @@ export async function getPublishedMenu(tenantId: string, branchId?: string): Pro
         descriptionAr: p.descriptionAr,
         effectivePrice: Number(p.basePrice),
         imageUrl: p.imageUrl,
+        brand: p.brand,
+        variants: (variantsByProduct[p.id] ?? []).map((v) => ({
+          id: v.id, nameEn: v.nameEn, nameAr: v.nameAr,
+          price: Number(v.price),
+          inStock: v.stockQuantity === null || v.stockQuantity > 0,
+        })),
+        inStock: (variantsByProduct[p.id] ?? []).length > 0
+          ? (variantsByProduct[p.id] ?? []).some((v) => v.stockQuantity === null || v.stockQuantity > 0)
+          : p.trackStock
+            ? (p.stockQuantity ?? 0) > 0
+            : true,
         isFeatured: p.isFeatured,
         createdAt: p.createdAt.toISOString(),
         modifierGroups: groupsByProduct[p.id] ?? [],

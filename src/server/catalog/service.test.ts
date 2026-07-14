@@ -22,6 +22,7 @@ import {
 } from "./service";
 import { CategoryNotEmptyError, ProductNotFoundError, InvalidModifierRulesError } from "./errors";
 import { createBranch } from "@/server/branches/service";
+import { upsertVariant } from "./variants";
 
 async function makeTenant(slug = "c1") {
   const [t] = await db.insert(tenants).values({ slug, name: "T", country: "EG" }).returning();
@@ -229,5 +230,32 @@ describe("catalog: branch availability and getPublishedMenu", () => {
     await setBranchAvailability(t.id, branch.id, p.id, true); // restore
     const menu = await getPublishedMenu(t.id, branch.id);
     expect(menu.categories[0].products).toHaveLength(1);
+  });
+});
+
+describe("getPublishedMenu retail fields", () => {
+  it("includes brand, variants with prices, and stock state", async () => {
+    const [t] = await db.insert(tenants).values({ slug: "pubret", name: "T", country: "EG", vertical: "retail" }).returning();
+    await seedDefaultPlans();
+    await startTrial(t.id, "pro");
+    const cat = await createCategory(t.id, { nameEn: "Hinges", nameAr: "مفصلات" });
+    const prod = await createProduct(t.id, { nameEn: "Soft-Close Hinge", nameAr: "مفصلة", basePrice: "50", categoryId: cat.id, brand: "Grimme" });
+    await updateProduct(t.id, prod.id, { isPublished: true });
+    await upsertVariant(t.id, prod.id, { nameEn: "35mm", nameAr: "٣٥مم", price: "55", stockQuantity: 4 });
+    await upsertVariant(t.id, prod.id, { nameEn: "40mm", nameAr: "٤٠مم", price: "60", stockQuantity: 0 });
+
+    const menu = await getPublishedMenu(t.id);
+    const p = menu.categories[0].products[0];
+    expect(p.brand).toBe("Grimme");
+    expect(p.variants.map((v) => [v.nameEn, v.price, v.inStock])).toEqual([["35mm", 55, true], ["40mm", 60, false]]);
+    expect(p.inStock).toBe(true); // at least one variant in stock
+
+    // out-of-stock tracked simple product
+    const prod2 = await createProduct(t.id, { nameEn: "Worktop", nameAr: "سطح", basePrice: "900", categoryId: cat.id, trackStock: true, stockQuantity: 0 });
+    await updateProduct(t.id, prod2.id, { isPublished: true });
+    const menu2 = await getPublishedMenu(t.id);
+    const p2 = menu2.categories[0].products.find((x) => x.nameEn === "Worktop")!;
+    expect(p2.inStock).toBe(false);
+    expect(p2.variants).toEqual([]);
   });
 });

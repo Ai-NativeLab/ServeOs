@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { loadCart, clearCart, cartSubtotal, type Cart } from "../_components/cart";
 import { rememberOrder } from "../_components/recent-orders";
 import { formatMoney } from "@/lib/money";
+import { computeOrderTotals, type CheckoutPricing } from "@/lib/order-totals";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -23,12 +24,12 @@ function loadCustomer(): SavedCustomer {
 }
 
 export function CheckoutForm({
-  slug, branchId, branchName, vatRate, currency, openNow, slots,
+  slug, branchId, branchName, pricing, currency, openNow, slots,
 }: {
   slug: string;
   branchId: string;
   branchName: string;
-  vatRate: number;
+  pricing: CheckoutPricing;
   currency: string;
   openNow: boolean;
   slots: SlotOption[];
@@ -68,8 +69,7 @@ export function CheckoutForm({
   const subtotal = cartSubtotal(cart.lines);
   const area = useMemo(() => areas.find((a) => a.id === areaId), [areas, areaId]);
   const deliveryFee = fulfillment === "delivery" && area ? Number(area.deliveryFee) : 0;
-  const vat = subtotal * (vatRate / 100);
-  const total = subtotal + vat + deliveryFee;
+  const totals = computeOrderTotals(pricing, subtotal, deliveryFee);
   const minShortfall =
     fulfillment === "delivery" && area && subtotal < Number(area.minOrderAmount)
       ? Number(area.minOrderAmount) - subtotal
@@ -108,13 +108,17 @@ export function CheckoutForm({
           addressText: fulfillment === "delivery" ? address : undefined,
           scheduledFor: when === "scheduled" ? slotIso : undefined,
           lines: cart.lines.map((l) => ({
-            productId: l.productId, quantity: l.quantity, selectedOptionIds: l.selectedOptionIds,
+            productId: l.productId, variantId: l.variantId, quantity: l.quantity, selectedOptionIds: l.selectedOptionIds,
           })),
         }),
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.error ?? "Could not place order.");
+        if (data.code === "out_of_stock") {
+          setError(`${data.error} — please remove it from your cart or reduce the quantity.`);
+        } else {
+          setError(data.error ?? "Something went wrong");
+        }
         setSubmitting(false);
         return;
       }
@@ -153,8 +157,9 @@ export function CheckoutForm({
     );
   }
 
+  // py-3 (was py-2) brings these radio-style toggle rows up to the 44px tap-target minimum.
   const segment = (active: boolean) =>
-    `flex-1 rounded-full px-4 py-2 text-sm font-semibold transition-colors disabled:pointer-events-none disabled:opacity-40 ${
+    `flex-1 rounded-full px-4 py-3 text-sm font-semibold transition-colors disabled:pointer-events-none disabled:opacity-40 ${
       active ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-ink"
     }`;
 
@@ -238,7 +243,7 @@ export function CheckoutForm({
                 id="co-area"
                 value={areaId}
                 onChange={(e) => setAreaId(e.target.value)}
-                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                className="h-9 rounded-md border border-input bg-transparent px-3 text-base outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 md:text-sm"
               >
                 <option value="">Select area…</option>
                 {areas.map((a) => (
@@ -271,10 +276,18 @@ export function CheckoutForm({
           ))}
         </div>
         <div className="mt-2 space-y-1.5 border-t border-border pt-3 text-sm">
-          <Row label="Subtotal" value={formatMoney(subtotal, currency)} />
-          <Row label={`VAT ${vatRate}%`} value={formatMoney(vat, currency)} />
-          {fulfillment === "delivery" && <Row label="Delivery" value={formatMoney(deliveryFee, currency)} />}
-          <Row label="Total" value={formatMoney(total, currency)} bold />
+          <Row label="Subtotal" value={formatMoney(totals.subtotal, currency)} />
+          {totals.serviceChargeAmount > 0 && (
+            <Row label="Service charge" value={formatMoney(totals.serviceChargeAmount, currency)} />
+          )}
+          {totals.vatAmount > 0 && (
+            <Row
+              label={totals.vatIncludedInPrices ? `VAT ${totals.vatRate}% (included)` : `VAT ${totals.vatRate}%`}
+              value={formatMoney(totals.vatAmount, currency)}
+            />
+          )}
+          {fulfillment === "delivery" && <Row label="Delivery" value={formatMoney(totals.deliveryFee, currency)} />}
+          <Row label="Total" value={formatMoney(totals.total, currency)} bold />
         </div>
         {minShortfall > 0 && (
           <p className="mt-3 rounded-lg bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive">
@@ -290,7 +303,7 @@ export function CheckoutForm({
         disabled={submitting || !name || !phone || minShortfall > 0}
         className="card-lift w-full rounded-full py-6 text-base transition-all active:scale-[0.98]"
       >
-        {submitting ? "Placing…" : `Place order (Cash) — ${formatMoney(total, currency)}`}
+        {submitting ? "Placing…" : `Place order (Cash) — ${formatMoney(totals.total, currency)}`}
       </Button>
       <p className="text-xs text-muted-foreground">Final price is confirmed by the restaurant.</p>
     </div>

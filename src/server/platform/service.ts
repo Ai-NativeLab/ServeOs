@@ -18,6 +18,7 @@ export async function listPendingApplications() {
       tenantName: tenants.name,
       slug: tenants.slug,
       submittedAt: onboardingApplications.submittedAt,
+      vertical: tenants.vertical,
     })
     .from(onboardingApplications)
     .innerJoin(tenants, eq(tenants.id, onboardingApplications.tenantId))

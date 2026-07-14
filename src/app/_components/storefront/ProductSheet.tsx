@@ -112,13 +112,14 @@ export function ProductSheet({
           })}
         </div>
 
-        <div className="-mx-6 -mb-6 mt-5 flex flex-none items-center gap-3 border-t border-border bg-card px-6 py-4">
-          <div className="inline-flex items-center gap-4 rounded-full border border-border px-4 py-2">
-            <button type="button" onClick={() => setQuantity((q) => Math.max(1, q - 1))} className="text-lg leading-none text-ink transition-colors hover:text-primary" aria-label="Decrease quantity">
+        <div className="-mx-6 -mb-6 mt-5 flex flex-none items-center gap-3 border-t border-border bg-card px-6 pt-4 pb-[calc(env(safe-area-inset-bottom)+1rem)]">
+          <div className="inline-flex items-center gap-1 rounded-full border border-border pl-1 pr-1">
+            {/* size-11 (44px) hit area — was a bare glyph with no padding, well under the 44px tap-target minimum */}
+            <button type="button" onClick={() => setQuantity((q) => Math.max(1, q - 1))} className="grid size-11 place-items-center rounded-full text-lg leading-none text-ink transition-colors hover:text-primary" aria-label="Decrease quantity">
               −
             </button>
             <span className="w-4 text-center font-display font-semibold text-ink">{quantity}</span>
-            <button type="button" onClick={() => setQuantity((q) => q + 1)} className="text-lg leading-none text-ink transition-colors hover:text-primary" aria-label="Increase quantity">
+            <button type="button" onClick={() => setQuantity((q) => q + 1)} className="grid size-11 place-items-center rounded-full text-lg leading-none text-ink transition-colors hover:text-primary" aria-label="Increase quantity">
               +
             </button>
           </div>

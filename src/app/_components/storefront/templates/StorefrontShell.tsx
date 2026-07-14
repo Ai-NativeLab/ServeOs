@@ -3,7 +3,7 @@ import type { Banner } from "@/server/banners/schema";
 import type { Branch } from "@/server/branches/schema";
 import type { BranchOpenState } from "@/server/branches/slots";
 import type { Tenant } from "@/server/tenancy/schema";
-import type { VerticalStorefrontCopy } from "@/server/tenancy/verticals";
+import type { VerticalStorefrontCopy } from "@/server/verticals";
 import { Hero } from "../Hero";
 import { OpenStateBanner } from "../OpenStateBanner";
 import { RecentOrderStrip } from "../RecentOrderStrip";
@@ -30,6 +30,8 @@ export type StorefrontTemplateProps = {
   openLabel?: string | null;
   etaLabel?: string | null;
   minOrderLabel?: string | null;
+  /** Shop verticals inject their catalog UI here; undefined = restaurant menu. */
+  catalog?: React.ReactNode;
 };
 
 export function StorefrontShell(props: StorefrontTemplateProps) {
@@ -81,16 +83,18 @@ export function StorefrontShell(props: StorefrontTemplateProps) {
         {menu.categories.length === 0 ? (
           <EmptyState title={config.emptyMenuTitle} description={config.emptyMenuDesc} />
         ) : (
-          <StorefrontMenu
-            menu={menu}
-            branchId={activeBranch?.id ?? null}
-            slug={slug}
-            orderingEnabled={orderingEnabled && !paused}
-            preorderOnly={openState !== null && !openState.open && !paused}
-            branches={branchSummaries}
-            currency={tenant.currency}
-            popularIds={[...popularIds]}
-          />
+          props.catalog ?? (
+            <StorefrontMenu
+              menu={menu}
+              branchId={activeBranch?.id ?? null}
+              slug={slug}
+              orderingEnabled={orderingEnabled && !paused}
+              preorderOnly={openState !== null && !openState.open && !paused}
+              branches={branchSummaries}
+              currency={tenant.currency}
+              popularIds={[...popularIds]}
+            />
+          )
         )}
       </section>
 

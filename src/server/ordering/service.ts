@@ -1,17 +1,20 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { requireFeature, incrementUsage } from "@/server/entitlements/service";
-import { getVatRate } from "@/server/tenancy/settings";
+import { getCheckoutPricing } from "@/server/tenancy/settings";
+import { computeOrderTotals } from "@/lib/order-totals";
 import { isBranchOrderableAt, isWithinSchedulingHorizon, MIN_LEAD_MINUTES } from "@/server/branches/slots";
 import { getTenantById } from "@/server/tenancy";
 import { branches, deliveryAreas } from "@/server/branches/schema";
-import { products, modifierGroups, modifierOptions, branchProductAvailability } from "@/server/catalog/schema";
+import { products, modifierGroups, modifierOptions, branchProductAvailability, productVariants } from "@/server/catalog/schema";
+import { InvalidVariantError } from "@/server/catalog/errors";
+import { getCapabilities, type VerticalId } from "@/server/verticals";
 import { orders, orderItems, orderStatusEvents, type SelectedModifier, type Order, type OrderWithItems, type OrderDetail, type OrderStatus } from "./schema";
 import { canTransition } from "./state-machine";
-import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError } from "./errors";
+import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, OutOfStockError } from "./errors";
 
-export type PlaceOrderLine = { productId: string; quantity: number; selectedOptionIds: string[] };
+export type PlaceOrderLine = { productId: string; variantId?: string; quantity: number; selectedOptionIds: string[] };
 export type PlaceOrderInput = {
   branchId: string;
   fulfillmentType: "pickup" | "delivery";
@@ -37,12 +40,13 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
   if (!input.customerName.trim() || !input.customerPhone.trim()) throw new OrderValidationError("missing customer details");
 
   await requireFeature(tenantId, "online_ordering");
-  const vatRate = await getVatRate(tenantId);
+  const pricing = await getCheckoutPricing(tenantId);
   const now = input.now ?? new Date();
 
   const tenant = await getTenantById(tenantId);
   if (!tenant) throw new OrderValidationError("unknown tenant");
   const tz = tenant.timezone;
+  const caps = getCapabilities(tenant.vertical as VerticalId);
 
   let scheduledFor: Date | null = null;
   if (input.scheduledFor !== undefined) {
@@ -65,7 +69,7 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
 
     // 2. Validate each line against the catalog; build snapshots.
     let subtotal = 0;
-    const itemsToInsert: Array<{ productId: string; nameEn: string; nameAr: string; unitBasePrice: string; quantity: number; lineTotal: string; selectedModifiers: SelectedModifier[] }> = [];
+    const itemsToInsert: Array<{ productId: string; variantId: string | null; variantNameEn: string | null; variantNameAr: string | null; nameEn: string; nameAr: string; unitBasePrice: string; quantity: number; lineTotal: string; selectedModifiers: SelectedModifier[] }> = [];
 
     for (const line of input.lines) {
       if (!Number.isInteger(line.quantity) || line.quantity < 1) throw new OrderValidationError("bad quantity");
@@ -78,31 +82,74 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       if (avail && !avail.isAvailable) throw new OrderValidationError("product unavailable at branch");
       const effectiveBase = avail?.priceOverride ?? product.basePrice;
 
-      const groups = await tx.select().from(modifierGroups).where(eq(modifierGroups.productId, product.id));
-      const groupIds = groups.map((g) => g.id);
-      const opts = groupIds.length > 0
-        ? await tx.select().from(modifierOptions).where(inArray(modifierOptions.modifierGroupId, groupIds))
-        : [];
-      const optById = new Map(opts.map((o) => [o.id, o]));
+      let unit: number;
+      let selected: Array<typeof modifierOptions.$inferSelect> = [];
+      let groups: Array<typeof modifierGroups.$inferSelect> = [];
+      let variantId: string | null = null;
+      let variantNameEn: string | null = null;
+      let variantNameAr: string | null = null;
 
-      // Dedupe first: a crafted request could repeat an option id to inflate the
-      // per-group count (bypassing maxSelections) and double-charge its priceDelta.
-      const selected = [...new Set(line.selectedOptionIds)].map((id) => {
-        const o = optById.get(id);
-        if (!o) throw new OrderValidationError("invalid modifier selection");
-        return o;
-      });
-      for (const g of groups) {
-        const count = selected.filter((o) => o.modifierGroupId === g.id).length;
-        if (g.required && count < Math.max(1, g.minSelections)) throw new OrderValidationError("required modifier missing");
-        // minSelections only binds once the (optional) group has at least one
-        // pick; an untouched optional group is allowed.
-        if (count > 0 && count < g.minSelections) throw new OrderValidationError("too few modifier selections");
-        if (count > g.maxSelections) throw new OrderValidationError("too many modifier selections");
+      if (line.variantId) {
+        if (line.selectedOptionIds.length > 0) throw new OrderValidationError("modifiers not allowed on variant lines");
+        const [variant] = await tx.select().from(productVariants)
+          .where(and(eq(productVariants.id, line.variantId), eq(productVariants.productId, product.id), eq(productVariants.isActive, true)))
+          .limit(1);
+        if (!variant) throw new InvalidVariantError();
+        unit = Number(variant.price);
+        variantId = variant.id;
+        variantNameEn = variant.nameEn;
+        variantNameAr = variant.nameAr;
+      } else {
+        groups = await tx.select().from(modifierGroups).where(eq(modifierGroups.productId, product.id));
+        const groupIds = groups.map((g) => g.id);
+        const opts = groupIds.length > 0
+          ? await tx.select().from(modifierOptions).where(inArray(modifierOptions.modifierGroupId, groupIds))
+          : [];
+        const optById = new Map(opts.map((o) => [o.id, o]));
+
+        // Dedupe first: a crafted request could repeat an option id to inflate the
+        // per-group count (bypassing maxSelections) and double-charge its priceDelta.
+        selected = [...new Set(line.selectedOptionIds)].map((id) => {
+          const o = optById.get(id);
+          if (!o) throw new OrderValidationError("invalid modifier selection");
+          return o;
+        });
+        for (const g of groups) {
+          const count = selected.filter((o) => o.modifierGroupId === g.id).length;
+          if (g.required && count < Math.max(1, g.minSelections)) throw new OrderValidationError("required modifier missing");
+          // minSelections only binds once the (optional) group has at least one
+          // pick; an untouched optional group is allowed.
+          if (count > 0 && count < g.minSelections) throw new OrderValidationError("too few modifier selections");
+          if (count > g.maxSelections) throw new OrderValidationError("too many modifier selections");
+        }
+
+        const modifiersTotal = selected.reduce((s, o) => s + Number(o.priceDelta), 0);
+        unit = Number(effectiveBase) + modifiersTotal;
       }
 
-      const modifiersTotal = selected.reduce((s, o) => s + Number(o.priceDelta), 0);
-      const unit = Number(effectiveBase) + modifiersTotal;
+      // Stock decrement — guarded UPDATE makes the WHERE the serialization point:
+      // under READ COMMITTED the second concurrent writer re-evaluates the WHERE
+      // against the latest committed row after the first commits, so exactly one
+      // order gets the last unit. NULL stock (untracked) always passes via isNull.
+      if (caps.stockTracking) {
+        if (variantId) {
+          const hit = await tx.update(productVariants)
+            .set({ stockQuantity: sql`${productVariants.stockQuantity} - ${line.quantity}` })
+            .where(and(
+              eq(productVariants.id, variantId),
+              or(isNull(productVariants.stockQuantity), gte(productVariants.stockQuantity, line.quantity)),
+            ))
+            .returning({ id: productVariants.id });
+          if (hit.length === 0) throw new OutOfStockError(product.nameEn, product.nameAr);
+        } else if (product.trackStock) {
+          const hit = await tx.update(products)
+            .set({ stockQuantity: sql`${products.stockQuantity} - ${line.quantity}` })
+            .where(and(eq(products.id, product.id), gte(products.stockQuantity, line.quantity)))
+            .returning({ id: products.id });
+          if (hit.length === 0) throw new OutOfStockError(product.nameEn, product.nameAr);
+        }
+      }
+
       const lineTotal = unit * line.quantity;
       subtotal += lineTotal;
 
@@ -112,8 +159,8 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       });
 
       itemsToInsert.push({
-        productId: product.id, nameEn: product.nameEn, nameAr: product.nameAr,
-        unitBasePrice: String(effectiveBase), quantity: line.quantity, lineTotal: money(lineTotal), selectedModifiers: snapshot,
+        productId: product.id, variantId, variantNameEn, variantNameAr, nameEn: product.nameEn, nameAr: product.nameAr,
+        unitBasePrice: variantId ? String(unit) : String(effectiveBase), quantity: line.quantity, lineTotal: money(lineTotal), selectedModifiers: variantId ? [] : snapshot,
       });
     }
 
@@ -135,9 +182,8 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       deliveryAddress = input.addressText.trim();
     }
 
-    // 4. Totals
-    const vatAmount = subtotal * (vatRate / 100);
-    const total = subtotal + vatAmount + deliveryFee;
+    // 4. Totals — single source of money math (src/lib/order-totals.ts)
+    const totals = computeOrderTotals(pricing, subtotal, deliveryFee);
 
     // 5. Order number (per-tenant max+1). Acquire the per-tenant advisory lock
     // only now — after all validation I/O — so concurrent checkouts serialize
@@ -155,7 +201,12 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       fulfillmentType: input.fulfillmentType, status: "pending",
       customerName: input.customerName.trim(), customerPhone: input.customerPhone.trim(), notes: input.notes?.trim() || null,
       deliveryAreaId, deliveryAreaNameSnapshot: deliveryAreaName, deliveryAddressText: deliveryAddress,
-      subtotal: money(subtotal), vatRateSnapshot: money(vatRate), vatAmount: money(vatAmount), deliveryFee: money(deliveryFee), total: money(total),
+      subtotal: money(totals.subtotal),
+      vatRateSnapshot: money(totals.vatRate),
+      vatAmount: money(totals.vatAmount),
+      serviceChargeAmount: totals.serviceChargeAmount > 0 ? money(totals.serviceChargeAmount) : null,
+      deliveryFee: money(totals.deliveryFee),
+      total: money(totals.total),
       statusToken,
       scheduledFor,
     }).returning();
@@ -182,11 +233,31 @@ export async function getOrderByToken(tenantId: string, token: string): Promise<
   });
 }
 
+/** Returns order-item quantities to stock. No-op for verticals without stockTracking.
+ * NULL stock (untracked) is left NULL; `sql`x + n`` on NULL stays NULL, so no guard needed. */
+async function restockOrderItems(tx: Parameters<Parameters<typeof withTenant>[1]>[0], orderId: string, caps: { stockTracking: boolean }): Promise<void> {
+  if (!caps.stockTracking) return;
+  const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, orderId));
+  for (const item of items) {
+    if (item.variantId) {
+      await tx.update(productVariants)
+        .set({ stockQuantity: sql`${productVariants.stockQuantity} + ${item.quantity}` })
+        .where(eq(productVariants.id, item.variantId));
+    } else {
+      await tx.update(products)
+        .set({ stockQuantity: sql`${products.stockQuantity} + ${item.quantity}` })
+        .where(and(eq(products.id, item.productId), eq(products.trackStock, true)));
+    }
+  }
+}
+
 /** Customer-initiated cancel, authorised by possession of the status token.
  * Policy: only while still `pending` — once the restaurant confirms, the
  * customer escalates via phone/WhatsApp instead. Dashboard cancels keep their
  * wider state-machine rights via transitionStatus. */
 export async function cancelOrderByToken(tenantId: string, token: string): Promise<Order> {
+  const tenant = await getTenantById(tenantId);
+  const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalId);
   return withTenant(tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.statusToken, token)).limit(1);
     if (!order) throw new OrderNotFoundError();
@@ -202,6 +273,7 @@ export async function cancelOrderByToken(tenantId: string, token: string): Promi
       .where(and(eq(orders.id, order.id), eq(orders.status, "pending")))
       .returning();
     if (!updated) throw new InvalidTransitionError(order.status, "cancelled");
+    await restockOrderItems(tx, order.id, caps);
     await tx.insert(orderStatusEvents).values({
       tenantId, orderId: order.id, fromStatus: order.status, toStatus: "cancelled",
       changedByUserId: null, reason: "cancelled_by_customer",
@@ -263,6 +335,8 @@ export async function ordersThisMonthCount(tenantId: string): Promise<number> {
 }
 
 export async function transitionStatus(tenantId: string, orderId: string, to: OrderStatus, userId: string, reason?: string): Promise<Order> {
+  const tenant = await getTenantById(tenantId);
+  const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalId);
   return withTenant(tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
     if (!order) throw new OrderNotFoundError();
@@ -274,6 +348,7 @@ export async function transitionStatus(tenantId: string, orderId: string, to: Or
       .where(and(eq(orders.id, orderId), eq(orders.status, order.status)))
       .returning();
     if (!updated) throw new InvalidTransitionError(order.status, to);
+    if (to === "cancelled" || to === "rejected") await restockOrderItems(tx, orderId, caps);
     await tx.insert(orderStatusEvents).values({ tenantId, orderId, fromStatus: order.status, toStatus: to, changedByUserId: userId, reason: reason ?? null });
     return updated;
   });
