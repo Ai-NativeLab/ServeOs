@@ -6,8 +6,8 @@ export const orderStatusEnum = pgEnum("order_status", [
   "pending", "confirmed", "preparing", "ready", "out_for_delivery", "completed", "rejected", "cancelled",
 ]);
 export const fulfillmentTypeEnum = pgEnum("fulfillment_type", ["pickup", "delivery"]);
-export const orderChannelEnum = pgEnum("order_channel", ["web"]);
-export const paymentStatusEnum = pgEnum("payment_status", ["unpaid", "paid"]);
+export const orderChannelEnum = pgEnum("order_channel", ["web", "pos"]);
+export const paymentStatusEnum = pgEnum("payment_status", ["unpaid", "partially_paid", "paid"]);
 export const paymentMethodEnum = pgEnum("payment_method", ["cash"]);
 
 export type OrderStatus = (typeof orderStatusEnum.enumValues)[number];
@@ -26,6 +26,9 @@ export const orders = pgTable("orders", {
   customerName: text("customer_name").notNull(),
   customerPhone: text("customer_phone").notNull(),
   notes: text("notes"),
+  cashierUserId: uuid("cashier_user_id"),
+  discountAmount: numeric("discount_amount").notNull().default("0"),
+  discountReason: text("discount_reason"),
   deliveryAreaId: uuid("delivery_area_id"),
   deliveryAreaNameSnapshot: text("delivery_area_name_snapshot"),
   deliveryAddressText: text("delivery_address_text"),
@@ -59,6 +62,7 @@ export const orderItems = pgTable("order_items", {
   unitBasePrice: numeric("unit_base_price").notNull(),
   quantity: integer("quantity").notNull(),
   lineTotal: numeric("line_total").notNull(),
+  discountAmount: numeric("discount_amount").notNull().default("0"),
   selectedModifiers: jsonb("selected_modifiers").$type<SelectedModifier[]>().notNull().default([]),
 });
 
