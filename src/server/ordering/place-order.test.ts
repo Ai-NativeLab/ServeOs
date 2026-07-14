@@ -2,12 +2,14 @@ import { describe, it, expect } from "vitest";
 import { db } from "@/db/client";
 import { eq } from "drizzle-orm";
 import { tenants } from "@/server/tenancy/schema";
+import { users } from "@/server/auth/schema";
 import { plans, subscriptions } from "@/server/subscription/schema";
 import { seedDefaultPlans } from "@/server/subscription/plans.seed";
 import { startTrial } from "@/server/subscription/service";
 import { createBranch, updateBranchOrdering, createDeliveryArea, updateDeliveryArea } from "@/server/branches/service";
 import { createCategory, createProduct, updateProduct, upsertModifierGroup, upsertModifierOption } from "@/server/catalog/service";
 import { placeOrder } from "./service";
+import { TotalMismatchError } from "./errors";
 
 async function setup(slug: string) {
   const [t] = await db.insert(tenants).values({ slug, name: "T", country: "EG" }).returning();
@@ -21,7 +23,8 @@ async function setup(slug: string) {
   const group = await upsertModifierGroup(t.id, pizza.id, { nameEn: "Extras", nameAr: "إضافات", required: false, minSelections: 0, maxSelections: 2 });
   const cheese = await upsertModifierOption(t.id, group.id, { nameEn: "Cheese", nameAr: "جبنة", priceDelta: "15" });
   const area = await createDeliveryArea(t.id, branch.id, { nameEn: "Maadi", nameAr: "المعادي", deliveryFee: "25", minOrderAmount: "100" });
-  return { t, branch, pizza, cheese, area };
+  const [user] = await db.insert(users).values({ tenantId: t.id, name: "Cashier" }).returning();
+  return { t, branch, pizza, cheese, area, user };
 }
 
 describe("placeOrder", () => {
@@ -305,5 +308,87 @@ describe("placeOrder retail variants + stock", () => {
     const { listVariants } = await import("@/server/catalog/variants");
     const [v] = await listVariants(t.id, hinge.id);
     expect(v.stockQuantity).toBe(2); // back to full
+  });
+});
+
+describe("placeOrder — POS extensions", () => {
+  it("applies line and order discounts before tax and stores them", async () => {
+    const { t, branch, pizza } = await setup("pos-ext1");
+    const res = await placeOrder(t.id, {
+      branchId: branch.id,
+      fulfillmentType: "pickup",
+      customerName: "Walk-in",
+      customerPhone: "000000000",
+      channel: "pos",
+      lines: [{ productId: pizza.id, quantity: 2, selectedOptionIds: [], discountAmount: 50, discountReason: "promo" }],
+      orderDiscountAmount: 20,
+      orderDiscountReason: "manager_discretion",
+    });
+    const { getOrder } = await import("./service");
+    const order = await getOrder(t.id, res.orderId);
+    expect(order.channel).toBe("pos");
+    expect(Number(order.discountAmount)).toBe(20);
+    // base 100 x2 = 200, less 50 line, less 20 order => subtotal 130
+    expect(Number(order.subtotal)).toBe(130);
+  });
+
+  it("rejects the sale when the client's expected total disagrees", async () => {
+    const { t, branch, pizza } = await setup("pos-ext2");
+    await expect(
+      placeOrder(t.id, {
+        branchId: branch.id,
+        fulfillmentType: "pickup",
+        customerName: "Walk-in",
+        customerPhone: "000000000",
+        channel: "pos",
+        expectedTotal: 1,
+        lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+      }),
+    ).rejects.toThrow(TotalMismatchError);
+  });
+
+  it("creates no order when the total mismatches", async () => {
+    const { t, branch, pizza } = await setup("pos-ext3");
+    const { listOrders } = await import("./service");
+    const before = await listOrders(t.id, {});
+    await expect(
+      placeOrder(t.id, {
+        branchId: branch.id, fulfillmentType: "pickup", customerName: "Walk-in", customerPhone: "000000000",
+        channel: "pos", expectedTotal: 1,
+        lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+      }),
+    ).rejects.toThrow(TotalMismatchError);
+    const after = await listOrders(t.id, {});
+    expect(after).toHaveLength(before.length);
+  });
+
+  it("attributes the cashier", async () => {
+    const { t, branch, pizza, user } = await setup("pos-ext4");
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "Walk-in", customerPhone: "000000000",
+      channel: "pos", cashierUserId: user.id,
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const { getOrder } = await import("./service");
+    const order = await getOrder(t.id, res.orderId);
+    expect(order.cashierUserId).toBe(user.id);
+  });
+
+  it("returns total and index-aligned itemIds", async () => {
+    const { t, branch, pizza } = await setup("pos-ext5");
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "Walk-in", customerPhone: "000000000",
+      lines: [
+        { productId: pizza.id, quantity: 1, selectedOptionIds: [] },
+        { productId: pizza.id, quantity: 3, selectedOptionIds: [] },
+      ],
+    });
+    const { getOrder } = await import("./service");
+    const order = await getOrder(t.id, res.orderId);
+    expect(res.itemIds).toHaveLength(2);
+    expect(new Set(res.itemIds)).toEqual(new Set(order.items.map((i) => i.id)));
+    expect(order.items.find((i) => i.id === res.itemIds[0])?.quantity).toBe(1);
+    expect(order.items.find((i) => i.id === res.itemIds[1])?.quantity).toBe(3);
+    expect(res.total).toBe(Number(order.total));
   });
 });

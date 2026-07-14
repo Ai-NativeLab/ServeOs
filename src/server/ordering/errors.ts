@@ -76,3 +76,15 @@ export class OutOfStockError extends DomainError {
     return locale === "ar" ? `"${this.productNameAr}" غير متوفر بالكمية المطلوبة` : `"${this.productNameEn}" doesn't have enough stock`;
   }
 }
+
+/**
+ * The client displayed a total that does not match what the server computes
+ * from live prices. A register must fail loudly rather than quietly charge a
+ * different amount, so this aborts the sale.
+ */
+export class TotalMismatchError extends Error {
+  constructor(public readonly expected: number, public readonly actual: number) {
+    super(`Total mismatch: client showed ${expected}, server computed ${actual}`);
+    this.name = "TotalMismatchError";
+  }
+}
