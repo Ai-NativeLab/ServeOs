@@ -35,7 +35,7 @@ export async function registerTenant(input: RegisterInput): Promise<RegisterResu
 
     const [tenant] = await tx
       .insert(tenants)
-      .values({ slug: input.slug, name: input.restaurantName, country: input.country, currency, timezone, status: "onboarding", vertical: input.vertical })
+      .values({ slug: input.slug, name: input.restaurantName, country: input.country, currency, timezone, status: "trial", vertical: input.vertical })
       .returning();
 
     const [owner] = await tx

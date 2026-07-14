@@ -22,7 +22,7 @@ describe("registerTenant", () => {
     });
 
     const [t] = await db.select().from(tenants).where(eq(tenants.id, result.tenantId));
-    expect(t.status).toBe("onboarding");
+    expect(t.status).toBe("trial");
 
     const owner = await db.select().from(users).where(eq(users.tenantId, t.id));
     expect(owner).toHaveLength(1);
