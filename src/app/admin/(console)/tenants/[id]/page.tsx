@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ConfirmActionButton } from "@/components/dashboard/ConfirmActionButton";
-import { cancelSubscriptionAction, forceActiveAction, markPaidAction, suspendTenantAction } from "./actions";
+import { activateTenantAction, cancelSubscriptionAction, forceActiveAction, markPaidAction, suspendTenantAction } from "./actions";
 
 export default async function TenantDetailPage({ params }: { params: Promise<{ id: string }> }) {
   await requireSuperAdmin();
@@ -108,16 +108,25 @@ export default async function TenantDetailPage({ params }: { params: Promise<{ i
                   variant="destructive"
                   successMessage="Subscription canceled"
                 />
-                <ConfirmActionButton
-                  action={() => suspendTenantAction(id)}
-                  label="Suspend tenant"
-                  title="Suspend tenant"
-                  description="Suspend this tenant. The storefront will stop serving."
-                  confirmLabel="Suspend"
-                  variant="destructive"
-                  successMessage="Tenant suspended"
-                />
-              </div>
+                 <ConfirmActionButton
+                   action={() => suspendTenantAction(id)}
+                   label="Suspend tenant"
+                   title="Suspend tenant"
+                   description="Suspend this tenant. The storefront will stop serving."
+                   confirmLabel="Suspend"
+                   variant="destructive"
+                   successMessage="Tenant suspended"
+                 />
+                 <ConfirmActionButton
+                   action={() => activateTenantAction(id)}
+                   label="Reactivate tenant"
+                   title="Reactivate tenant"
+                   description="Reactivate this tenant and resume storefront serving."
+                   confirmLabel="Reactivate"
+                   variant="default"
+                   successMessage="Tenant reactivated"
+                 />
+               </div>
             </CardContent>
           </Card>
         </TabsContent>

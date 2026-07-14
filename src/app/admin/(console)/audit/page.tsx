@@ -14,10 +14,26 @@ export default async function AuditPage({
   await requireSuperAdmin();
   const { action } = await searchParams;
   const rows = await listAuditLogs({ action: action || undefined, limit: 100 });
+  const actions = Array.from(new Set(rows.map((r) => r.action))).sort();
 
   return (
     <>
       <PageHeader title="Audit log" eyebrow="Platform" description="All platform actions" />
+      <form method="get" className="mb-4 flex items-center gap-2 text-sm">
+        <label className="text-muted-foreground" htmlFor="action">Action</label>
+        <select
+          id="action"
+          name="action"
+          defaultValue={action ?? ""}
+          className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+        >
+          <option value="">All</option>
+          {actions.map((a) => (
+            <option key={a} value={a}>{a}</option>
+          ))}
+        </select>
+        <button type="submit" className="h-9 rounded-md border border-input bg-background px-3 text-sm font-medium hover:bg-muted">Filter</button>
+      </form>
       <Card>
         <CardContent className="pt-4">
           <Table>

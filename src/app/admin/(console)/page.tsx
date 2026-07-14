@@ -50,13 +50,14 @@ export default async function AdminOverview() {
   return (
     <>
       <PageHeader title="Overview" eyebrow="Platform" description="Fleet health at a glance" />
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3 mb-6">
         <Stat label="Total tenants" value={total} />
         <Stat label="Active" value={byStatus.find((r) => r.status === "active")?.count ?? 0} />
         <Stat label="Trials" value={byStatus.find((r) => r.status === "trial")?.count ?? 0} />
         <Stat label="Suspended" value={byStatus.find((r) => r.status === "suspended")?.count ?? 0} />
         <Stat label="Pending" value={pending.length} />
         <Stat label="MRR" value={`${mrr.toLocaleString()}`} />
+        <Stat label="Trials ≤7d" value={trialsSoon} />
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-6">
         <SignupChart data={signups} />
@@ -73,9 +74,6 @@ export default async function AdminOverview() {
               <span className="text-xs text-muted-foreground">{r.createdAt.toISOString().slice(0, 16).replace("T", " ")}</span>
             </div>
           ))}
-          {trialsSoon > 0 && (
-            <p className="text-xs text-muted-foreground pt-2">{trialsSoon} trial(s) ending in the next 7 days.</p>
-          )}
         </CardContent>
       </Card>
     </>

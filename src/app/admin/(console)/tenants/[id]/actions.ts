@@ -2,7 +2,7 @@
 "use server";
 import { revalidatePath } from "next/cache";
 import { requireSuperAdmin } from "@/server/auth/admin-context";
-import { cancelSubscription, forceSubscriptionActive, markSubscriptionPaid, suspendTenant } from "@/server/platform";
+import { activateTenant, cancelSubscription, forceSubscriptionActive, markSubscriptionPaid, suspendTenant } from "@/server/platform";
 
 async function withAdmin(tenantId: string, fn: (adminId: string) => Promise<void>): Promise<void> {
   const admin = await requireSuperAdmin();
@@ -24,4 +24,8 @@ export async function markPaidAction(tenantId: string) {
 
 export async function suspendTenantAction(tenantId: string) {
   await withAdmin(tenantId, (adminId) => suspendTenant(tenantId, adminId));
+}
+
+export async function activateTenantAction(tenantId: string) {
+  await withAdmin(tenantId, (adminId) => activateTenant(tenantId, adminId));
 }
