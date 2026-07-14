@@ -82,4 +82,30 @@ describe("computeCartTotals", () => {
     expect(t.subtotal).toBe(0);
     expect(t.total).toBe(0);
   });
+
+  it("correctly accumulates multi-line cart with per-line and order discounts", () => {
+    // Three items with differing prices, quantities, and per-line discounts.
+    // Line 1: (50 * 2) - 10 = 90
+    // Line 2: (75 * 1) - 15 = 60
+    // Line 3: (30 * 3) - 0 = 90
+    // Gross subtotal: 240
+    // After order discount of 20: discounted subtotal = 220
+    // Service charge (10% of 220): 22
+    // Taxable base: 242
+    // VAT (14% of 242): 33.88
+    // Total: 242 + 33.88 = 275.88
+    // Discount amount: (10 + 15 + 0) + 20 = 45
+    const t = computeCartTotals(
+      pricing,
+      [
+        { unitPrice: 50, quantity: 2, discountAmount: 10 },
+        { unitPrice: 75, quantity: 1, discountAmount: 15 },
+        { unitPrice: 30, quantity: 3, discountAmount: 0 },
+      ],
+      20,
+    );
+    expect(t.subtotal).toBe(220);
+    expect(t.discountAmount).toBe(45);
+    expect(t.total).toBe(275.88);
+  });
 });

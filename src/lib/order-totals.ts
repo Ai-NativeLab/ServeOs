@@ -18,7 +18,7 @@ export type OrderTotals = {
   total: number;
 };
 
-export const round2 = (n: number) => Math.round(n * 100) / 100;
+const round2 = (n: number) => Math.round(n * 100) / 100;
 
 export function computeOrderTotals(pricing: CheckoutPricing, subtotal: number, deliveryFee: number): OrderTotals {
   const sub = round2(subtotal);
