@@ -72,7 +72,10 @@ export function ImageInput({
       {/* Submitted with the form */}
       <input type="hidden" name={name} value={value} />
 
-      <div className="flex items-start gap-3">
+      {/* flex-wrap (here and on the buttons row): the nowrap thumb+buttons row's
+          min-content (~347px) otherwise blows out the parent form's grid track at
+          360px viewports, dragging every input past the card edge. */}
+      <div className="flex flex-wrap items-start gap-3">
         <div className={cn("shrink-0 overflow-hidden rounded-lg border border-input bg-secondary", previewClass)}>
           {value ? (
             /* eslint-disable-next-line @next/next/no-img-element */
@@ -85,7 +88,7 @@ export function ImageInput({
         </div>
 
         <div className="grid gap-2">
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <input
               ref={fileRef}
               type="file"

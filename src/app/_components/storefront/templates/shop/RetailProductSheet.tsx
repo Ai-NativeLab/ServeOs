@@ -60,7 +60,7 @@ export function RetailProductSheet({
                   return (
                     <label
                       key={v.id}
-                      className={`flex items-center justify-between rounded-xl border px-3.5 py-2.5 text-sm transition-colors ${
+                      className={`flex items-center justify-between rounded-xl border px-3.5 py-3 text-sm transition-colors ${
                         !v.inStock ? "cursor-not-allowed opacity-50" : "cursor-pointer"
                       } ${isSelected ? "border-primary bg-accent/60" : "border-border bg-card hover:border-primary/40"}`}
                     >
@@ -86,11 +86,12 @@ export function RetailProductSheet({
           )}
         </div>
 
-        <div className="-mx-6 -mb-6 mt-5 flex flex-none items-center gap-3 border-t border-border bg-card px-6 py-4">
-          <div className="inline-flex items-center gap-4 rounded-full border border-border px-4 py-2">
-            <button type="button" onClick={() => setQuantity((q) => Math.max(1, q - 1))} className="text-lg leading-none text-ink transition-colors hover:text-primary" aria-label="Decrease quantity">−</button>
+        <div className="-mx-6 -mb-6 mt-5 flex flex-none items-center gap-3 border-t border-border bg-card px-6 pt-4 pb-[calc(env(safe-area-inset-bottom)+1rem)]">
+          <div className="inline-flex items-center gap-1 rounded-full border border-border pl-1 pr-1">
+            {/* size-11 (44px) hit area — was a bare glyph with no padding, well under the 44px tap-target minimum */}
+            <button type="button" onClick={() => setQuantity((q) => Math.max(1, q - 1))} className="grid size-11 place-items-center rounded-full text-lg leading-none text-ink transition-colors hover:text-primary" aria-label="Decrease quantity">−</button>
             <span className="w-4 text-center font-display font-semibold text-ink">{quantity}</span>
-            <button type="button" onClick={() => setQuantity((q) => q + 1)} className="text-lg leading-none text-ink transition-colors hover:text-primary" aria-label="Increase quantity">+</button>
+            <button type="button" onClick={() => setQuantity((q) => q + 1)} className="grid size-11 place-items-center rounded-full text-lg leading-none text-ink transition-colors hover:text-primary" aria-label="Increase quantity">+</button>
           </div>
           <Button
             disabled={!canAdd}

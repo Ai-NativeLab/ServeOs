@@ -36,8 +36,8 @@ export function ShopProductCard({
         )}
       </div>
       <div className="flex flex-1 flex-col p-3">
-        {product.brand && <span className="eyebrow text-[10px] text-muted-foreground">{product.brand}</span>}
-        <h3 className="font-sans text-sm font-semibold leading-tight text-ink">{product.nameEn}</h3>
+        {product.brand && <span className="eyebrow truncate text-[10px] text-muted-foreground">{product.brand}</span>}
+        <h3 className="line-clamp-2 font-sans text-sm font-semibold leading-tight text-ink">{product.nameEn}</h3>
         <span dir="rtl" className="text-xs text-muted-foreground">{product.nameAr}</span>
         <div className="mt-auto flex items-center justify-between pt-2.5">
           <span className="font-display font-bold text-ink">

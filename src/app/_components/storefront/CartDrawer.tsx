@@ -35,10 +35,11 @@ export function CartDrawer({
                   {l.modifierSummaryEn && (
                     <div className="truncate text-xs text-muted-foreground">{l.modifierSummaryEn}</div>
                   )}
-                  <div className="mt-2 inline-flex items-center gap-3 rounded-full border border-border px-3 py-1">
-                    <button type="button" onClick={() => onSetQuantity(i, l.quantity - 1)} className="text-base leading-none text-ink transition-colors hover:text-primary" aria-label={`Decrease ${l.nameEn}`}>−</button>
+                  <div className="mt-2 inline-flex items-center gap-1 rounded-full border border-border">
+                    {/* size-11 (44px) hit area — was a bare glyph with no padding, well under the 44px tap-target minimum */}
+                    <button type="button" onClick={() => onSetQuantity(i, l.quantity - 1)} className="grid size-11 place-items-center rounded-full text-base leading-none text-ink transition-colors hover:text-primary" aria-label={`Decrease ${l.nameEn}`}>−</button>
                     <span className="w-4 text-center text-sm font-medium text-ink">{l.quantity}</span>
-                    <button type="button" onClick={() => onSetQuantity(i, l.quantity + 1)} className="text-base leading-none text-ink transition-colors hover:text-primary" aria-label={`Increase ${l.nameEn}`}>+</button>
+                    <button type="button" onClick={() => onSetQuantity(i, l.quantity + 1)} className="grid size-11 place-items-center rounded-full text-base leading-none text-ink transition-colors hover:text-primary" aria-label={`Increase ${l.nameEn}`}>+</button>
                   </div>
                 </div>
                 <div className="shrink-0 text-right font-display font-bold text-ink">
@@ -49,7 +50,7 @@ export function CartDrawer({
           </div>
         </div>
 
-        <div className="-mx-6 -mb-6 mt-4 flex-none border-t border-border bg-card px-6 py-4">
+        <div className="-mx-6 -mb-6 mt-4 flex-none border-t border-border bg-card px-6 pt-4 pb-[calc(env(safe-area-inset-bottom)+1rem)]">
           <div className="flex justify-between font-display font-bold text-ink">
             <span>Subtotal</span>
             <span>{formatMoney(subtotal, currency)}</span>
