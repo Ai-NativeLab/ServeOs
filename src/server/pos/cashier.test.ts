@@ -8,12 +8,12 @@ import { PosCashierError } from "./errors";
 
 let n = 0;
 
-async function seedUser(roleKey: "owner" | "staff") {
+async function seedUser(roleKey: "owner" | "staff", emailOverride?: string) {
   const [t] = await db.insert(tenants).values({
     slug: `pos-cashier-${n++}`, name: "T", country: "EG", vertical: "restaurant",
   }).returning();
   const [u] = await db.insert(users).values({
-    tenantId: t.id, name: "Cash Ier", email: `c${n}@x.com`,
+    tenantId: t.id, name: "Cash Ier", email: emailOverride ?? `c${n}@x.com`,
     passwordHash: await hashPassword("pw123456"), status: "active",
   }).returning();
   const [r] = await db.insert(roles).values({ tenantId: t.id, key: roleKey, name: roleKey }).returning();
@@ -39,6 +39,14 @@ describe("signInCashier", () => {
   it("rejects a wrong password", async () => {
     const { tenantId, email } = await seedUser("staff");
     await expect(signInCashier(tenantId, email, "wrong")).rejects.toThrow(PosCashierError);
+  });
+
+  it("signs in a user whose stored email has uppercase characters", async () => {
+    // Emails are stored trim-only, case preserved (createStaff + the plain
+    // unique index). Lower-casing the lookup would miss this row entirely.
+    const { tenantId, userId } = await seedUser("owner", "Mixed.Case@X.com");
+    const res = await signInCashier(tenantId, "Mixed.Case@X.com", "pw123456");
+    expect(res.userId).toBe(userId);
   });
 
   it("resolves a signed-in cashier from their token", async () => {

@@ -44,7 +44,7 @@ export async function signInCashier(
   password: string,
 ): Promise<{ cashierToken: string; userId: string; name: string; permissions: Permission[] }> {
   const [user] = await db.select().from(users)
-    .where(and(eq(users.tenantId, tenantId), eq(users.email, email.trim().toLowerCase())))
+    .where(and(eq(users.tenantId, tenantId), eq(users.email, email.trim())))
     .limit(1);
 
   if (!user?.passwordHash || user.status !== "active" || !(await verifyPassword(password, user.passwordHash))) {
@@ -84,7 +84,7 @@ export async function verifyAuthorizer(
   permission: Permission,
 ): Promise<{ userId: string; name: string }> {
   const [user] = await db.select().from(users)
-    .where(and(eq(users.tenantId, tenantId), eq(users.email, email.trim().toLowerCase())))
+    .where(and(eq(users.tenantId, tenantId), eq(users.email, email.trim())))
     .limit(1);
 
   if (!user?.passwordHash || user.status !== "active" || !(await verifyPassword(password, user.passwordHash))) {
