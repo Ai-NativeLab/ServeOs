@@ -1,19 +1,25 @@
 import { useEffect, useState } from "react";
 import { LoginScreen } from "./screens/LoginScreen";
+import { CashierSignIn } from "./screens/CashierSignIn";
 import { OrderScreen } from "./screens/OrderScreen";
 import { OrdersQueue } from "./screens/OrdersQueue";
 
 type View = "order" | "queue";
+export type Cashier = { name: string; permissions: string[] };
 
 export function App() {
   const [paired, setPaired] = useState<boolean | null>(null);
   const [branchName, setBranchName] = useState<string>("");
+  const [cashier, setCashier] = useState<Cashier | null>(null);
   const [view, setView] = useState<View>("order");
 
   useEffect(() => {
     window.pos.isPaired().then(async (p) => {
       setPaired(p);
-      if (p) setBranchName(await window.pos.branchName());
+      if (p) {
+        setBranchName(await window.pos.branchName());
+        setCashier(await window.pos.cashier());
+      }
     });
   }, []);
 
@@ -32,6 +38,10 @@ export function App() {
     );
   }
 
+  if (!cashier) {
+    return <CashierSignIn branchName={branchName} onSignedIn={setCashier} />;
+  }
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       <header className="flex items-center justify-between border-b border-border bg-card px-4 h-14">
@@ -39,7 +49,7 @@ export function App() {
           <span className="font-display text-base font-bold">Serve<span className="text-primary">OS</span> POS</span>
           <span className="text-sm text-muted-foreground">{branchName}</span>
         </div>
-        <nav className="flex gap-1">
+        <nav className="flex items-center gap-1">
           <button
             onClick={() => setView("order")}
             className={view === "order"
@@ -56,9 +66,15 @@ export function App() {
           >
             Live orders
           </button>
+          <button
+            onClick={async () => { await window.pos.signOutCashier(); setCashier(null); }}
+            className="ml-2 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-secondary"
+          >
+            {cashier.name} · Sign out
+          </button>
         </nav>
       </header>
-      {view === "order" ? <OrderScreen branchName={branchName} /> : <OrdersQueue />}
+      {view === "order" ? <OrderScreen branchName={branchName} cashier={cashier} /> : <OrdersQueue />}
     </div>
   );
 }
