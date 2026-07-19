@@ -5,10 +5,10 @@ import { orders } from "@/server/ordering/schema";
 import { getCheckoutPricing } from "@/server/tenancy/settings";
 import { computeCartTotals } from "@/lib/order-totals";
 import { orderPayments, posAdjustmentEvents } from "./tender-schema";
-import { PosForbiddenError } from "./errors";
+import { PosForbiddenError, PosSaleError } from "./errors";
 import { TotalMismatchError } from "@/server/ordering/errors";
 import { issueGrant } from "./grants";
-import { recordSale } from "./record-sale";
+import { recordSale, addTender } from "./record-sale";
 import { seedPosContext } from "./test-helpers";
 
 describe("recordSale", () => {
@@ -127,5 +127,53 @@ describe("recordSale", () => {
     expect(ev.type).toBe("line_discount");
     expect(ev.authorizedByUserId).toBe(managerId);
     expect(ev.byUserId).toBe(ctx.cashierUserId);
+  });
+});
+
+describe("addTender", () => {
+  it("tops up a partially paid sale to paid", async () => {
+    const { ctx, productId, total } = await seedPosContext("owner");
+    const sale = await recordSale(ctx, {
+      clientOrderId: "top-1",
+      lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: total,
+      payments: [{ clientPaymentId: "p-1", method: "card", amount: 1 }],
+    });
+    expect(sale.paymentStatus).toBe("partially_paid");
+
+    const res = await addTender(ctx, sale.orderId, {
+      clientPaymentId: "p-2", method: "cash", amount: total - 1, tenderedAmount: total - 1,
+    });
+    expect(res.paymentStatus).toBe("paid");
+    expect(res.paidAmount).toBe(total);
+  });
+
+  it("is idempotent on clientPaymentId", async () => {
+    const { ctx, productId, total } = await seedPosContext("owner");
+    const sale = await recordSale(ctx, {
+      clientOrderId: "top-2",
+      lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: total,
+      payments: [{ clientPaymentId: "p-1", method: "card", amount: 1 }],
+    });
+    const tender = { clientPaymentId: "p-2", method: "cash" as const, amount: 1 };
+    await addTender(ctx, sale.orderId, tender);
+    await addTender(ctx, sale.orderId, tender);
+    const tenders = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(orderPayments).where(eq(orderPayments.orderId, sale.orderId)));
+    expect(tenders).toHaveLength(2); // the original + one, not two
+  });
+
+  it("refuses a tender larger than what remains", async () => {
+    const { ctx, productId, total } = await seedPosContext("owner");
+    const sale = await recordSale(ctx, {
+      clientOrderId: "top-3",
+      lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: total,
+      payments: [{ clientPaymentId: "p-1", method: "card", amount: 1 }],
+    });
+    await expect(addTender(ctx, sale.orderId, {
+      clientPaymentId: "p-2", method: "card", amount: total,
+    })).rejects.toThrow(PosSaleError);
   });
 });

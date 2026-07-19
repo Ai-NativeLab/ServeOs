@@ -190,3 +190,64 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
     idempotent: false,
   };
 }
+
+/** Adds a tender to an existing (typically partially_paid) sale. Idempotent on clientPaymentId. */
+export async function addTender(
+  ctx: PosCashierContext,
+  orderId: string,
+  tender: TenderInput,
+): Promise<SaleReceipt> {
+  if (!(tender.amount > 0)) throw new PosSaleError("A tender must be a positive amount");
+  if (tender.method !== "cash" && tender.tenderedAmount !== undefined && tender.tenderedAmount !== tender.amount) {
+    throw new PosSaleError("Only a cash tender can give change");
+  }
+
+  return withTenant(ctx.tenantId, async (tx) => {
+    const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+    if (!order) throw new PosSaleError("Unknown order");
+
+    const existingTenders = await tx.select().from(orderPayments).where(eq(orderPayments.orderId, orderId));
+    const already = existingTenders.find((t) => t.clientPaymentId === tender.clientPaymentId);
+
+    const paidBefore = round2(existingTenders.reduce((s, t) => s + Number(t.amount), 0));
+    const total = Number(order.total);
+
+    if (!already) {
+      if (paidBefore + tender.amount > total + 0.001) {
+        throw new PosSaleError("Tender exceeds the amount due");
+      }
+      const change = tender.method === "cash" && tender.tenderedAmount !== undefined
+        ? Math.max(0, round2(tender.tenderedAmount - tender.amount))
+        : 0;
+      await tx.insert(orderPayments).values({
+        tenantId: ctx.tenantId,
+        orderId,
+        method: tender.method,
+        amount: money(tender.amount),
+        tipAmount: money(tender.tipAmount ?? 0),
+        tenderedAmount: tender.tenderedAmount !== undefined ? money(tender.tenderedAmount) : null,
+        changeAmount: tender.method === "cash" ? money(change) : null,
+        reference: tender.reference ?? null,
+        takenByUserId: ctx.cashierUserId,
+        clientPaymentId: tender.clientPaymentId,
+      });
+    }
+
+    const after = await tx.select().from(orderPayments).where(eq(orderPayments.orderId, orderId));
+    const paidAmount = round2(after.reduce((s, t) => s + Number(t.amount), 0));
+    const paymentStatus: "paid" | "partially_paid" =
+      paidAmount >= total - 0.001 ? "paid" : "partially_paid";
+
+    await tx.update(orders).set({ paymentStatus, updatedAt: new Date() }).where(eq(orders.id, orderId));
+
+    return {
+      orderId,
+      orderNumber: String(order.orderNumber),
+      total,
+      paidAmount,
+      changeAmount: round2(after.reduce((s, t) => s + Number(t.changeAmount ?? 0), 0)),
+      paymentStatus,
+      idempotent: Boolean(already),
+    };
+  });
+}
