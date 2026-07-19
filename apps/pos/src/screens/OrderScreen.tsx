@@ -21,6 +21,7 @@ import { ManagerAuthModal } from "./ManagerAuthModal";
 
 type Cashier = { name: string; permissions: string[] };
 type PendingAuth = { permission: string; action: string; onGranted: () => void };
+type RecalledDraft = { lines: CartLine[]; orderDiscount: number };
 
 const REASON_CODES = [
   "staff_meal", "comp_service", "promo", "manager_discretion",
@@ -29,7 +30,17 @@ const REASON_CODES = [
 
 const reasonLabel = (code: string) => code.replace(/_/g, " ");
 
-export function OrderScreen({ branchName, cashier }: { branchName: string; cashier: Cashier }) {
+export function OrderScreen({
+  branchName,
+  cashier,
+  recalled,
+  onCartConsumed,
+}: {
+  branchName: string;
+  cashier: Cashier;
+  recalled?: RecalledDraft | null;
+  onCartConsumed?: () => void;
+}) {
   const [menu, setMenu] = useState<Menu | null>(null);
   const [pricing, setPricing] = useState<CheckoutPricing | null>(null);
   const [syncedAt, setSyncedAt] = useState<string | null>(null);
@@ -41,14 +52,14 @@ export function OrderScreen({ branchName, cashier }: { branchName: string; cashi
   const [sheetSelected, setSheetSelected] = useState<string[]>([]);
   const [sheetQty, setSheetQty] = useState(1);
 
-  const [cart, setCart] = useState<CartLine[]>([]);
+  const [cart, setCart] = useState<CartLine[]>(() => recalled?.lines ?? []);
   const [cartError, setCartError] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<ReceiptData | null>(null);
 
   const [view, setView] = useState<"cart" | "payment">("cart");
   const [saleId, setSaleId] = useState<string | null>(null);
 
-  const [orderDiscount, setOrderDiscount] = useState(0);
+  const [orderDiscount, setOrderDiscount] = useState(() => recalled?.orderDiscount ?? 0);
   const [orderDiscountReason, setOrderDiscountReason] = useState<string>("promo");
   const [orderDiscountEntry, setOrderDiscountEntry] = useState("");
 
@@ -187,6 +198,9 @@ export function OrderScreen({ branchName, cashier }: { branchName: string; cashi
     setDiscountingIdx(null);
     setParkLabel("");
     setCartError(null);
+    // Once the cart is cleared, a recalled draft has been consumed — tell App to
+    // drop it so a later remount does not re-seed a ticket that is already done.
+    onCartConsumed?.();
   }
 
   async function park() {

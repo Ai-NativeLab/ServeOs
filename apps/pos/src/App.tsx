@@ -3,15 +3,20 @@ import { LoginScreen } from "./screens/LoginScreen";
 import { CashierSignIn } from "./screens/CashierSignIn";
 import { OrderScreen } from "./screens/OrderScreen";
 import { OrdersQueue } from "./screens/OrdersQueue";
+import { HeldTickets } from "./screens/HeldTickets";
+import type { CartLine } from "./order/cart";
 
-type View = "order" | "queue";
+type View = "order" | "queue" | "held";
 export type Cashier = { name: string; permissions: string[] };
+type RecalledDraft = { lines: CartLine[]; orderDiscount: number };
 
 export function App() {
   const [paired, setPaired] = useState<boolean | null>(null);
   const [branchName, setBranchName] = useState<string>("");
   const [cashier, setCashier] = useState<Cashier | null>(null);
   const [view, setView] = useState<View>("order");
+  const [recalled, setRecalled] = useState<RecalledDraft | null>(null);
+  const [recallNonce, setRecallNonce] = useState(0);
 
   useEffect(() => {
     window.pos.isPaired().then(async (p) => {
@@ -67,6 +72,14 @@ export function App() {
             Live orders
           </button>
           <button
+            onClick={() => setView("held")}
+            className={view === "held"
+              ? "rounded-lg bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground"
+              : "rounded-lg px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-secondary"}
+          >
+            Parked
+          </button>
+          <button
             onClick={async () => { await window.pos.signOutCashier(); setCashier(null); }}
             className="ml-2 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-secondary"
           >
@@ -74,7 +87,25 @@ export function App() {
           </button>
         </nav>
       </header>
-      {view === "order" ? <OrderScreen branchName={branchName} cashier={cashier} /> : <OrdersQueue />}
+      {view === "order" && (
+        <OrderScreen
+          key={recallNonce}
+          branchName={branchName}
+          cashier={cashier}
+          recalled={recalled}
+          onCartConsumed={() => setRecalled(null)}
+        />
+      )}
+      {view === "queue" && <OrdersQueue />}
+      {view === "held" && (
+        <HeldTickets
+          onRecall={(lines, orderDiscount) => {
+            setRecalled({ lines, orderDiscount });
+            setRecallNonce((n) => n + 1);
+            setView("order");
+          }}
+        />
+      )}
     </div>
   );
 }
