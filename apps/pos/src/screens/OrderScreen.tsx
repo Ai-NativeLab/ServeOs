@@ -1,17 +1,37 @@
 import { useEffect, useMemo, useState } from "react";
+import type { CheckoutPricing } from "@shared/order-totals";
 import {
-  findProduct,
   listCategories,
   optionDeltaSum,
   parseMenu,
   type Menu,
   type MenuProduct,
 } from "../order/menu";
-import { addLine, cartTotal, changeQty, removeLine, type CartLine } from "../order/cart";
+import {
+  addLine,
+  cartTotals,
+  changeQty,
+  discountLine,
+  removeLine,
+  type CartLine,
+} from "../order/cart";
 import { Receipt, type ReceiptData } from "./Receipt";
+import { PaymentScreen, changeFor, type TenderDraft } from "./PaymentScreen";
+import { ManagerAuthModal } from "./ManagerAuthModal";
 
-export function OrderScreen({ branchName }: { branchName: string }) {
+type Cashier = { name: string; permissions: string[] };
+type PendingAuth = { permission: string; action: string; onGranted: () => void };
+
+const REASON_CODES = [
+  "staff_meal", "comp_service", "promo", "manager_discretion",
+  "wrong_item", "customer_changed_mind", "other",
+] as const;
+
+const reasonLabel = (code: string) => code.replace(/_/g, " ");
+
+export function OrderScreen({ branchName, cashier }: { branchName: string; cashier: Cashier }) {
   const [menu, setMenu] = useState<Menu | null>(null);
+  const [pricing, setPricing] = useState<CheckoutPricing | null>(null);
   const [syncedAt, setSyncedAt] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -22,9 +42,41 @@ export function OrderScreen({ branchName }: { branchName: string }) {
   const [sheetQty, setSheetQty] = useState(1);
 
   const [cart, setCart] = useState<CartLine[]>([]);
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [cartError, setCartError] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<ReceiptData | null>(null);
+
+  const [view, setView] = useState<"cart" | "payment">("cart");
+  const [saleId, setSaleId] = useState<string | null>(null);
+
+  const [orderDiscount, setOrderDiscount] = useState(0);
+  const [orderDiscountReason, setOrderDiscountReason] = useState<string>("promo");
+  const [orderDiscountEntry, setOrderDiscountEntry] = useState("");
+
+  const [discountGrant, setDiscountGrant] = useState<string | null>(null);
+  const [pendingAuth, setPendingAuth] = useState<PendingAuth | null>(null);
+
+  const [discountingIdx, setDiscountingIdx] = useState<number | null>(null);
+  const [lineDiscountEntry, setLineDiscountEntry] = useState("");
+  const [lineDiscountReason, setLineDiscountReason] = useState<string>("promo");
+
+  const [parkLabel, setParkLabel] = useState("");
+
+  async function reloadMenu() {
+    try {
+      const res = await window.pos.getMenu();
+      if (!res) {
+        setLoadError("No menu cached. Connect to sync.");
+        return;
+      }
+      const m = parseMenu(res.json);
+      setMenu(m);
+      setPricing(res.pricing);
+      setSyncedAt(res.syncedAt);
+      if (m.categories.length > 0 && !activeCat) setActiveCat(m.categories[0].id);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Failed to load menu");
+    }
+  }
 
   useEffect(() => {
     window.pos
@@ -36,6 +88,7 @@ export function OrderScreen({ branchName }: { branchName: string }) {
         }
         const m = parseMenu(res.json);
         setMenu(m);
+        setPricing(res.pricing);
         setSyncedAt(res.syncedAt);
         if (m.categories.length > 0) setActiveCat(m.categories[0].id);
       })
@@ -43,10 +96,28 @@ export function OrderScreen({ branchName }: { branchName: string }) {
   }, []);
 
   const categories = useMemo(() => (menu ? listCategories(menu) : []), [menu]);
+  const totals = useMemo(
+    () => (pricing ? cartTotals(pricing, cart, orderDiscount) : null),
+    [pricing, cart, orderDiscount],
+  );
+
+  const canDiscount = cashier.permissions.includes("pos:discount") || discountGrant !== null;
+
+  /** Runs `apply` if the cashier may discount; otherwise gets a manager grant first. */
+  function gateDiscount(apply: () => void) {
+    if (canDiscount) {
+      apply();
+      return;
+    }
+    setPendingAuth({
+      permission: "pos:discount",
+      action: "Apply a discount to this sale",
+      onGranted: apply,
+    });
+  }
 
   function openProduct(p: MenuProduct) {
     if (p.modifierGroups.length === 0) {
-      // no modifiers: add directly with qty 1
       const unitPrice = p.effectivePrice;
       setCart((c) => addLine(c, { productId: p.id, name: p.nameEn, quantity: 1, selectedOptionIds: [], unitPrice }));
       return;
@@ -70,12 +141,11 @@ export function OrderScreen({ branchName }: { branchName: string }) {
   function addFromSheet() {
     if (!sheetProduct) return;
     const p = sheetProduct;
-    // validate required groups
     for (const g of p.modifierGroups) {
       if (g.required) {
         const sel = sheetSelected.filter((id) => g.options.some((o) => o.id === id));
         if (sel.length < g.minSelections) {
-          setSubmitError(`Select at least ${g.minSelections} for ${g.nameEn}`);
+          setCartError(`Select at least ${g.minSelections} for ${g.nameEn}`);
           return;
         }
       }
@@ -86,39 +156,100 @@ export function OrderScreen({ branchName }: { branchName: string }) {
     );
     setSheetOpen(false);
     setSheetProduct(null);
-    setSubmitError(null);
+    setCartError(null);
   }
 
-  async function charge() {
+  function applyLineDiscount() {
+    if (discountingIdx === null) return;
+    const idx = discountingIdx;
+    const amount = Math.max(0, Number(lineDiscountEntry || 0));
+    const reason = lineDiscountReason;
+    gateDiscount(() => {
+      setCart((c) => discountLine(c, idx, amount, reason));
+      setDiscountingIdx(null);
+      setLineDiscountEntry("");
+    });
+  }
+
+  function applyOrderDiscount() {
+    const amount = Math.max(0, Number(orderDiscountEntry || 0));
+    gateDiscount(() => {
+      setOrderDiscount(amount);
+      setOrderDiscountEntry("");
+    });
+  }
+
+  function resetSale() {
+    setCart([]);
+    setOrderDiscount(0);
+    setOrderDiscountEntry("");
+    setDiscountGrant(null);
+    setDiscountingIdx(null);
+    setParkLabel("");
+    setCartError(null);
+  }
+
+  async function park() {
     if (cart.length === 0) return;
-    setSubmitting(true);
-    setSubmitError(null);
     try {
-      const draft = {
-        lines: cart.map((l) => ({
-          productId: l.productId,
-          quantity: l.quantity,
-          selectedOptionIds: l.selectedOptionIds,
-        })),
-      };
-      const res = await window.pos.submitOrder(draft);
-      setReceipt({
-        orderNumber: res.orderNumber,
-        lines: [...cart],
-        total: cartTotal(cart),
-        timestamp: new Date().toISOString(),
-      });
-      setCart([]);
+      await window.pos.holdTicket(parkLabel.trim() || "Ticket", { lines: cart, orderDiscount });
+      resetSale();
     } catch (e) {
-      setSubmitError(e instanceof Error ? e.message : "Failed to submit order");
-    } finally {
-      setSubmitting(false);
+      setCartError(e instanceof Error ? e.message : "Could not park the ticket");
     }
   }
 
-  function newOrder() {
-    setReceipt(null);
-    setSubmitError(null);
+  function startPayment() {
+    if (cart.length === 0 || !totals) return;
+    setSaleId(crypto.randomUUID());
+    setCartError(null);
+    setView("payment");
+  }
+
+  async function completeSale(tenders: TenderDraft[]) {
+    if (!totals || !saleId) return;
+    try {
+      const receiptData = await window.pos.recordSale({
+        lines: cart.map((l) => ({
+          productId: l.productId,
+          variantId: l.variantId,
+          quantity: l.quantity,
+          selectedOptionIds: l.selectedOptionIds,
+          discountAmount: l.discountAmount,
+          discountReason: l.discountReason,
+        })),
+        orderDiscountAmount: orderDiscount || undefined,
+        orderDiscountReason: orderDiscount ? orderDiscountReason : undefined,
+        expectedTotal: totals.total,
+        payments: tenders.map((t, i) => ({ ...t, clientPaymentId: `${saleId}-${i}` })),
+        grants: discountGrant ? [{ permission: "pos:discount", token: discountGrant }] : undefined,
+      });
+      const change = Math.round(tenders.reduce((s, t) => s + changeFor(t), 0) * 100) / 100;
+      setReceipt({
+        orderNumber: receiptData.orderNumber,
+        lines: [...cart],
+        subtotal: totals.subtotal,
+        discountAmount: totals.discountAmount,
+        serviceChargeAmount: totals.serviceChargeAmount,
+        vatAmount: totals.vatAmount,
+        total: totals.total,
+        tenders: tenders.map((t) => ({ method: t.method, amount: t.amount })),
+        changeAmount: change,
+        cashierName: cashier.name,
+        timestamp: new Date().toISOString(),
+      });
+      resetSale();
+      setView("cart");
+    } catch (e) {
+      const err = e as Error & { code?: string };
+      if (err.code === "TOTAL_MISMATCH") {
+        await reloadMenu();
+        setView("cart");
+        setCartError("Prices have changed — please review the cart and charge again.");
+        return;
+      }
+      throw err;
+    }
   }
 
   if (receipt) {
@@ -126,7 +257,18 @@ export function OrderScreen({ branchName }: { branchName: string }) {
       <Receipt
         data={receipt}
         onPrint={() => window.print()}
-        onNewOrder={newOrder}
+        onNewOrder={() => { setReceipt(null); setCartError(null); }}
+      />
+    );
+  }
+
+  if (view === "payment" && totals) {
+    return (
+      <PaymentScreen
+        total={totals.total}
+        cashierName={cashier.name}
+        onCancel={() => setView("cart")}
+        onComplete={completeSale}
       />
     );
   }
@@ -190,7 +332,7 @@ export function OrderScreen({ branchName }: { branchName: string }) {
           </div>
         </div>
 
-        {/* Right: cart + tickets */}
+        {/* Right: cart */}
         <aside className="flex w-80 flex-col gap-3 border-l border-border bg-card p-3 overflow-y-auto">
           <h2 className="text-sm font-semibold text-ink">Current order</h2>
           {cart.length === 0 ? (
@@ -217,24 +359,160 @@ export function OrderScreen({ branchName }: { branchName: string }) {
                     </div>
                     <span className="font-medium text-ink">{(l.unitPrice * l.quantity).toFixed(2)}</span>
                   </div>
+                  {l.discountAmount ? (
+                    <div className="mt-1 flex justify-between text-xs text-primary">
+                      <span>Discount · {reasonLabel(l.discountReason ?? "")}</span>
+                      <span>−{l.discountAmount.toFixed(2)}</span>
+                    </div>
+                  ) : null}
+                  {discountingIdx === i ? (
+                    <div className="mt-2 flex flex-col gap-1.5 rounded-lg border border-dashed border-border p-2">
+                      <input
+                        inputMode="decimal"
+                        value={lineDiscountEntry}
+                        onChange={(e) => setLineDiscountEntry(e.target.value.replace(/[^0-9.]/g, ""))}
+                        placeholder="Discount amount"
+                        aria-label="Line discount amount"
+                        className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-right tabular-nums"
+                      />
+                      <select
+                        value={lineDiscountReason}
+                        onChange={(e) => setLineDiscountReason(e.target.value)}
+                        aria-label="Line discount reason"
+                        className="w-full rounded-md border border-border bg-background px-2 py-1.5 capitalize"
+                      >
+                        {REASON_CODES.map((r) => <option key={r} value={r}>{reasonLabel(r)}</option>)}
+                      </select>
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => { setDiscountingIdx(null); setLineDiscountEntry(""); }}
+                          className="flex-1 rounded-md border border-border px-2 py-1.5 text-xs font-medium text-ink"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={applyLineDiscount}
+                          className="flex-1 rounded-md bg-primary px-2 py-1.5 text-xs font-semibold text-primary-foreground"
+                        >
+                          Apply
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => { setDiscountingIdx(i); setLineDiscountEntry(""); }}
+                      className="mt-1 text-xs font-medium text-muted-foreground hover:text-primary"
+                    >
+                      Discount
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>
           )}
-          <div className="flex justify-between border-t border-border pt-2 text-sm font-bold text-ink">
-            <span>Total</span>
-            <span>{cartTotal(cart).toFixed(2)}</span>
-          </div>
-          {submitError && <p className="text-sm text-status-danger-fg">{submitError}</p>}
+
+          {cart.length > 0 && totals && (
+            <div className="flex flex-col gap-1 border-t border-border pt-2 text-sm">
+              <div className="flex justify-between text-muted-foreground">
+                <span>Subtotal</span>
+                <span className="tabular-nums">{totals.subtotal.toFixed(2)}</span>
+              </div>
+              {totals.discountAmount > 0 && (
+                <div className="flex justify-between text-primary">
+                  <span>Discount</span>
+                  <span className="tabular-nums">−{totals.discountAmount.toFixed(2)}</span>
+                </div>
+              )}
+              {totals.serviceChargeAmount > 0 && (
+                <div className="flex justify-between text-muted-foreground">
+                  <span>Service charge</span>
+                  <span className="tabular-nums">{totals.serviceChargeAmount.toFixed(2)}</span>
+                </div>
+              )}
+              {totals.vatAmount > 0 && (
+                <div className="flex justify-between text-muted-foreground">
+                  <span>VAT</span>
+                  <span className="tabular-nums">{totals.vatAmount.toFixed(2)}</span>
+                </div>
+              )}
+              <div className="mt-1 flex justify-between border-t border-border pt-1 font-bold text-ink">
+                <span>Total</span>
+                <span className="tabular-nums">{totals.total.toFixed(2)}</span>
+              </div>
+            </div>
+          )}
+
+          {cart.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              <input
+                inputMode="decimal"
+                value={orderDiscountEntry}
+                onChange={(e) => setOrderDiscountEntry(e.target.value.replace(/[^0-9.]/g, ""))}
+                placeholder="Order discount"
+                aria-label="Order discount amount"
+                className="w-24 rounded-lg border border-border bg-background px-2 py-1.5 text-right text-sm tabular-nums"
+              />
+              <select
+                value={orderDiscountReason}
+                onChange={(e) => setOrderDiscountReason(e.target.value)}
+                aria-label="Order discount reason"
+                className="flex-1 rounded-lg border border-border bg-background px-2 py-1.5 text-sm capitalize"
+              >
+                {REASON_CODES.map((r) => <option key={r} value={r}>{reasonLabel(r)}</option>)}
+              </select>
+              <button
+                onClick={applyOrderDiscount}
+                disabled={!orderDiscountEntry}
+                className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-ink disabled:opacity-40"
+              >
+                Apply
+              </button>
+            </div>
+          )}
+
+          {cartError && <p role="alert" className="text-sm text-status-danger-fg">{cartError}</p>}
+
+          {cart.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              <input
+                value={parkLabel}
+                onChange={(e) => setParkLabel(e.target.value)}
+                placeholder="Label (e.g. Table 4)"
+                aria-label="Park ticket label"
+                className="flex-1 rounded-lg border border-border bg-background px-2 py-1.5 text-sm"
+              />
+              <button
+                onClick={park}
+                className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-ink"
+              >
+                Park
+              </button>
+            </div>
+          )}
+
           <button
-            onClick={charge}
-            disabled={cart.length === 0 || submitting}
+            onClick={startPayment}
+            disabled={cart.length === 0 || !totals}
             className="rounded-xl bg-primary px-4 py-3 font-semibold text-primary-foreground disabled:opacity-50"
           >
-            {submitting ? "Submitting…" : "Charge (cash)"}
+            Charge
           </button>
         </aside>
       </div>
+
+      {/* Manager authorization for a gated discount */}
+      {pendingAuth && (
+        <ManagerAuthModal
+          permission={pendingAuth.permission}
+          action={pendingAuth.action}
+          onGranted={(grant) => {
+            setDiscountGrant(grant);
+            pendingAuth.onGranted();
+            setPendingAuth(null);
+          }}
+          onCancel={() => setPendingAuth(null)}
+        />
+      )}
 
       {/* Modifier sheet */}
       {sheetOpen && sheetProduct && (
@@ -299,7 +577,7 @@ export function OrderScreen({ branchName }: { branchName: string }) {
                 Add
               </button>
             </div>
-            {submitError && <p className="mt-2 text-sm text-status-danger-fg">{submitError}</p>}
+            {cartError && <p className="mt-2 text-sm text-status-danger-fg">{cartError}</p>}
           </div>
         </div>
       )}

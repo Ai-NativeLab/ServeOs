@@ -1,9 +1,17 @@
 import type { CartLine } from "../order/cart";
 
+export type ReceiptTender = { method: string; amount: number };
 export type ReceiptData = {
   orderNumber: string;
   lines: CartLine[];
+  subtotal: number;
+  discountAmount: number;
+  serviceChargeAmount: number;
+  vatAmount: number;
   total: number;
+  tenders: ReceiptTender[];
+  changeAmount: number;
+  cashierName: string;
   timestamp: string;
 };
 
@@ -33,12 +41,51 @@ export function Receipt({ data, onPrint, onNewOrder }: { data: ReceiptData; onPr
             ))}
           </ul>
           <div className="my-3 border-t border-dashed border-border" />
+          <div className="flex flex-col gap-1">
+            <div className="flex justify-between text-muted-foreground">
+              <span>Subtotal</span>
+              <span>{data.subtotal.toFixed(2)}</span>
+            </div>
+            {data.discountAmount > 0 && (
+              <div className="flex justify-between">
+                <span>Discount</span>
+                <span>−{data.discountAmount.toFixed(2)}</span>
+              </div>
+            )}
+            {data.serviceChargeAmount > 0 && (
+              <div className="flex justify-between text-muted-foreground">
+                <span>Service charge</span>
+                <span>{data.serviceChargeAmount.toFixed(2)}</span>
+              </div>
+            )}
+            {data.vatAmount > 0 && (
+              <div className="flex justify-between text-muted-foreground">
+                <span>VAT</span>
+                <span>{data.vatAmount.toFixed(2)}</span>
+              </div>
+            )}
+          </div>
+          <div className="my-3 border-t border-dashed border-border" />
           <div className="flex justify-between font-bold">
             <span>TOTAL</span>
             <span>{data.total.toFixed(2)}</span>
           </div>
-          <div className="mt-3 text-center font-bold tracking-wider">PAID — CASH</div>
-          <div className="mt-4 text-center text-xs text-muted-foreground">Thank you!</div>
+          <div className="mt-3 flex flex-col gap-1">
+            {data.tenders.map((t, i) => (
+              <div key={i} className="flex justify-between uppercase tracking-wider">
+                <span>PAID — {t.method}</span>
+                <span>{t.amount.toFixed(2)}</span>
+              </div>
+            ))}
+            {data.changeAmount > 0 && (
+              <div className="flex justify-between font-bold uppercase tracking-wider">
+                <span>CHANGE</span>
+                <span>{data.changeAmount.toFixed(2)}</span>
+              </div>
+            )}
+          </div>
+          <div className="mt-4 text-center text-xs text-muted-foreground">Cashier: {data.cashierName}</div>
+          <div className="mt-1 text-center text-xs text-muted-foreground">Thank you!</div>
         </div>
 
         <div className="no-print mt-4 flex gap-2">
