@@ -37,3 +37,11 @@ export class PosForbiddenError extends Error {
     this.name = "PosForbiddenError";
   }
 }
+
+/** Thrown when a sale's tenders are internally inconsistent (bad amount, change on a card, overpayment). */
+export class PosSaleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PosSaleError";
+  }
+}
