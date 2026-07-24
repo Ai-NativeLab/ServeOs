@@ -39,6 +39,8 @@ These come from the product owner and hold across every spec below.
 | D5 | Suppliers & purchasing | **PO tracking + receiving + send-to-supplier.** Full PO lifecycle, receiving against PO increments lots, PO-vs-received-vs-invoice variance, and the PO can be emailed to the supplier from the system. |
 | D6 | Reporting | **Cross-channel, dual-surface.** Manager reports on the web dashboard span POS + online; the POS gets operational **X / Z reports**. Gated by a new `reports:view` permission and the (now-enforced) `advanced_analytics` entitlement. |
 | D7 | Email / notifications provider | **Resend first**, behind an `EmailProvider` interface. Free tier (3k/mo, 100/day) covers POs + alerts; Brevo (free-forever, SMTP relay) and Amazon SES (cheapest at scale) are alternatives on the same interface. No self-hosted SMTP. Requires a verified sending domain + DNS (SPF/DKIM/DMARC). Chosen 2026-07-24. |
+| D8 | Fiscal compliance | **ETA e-Invoicing & e-Receipts is IN SCOPE (Spec 11).** POS + online sales submit to the Egyptian Tax Authority; receipts carry the ETA UUID + QR code; refunds issue credit notes; products carry EGS/GS1 tax codes. Built behind a `FiscalProvider` interface so other tax regimes can be added. Exact ETA API/mandate details verified against current ETA docs during speccing. Added 2026-07-24. |
+| D9 | Restaurant stock mode | **Both, per product.** Dishes default to made-to-order (recipe/BOM deduction); packaged/retail items use finished-goods stock. `product_inventory_links.kind` selects per product. Resolves the former open question #5. |
 
 ### Consequences of the locked decisions (things we must build that don't exist yet)
 
@@ -65,6 +67,7 @@ These come from the product owner and hold across every spec below.
 | 8 | **Inventory Core + Recipes/BOM** | ☐ spec written | 1 | **inventory** |
 | 9 | **Suppliers & Purchasing** | ☐ spec written | 8, 5 | **inventory / suppliers** |
 | 10 | **Cross-Channel Reporting** | ☐ spec written | 3, 4, 6, 7, 8, 9 | **reporting** |
+| 11 | **Fiscal Compliance — ETA e-Invoicing & e-Receipts** | ☐ spec drafting | 1, 3 | **e-invoicing (promoted from backlog)** |
 
 ### Dependency graph
 
@@ -82,7 +85,7 @@ Spec 1  Sale & Tender  ✅
       All of the above ─────────────────────────────┴──► Spec 10  Cross-Channel Reporting ☐
 ```
 
-**Parallelizable now:** Specs 4 (Audit), 5 (Notifications), 8 (Inventory core) have no dependency on the unwritten 2/3 and can start immediately. Spec 6 (Payments) can start once a gateway is signed off. Spec 7 (Reconciliation) is the capstone that waits on 2, 3, 6.
+**Parallelizable now:** Specs 4 (Audit), 5 (Notifications), 8 (Inventory core) have no dependency on the unwritten 2/3 and can start immediately. Spec 6 (Payments) can start once a gateway is signed off. Spec 7 (Reconciliation) is the capstone that waits on 2, 3, 6. Spec 11 (ETA fiscal) depends only on Spec 1 (plus Spec 3 for credit notes) and is compliance-critical, so it can start early.
 
 ---
 
@@ -101,6 +104,7 @@ Spec 1  Sale & Tender  ✅
 | Inventory (8) | `inventory_items`, `storage_locations` (per branch), `inventory_lots`, `stock_ledger` (append-only), `recipes`, `recipe_components`, `product_inventory_links`, `stock_counts`, `stock_count_lines` |
 | Purchasing (9) | `suppliers`, `purchase_orders`, `purchase_order_lines`, `po_receipts`, `po_receipt_lines` |
 | Reporting (10) | *optional* rollups `daily_sales_rollup`, `daily_inventory_rollup` |
+| Fiscal (11) | `eta_submissions` (invoice/receipt/credit-note submissions + UUID/QR/status), `product_tax_codes` (EGS/GS1 code + tax type per product), `eta_tenant_config` (registration + encrypted credentials) |
 
 **New permissions** (`src/server/rbac/permissions.ts`):
 `audit:view`, `payments:manage`, `reconciliation:manage`, `inventory:view`, `inventory:manage`, `inventory:count`, `purchasing:manage`, `suppliers:manage`, `reports:view`, `reports:financial`.
@@ -154,7 +158,7 @@ restaurant/retail register. Not scheduled — captured now so the data model lea
 for them (e.g. table/seat ids, terminal ids, customer ids) rather than being retrofitted.
 
 1. **Offline-first resilience** — `apps/pos/electron/_offline/` is parked today. A till must keep selling through an internet drop and sync on reconnect. Highest operational priority; the current online-first model fails hard when the network does.
-2. **Egyptian Tax Authority (ETA) e-invoicing / e-receipt** — Egypt mandates electronic invoicing/receipts for a widening set of businesses; POS sales likely need real-time (or batched) submission to ETA with a signed QR on the receipt. Compliance-critical for EG tenants. **Verify the current mandate scope, thresholds, and deadlines before scheduling** — this may outrank items 3–10.
+2. ✅ **PROMOTED to Spec 11 (2026-07-24)** — Egyptian Tax Authority (ETA) e-invoicing / e-receipt. No longer backlog; now a numbered, in-scope spec (see D8). Egypt mandates electronic invoicing/receipts with a signed QR on the receipt; POS + online sales submit to ETA. Exact mandate scope/thresholds verified during speccing.
 3. **Dine-in & table management** — the POS is walk-in only (hardcoded "Walk-in", pickup — `record-sale.ts`). Restaurants need a floor plan, table tabs, seat/course assignment, and transfer / merge / split checks. Held tickets (Spec 1) are a partial stand-in.
 4. **Kitchen Display System (KDS) + kitchen printing** — no KDS exists; orders sit in the `OrdersQueue` screen. Needs prep timers, station routing, ESC/POS thermal chits, and a bump-bar flow.
 5. **Peripheral hardware** — receipt printer (ESC/POS), cash-drawer kick, barcode scanner (retail), weighing scale (sold-by-weight — ties to inventory UoM in Spec 8), customer-facing display.
@@ -172,4 +176,4 @@ for them (e.g. table/seat ids, terminal ids, customer ids) rather than being ret
 2. **Email provider (Spec 5):** ✅ **RESOLVED** — **Resend**, behind the `EmailProvider` interface (see D7). Needs a verified sending domain + DNS records from the owner (details below).
 3. **Shifts & Refunds (Specs 2, 3):** ✅ **RESOLVED** — this roadmap absorbs and specs them (drafted 2026-07-24) so reconciliation is unblocked.
 4. **Integrated POS card terminals** vs. "record-only" card tenders — ⏸ parked alongside #1; specs default to record-only, and integrated terminals will come with the chosen gateway/hardware vendor.
-5. **Restaurant finished dishes:** confirm dishes are made-to-order (deduct ingredients, no finished-dish stock). Any prepared/packaged items that should carry their own finished-goods stock?
+5. ✅ **RESOLVED (2026-07-24)** — restaurant stock mode is **both, per product** (see D9): dishes = made-to-order (recipe/BOM), packaged/retail items = finished-goods, selected by `product_inventory_links.kind`.
