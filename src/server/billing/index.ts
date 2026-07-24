@@ -7,4 +7,5 @@ export {
   submitInvoiceProof,
   confirmInvoice,
   rejectInvoice,
+  listInvoicesPendingVerification,
 } from "./service";

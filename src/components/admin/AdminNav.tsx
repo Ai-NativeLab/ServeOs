@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, ClipboardList, Store, ScrollText } from "lucide-react";
+import { LayoutDashboard, ClipboardList, Store, ScrollText, CreditCard } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { LogoMark } from "@/components/brand/LogoMark";
 import type { NavItem } from "@/components/dashboard/nav-items";
@@ -9,6 +9,7 @@ import type { NavItem } from "@/components/dashboard/nav-items";
 const ICONS: Record<string, React.ComponentType<{ className?: string; strokeWidth?: number }>> = {
   overview: LayoutDashboard,
   approvals: ClipboardList,
+  billing: CreditCard,
   tenants: Store,
   audit: ScrollText,
 };

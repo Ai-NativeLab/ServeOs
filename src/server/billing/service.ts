@@ -5,6 +5,7 @@ import { plans, subscriptions } from "@/server/subscription/schema";
 import { activateSubscriptionForPlan } from "@/server/subscription/service";
 import { PaymentAlreadyResolvedError, InvalidProofError } from "@/server/payments/offline";
 import { OutstandingInvoiceExistsError } from "./errors";
+import { tenants } from "@/server/tenancy/schema";
 
 /** Postgres unique-violation error code. */
 const UNIQUE_VIOLATION = "23505";
@@ -81,4 +82,14 @@ export async function rejectInvoice(tenantId: string, invoiceId: string): Promis
     .returning();
   if (!inv) throw new PaymentAlreadyResolvedError();
   return inv;
+}
+
+/** Platform admin queue — invoices awaiting proof verification across all tenants, newest first. */
+export async function listInvoicesPendingVerification() {
+  return db.select({
+    id: invoices.id, tenantId: invoices.tenantId, amount: invoices.amount, currency: invoices.currency,
+    reference: invoices.paymentReference, proofUrl: invoices.paymentProofUrl, createdAt: invoices.createdAt,
+    tenantName: tenants.name,
+  }).from(invoices).innerJoin(tenants, eq(tenants.id, invoices.tenantId))
+    .where(eq(invoices.status, "pending_verification")).orderBy(desc(invoices.createdAt));
 }
