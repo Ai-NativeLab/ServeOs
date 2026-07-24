@@ -428,3 +428,64 @@ describe("confirmOrderPayment / rejectOrderPayment", () => {
     expect(order.status).not.toBe("cancelled");
   });
 });
+
+describe("listAwaitingPaymentOrders", () => {
+  it("returns only pending_verification orders, newest first", async () => {
+    const { t, branch, pizza } = await setup("aw1");
+    const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
+    await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
+
+    // Cash order stays "unpaid" — must be excluded from the confirmation queue.
+    await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "Cash", customerPhone: "1",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+
+    const older = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "Older", customerPhone: "2",
+      paymentMethod: "instapay", paymentReference: "IP-OLD",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const newer = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "Newer", customerPhone: "3",
+      paymentMethod: "instapay", paymentReference: "IP-NEW",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+
+    // A confirmed order was pending_verification too — must be excluded once resolved.
+    const confirmed = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "Confirmed", customerPhone: "4",
+      paymentMethod: "instapay", paymentReference: "IP-CONF",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const { confirmOrderPayment, listAwaitingPaymentOrders } = await import("./service");
+    await confirmOrderPayment(t.id, confirmed.orderId, "00000000-0000-0000-0000-000000000001");
+
+    // Force a deterministic newest/oldest gap, independent of wall-clock timing between inserts.
+    const { withTenant } = await import("@/db/with-tenant");
+    const { orders } = await import("./schema");
+    await withTenant(t.id, (tx) => tx.update(orders).set({ placedAt: new Date(Date.now() - 60_000) }).where(eq(orders.id, older.orderId)));
+    await withTenant(t.id, (tx) => tx.update(orders).set({ placedAt: new Date() }).where(eq(orders.id, newer.orderId)));
+
+    const queue = await listAwaitingPaymentOrders(t.id);
+    expect(queue.map((o) => o.id)).toEqual([newer.orderId, older.orderId]);
+    expect(queue.every((o) => o.paymentStatus === "pending_verification")).toBe(true);
+  });
+});
+
+describe("placeOrder paymentProofUrl sanitization", () => {
+  it("drops a javascript: proof URL (stored XSS) and stores null instead", async () => {
+    const { t, branch, pizza } = await setup("xss1");
+    const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
+    await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      paymentMethod: "instapay", paymentReference: "IP-XSS",
+      paymentProofUrl: "javascript:alert(1)",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const { getOrder } = await import("./service");
+    const order = await getOrder(t.id, res.orderId);
+    expect(order.paymentProofUrl).toBeNull();
+  });
+});

@@ -40,6 +40,17 @@ export function money(n: number): string {
   return (Math.round(n * 100) / 100).toFixed(2);
 }
 
+/** Only http(s) URLs are safe to persist/render as an href — a customer-supplied
+ * `javascript:`/`data:` proof URL would be stored XSS the first time a merchant
+ * clicks "View screenshot" in the payments queue. Anything else is dropped (stored
+ * as null) rather than trusted; the reference/screenshot are informational only
+ * per the manual-payments spec, never authoritative. */
+const SAFE_PROOF_URL_RE = /^https?:\/\//i;
+function sanitizeProofUrl(url: string | undefined): string | null {
+  const trimmed = url?.trim();
+  return trimmed && SAFE_PROOF_URL_RE.test(trimmed) ? trimmed : null;
+}
+
 export async function placeOrder(tenantId: string, input: PlaceOrderInput): Promise<PlaceOrderResult> {
   if (!input.lines || input.lines.length === 0) throw new OrderValidationError("empty cart");
   if (!input.customerName.trim() || !input.customerPhone.trim()) throw new OrderValidationError("missing customer details");
@@ -53,7 +64,7 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
     if (!input.paymentReference?.trim()) throw new InvalidProofError();
     paymentStatus = "pending_verification";
     paymentReference = input.paymentReference.trim();
-    paymentProofUrl = input.paymentProofUrl?.trim() || null;
+    paymentProofUrl = sanitizeProofUrl(input.paymentProofUrl);
   }
 
   await requireFeature(tenantId, "online_ordering");

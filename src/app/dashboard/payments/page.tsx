@@ -9,9 +9,14 @@ import { SubmitButton } from "@/components/dashboard/SubmitButton";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
+/** Only http(s) URLs are ever safe to render as an href — a customer-supplied
+ * `javascript:`/`data:` URL would be stored XSS if a merchant clicked it. This
+ * mirrors the same check enforced at write-time in placeOrder. */
+const SAFE_URL_RE = /^https?:\/\//i;
+
 export default async function PaymentsQueuePage() {
   const ctx = await requireDashboardUser();
-  authorize(ctx.roleKeys, "orders:manage");
+  authorize(ctx.roleKeys, "payments:confirm");
   const orders = await listAwaitingPaymentOrders(ctx.tenantId);
   return (
     <>
@@ -31,7 +36,7 @@ export default async function PaymentsQueuePage() {
                 <div className="text-muted-foreground">
                   {o.paymentMethod} · ref {o.paymentReference ?? "—"} · {Number(o.total).toFixed(2)}
                 </div>
-                {o.paymentProofUrl && (
+                {o.paymentProofUrl && SAFE_URL_RE.test(o.paymentProofUrl) && (
                   <a href={o.paymentProofUrl} target="_blank" rel="noreferrer" className="text-primary hover:underline">
                     View screenshot
                   </a>
