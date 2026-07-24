@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { requireFeature, incrementUsage } from "@/server/entitlements/service";
 import { getCheckoutPricing } from "@/server/tenancy/settings";
@@ -394,16 +394,29 @@ export async function markPaid(tenantId: string, orderId: string, _userId: strin
  * No orderStatusEvents row: that table's toStatus tracks order.status (the fulfillment
  * state machine), not paymentStatus, and there's no unchanged-status audit row to write —
  * the guarded UPDATE (WHERE paymentStatus = 'pending_verification') is itself the audit
- * trail / idempotency source of truth. */
+ * trail / idempotency source of truth.
+ *
+ * The guard also excludes terminal order states (cancelled/rejected) so a confirm can
+ * never land on an order that's already been rejected: rejectOrderPayment claims
+ * paymentStatus → 'unpaid' before it cancels, so the paymentStatus half of the guard
+ * already blocks confirm-after-reject; the status exclusion here is defense in depth
+ * against any other path that could cancel/reject an order without first resolving
+ * its pending_verification payment. */
 export async function confirmOrderPayment(tenantId: string, orderId: string, _userId: string): Promise<Order> {
   return withTenant(tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
     if (!order) throw new OrderNotFoundError();
     if (order.paymentStatus !== "pending_verification") throw new PaymentAlreadyResolvedError();
+    // Mirrors markPaid's terminal-state guard: a cancelled/rejected order can't be paid.
+    if (order.status === "cancelled" || order.status === "rejected") throw new PaymentAlreadyResolvedError();
     // Guarded UPDATE serializes against concurrent writers (see cancelOrderByToken).
     const [updated] = await tx.update(orders)
       .set({ paymentStatus: "paid", updatedAt: new Date() })
-      .where(and(eq(orders.id, orderId), eq(orders.paymentStatus, "pending_verification")))
+      .where(and(
+        eq(orders.id, orderId),
+        eq(orders.paymentStatus, "pending_verification"),
+        notInArray(orders.status, ["cancelled", "rejected"]),
+      ))
       .returning();
     if (!updated) throw new PaymentAlreadyResolvedError();
     return updated;
@@ -411,12 +424,23 @@ export async function confirmOrderPayment(tenantId: string, orderId: string, _us
 }
 
 /** Merchant rejects an offline payment: cancel the order + restock.
- * Reuses the dashboard cancel path (guarded UPDATE + restock + status-event audit row)
- * already in transitionStatus, so cancelling for a bad/missing payment looks identical
- * to any other dashboard cancel in the order's history. */
+ * First atomically CLAIMS the payment (guarded UPDATE paymentStatus 'pending_verification'
+ * → 'unpaid') in its own withTenant transaction — this is the serialization point: it
+ * moves paymentStatus off pending_verification so a racing confirmOrderPayment can no
+ * longer win (its guard requires paymentStatus = 'pending_verification'). Only once the
+ * claim succeeds do we cancel + restock, reusing the dashboard cancel path (guarded
+ * UPDATE + restock + status-event audit row) already in transitionStatus, so cancelling
+ * for a bad/missing payment looks identical to any other dashboard cancel in the order's
+ * history. */
 export async function rejectOrderPayment(tenantId: string, orderId: string, userId: string, reason?: string): Promise<Order> {
-  const [order] = await withTenant(tenantId, (tx) => tx.select().from(orders).where(eq(orders.id, orderId)).limit(1));
-  if (!order) throw new OrderNotFoundError();
-  if (order.paymentStatus !== "pending_verification") throw new PaymentAlreadyResolvedError();
+  await withTenant(tenantId, async (tx) => {
+    const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+    if (!order) throw new OrderNotFoundError();
+    const [claimed] = await tx.update(orders)
+      .set({ paymentStatus: "unpaid", updatedAt: new Date() })
+      .where(and(eq(orders.id, orderId), eq(orders.paymentStatus, "pending_verification")))
+      .returning();
+    if (!claimed) throw new PaymentAlreadyResolvedError();
+  });
   return transitionStatus(tenantId, orderId, "cancelled", userId, reason ?? "offline_payment_rejected");
 }

@@ -389,4 +389,42 @@ describe("confirmOrderPayment / rejectOrderPayment", () => {
     const o = await rejectOrderPayment(t.id, res.orderId, "00000000-0000-0000-0000-000000000001", "no funds received");
     expect(o.status).toBe("cancelled");
   });
+
+  it("reject then confirm is refused", async () => {
+    const { t, branch, pizza } = await setup("cf3");
+    const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
+    await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      paymentMethod: "instapay", paymentReference: "IP-3",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const { confirmOrderPayment, rejectOrderPayment, getOrder } = await import("./service");
+    const { PaymentAlreadyResolvedError } = await import("@/server/payments/offline");
+    await rejectOrderPayment(t.id, res.orderId, "00000000-0000-0000-0000-000000000001", "no funds received");
+    await expect(confirmOrderPayment(t.id, res.orderId, "00000000-0000-0000-0000-000000000001"))
+      .rejects.toThrow(PaymentAlreadyResolvedError);
+    const order = await getOrder(t.id, res.orderId);
+    expect(order.status).toBe("cancelled");
+    expect(order.paymentStatus).not.toBe("paid");
+  });
+
+  it("confirm then reject is refused", async () => {
+    const { t, branch, pizza } = await setup("cf4");
+    const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
+    await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      paymentMethod: "instapay", paymentReference: "IP-4",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const { confirmOrderPayment, rejectOrderPayment, getOrder } = await import("./service");
+    const { PaymentAlreadyResolvedError } = await import("@/server/payments/offline");
+    await confirmOrderPayment(t.id, res.orderId, "00000000-0000-0000-0000-000000000001");
+    await expect(rejectOrderPayment(t.id, res.orderId, "00000000-0000-0000-0000-000000000001", "no funds received"))
+      .rejects.toThrow(PaymentAlreadyResolvedError);
+    const order = await getOrder(t.id, res.orderId);
+    expect(order.paymentStatus).toBe("paid");
+    expect(order.status).not.toBe("cancelled");
+  });
 });
