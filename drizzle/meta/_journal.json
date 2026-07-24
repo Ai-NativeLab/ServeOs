@@ -127,6 +127,13 @@
       "when": 1784891903073,
       "tag": "0017_famous_gauntlet",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784892366269,
+      "tag": "0018_smart_ser_duncan",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, timestamp, numeric, pgEnum } from "drizzle-orm/pg-core";
 import { tenants } from "@/server/tenancy/schema";
-import { subscriptions } from "@/server/subscription/schema";
+import { subscriptions, plans } from "@/server/subscription/schema";
 import { users } from "@/server/auth/schema";
 
 export const invoiceStatus = pgEnum("invoice_status", ["open", "pending_verification", "paid", "void"]);
@@ -9,6 +9,9 @@ export const invoices = pgTable("invoices", {
   id: uuid("id").defaultRandom().primaryKey(),
   tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
   subscriptionId: uuid("subscription_id").notNull().references(() => subscriptions.id, { onDelete: "cascade" }),
+  // Target plan for a manual plan-invoice (set by createPlanInvoice); null for
+  // invoices created via the generic BillingProvider interface.
+  planId: uuid("plan_id").references(() => plans.id),
   amount: numeric("amount").notNull(),
   currency: text("currency").notNull(),
   status: invoiceStatus("status").notNull().default("open"),
