@@ -7,8 +7,8 @@ export const orderStatusEnum = pgEnum("order_status", [
 ]);
 export const fulfillmentTypeEnum = pgEnum("fulfillment_type", ["pickup", "delivery"]);
 export const orderChannelEnum = pgEnum("order_channel", ["web"]);
-export const paymentStatusEnum = pgEnum("payment_status", ["unpaid", "paid"]);
-export const paymentMethodEnum = pgEnum("payment_method", ["cash"]);
+export const paymentStatusEnum = pgEnum("payment_status", ["unpaid", "pending_verification", "paid"]);
+export const paymentMethodEnum = pgEnum("payment_method", ["cash", "instapay", "vodafone_cash", "mobile_wallet"]);
 
 export type OrderStatus = (typeof orderStatusEnum.enumValues)[number];
 export type FulfillmentType = (typeof fulfillmentTypeEnum.enumValues)[number];
@@ -23,6 +23,9 @@ export const orders = pgTable("orders", {
   channel: orderChannelEnum("channel").notNull().default("web"),
   paymentStatus: paymentStatusEnum("payment_status").notNull().default("unpaid"),
   paymentMethod: paymentMethodEnum("payment_method").notNull().default("cash"),
+  paymentReference: text("payment_reference"),
+  paymentProofUrl: text("payment_proof_url"),
+  paymentProviderRef: text("payment_provider_ref"),
   customerName: text("customer_name").notNull(),
   customerPhone: text("customer_phone").notNull(),
   notes: text("notes"),

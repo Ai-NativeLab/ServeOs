@@ -3,7 +3,7 @@ import { tenants } from "@/server/tenancy/schema";
 import { subscriptions } from "@/server/subscription/schema";
 import { users } from "@/server/auth/schema";
 
-export const invoiceStatus = pgEnum("invoice_status", ["open", "paid", "void"]);
+export const invoiceStatus = pgEnum("invoice_status", ["open", "pending_verification", "paid", "void"]);
 
 export const invoices = pgTable("invoices", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -13,6 +13,9 @@ export const invoices = pgTable("invoices", {
   currency: text("currency").notNull(),
   status: invoiceStatus("status").notNull().default("open"),
   method: text("method"), // bank | cash | manual
+  paymentReference: text("payment_reference"),
+  paymentProofUrl: text("payment_proof_url"),
+  providerRef: text("provider_ref"),
   markedBy: uuid("marked_by").references(() => users.id),
   paidAt: timestamp("paid_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

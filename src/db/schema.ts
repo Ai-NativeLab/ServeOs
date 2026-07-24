@@ -10,3 +10,4 @@ export * from "../server/catalog/schema";
 export * from "../server/banners/schema";
 export * from "../server/ordering/schema";
 export * from "../server/pos/schema";
+export * from "../server/payments/offline/methods.schema";
