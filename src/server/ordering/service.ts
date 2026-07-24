@@ -10,6 +10,8 @@ import { branches, deliveryAreas } from "@/server/branches/schema";
 import { products, modifierGroups, modifierOptions, branchProductAvailability, productVariants } from "@/server/catalog/schema";
 import { InvalidVariantError } from "@/server/catalog/errors";
 import { getCapabilities, type VerticalId } from "@/server/verticals";
+import { isMethodEnabled } from "@/server/payments/offline/methods";
+import { PaymentMethodNotEnabledError, InvalidProofError } from "@/server/payments/offline";
 import { orders, orderItems, orderStatusEvents, type SelectedModifier, type Order, type OrderWithItems, type OrderDetail, type OrderStatus } from "./schema";
 import { canTransition } from "./state-machine";
 import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, OutOfStockError } from "./errors";
@@ -27,6 +29,9 @@ export type PlaceOrderInput = {
   scheduledFor?: string;
   lines: PlaceOrderLine[];
   now?: Date;
+  paymentMethod?: "cash" | "instapay" | "vodafone_cash" | "mobile_wallet";
+  paymentReference?: string;
+  paymentProofUrl?: string;
 };
 export type PlaceOrderResult = { orderId: string; orderNumber: number; statusToken: string };
 
@@ -38,6 +43,18 @@ export function money(n: number): string {
 export async function placeOrder(tenantId: string, input: PlaceOrderInput): Promise<PlaceOrderResult> {
   if (!input.lines || input.lines.length === 0) throw new OrderValidationError("empty cart");
   if (!input.customerName.trim() || !input.customerPhone.trim()) throw new OrderValidationError("missing customer details");
+
+  const paymentMethod = input.paymentMethod ?? "cash";
+  let paymentStatus: "unpaid" | "pending_verification" = "unpaid";
+  let paymentReference: string | null = null;
+  let paymentProofUrl: string | null = null;
+  if (paymentMethod !== "cash") {
+    if (!(await isMethodEnabled(tenantId, paymentMethod))) throw new PaymentMethodNotEnabledError(paymentMethod);
+    if (!input.paymentReference?.trim()) throw new InvalidProofError();
+    paymentStatus = "pending_verification";
+    paymentReference = input.paymentReference.trim();
+    paymentProofUrl = input.paymentProofUrl?.trim() || null;
+  }
 
   await requireFeature(tenantId, "online_ordering");
   const pricing = await getCheckoutPricing(tenantId);
@@ -199,6 +216,10 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
     const [order] = await tx.insert(orders).values({
       tenantId, branchId: input.branchId, orderNumber,
       fulfillmentType: input.fulfillmentType, status: "pending",
+      paymentMethod,
+      paymentStatus,
+      paymentReference,
+      paymentProofUrl,
       customerName: input.customerName.trim(), customerPhone: input.customerPhone.trim(), notes: input.notes?.trim() || null,
       deliveryAreaId, deliveryAreaNameSnapshot: deliveryAreaName, deliveryAddressText: deliveryAddress,
       subtotal: money(totals.subtotal),

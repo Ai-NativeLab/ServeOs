@@ -29,6 +29,9 @@ export async function POST(req: NextRequest) {
     areaId: typeof body.areaId === "string" ? body.areaId : undefined,
     addressText: typeof body.addressText === "string" ? body.addressText : undefined,
     scheduledFor: typeof body.scheduledFor === "string" ? body.scheduledFor : undefined,
+    paymentMethod: body.paymentMethod === "instapay" || body.paymentMethod === "vodafone_cash" || body.paymentMethod === "mobile_wallet" ? body.paymentMethod : "cash",
+    paymentReference: typeof body.paymentReference === "string" ? body.paymentReference : undefined,
+    paymentProofUrl: typeof body.paymentProofUrl === "string" ? body.paymentProofUrl : undefined,
     lines: Array.isArray(body.lines)
       ? (body.lines as unknown[]).map((l): PlaceOrderLine => {
           const line = (l ?? {}) as Record<string, unknown>;
