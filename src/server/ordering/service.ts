@@ -326,6 +326,13 @@ export async function listOrders(tenantId: string, opts: ListOrdersOpts): Promis
   });
 }
 
+/** Orders sitting in the merchant's manual-payment review queue (offline transfer proof pending), newest first. */
+export async function listAwaitingPaymentOrders(tenantId: string): Promise<Order[]> {
+  return withTenant(tenantId, (tx) =>
+    tx.select().from(orders).where(eq(orders.paymentStatus, "pending_verification")).orderBy(desc(orders.placedAt)),
+  );
+}
+
 /** The compact order shape the dashboard list (SSR + polling endpoint) renders. */
 export type OrderRow = Pick<Order, "id" | "orderNumber" | "customerName" | "fulfillmentType" | "total" | "status" | "paymentStatus"> & {
   scheduledFor: string | null;
