@@ -13,6 +13,10 @@ describe("listInvoicesForTenant", () => {
     const sub = await startTrial(t.id, "basic");
     const provider = new ManualBillingProvider();
     const first = await provider.createInvoice({ tenantId: t.id, subscriptionId: sub.id, amount: "100", currency: "EGP" });
+    // Settle the first invoice before opening a second one — a tenant can have
+    // at most one outstanding (open/pending_verification) invoice at a time,
+    // enforced by the invoices_one_outstanding_per_tenant partial unique index.
+    await provider.settleInvoice(first.id, "manual");
     await new Promise((r) => setTimeout(r, 10));
     const second = await provider.createInvoice({ tenantId: t.id, subscriptionId: sub.id, amount: "200", currency: "EGP" });
 

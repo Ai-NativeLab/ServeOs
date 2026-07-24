@@ -3,29 +3,54 @@ import { db } from "@/db/client";
 import { invoices, type Invoice } from "./schema";
 import { plans, subscriptions } from "@/server/subscription/schema";
 import { activateSubscriptionForPlan } from "@/server/subscription/service";
-import { PaymentAlreadyResolvedError } from "@/server/payments/offline";
+import { PaymentAlreadyResolvedError, InvalidProofError } from "@/server/payments/offline";
+import { OutstandingInvoiceExistsError } from "./errors";
+
+/** Postgres unique-violation error code. */
+const UNIQUE_VIOLATION = "23505";
+
+function isUniqueViolation(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: unknown }).code ?? (err as { cause?: { code?: unknown } }).cause?.code;
+  return code === UNIQUE_VIOLATION;
+}
 
 /** invoices is a control table (like subscriptions/plans) → plain db, matching ManualBillingProvider. */
 export async function listInvoicesForTenant(tenantId: string): Promise<Invoice[]> {
   return db.select().from(invoices).where(eq(invoices.tenantId, tenantId)).orderBy(desc(invoices.createdAt));
 }
 
-/** Open a new invoice for the tenant's monthly plan price against its existing subscription. */
+/** Open a new invoice for the tenant's monthly plan price against its existing subscription.
+ *
+ * The `subscribeToPlanAction` pre-check (list-then-create) is racy under
+ * concurrent double-submit, so this is backstopped by a partial unique index
+ * (invoices_one_outstanding_per_tenant, see ./schema.ts) that allows at most
+ * one open/pending_verification invoice per tenant. A violation here means
+ * another request won the race — surface it as the same domain error the
+ * pre-check would have thrown. */
 export async function createPlanInvoice(tenantId: string, planId: string): Promise<Invoice> {
   const [plan] = await db.select().from(plans).where(eq(plans.id, planId)).limit(1);
   if (!plan) throw new Error("Unknown plan");
   const [sub] = await db.select().from(subscriptions).where(eq(subscriptions.tenantId, tenantId)).limit(1);
   if (!sub) throw new Error("No subscription");
-  const [inv] = await db.insert(invoices).values({
-    tenantId, subscriptionId: sub.id, planId: plan.id,
-    amount: (Math.round(Number(plan.priceMonthly) * 100) / 100).toFixed(2),
-    currency: plan.currency, status: "open", method: null,
-  }).returning();
-  return inv;
+  try {
+    const [inv] = await db.insert(invoices).values({
+      tenantId, subscriptionId: sub.id, planId: plan.id,
+      amount: (Math.round(Number(plan.priceMonthly) * 100) / 100).toFixed(2),
+      currency: plan.currency, status: "open", method: null,
+    }).returning();
+    return inv;
+  } catch (err) {
+    if (isUniqueViolation(err)) throw new OutstandingInvoiceExistsError();
+    throw err;
+  }
 }
 
 /** Tenant submits payment proof (reference and/or screenshot) — open → pending_verification. */
 export async function submitInvoiceProof(tenantId: string, invoiceId: string, proof: { reference: string | null; screenshotUrl: string | null }): Promise<Invoice> {
+  if (!proof.reference?.trim() && !proof.screenshotUrl?.trim()) {
+    throw new InvalidProofError();
+  }
   const [inv] = await db.update(invoices)
     .set({ status: "pending_verification", paymentReference: proof.reference, paymentProofUrl: proof.screenshotUrl })
     .where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, tenantId), eq(invoices.status, "open")))

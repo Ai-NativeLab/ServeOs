@@ -114,7 +114,7 @@ export default async function BillingPage() {
             >
               <div className="grid gap-1.5">
                 <Label htmlFor="reference">Payment reference</Label>
-                <Input id="reference" name="reference" placeholder="e.g. InstaPay transaction ID" />
+                <Input id="reference" name="reference" placeholder="e.g. InstaPay transaction ID" required />
               </div>
               <div className="grid gap-1.5">
                 <Label htmlFor="screenshotUrl">Screenshot URL (optional)</Label>

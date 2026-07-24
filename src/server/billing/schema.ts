@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, timestamp, numeric, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, numeric, pgEnum, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { tenants } from "@/server/tenancy/schema";
 import { subscriptions, plans } from "@/server/subscription/schema";
 import { users } from "@/server/auth/schema";
@@ -22,6 +23,13 @@ export const invoices = pgTable("invoices", {
   markedBy: uuid("marked_by").references(() => users.id),
   paidAt: timestamp("paid_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  // At most one outstanding (open or pending_verification) invoice per tenant
+  // — enforced in the DB so a concurrent double-submit of subscribeToPlanAction
+  // can't create two open invoices (the pre-check in the action is racy on its
+  // own). See src/server/payments/offline/methods.schema.ts for the same
+  // pattern applied to offline methods.
+  uniqueIndex("invoices_one_outstanding_per_tenant").on(t.tenantId).where(sql`status in ('open','pending_verification')`),
+]);
 
 export type Invoice = typeof invoices.$inferSelect;

@@ -7,6 +7,8 @@ import { plans, subscriptions } from "@/server/subscription/schema";
 import { seedDefaultPlans } from "@/server/subscription/plans.seed";
 import { startTrial } from "@/server/subscription/service";
 import { createPlanInvoice, submitInvoiceProof, confirmInvoice } from "./service";
+import { OutstandingInvoiceExistsError } from "./errors";
+import { InvalidProofError } from "@/server/payments/offline";
 
 // invoices.marked_by is FK-enforced against users.id (see platform/service.test.ts
 // for the same pattern), so admin actions in tests need a real user row.
@@ -49,5 +51,20 @@ describe("manual subscription billing", () => {
     const { PaymentAlreadyResolvedError } = await import("@/server/payments/offline");
     await expect(confirmInvoice(t.id, inv.id, admin.id))
       .rejects.toThrow(PaymentAlreadyResolvedError);
+  });
+
+  it("creating a second plan invoice while one is already open is rejected by the DB backstop", async () => {
+    const { t, pro } = await setup("msub3");
+    await createPlanInvoice(t.id, pro.id);
+    await expect(createPlanInvoice(t.id, pro.id)).rejects.toThrow(OutstandingInvoiceExistsError);
+  });
+
+  it("submitInvoiceProof rejects empty proof and accepts a reference", async () => {
+    const { t, pro } = await setup("msub4");
+    const inv = await createPlanInvoice(t.id, pro.id);
+    await expect(submitInvoiceProof(t.id, inv.id, { reference: null, screenshotUrl: null }))
+      .rejects.toThrow(InvalidProofError);
+    const pending = await submitInvoiceProof(t.id, inv.id, { reference: "REF-1", screenshotUrl: null });
+    expect(pending.status).toBe("pending_verification");
   });
 });

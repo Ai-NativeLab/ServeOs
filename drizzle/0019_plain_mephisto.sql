@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "invoices_one_outstanding_per_tenant" ON "invoices" USING btree ("tenant_id") WHERE status in ('open','pending_verification');
