@@ -67,4 +67,19 @@ describe("manual subscription billing", () => {
     const pending = await submitInvoiceProof(t.id, inv.id, { reference: "REF-1", screenshotUrl: null });
     expect(pending.status).toBe("pending_verification");
   });
+
+  it("submitInvoiceProof sanitizes a javascript: screenshotUrl to null and treats it as no proof", async () => {
+    const { t, pro } = await setup("msub5");
+    const inv = await createPlanInvoice(t.id, pro.id);
+    await expect(submitInvoiceProof(t.id, inv.id, { reference: null, screenshotUrl: "javascript:alert(1)" }))
+      .rejects.toThrow(InvalidProofError);
+  });
+
+  it("submitInvoiceProof accepts and stores a well-formed http(s) screenshotUrl", async () => {
+    const { t, pro } = await setup("msub6");
+    const inv = await createPlanInvoice(t.id, pro.id);
+    const pending = await submitInvoiceProof(t.id, inv.id, { reference: null, screenshotUrl: "https://x/y.png" });
+    expect(pending.status).toBe("pending_verification");
+    expect(pending.paymentProofUrl).toBe("https://x/y.png");
+  });
 });

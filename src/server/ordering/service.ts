@@ -12,6 +12,7 @@ import { InvalidVariantError } from "@/server/catalog/errors";
 import { getCapabilities, type VerticalId } from "@/server/verticals";
 import { isMethodEnabled } from "@/server/payments/offline/methods";
 import { PaymentMethodNotEnabledError, InvalidProofError, PaymentAlreadyResolvedError } from "@/server/payments/offline";
+import { sanitizeHttpUrl } from "@/lib/safe-url";
 import { orders, orderItems, orderStatusEvents, type SelectedModifier, type Order, type OrderWithItems, type OrderDetail, type OrderStatus } from "./schema";
 import { canTransition } from "./state-machine";
 import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, OutOfStockError } from "./errors";
@@ -45,11 +46,7 @@ export function money(n: number): string {
  * clicks "View screenshot" in the payments queue. Anything else is dropped (stored
  * as null) rather than trusted; the reference/screenshot are informational only
  * per the manual-payments spec, never authoritative. */
-const SAFE_PROOF_URL_RE = /^https?:\/\//i;
-function sanitizeProofUrl(url: string | undefined): string | null {
-  const trimmed = url?.trim();
-  return trimmed && SAFE_PROOF_URL_RE.test(trimmed) ? trimmed : null;
-}
+const sanitizeProofUrl = sanitizeHttpUrl;
 
 export async function placeOrder(tenantId: string, input: PlaceOrderInput): Promise<PlaceOrderResult> {
   if (!input.lines || input.lines.length === 0) throw new OrderValidationError("empty cart");

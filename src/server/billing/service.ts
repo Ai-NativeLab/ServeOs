@@ -4,6 +4,7 @@ import { invoices, type Invoice } from "./schema";
 import { plans, subscriptions } from "@/server/subscription/schema";
 import { activateSubscriptionForPlan } from "@/server/subscription/service";
 import { PaymentAlreadyResolvedError, InvalidProofError } from "@/server/payments/offline";
+import { sanitizeHttpUrl } from "@/lib/safe-url";
 import { OutstandingInvoiceExistsError } from "./errors";
 import { tenants } from "@/server/tenancy/schema";
 
@@ -49,11 +50,15 @@ export async function createPlanInvoice(tenantId: string, planId: string): Promi
 
 /** Tenant submits payment proof (reference and/or screenshot) — open → pending_verification. */
 export async function submitInvoiceProof(tenantId: string, invoiceId: string, proof: { reference: string | null; screenshotUrl: string | null }): Promise<Invoice> {
-  if (!proof.reference?.trim() && !proof.screenshotUrl?.trim()) {
+  // Sanitize before the empty-check: a javascript:/data: screenshotUrl sanitizes to
+  // null, so a submission with no reference and only such a URL is correctly
+  // treated as "no proof" rather than silently persisted as stored XSS.
+  const screenshotUrl = sanitizeHttpUrl(proof.screenshotUrl);
+  if (!proof.reference?.trim() && !screenshotUrl) {
     throw new InvalidProofError();
   }
   const [inv] = await db.update(invoices)
-    .set({ status: "pending_verification", paymentReference: proof.reference, paymentProofUrl: proof.screenshotUrl })
+    .set({ status: "pending_verification", paymentReference: proof.reference, paymentProofUrl: screenshotUrl })
     .where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, tenantId), eq(invoices.status, "open")))
     .returning();
   if (!inv) throw new PaymentAlreadyResolvedError();

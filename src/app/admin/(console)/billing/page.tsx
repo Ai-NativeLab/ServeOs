@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/dashboard/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { SubmitButton } from "@/components/dashboard/SubmitButton";
+import { isHttpUrl } from "@/lib/safe-url";
 import { confirmInvoiceAction, rejectInvoiceAction } from "./actions";
 
 export default async function BillingPage() {
@@ -34,8 +35,8 @@ export default async function BillingPage() {
                   <TableCell className="font-mono">{Number(inv.amount).toFixed(2)} {inv.currency}</TableCell>
                   <TableCell>{inv.reference ?? "—"}</TableCell>
                   <TableCell>
-                    {inv.proofUrl ? (
-                      <a href={inv.proofUrl} target="_blank" rel="noreferrer" className="text-primary hover:underline">
+                    {isHttpUrl(inv.proofUrl) ? (
+                      <a href={inv.proofUrl!} target="_blank" rel="noreferrer" className="text-primary hover:underline">
                         View
                       </a>
                     ) : (
