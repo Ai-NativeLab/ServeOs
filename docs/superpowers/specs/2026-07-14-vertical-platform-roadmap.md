@@ -89,6 +89,18 @@ and prescription history, so they come first.
   carts), tips, allergen/dietary attributes, loyalty (needs P2), combos/meal-deals.
 - Dependencies: P1 (deposits), P2 (loyalty).
 
+### Future candidate — subscription-billing provider (not order payments)
+
+ServeOS's own SaaS subscription billing (merchant → ServeOS) currently runs through the
+`BillingProvider` interface with a `ManualBillingProvider`. A Merchant-of-Record like
+**Lemon Squeezy** (or Paddle) is a legitimate candidate to slot in there — it is purpose-built
+for digital/SaaS subscriptions and handles global tax remittance. Note this is a *different*
+surface from P1 order payments: LemonSqueezy is MoR for **digital goods only**, collects
+centrally, and cannot settle direct-to-merchant, so it is **not** applicable to customer→merchant
+order payments. Before adopting it, verify Egyptian seller onboarding support and weigh its
+global-tax value against a simpler local gateway given the EG/KSA focus. Own sub-project when
+prioritized; not part of P1.
+
 ## Out of scope for this roadmap
 
 - Non-EG/KSA markets and their local payment methods (beyond the provider abstraction hook).
