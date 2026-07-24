@@ -2,7 +2,7 @@
 import { revalidatePath } from "next/cache";
 import { requireDashboardUser } from "@/server/auth/dashboard-context";
 import { authorize } from "@/server/rbac/authorize";
-import { listOfflineMethods, upsertOfflineMethod, deleteOfflineMethod } from "@/server/payments/offline/methods";
+import { upsertOfflineMethod, deleteOfflineMethod } from "@/server/payments/offline/methods";
 import type { OfflineMethodType } from "@/server/payments/offline";
 
 /**
@@ -27,19 +27,12 @@ export async function saveOfflineMethodAction(formData: FormData) {
 
   const id = formData.get("id") ? String(formData.get("id")) : undefined;
 
-  // Prevent two methods of the same type for a tenant: `type` doubles as the
-  // checkout list's React key and the order's paymentMethod value, so duplicates
-  // would be ambiguous. If creating (no id) and one of this type already exists,
-  // update it in place instead of inserting a second row.
-  let targetId = id;
-  if (!targetId) {
-    const existing = await listOfflineMethods(tenantId);
-    const duplicate = existing.find((m) => m.type === type);
-    if (duplicate) targetId = duplicate.id;
-  }
-
+  // No app-level dedupe needed: `tenant_offline_methods` has a DB-level unique
+  // index on (tenant_id, type), and upsertOfflineMethod's insert path uses
+  // onConflictDoUpdate, so creating a method of an existing type atomically
+  // updates it in place instead of racing or throwing.
   await upsertOfflineMethod(tenantId, {
-    id: targetId,
+    id,
     type: type as OfflineMethodType,
     label,
     payToDetail: formData.get("payToDetail") ? String(formData.get("payToDetail")) : null,

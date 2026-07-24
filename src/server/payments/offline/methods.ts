@@ -45,6 +45,15 @@ export async function upsertOfflineMethod(tenantId: string, input: OfflineMethod
   const [row] = await withTenant(tenantId, (tx) =>
     tx.insert(tenantOfflineMethods)
       .values({ tenantId, type: input.type, label: input.label, payToDetail: input.payToDetail ?? null, enabled: input.enabled ?? true, sortOrder: input.sortOrder ?? 0 })
+      .onConflictDoUpdate({
+        target: [tenantOfflineMethods.tenantId, tenantOfflineMethods.type],
+        set: {
+          label: input.label,
+          payToDetail: input.payToDetail ?? null,
+          enabled: input.enabled ?? true,
+          sortOrder: input.sortOrder ?? 0,
+        },
+      })
       .returning(),
   );
   return row;

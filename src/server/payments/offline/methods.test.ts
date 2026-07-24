@@ -28,4 +28,14 @@ describe("offline methods service", () => {
     expect(updated.payToDetail).toBe("b@instapay");
     expect((await listOfflineMethods(t.id)).length).toBe(1);
   });
+
+  it("dedupes concurrent/no-id creates of the same type via DB unique index + onConflictDoUpdate", async () => {
+    const t = await tenant("om-svc3");
+    await upsertOfflineMethod(t.id, { type: "vodafone_cash", label: "Vodafone Cash", payToDetail: "01001234567" });
+    await upsertOfflineMethod(t.id, { type: "vodafone_cash", label: "Vodafone Cash (updated)", payToDetail: "01009999999" });
+    const rows = (await listOfflineMethods(t.id)).filter((m) => m.type === "vodafone_cash");
+    expect(rows.length).toBe(1);
+    expect(rows[0].payToDetail).toBe("01009999999");
+    expect(rows[0].label).toBe("Vodafone Cash (updated)");
+  });
 });
