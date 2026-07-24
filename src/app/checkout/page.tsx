@@ -3,6 +3,7 @@ import { getTenantBySlug, isTenantServable, getCheckoutPricing } from "@/server/
 import { listBranches } from "@/server/branches/service";
 import { getBranchOpenState, listSlots, localDateKey } from "@/server/branches/slots";
 import { formatSlotLabel } from "@/lib/datetime";
+import { listEnabledOfflineMethods } from "@/server/payments/offline/methods";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { CheckoutForm, type SlotOption } from "./CheckoutForm";
 
@@ -32,7 +33,11 @@ export default async function CheckoutPage({
     );
   }
 
-  const [branches, pricing] = await Promise.all([listBranches(tenant.id), getCheckoutPricing(tenant.id)]);
+  const [branches, pricing, offlineMethods] = await Promise.all([
+    listBranches(tenant.id),
+    getCheckoutPricing(tenant.id),
+    listEnabledOfflineMethods(tenant.id),
+  ]);
   // No silent fallback: resolve only an explicit ?branch= or the single branch.
   const branch =
     branches.length === 1 ? branches[0] : (branches.find((b) => b.id === branchParam) ?? null);
@@ -79,6 +84,7 @@ export default async function CheckoutPage({
           currency={tenant.currency}
           openNow={openState.open && branch.isActive && branch.acceptingOrders}
           slots={slots}
+          methods={offlineMethods.map((m) => ({ type: m.type, label: m.label, payToDetail: m.payToDetail }))}
         />
       </div>
     </main>
