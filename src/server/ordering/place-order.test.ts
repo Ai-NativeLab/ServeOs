@@ -357,3 +357,36 @@ describe("placeOrder retail variants + stock", () => {
     expect(v.stockQuantity).toBe(2); // back to full
   });
 });
+
+describe("confirmOrderPayment / rejectOrderPayment", () => {
+  it("confirms an offline order payment → paid, idempotently", async () => {
+    const { t, branch, pizza } = await setup("cf1");
+    const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
+    await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      paymentMethod: "instapay", paymentReference: "IP-1",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const { confirmOrderPayment, getOrder } = await import("./service");
+    await confirmOrderPayment(t.id, res.orderId, "00000000-0000-0000-0000-000000000001");
+    expect((await getOrder(t.id, res.orderId)).paymentStatus).toBe("paid");
+    const { PaymentAlreadyResolvedError } = await import("@/server/payments/offline");
+    await expect(confirmOrderPayment(t.id, res.orderId, "00000000-0000-0000-0000-000000000001"))
+      .rejects.toThrow(PaymentAlreadyResolvedError);
+  });
+
+  it("rejecting an offline order payment cancels + restocks", async () => {
+    const { t, branch, pizza } = await setup("cf2");
+    const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
+    await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      paymentMethod: "instapay", paymentReference: "IP-2",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const { rejectOrderPayment, getOrder } = await import("./service");
+    const o = await rejectOrderPayment(t.id, res.orderId, "00000000-0000-0000-0000-000000000001", "no funds received");
+    expect(o.status).toBe("cancelled");
+  });
+});
