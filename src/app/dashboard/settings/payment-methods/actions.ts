@@ -4,15 +4,7 @@ import { requireDashboardUser } from "@/server/auth/dashboard-context";
 import { authorize } from "@/server/rbac/authorize";
 import { upsertOfflineMethod, deleteOfflineMethod } from "@/server/payments/offline/methods";
 import type { OfflineMethodType } from "@/server/payments/offline";
-
-/**
- * Order-valid subset only. `cash` is the always-available COD default and isn't
- * configured here; `bank` is in OFFLINE_METHOD_TYPES but is NOT a valid order
- * paymentMethod (the order enum is cash/instapay/vodafone_cash/mobile_wallet — see
- * paymentMethodEnum in @/server/ordering/schema). Offering either in this dropdown
- * would let an owner create a method that silently falls back to cash at checkout.
- */
-export const ORDER_METHOD_TYPES = ["instapay", "vodafone_cash", "mobile_wallet"] as const;
+import { ORDER_METHOD_TYPES } from "./method-types";
 
 export async function saveOfflineMethodAction(formData: FormData) {
   const { tenantId, roleKeys } = await requireDashboardUser();

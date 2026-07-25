@@ -1,7 +1,8 @@
 import { requireDashboardUser } from "@/server/auth/dashboard-context";
 import { authorize } from "@/server/rbac/authorize";
 import { listOfflineMethods } from "@/server/payments/offline/methods";
-import { saveOfflineMethodAction, deleteOfflineMethodAction, ORDER_METHOD_TYPES } from "./actions";
+import { saveOfflineMethodAction, deleteOfflineMethodAction } from "./actions";
+import { ORDER_METHOD_TYPES } from "./method-types";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { SubmitButton } from "@/components/dashboard/SubmitButton";
 import { ToastForm } from "@/components/dashboard/ToastForm";
