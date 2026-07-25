@@ -489,3 +489,82 @@ describe("placeOrder paymentProofUrl sanitization", () => {
     expect(order.paymentProofUrl).toBeNull();
   });
 });
+
+describe("markPaid vs offline payment authorization gate", () => {
+  it("refuses to mark an offline pending_verification order paid, bypassing the payments:confirm gate", async () => {
+    const { t, branch, pizza } = await setup("mp1");
+    const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
+    await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      paymentMethod: "instapay", paymentReference: "IP-MP1",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const { markPaid, getOrder } = await import("./service");
+    const { InvalidTransitionError } = await import("./errors");
+    await expect(markPaid(t.id, res.orderId, "00000000-0000-0000-0000-000000000001")).rejects.toThrow(InvalidTransitionError);
+    const order = await getOrder(t.id, res.orderId);
+    expect(order.paymentStatus).toBe("pending_verification");
+  });
+});
+
+describe("rejectOrderPayment atomicity", () => {
+  it("refuses to reject once the order has reached a non-cancellable terminal status, without touching paymentStatus", async () => {
+    const { t, branch, pizza } = await setup("rp1");
+    const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
+    await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      paymentMethod: "instapay", paymentReference: "IP-RP1",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const { transitionStatus, rejectOrderPayment, getOrder } = await import("./service");
+    const { InvalidTransitionError } = await import("./errors");
+    const userId = "00000000-0000-0000-0000-000000000001";
+    // Advance the fulfillment status all the way to "completed" — a reachable
+    // terminal status per the real state machine (pending → confirmed →
+    // preparing → ready → completed for pickup) — WITHOUT resolving the
+    // payment, so paymentStatus stays pending_verification throughout.
+    await transitionStatus(t.id, res.orderId, "confirmed", userId);
+    await transitionStatus(t.id, res.orderId, "preparing", userId);
+    await transitionStatus(t.id, res.orderId, "ready", userId);
+    await transitionStatus(t.id, res.orderId, "completed", userId);
+
+    const before = await getOrder(t.id, res.orderId);
+    expect(before.status).toBe("completed");
+    expect(before.paymentStatus).toBe("pending_verification");
+
+    await expect(rejectOrderPayment(t.id, res.orderId, userId, "no funds received")).rejects.toThrow(InvalidTransitionError);
+
+    const after = await getOrder(t.id, res.orderId);
+    expect(after.status).toBe("completed");
+    // The claim must never have run: paymentStatus is untouched, not flipped to "unpaid".
+    expect(after.paymentStatus).toBe("pending_verification");
+  });
+
+  it("exactly one of concurrent confirm/reject wins, and the order never ends up cancelled+paid", async () => {
+    const { t, branch, pizza } = await setup("rp2");
+    const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
+    await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      paymentMethod: "instapay", paymentReference: "IP-RP2",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const { confirmOrderPayment, rejectOrderPayment, getOrder } = await import("./service");
+    const userId = "00000000-0000-0000-0000-000000000001";
+    const results = await Promise.allSettled([
+      confirmOrderPayment(t.id, res.orderId, userId),
+      rejectOrderPayment(t.id, res.orderId, userId, "no funds received"),
+    ]);
+    const ok = results.filter((r) => r.status === "fulfilled");
+    const failed = results.filter((r) => r.status === "rejected");
+    expect(ok.length).toBe(1);
+    expect(failed.length).toBe(1);
+
+    const order = await getOrder(t.id, res.orderId);
+    // The corrupt state this atomicity fix guards against: cancelled status
+    // with paymentStatus somehow left/landed on "paid".
+    expect(order.status === "cancelled" && order.paymentStatus === "paid").toBe(false);
+  });
+});

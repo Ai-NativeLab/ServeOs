@@ -398,6 +398,13 @@ export async function markPaid(tenantId: string, orderId: string, _userId: strin
     if (order.status === "cancelled" || order.status === "rejected") {
       throw new InvalidTransitionError(order.status, "paid");
     }
+    // An offline payment awaiting verification must be resolved via
+    // confirmOrderPayment/the payments queue (owner/manager-gated), not this
+    // cash mark-paid path (staff-gated on orders:manage) — otherwise staff
+    // could side-step the payments:confirm authorization boundary.
+    if (order.paymentStatus === "pending_verification") {
+      throw new InvalidTransitionError(order.paymentStatus, "paid");
+    }
     const [updated] = await tx.update(orders)
       .set({ paymentStatus: "paid", updatedAt: new Date() })
       .where(eq(orders.id, orderId)).returning();
@@ -439,18 +446,31 @@ export async function confirmOrderPayment(tenantId: string, orderId: string, _us
 }
 
 /** Merchant rejects an offline payment: cancel the order + restock.
- * First atomically CLAIMS the payment (guarded UPDATE paymentStatus 'pending_verification'
- * → 'unpaid') in its own withTenant transaction — this is the serialization point: it
- * moves paymentStatus off pending_verification so a racing confirmOrderPayment can no
- * longer win (its guard requires paymentStatus = 'pending_verification'). Only once the
- * claim succeeds do we cancel + restock, reusing the dashboard cancel path (guarded
- * UPDATE + restock + status-event audit row) already in transitionStatus, so cancelling
- * for a bad/missing payment looks identical to any other dashboard cancel in the order's
- * history. */
+ * Before touching anything, we verify the downstream cancel would actually succeed
+ * (canTransition(order.status, "cancelled", ...)) — if the order is already in a
+ * terminal/non-cancellable status this throws InvalidTransitionError immediately,
+ * with zero mutation. Without this pre-check, a half-applied write was possible:
+ * the claim below would flip paymentStatus to 'unpaid' (dropping the order out of
+ * the awaiting-payment queue) and only then would transitionStatus discover the
+ * cancel is invalid and throw — leaving the order stuck as unpaid with no cancel
+ * and no restock. This pre-check makes reject all-or-nothing for that case.
+ *
+ * Once the pre-check passes, we atomically CLAIM the payment (guarded UPDATE
+ * paymentStatus 'pending_verification' → 'unpaid') in its own withTenant
+ * transaction — this is the serialization point: it moves paymentStatus off
+ * pending_verification so a racing confirmOrderPayment can no longer win (its
+ * guard requires paymentStatus = 'pending_verification'). Only once the claim
+ * succeeds do we cancel + restock, reusing the dashboard cancel path (guarded
+ * UPDATE + restock + status-event audit row) already in transitionStatus, so
+ * cancelling for a bad/missing payment looks identical to any other dashboard
+ * cancel in the order's history. */
 export async function rejectOrderPayment(tenantId: string, orderId: string, userId: string, reason?: string): Promise<Order> {
   await withTenant(tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
     if (!order) throw new OrderNotFoundError();
+    if (!canTransition(order.status, "cancelled", order.fulfillmentType)) {
+      throw new InvalidTransitionError(order.status, "cancelled");
+    }
     const [claimed] = await tx.update(orders)
       .set({ paymentStatus: "unpaid", updatedAt: new Date() })
       .where(and(eq(orders.id, orderId), eq(orders.paymentStatus, "pending_verification")))
