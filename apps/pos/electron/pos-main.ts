@@ -23,6 +23,49 @@ export type OrderSummary = {
   source: "walkin" | "online";
 };
 
+export type CheckoutPricing = {
+  vatEnabled: boolean;
+  vatRate: number;
+  pricesIncludeVat: boolean;
+  serviceChargeRate: number;
+};
+export type Cashier = { token: string; name: string; permissions: string[] };
+export type TenderInput = {
+  clientPaymentId: string;
+  method: "cash" | "card" | "other";
+  amount: number;
+  tipAmount?: number;
+  tenderedAmount?: number;
+  reference?: string;
+};
+export type SaleLine = {
+  productId: string;
+  variantId?: string;
+  quantity: number;
+  selectedOptionIds: string[];
+  discountAmount?: number;
+  discountReason?: string;
+};
+export type RecordSaleInput = {
+  lines: SaleLine[];
+  orderDiscountAmount?: number;
+  orderDiscountReason?: string;
+  expectedTotal: number;
+  payments: TenderInput[];
+  grants?: { permission: string; token: string }[];
+  notes?: string;
+};
+export type SaleReceipt = {
+  orderId: string;
+  orderNumber: string;
+  total: number;
+  paidAmount: number;
+  changeAmount: number;
+  paymentStatus: "paid" | "partially_paid";
+  idempotent: boolean;
+};
+export type HeldTicket = { id: string; label: string; draftJson: unknown; createdAt: string };
+
 /**
  * Online-first POS glue: talks straight to the cloud backend. No local
  * database — the offline store/sync engine lives (parked) in electron/_offline
@@ -31,6 +74,8 @@ export type OrderSummary = {
 export class PosMain {
   private baseUrl = process.env.POS_API_URL || DEFAULT_BASE_URL;
   private device: Device | null = null;
+  /** In memory only: closing the app signs the cashier out but leaves the device paired. */
+  private cashier: Cashier | null = null;
   private readonly file = path.join(app.getPath("userData"), "pos-device.json");
 
   constructor() {
@@ -57,7 +102,12 @@ export class PosMain {
   }
 
   private authHeaders(): Record<string, string> {
-    return { "Content-Type": "application/json", Authorization: `Bearer ${this.device?.token ?? ""}` };
+    const h: Record<string, string> = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${this.device?.token ?? ""}`,
+    };
+    if (this.cashier) h["X-POS-Cashier"] = this.cashier.token;
+    return h;
   }
 
   isPaired(): boolean {
@@ -108,7 +158,7 @@ export class PosMain {
     return { status: "paired", branchName: d.branchName };
   }
 
-  async getMenu(): Promise<{ json: string; syncedAt: string } | null> {
+  async getMenu(): Promise<{ json: string; pricing: CheckoutPricing; syncedAt: string } | null> {
     if (!this.device) return null;
     const res = await fetch(`${this.baseUrl}/api/pos/v1/catalog`, { headers: this.authHeaders() });
     if (res.status === 401) {
@@ -116,24 +166,88 @@ export class PosMain {
       throw new Error("Device unpaired — please pair again");
     }
     if (!res.ok) throw new Error(`Menu fetch failed (${res.status})`);
-    const d = (await res.json()) as { menu: unknown; syncedAt: string };
-    return { json: JSON.stringify(d.menu), syncedAt: d.syncedAt };
+    const d = (await res.json()) as { menu: unknown; pricing: CheckoutPricing; syncedAt: string };
+    return { json: JSON.stringify(d.menu), pricing: d.pricing, syncedAt: d.syncedAt };
   }
 
-  async submitOrder(draft: OrderDraft): Promise<{ orderNumber: string }> {
+  async signInCashier(email: string, password: string): Promise<{ name: string; permissions: string[] }> {
     if (!this.device) throw new Error("Not paired");
-    const clientOrderId = crypto.randomUUID();
-    const res = await fetch(`${this.baseUrl}/api/pos/v1/orders`, {
+    const res = await fetch(`${this.baseUrl}/api/pos/v1/cashier/login`, {
       method: "POST",
-      headers: this.authHeaders(),
-      body: JSON.stringify({ clientOrderId, lines: draft.lines, notes: draft.notes }),
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.device.token}` },
+      body: JSON.stringify({ email, password }),
     });
     if (!res.ok) {
       const err = (await res.json().catch(() => ({}))) as { error?: string };
-      throw new Error(err.error ?? `Order failed (${res.status})`);
+      throw new Error(err.error ?? `Sign-in failed (${res.status})`);
     }
-    const d = (await res.json()) as { orderNumber: string };
-    return { orderNumber: d.orderNumber };
+    const d = (await res.json()) as { cashierToken: string; name: string; permissions: string[] };
+    this.cashier = { token: d.cashierToken, name: d.name, permissions: d.permissions };
+    return { name: d.name, permissions: d.permissions };
+  }
+
+  currentCashier(): { name: string; permissions: string[] } | null {
+    return this.cashier ? { name: this.cashier.name, permissions: this.cashier.permissions } : null;
+  }
+
+  signOutCashier(): void {
+    this.cashier = null;
+  }
+
+  async authorize(email: string, password: string, permission: string): Promise<{ grant: string; authorizedBy: string }> {
+    const res = await fetch(`${this.baseUrl}/api/pos/v1/authorize`, {
+      method: "POST",
+      headers: this.authHeaders(),
+      body: JSON.stringify({ email, password, permission }),
+    });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(err.error ?? `Authorization failed (${res.status})`);
+    }
+    return (await res.json()) as { grant: string; authorizedBy: string };
+  }
+
+  async recordSale(input: RecordSaleInput): Promise<SaleReceipt> {
+    if (!this.device) throw new Error("Not paired");
+    if (!this.cashier) throw new Error("No cashier signed in");
+    const res = await fetch(`${this.baseUrl}/api/pos/v1/sales`, {
+      method: "POST",
+      headers: this.authHeaders(),
+      body: JSON.stringify({ clientOrderId: crypto.randomUUID(), ...input }),
+    });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      // A 409 means live prices moved under a stale catalog. The renderer must
+      // re-pull and make the cashier re-check the cart — never retry silently.
+      const e = new Error(err.error ?? `Sale failed (${res.status})`) as Error & { code?: string };
+      if (res.status === 409) e.code = "TOTAL_MISMATCH";
+      throw e;
+    }
+    return (await res.json()) as SaleReceipt;
+  }
+
+  async holdTicket(label: string, draft: unknown): Promise<{ id: string }> {
+    const res = await fetch(`${this.baseUrl}/api/pos/v1/held-tickets`, {
+      method: "POST",
+      headers: this.authHeaders(),
+      body: JSON.stringify({ label, draft }),
+    });
+    if (!res.ok) throw new Error(`Could not park the ticket (${res.status})`);
+    return (await res.json()) as { id: string };
+  }
+
+  async listHeldTickets(): Promise<HeldTicket[]> {
+    const res = await fetch(`${this.baseUrl}/api/pos/v1/held-tickets`, { headers: this.authHeaders() });
+    if (!res.ok) return [];
+    const d = (await res.json()) as { tickets: HeldTicket[] };
+    return d.tickets;
+  }
+
+  async discardTicket(id: string): Promise<void> {
+    await fetch(`${this.baseUrl}/api/pos/v1/held-tickets/${id}`, {
+      method: "DELETE",
+      headers: this.authHeaders(),
+    });
   }
 
   async getOrders(): Promise<OrderSummary[]> {
@@ -155,6 +269,7 @@ export class PosMain {
 
   unpair(): void {
     this.device = null;
+    this.cashier = null;
     try { fs.unlinkSync(this.file); } catch { /* nothing to remove */ }
   }
 }

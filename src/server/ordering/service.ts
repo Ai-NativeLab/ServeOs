@@ -3,7 +3,7 @@ import { and, desc, eq, gte, inArray, isNull, notInArray, or, sql } from "drizzl
 import { withTenant } from "@/db/with-tenant";
 import { requireFeature, incrementUsage } from "@/server/entitlements/service";
 import { getCheckoutPricing } from "@/server/tenancy/settings";
-import { computeOrderTotals } from "@/lib/order-totals";
+import { computeOrderTotals, computeLineTotal } from "@/lib/order-totals";
 import { isBranchOrderableAt, isWithinSchedulingHorizon, MIN_LEAD_MINUTES } from "@/server/branches/slots";
 import { getTenantById } from "@/server/tenancy";
 import { branches, deliveryAreas } from "@/server/branches/schema";
@@ -15,9 +15,17 @@ import { PaymentMethodNotEnabledError, InvalidProofError, PaymentAlreadyResolved
 import { sanitizeHttpUrl } from "@/lib/safe-url";
 import { orders, orderItems, orderStatusEvents, type SelectedModifier, type Order, type OrderWithItems, type OrderDetail, type OrderStatus } from "./schema";
 import { canTransition } from "./state-machine";
-import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, OutOfStockError } from "./errors";
+import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, OutOfStockError, TotalMismatchError } from "./errors";
 
-export type PlaceOrderLine = { productId: string; variantId?: string; quantity: number; selectedOptionIds: string[] };
+export type PlaceOrderLine = {
+  productId: string;
+  variantId?: string;
+  quantity: number;
+  selectedOptionIds: string[];
+  discountAmount?: number;
+  discountReason?: string;
+  note?: string;
+};
 export type PlaceOrderInput = {
   branchId: string;
   fulfillmentType: "pickup" | "delivery";
@@ -33,8 +41,21 @@ export type PlaceOrderInput = {
   paymentMethod?: "cash" | "instapay" | "vodafone_cash" | "mobile_wallet";
   paymentReference?: string;
   paymentProofUrl?: string;
+  channel?: "web" | "pos";
+  cashierUserId?: string;
+  orderDiscountAmount?: number;
+  orderDiscountReason?: string;
+  /** What the client displayed. Compared, never trusted. */
+  expectedTotal?: number;
 };
-export type PlaceOrderResult = { orderId: string; orderNumber: number; statusToken: string };
+export type PlaceOrderResult = {
+  orderId: string;
+  orderNumber: number;
+  statusToken: string;
+  total: number;
+  /** Index-aligned with input.lines. */
+  itemIds: string[];
+};
 
 /** Round to 2 decimals and format as a numeric string for Postgres. */
 export function money(n: number): string {
@@ -94,7 +115,7 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
 
     // 2. Validate each line against the catalog; build snapshots.
     let subtotal = 0;
-    const itemsToInsert: Array<{ productId: string; variantId: string | null; variantNameEn: string | null; variantNameAr: string | null; nameEn: string; nameAr: string; unitBasePrice: string; quantity: number; lineTotal: string; selectedModifiers: SelectedModifier[] }> = [];
+    const itemsToInsert: Array<{ productId: string; variantId: string | null; variantNameEn: string | null; variantNameAr: string | null; nameEn: string; nameAr: string; unitBasePrice: string; quantity: number; lineTotal: string; discountAmount: string; selectedModifiers: SelectedModifier[] }> = [];
 
     for (const line of input.lines) {
       if (!Number.isInteger(line.quantity) || line.quantity < 1) throw new OrderValidationError("bad quantity");
@@ -175,7 +196,11 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
         }
       }
 
-      const lineTotal = unit * line.quantity;
+      const lineDiscount = Math.min(
+        Math.max(0, line.discountAmount ?? 0),
+        Math.round(unit * line.quantity * 100) / 100,
+      );
+      const lineTotal = computeLineTotal({ unitPrice: unit, quantity: line.quantity, discountAmount: lineDiscount });
       subtotal += lineTotal;
 
       const snapshot: SelectedModifier[] = selected.map((o) => {
@@ -185,7 +210,8 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
 
       itemsToInsert.push({
         productId: product.id, variantId, variantNameEn, variantNameAr, nameEn: product.nameEn, nameAr: product.nameAr,
-        unitBasePrice: variantId ? String(unit) : String(effectiveBase), quantity: line.quantity, lineTotal: money(lineTotal), selectedModifiers: variantId ? [] : snapshot,
+        unitBasePrice: variantId ? String(unit) : String(effectiveBase), quantity: line.quantity, lineTotal: money(lineTotal),
+        discountAmount: money(lineDiscount), selectedModifiers: variantId ? [] : snapshot,
       });
     }
 
@@ -207,8 +233,19 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       deliveryAddress = input.addressText.trim();
     }
 
-    // 4. Totals — single source of money math (src/lib/order-totals.ts)
-    const totals = computeOrderTotals(pricing, subtotal, deliveryFee);
+    // 4. Totals — single source of money math (src/lib/order-totals.ts).
+    // Each line was already reduced by its own discount via computeLineTotal
+    // above, so `subtotal` here is the line-discounted total. The order-level
+    // discount further reduces that before computeOrderTotals — called
+    // exactly once — applies the service charge and VAT to the final base.
+    const orderDiscount = Math.min(Math.max(0, input.orderDiscountAmount ?? 0), subtotal);
+    const totals = computeOrderTotals(pricing, subtotal - orderDiscount, deliveryFee);
+
+    // The register must never quietly charge a different amount than the one
+    // shown to the customer. A stale cached catalog lands here.
+    if (input.expectedTotal !== undefined && Math.abs(input.expectedTotal - totals.total) > 0.001) {
+      throw new TotalMismatchError(input.expectedTotal, totals.total);
+    }
 
     // 5. Order number (per-tenant max+1). Acquire the per-tenant advisory lock
     // only now — after all validation I/O — so concurrent checkouts serialize
@@ -228,6 +265,8 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       paymentStatus,
       paymentReference,
       paymentProofUrl,
+      channel: input.channel ?? "web",
+      cashierUserId: input.cashierUserId ?? null,
       customerName: input.customerName.trim(), customerPhone: input.customerPhone.trim(), notes: input.notes?.trim() || null,
       deliveryAreaId, deliveryAreaNameSnapshot: deliveryAreaName, deliveryAddressText: deliveryAddress,
       subtotal: money(totals.subtotal),
@@ -235,15 +274,19 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       vatAmount: money(totals.vatAmount),
       serviceChargeAmount: totals.serviceChargeAmount > 0 ? money(totals.serviceChargeAmount) : null,
       deliveryFee: money(totals.deliveryFee),
+      discountAmount: money(orderDiscount),
+      discountReason: input.orderDiscountReason ?? null,
       total: money(totals.total),
       statusToken,
       scheduledFor,
     }).returning();
 
-    await tx.insert(orderItems).values(itemsToInsert.map((i) => ({ ...i, tenantId, orderId: order.id })));
+    const inserted = await tx.insert(orderItems)
+      .values(itemsToInsert.map((i) => ({ ...i, tenantId, orderId: order.id })))
+      .returning({ id: orderItems.id });
     await tx.insert(orderStatusEvents).values({ tenantId, orderId: order.id, fromStatus: null, toStatus: "pending" });
 
-    return { orderId: order.id, orderNumber, statusToken };
+    return { orderId: order.id, orderNumber, statusToken, total: totals.total, itemIds: inserted.map((i) => i.id) };
   });
 
   // Meter usage (control table, outside the tenant tx). By design (spec §2)

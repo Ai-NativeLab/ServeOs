@@ -1,1 +1,0 @@
-CREATE UNIQUE INDEX "tenant_offline_methods_tenant_type_unique" ON "tenant_offline_methods" USING btree ("tenant_id","type");

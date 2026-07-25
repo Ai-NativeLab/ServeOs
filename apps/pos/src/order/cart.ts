@@ -1,13 +1,20 @@
+import { computeCartTotals, type CartTotals, type CheckoutPricing } from "@shared/order-totals";
+
 export type CartLine = {
   productId: string;
+  variantId?: string;
+  variantName?: string;
   name: string;
   quantity: number;
   selectedOptionIds: string[];
   unitPrice: number;
+  discountAmount?: number;
+  discountReason?: string;
+  note?: string;
 };
 
-export function lineKey(l: { productId: string; selectedOptionIds: string[] }): string {
-  return l.productId + "|" + [...l.selectedOptionIds].sort().join(",");
+export function lineKey(l: { productId: string; variantId?: string; selectedOptionIds: string[] }): string {
+  return [l.productId, l.variantId ?? "", [...l.selectedOptionIds].sort().join(",")].join("|");
 }
 
 export function addLine(lines: CartLine[], line: CartLine): CartLine[] {
@@ -28,6 +35,11 @@ export function changeQty(lines: CartLine[], index: number, quantity: number): C
   return lines.map((l, i) => (i === index ? { ...l, quantity } : l));
 }
 
-export function cartTotal(lines: CartLine[]): number {
-  return lines.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0);
+export function discountLine(lines: CartLine[], index: number, amount: number, reason: string): CartLine[] {
+  return lines.map((l, i) => (i === index ? { ...l, discountAmount: amount, discountReason: reason } : l));
+}
+
+/** The ONLY total the POS may display. Delegates to the shared money math. */
+export function cartTotals(pricing: CheckoutPricing, lines: CartLine[], orderDiscountAmount = 0): CartTotals {
+  return computeCartTotals(pricing, lines, orderDiscountAmount);
 }

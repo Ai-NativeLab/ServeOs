@@ -117,29 +117,15 @@
     {
       "idx": 16,
       "version": "7",
-      "when": 1784887262471,
-      "tag": "0016_tiny_wong",
+      "when": 1784065231197,
+      "tag": "0016_bitter_beast",
       "breakpoints": true
     },
     {
       "idx": 17,
       "version": "7",
-      "when": 1784891903073,
-      "tag": "0017_famous_gauntlet",
-      "breakpoints": true
-    },
-    {
-      "idx": 18,
-      "version": "7",
-      "when": 1784892366269,
-      "tag": "0018_smart_ser_duncan",
-      "breakpoints": true
-    },
-    {
-      "idx": 19,
-      "version": "7",
-      "when": 1784893860300,
-      "tag": "0019_plain_mephisto",
+      "when": 1785012529536,
+      "tag": "0017_gigantic_fantastic_four",
       "breakpoints": true
     }
   ]

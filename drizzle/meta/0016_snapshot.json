@@ -1,5 +1,5 @@
 {
-  "id": "43f99653-1345-4f61-b137-8f2c6e2271a8",
+  "id": "fb5ab567-6ea9-4907-b2c3-66aa441d7fb5",
   "prevId": "446e3753-edf0-405c-bde4-5ba1456c9b36",
   "version": "7",
   "dialect": "postgresql",
@@ -591,12 +591,6 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true
-        },
-        "lemon_squeezy_variant_id": {
-          "name": "lemon_squeezy_variant_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {},
@@ -670,18 +664,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'manual'"
-        },
-        "provider_subscription_id": {
-          "name": "provider_subscription_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "provider_customer_id": {
-          "name": "provider_customer_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {},
@@ -823,24 +805,6 @@
         },
         "method": {
           "name": "method",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "payment_reference": {
-          "name": "payment_reference",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "payment_proof_url": {
-          "name": "payment_proof_url",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "provider_ref": {
-          "name": "provider_ref",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -2103,6 +2067,13 @@
           "primaryKey": false,
           "notNull": true
         },
+        "discount_amount": {
+          "name": "discount_amount",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'0'"
+        },
         "selected_modifiers": {
           "name": "selected_modifiers",
           "type": "jsonb",
@@ -2306,24 +2277,6 @@
           "notNull": true,
           "default": "'cash'"
         },
-        "payment_reference": {
-          "name": "payment_reference",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "payment_proof_url": {
-          "name": "payment_proof_url",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "payment_provider_ref": {
-          "name": "payment_provider_ref",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "customer_name": {
           "name": "customer_name",
           "type": "text",
@@ -2338,6 +2291,25 @@
         },
         "notes": {
           "name": "notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cashier_user_id": {
+          "name": "cashier_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "discount_amount": {
+          "name": "discount_amount",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'0'"
+        },
+        "discount_reason": {
+          "name": "discount_reason",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -2823,8 +2795,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.tenant_offline_methods": {
-      "name": "tenant_offline_methods",
+    "public.order_payments": {
+      "name": "order_payments",
       "schema": "",
       "columns": {
         "id": {
@@ -2840,37 +2812,67 @@
           "primaryKey": false,
           "notNull": true
         },
-        "type": {
-          "name": "type",
-          "type": "text",
+        "order_id": {
+          "name": "order_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "label": {
-          "name": "label",
-          "type": "text",
+        "method": {
+          "name": "method",
+          "type": "pos_tender_method",
+          "typeSchema": "public",
           "primaryKey": false,
           "notNull": true
         },
-        "pay_to_detail": {
-          "name": "pay_to_detail",
+        "amount": {
+          "name": "amount",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tip_amount": {
+          "name": "tip_amount",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'0'"
+        },
+        "tendered_amount": {
+          "name": "tendered_amount",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "change_amount": {
+          "name": "change_amount",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reference": {
+          "name": "reference",
           "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "enabled": {
-          "name": "enabled",
-          "type": "boolean",
+        "taken_by_user_id": {
+          "name": "taken_by_user_id",
+          "type": "uuid",
           "primaryKey": false,
-          "notNull": true,
-          "default": true
+          "notNull": true
         },
-        "sort_order": {
-          "name": "sort_order",
-          "type": "integer",
+        "shift_id": {
+          "name": "shift_id",
+          "type": "uuid",
           "primaryKey": false,
-          "notNull": true,
-          "default": 0
+          "notNull": false
+        },
+        "client_payment_id": {
+          "name": "client_payment_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
         },
         "created_at": {
           "name": "created_at",
@@ -2880,11 +2882,48 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "order_payments_order_client": {
+          "name": "order_payments_order_client",
+          "columns": [
+            {
+              "expression": "order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "client_payment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "order_payments_order": {
+          "name": "order_payments_order",
+          "columns": [
+            {
+              "expression": "order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
-        "tenant_offline_methods_tenant_id_tenants_id_fk": {
-          "name": "tenant_offline_methods_tenant_id_tenants_id_fk",
-          "tableFrom": "tenant_offline_methods",
+        "order_payments_tenant_id_tenants_id_fk": {
+          "name": "order_payments_tenant_id_tenants_id_fk",
+          "tableFrom": "order_payments",
           "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
@@ -2893,6 +2932,335 @@
             "id"
           ],
           "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "order_payments_order_id_orders_id_fk": {
+          "name": "order_payments_order_id_orders_id_fk",
+          "tableFrom": "order_payments",
+          "tableTo": "orders",
+          "columnsFrom": [
+            "order_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "order_payments_taken_by_user_id_users_id_fk": {
+          "name": "order_payments_taken_by_user_id_users_id_fk",
+          "tableFrom": "order_payments",
+          "tableTo": "users",
+          "columnsFrom": [
+            "taken_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.pos_adjustment_events": {
+      "name": "pos_adjustment_events",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "order_id": {
+          "name": "order_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "order_item_id": {
+          "name": "order_item_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "type": {
+          "name": "type",
+          "type": "pos_adjustment_type",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount": {
+          "name": "amount",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason_code": {
+          "name": "reason_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason_text": {
+          "name": "reason_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "by_user_id": {
+          "name": "by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "authorized_by_user_id": {
+          "name": "authorized_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "pos_adjustment_events_order": {
+          "name": "pos_adjustment_events_order",
+          "columns": [
+            {
+              "expression": "order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pos_adjustment_events_tenant_id_tenants_id_fk": {
+          "name": "pos_adjustment_events_tenant_id_tenants_id_fk",
+          "tableFrom": "pos_adjustment_events",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "pos_adjustment_events_order_id_orders_id_fk": {
+          "name": "pos_adjustment_events_order_id_orders_id_fk",
+          "tableFrom": "pos_adjustment_events",
+          "tableTo": "orders",
+          "columnsFrom": [
+            "order_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "pos_adjustment_events_order_item_id_order_items_id_fk": {
+          "name": "pos_adjustment_events_order_item_id_order_items_id_fk",
+          "tableFrom": "pos_adjustment_events",
+          "tableTo": "order_items",
+          "columnsFrom": [
+            "order_item_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "pos_adjustment_events_by_user_id_users_id_fk": {
+          "name": "pos_adjustment_events_by_user_id_users_id_fk",
+          "tableFrom": "pos_adjustment_events",
+          "tableTo": "users",
+          "columnsFrom": [
+            "by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pos_adjustment_events_authorized_by_user_id_users_id_fk": {
+          "name": "pos_adjustment_events_authorized_by_user_id_users_id_fk",
+          "tableFrom": "pos_adjustment_events",
+          "tableTo": "users",
+          "columnsFrom": [
+            "authorized_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.pos_held_tickets": {
+      "name": "pos_held_tickets",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "branch_id": {
+          "name": "branch_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "device_id": {
+          "name": "device_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cashier_user_id": {
+          "name": "cashier_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "draft_json": {
+          "name": "draft_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "pos_held_tickets_branch": {
+          "name": "pos_held_tickets_branch",
+          "columns": [
+            {
+              "expression": "branch_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pos_held_tickets_tenant_id_tenants_id_fk": {
+          "name": "pos_held_tickets_tenant_id_tenants_id_fk",
+          "tableFrom": "pos_held_tickets",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "pos_held_tickets_branch_id_branches_id_fk": {
+          "name": "pos_held_tickets_branch_id_branches_id_fk",
+          "tableFrom": "pos_held_tickets",
+          "tableTo": "branches",
+          "columnsFrom": [
+            "branch_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "pos_held_tickets_device_id_pos_devices_id_fk": {
+          "name": "pos_held_tickets_device_id_pos_devices_id_fk",
+          "tableFrom": "pos_held_tickets",
+          "tableTo": "pos_devices",
+          "columnsFrom": [
+            "device_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "pos_held_tickets_cashier_user_id_users_id_fk": {
+          "name": "pos_held_tickets_cashier_user_id_users_id_fk",
+          "tableFrom": "pos_held_tickets",
+          "tableTo": "users",
+          "columnsFrom": [
+            "cashier_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -2941,7 +3309,6 @@
       "schema": "public",
       "values": [
         "open",
-        "pending_verification",
         "paid",
         "void"
       ]
@@ -2967,7 +3334,8 @@
       "name": "order_channel",
       "schema": "public",
       "values": [
-        "web"
+        "web",
+        "pos"
       ]
     },
     "public.order_status": {
@@ -2988,10 +3356,7 @@
       "name": "payment_method",
       "schema": "public",
       "values": [
-        "cash",
-        "instapay",
-        "vodafone_cash",
-        "mobile_wallet"
+        "cash"
       ]
     },
     "public.payment_status": {
@@ -2999,8 +3364,27 @@
       "schema": "public",
       "values": [
         "unpaid",
-        "pending_verification",
+        "partially_paid",
         "paid"
+      ]
+    },
+    "public.pos_adjustment_type": {
+      "name": "pos_adjustment_type",
+      "schema": "public",
+      "values": [
+        "line_discount",
+        "order_discount",
+        "line_void",
+        "order_void"
+      ]
+    },
+    "public.pos_tender_method": {
+      "name": "pos_tender_method",
+      "schema": "public",
+      "values": [
+        "cash",
+        "card",
+        "other"
       ]
     }
   },

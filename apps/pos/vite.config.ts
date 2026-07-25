@@ -18,5 +18,10 @@ export default defineConfig({
       preload: { input: "electron/preload.ts" },
     }),
   ],
-  resolve: { alias: { "@": path.resolve(__dirname, "src") } },
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "src"),
+      "@shared": path.resolve(__dirname, "../../src/lib"),
+    },
+  },
 });
