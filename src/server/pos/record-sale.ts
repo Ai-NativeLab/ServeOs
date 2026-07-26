@@ -9,6 +9,7 @@ import { orderPayments, posAdjustmentEvents } from "./tender-schema";
 import { resolveAuthorizer } from "./grants";
 import { PosSaleError } from "./errors";
 import type { PosCashierContext } from "./require-cashier";
+import { recordAuditEvent } from "@/server/audit/service";
 
 export const REASON_CODES = [
   "staff_meal", "comp_service", "promo", "manager_discretion",
@@ -106,6 +107,7 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
     orderDiscountAmount: input.orderDiscountAmount,
     orderDiscountReason: input.orderDiscountReason,
     expectedTotal: input.expectedTotal,
+    audit: { fingerprint: ctx.fingerprint, actorUserId: ctx.cashierUserId, actorType: "user" },
   });
 
   const paidAmount = round2(input.payments.reduce((s, p) => s + p.amount, 0));
@@ -171,6 +173,40 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
     if (events.length > 0) await tx.insert(posAdjustmentEvents).values(events);
 
     await tx.update(orders).set({ paymentStatus, updatedAt: new Date() }).where(eq(orders.id, placed.orderId));
+
+    // Emit the audit chain for this sale on the SAME tx. order.placed was already
+    // appended by placeOrder above; discount.* rows come next, and sale.recorded
+    // last so it is the tip. Forward emission points (void.line, void.order,
+    // refund.*, inventory/PO/ETA events) attach to this same helper in
+    // Specs 3/8/9/11 — no chain change.
+    const auditCtx = { tenantId: ctx.tenantId, branchId: ctx.branchId, actorUserId: ctx.cashierUserId, fingerprint: ctx.fingerprint };
+    for (let i = 0; i < input.lines.length; i++) {
+      const line = input.lines[i];
+      if ((line.discountAmount ?? 0) > 0) {
+        await recordAuditEvent(auditCtx, {
+          action: "discount.line_applied", entityType: "order", entityId: placed.orderId,
+          summary: `Line discount ${money(line.discountAmount!)}`,
+          metadata: { orderItemId: placed.itemIds[i], amount: money(line.discountAmount!), reasonCode: line.discountReason ?? "other", byUserId: ctx.cashierUserId, authorizedByUserId: discountAuthorizer },
+          actorType: "user",
+        }, tx);
+      }
+    }
+    if (hasOrderDiscount) {
+      await recordAuditEvent(auditCtx, {
+        action: "discount.order_applied", entityType: "order", entityId: placed.orderId,
+        summary: `Order discount ${money(input.orderDiscountAmount!)}`,
+        metadata: { amount: money(input.orderDiscountAmount!), reasonCode: input.orderDiscountReason ?? "other", byUserId: ctx.cashierUserId, authorizedByUserId: discountAuthorizer },
+        actorType: "user",
+      }, tx);
+    }
+    await recordAuditEvent(auditCtx, {
+      action: "sale.recorded", entityType: "order", entityId: placed.orderId,
+      summary: `Sale #${placed.orderNumber} — ${paymentStatus}`,
+      metadata: {
+        orderNumber: String(placed.orderNumber), total: money(placed.total), paymentStatus,
+        tenders: input.payments.map((p) => ({ method: p.method, amount: money(p.amount) })),
+      }, actorType: "user",
+    }, tx);
   });
 
   await db.insert(posOrderReceipts).values({
@@ -239,6 +275,18 @@ export async function addTender(
       paidAmount >= total - 0.001 ? "paid" : "partially_paid";
 
     await tx.update(orders).set({ paymentStatus, updatedAt: new Date() }).where(eq(orders.id, orderId));
+
+    // Only a genuinely new tender advances the chain — a retried clientPaymentId
+    // is idempotent and must not append a second audit row.
+    if (!already) {
+      await recordAuditEvent(
+        { tenantId: ctx.tenantId, branchId: ctx.branchId, actorUserId: ctx.cashierUserId, fingerprint: ctx.fingerprint },
+        { action: "payment.tender_added", entityType: "order", entityId: orderId,
+          summary: `Tender ${tender.method} ${money(tender.amount)}`,
+          metadata: { method: tender.method, amount: money(tender.amount), paymentStatus }, actorType: "user" },
+        tx,
+      );
+    }
 
     return {
       orderId,

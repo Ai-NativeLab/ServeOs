@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getTenantBySlug, isTenantServable } from "@/server/tenancy";
 import { placeOrder, type PlaceOrderInput, type PlaceOrderLine } from "@/server/ordering/service";
+import { webFingerprint } from "@/server/audit/fingerprint";
 import { DomainError } from "@/shared/errors";
 
 export async function POST(req: NextRequest) {
@@ -42,6 +43,9 @@ export async function POST(req: NextRequest) {
           };
         })
       : [],
+    // Storefront placement — the actor stays a `customer`; capture the request
+    // fingerprint (IP/UA) for the audit trail.
+    audit: { fingerprint: webFingerprint(req) },
   };
 
   try {

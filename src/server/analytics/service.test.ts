@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { tenants } from "@/server/tenancy/schema";
+import { users } from "@/server/auth/schema";
 import { withTenant } from "@/db/with-tenant";
 import { orders } from "@/server/ordering/schema";
 import { seedDefaultPlans } from "@/server/subscription/plans.seed";
@@ -50,14 +51,17 @@ async function setup(slug: string) {
   const cat = await createCategory(t.id, { nameEn: "P", nameAr: "ب" });
   const prod = await createProduct(t.id, { nameEn: "Pie", nameAr: "فطيرة", basePrice: "100", categoryId: cat.id });
   await updateProduct(t.id, prod.id, { isPublished: true });
-  return { t, branch, area, prod };
+  // audit_events.actor_user_id is FK-constrained to users, so status transitions
+  // must record a real actor.
+  const [staff] = await db.insert(users).values({ tenantId: t.id, name: "Staff", email: `staff-${slug}@x.com`, status: "active" }).returning();
+  return { t, branch, area, prod, userId: staff.id };
 }
 
 const DAY = 24 * 60 * 60 * 1000;
 
 describe("analytics service", () => {
   it("aggregates revenue, top products, status, fulfillment, AOV and peak hours, excluding out-of-range orders", async () => {
-    const { t, branch, area, prod } = await setup("a1");
+    const { t, branch, area, prod, userId } = await setup("a1");
 
     const nowA = new Date(Date.now() - 2 * 3600 * 1000); // today, 2h ago — in range
     const nowB = new Date(Date.now() - 3 * DAY);          // 3 days ago — in range
@@ -72,7 +76,7 @@ describe("analytics service", () => {
     });
     await backdate(t.id, a.orderId, nowA);
     for (const to of ["confirmed", "preparing", "ready", "completed"] as const) {
-      await transitionStatus(t.id, a.orderId, to, "00000000-0000-0000-0000-000000000001");
+      await transitionStatus(t.id, a.orderId, to, userId);
     }
 
     // Order B: delivery, qty 1, pending

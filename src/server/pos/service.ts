@@ -6,6 +6,8 @@ import { branches } from "@/server/branches/schema";
 import { users } from "@/server/auth/schema";
 import { verifyPassword } from "@/server/auth/password";
 import { getTenantBySlug } from "@/server/tenancy";
+import { recordAuditEvent, type AuditActorInput, type AuditFingerprint } from "@/server/audit/service";
+import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { posDevices, posPairingCodes, type PosDevice } from "./schema";
 import { PosPairingError, PosLoginError } from "./errors";
 
@@ -35,17 +37,30 @@ export async function createPairingCode(
   branchId: string,
   label: string,
   userId: string,
+  audit?: AuditActorInput,
 ): Promise<{ code: string; expiresAt: Date }> {
   const code = generatePairingCode();
   const expiresAt = new Date(Date.now() + PAIRING_CODE_TTL_MS);
-  await db.insert(posPairingCodes).values({
-    tenantId, branchId, code, label, createdByUserId: userId, expiresAt,
+  // posPairingCodes has no RLS; the withTenant wrap exists so the audit insert
+  // gets app.tenant_id. The pairing-code write itself is unaffected.
+  await withTenant(tenantId, async (tx) => {
+    await tx.insert(posPairingCodes).values({
+      tenantId, branchId, code, label, createdByUserId: userId, expiresAt,
+    });
+    await recordAuditEvent(
+      { tenantId, branchId, actorUserId: audit?.actorUserId ?? userId, fingerprint: audit?.fingerprint ?? emptyFingerprint() },
+      { action: "device.pairing_created", entityType: "pos_device", entityId: code,
+        summary: `Pairing code created for "${label}"`,
+        metadata: { label, roleKey: audit?.roleKey ?? null }, actorType: "user" },
+      tx,
+    );
   });
   return { code, expiresAt };
 }
 
 export async function redeemPairingCode(
   code: string,
+  audit?: { fingerprint: AuditFingerprint },
 ): Promise<{ deviceToken: string; tenantId: string; branchId: string; branchName: string }> {
   const [pairing] = await db
     .select()
@@ -69,14 +84,24 @@ export async function redeemPairingCode(
   if (!branch) throw new PosPairingError("Pairing code references a missing branch");
 
   const deviceToken = generateDeviceToken();
-  await db.insert(posDevices).values({
-    tenantId: pairing.tenantId,
-    branchId: pairing.branchId,
-    token: deviceToken,
-    label: pairing.label,
-    createdByUserId: pairing.createdByUserId,
+  // Mint the device, spend the code, and audit — all in one tx so a paired
+  // device always has its device.paired row (no human at the terminal → device actor).
+  await withTenant(pairing.tenantId, async (tx) => {
+    const [device] = await tx.insert(posDevices).values({
+      tenantId: pairing.tenantId,
+      branchId: pairing.branchId,
+      token: deviceToken,
+      label: pairing.label,
+      createdByUserId: pairing.createdByUserId,
+    }).returning({ id: posDevices.id });
+    await tx.update(posPairingCodes).set({ usedAt: new Date() }).where(eq(posPairingCodes.id, pairing.id));
+    await recordAuditEvent(
+      { tenantId: pairing.tenantId, branchId: pairing.branchId, actorUserId: null, fingerprint: audit?.fingerprint ?? emptyFingerprint() },
+      { action: "device.paired", entityType: "pos_device", entityId: device.id,
+        summary: `Device "${pairing.label}" paired`, metadata: { label: pairing.label }, actorType: "device" },
+      tx,
+    );
   });
-  await db.update(posPairingCodes).set({ usedAt: new Date() }).where(eq(posPairingCodes.id, pairing.id));
 
   return { deviceToken, tenantId: pairing.tenantId, branchId: pairing.branchId, branchName: branch.name };
 }
@@ -92,7 +117,9 @@ export async function loginForPos(
   email: string,
   password: string,
   branchId: string | null,
+  audit?: { fingerprint: AuditFingerprint },
 ): Promise<PosLoginResult> {
+  const fingerprint = audit?.fingerprint ?? emptyFingerprint();
   const tenant = await getTenantBySlug(slug);
   if (!tenant) throw new PosLoginError();
 
@@ -102,6 +129,12 @@ export async function loginForPos(
     .where(and(eq(users.tenantId, tenant.id), eq(users.email, email)))
     .limit(1);
   if (!user?.passwordHash || user.status !== "active" || !(await verifyPassword(password, user.passwordHash))) {
+    await withTenant(tenant.id, (tx) => recordAuditEvent(
+      { tenantId: tenant.id, actorUserId: null, fingerprint },
+      { action: "auth.login_failed", entityType: "auth", entityId: email || "unknown",
+        summary: `Failed POS device login for ${email}`, metadata: { email, reason: "bad_credentials" }, actorType: "system" },
+      tx,
+    ));
     throw new PosLoginError();
   }
 
@@ -122,12 +155,22 @@ export async function loginForPos(
   if (!chosen) return { status: "branch_required", branches: branchRows };
 
   const deviceToken = generateDeviceToken();
-  await db.insert(posDevices).values({
-    tenantId: tenant.id,
-    branchId: chosen.id,
-    token: deviceToken,
-    label: `${user.name} · ${chosen.name}`,
-    createdByUserId: user.id,
+  const deviceLabel = `${user.name} · ${chosen.name}`;
+  await withTenant(tenant.id, async (tx) => {
+    await tx.insert(posDevices).values({
+      tenantId: tenant.id,
+      branchId: chosen.id,
+      token: deviceToken,
+      label: deviceLabel,
+      createdByUserId: user.id,
+    });
+    await recordAuditEvent(
+      { tenantId: tenant.id, branchId: chosen.id, actorUserId: user.id, fingerprint },
+      { action: "auth.login", entityType: "user", entityId: user.id,
+        summary: `${user.name} logged in a POS device at ${chosen.name}`,
+        metadata: { branchId: chosen.id, deviceLabel }, actorType: "user" },
+      tx,
+    );
   });
 
   return { status: "paired", deviceToken, tenantId: tenant.id, branchId: chosen.id, branchName: chosen.name };
@@ -159,9 +202,17 @@ export async function listDevices(tenantId: string): Promise<PosDevice[]> {
     .orderBy(desc(posDevices.createdAt));
 }
 
-export async function revokeDevice(tenantId: string, deviceId: string): Promise<void> {
-  await db
-    .update(posDevices)
-    .set({ revokedAt: new Date() })
-    .where(and(eq(posDevices.id, deviceId), eq(posDevices.tenantId, tenantId)));
+export async function revokeDevice(tenantId: string, deviceId: string, audit?: AuditActorInput): Promise<void> {
+  await withTenant(tenantId, async (tx) => {
+    await tx
+      .update(posDevices)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(posDevices.id, deviceId), eq(posDevices.tenantId, tenantId)));
+    await recordAuditEvent(
+      { tenantId, actorUserId: audit?.actorUserId ?? null, fingerprint: audit?.fingerprint ?? emptyFingerprint() },
+      { action: "device.revoked", entityType: "pos_device", entityId: deviceId,
+        summary: `Device revoked`, metadata: { roleKey: audit?.roleKey ?? null }, actorType: audit?.actorType ?? "user" },
+      tx,
+    );
+  });
 }

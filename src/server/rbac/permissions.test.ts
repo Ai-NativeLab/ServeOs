@@ -17,3 +17,13 @@ describe("POS permissions", () => {
     }
   });
 });
+
+describe("audit:view", () => {
+  it("is held by owner and manager", () => {
+    expect(ROLE_PERMISSIONS.owner).toContain("audit:view");
+    expect(ROLE_PERMISSIONS.manager).toContain("audit:view");
+  });
+  it("is NOT held by staff", () => {
+    expect(ROLE_PERMISSIONS.staff).not.toContain("audit:view");
+  });
+});

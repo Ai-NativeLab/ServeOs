@@ -4,6 +4,8 @@ import { requireOrdersPermission } from "../../orders-permission";
 import { getOrder } from "@/server/ordering/service";
 import { nextStatuses } from "@/server/ordering/state-machine";
 import { transitionOrderAction, markPaidAction } from "./actions";
+import { recordCustomerPiiView } from "@/server/audit/read-events";
+import { actionAudit } from "@/server/audit/action-context";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { StatusBadge } from "@/components/dashboard/StatusBadge";
 import { ToastForm } from "@/components/dashboard/ToastForm";
@@ -22,8 +24,12 @@ const STATUS_LABEL: Record<string, string> = {
 
 export default async function OrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const { tenantId } = await requireOrdersPermission();
+  const ctx = await requireOrdersPermission();
+  const tenantId = ctx.tenantId;
   const order = await getOrder(tenantId, id);
+  // A staff/manager/owner viewing another party's order detail exposes customer
+  // PII — log that it was viewed (the storefront's own-order view does not qualify).
+  await recordCustomerPiiView(tenantId, id, await actionAudit(ctx));
   const tenant = await getTenantById(tenantId);
   const actions = nextStatuses(order.status, order.fulfillmentType);
   const advance = actions.filter((to) => to !== "cancelled" && to !== "rejected");

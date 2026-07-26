@@ -1,9 +1,11 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { tenants } from "@/server/tenancy/schema";
 import { users, roles, userRoles } from "@/server/auth/schema";
 import { hashPassword } from "@/server/auth/password";
 import { plans, subscriptions } from "@/server/subscription/schema";
+import { recordAuditEvent } from "@/server/audit/service";
+import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { onboardingApplications } from "./schema";
 import { VERTICAL_IDS, type VerticalId } from "@/server/verticals";
 
@@ -59,6 +61,17 @@ export async function registerTenant(input: RegisterInput): Promise<RegisterResu
     });
 
     await tx.insert(onboardingApplications).values({ tenantId: tenant.id });
+
+    // The tenant's genesis audit row. registerTenant uses a raw db.transaction,
+    // so set app.tenant_id here (as withTenant would) for the RLS insert to pass.
+    await tx.execute(sql`SELECT set_config('app.tenant_id', ${tenant.id}, true)`);
+    await recordAuditEvent(
+      { tenantId: tenant.id, actorUserId: owner.id, fingerprint: emptyFingerprint() },
+      { action: "tenant.registered", entityType: "tenant", entityId: tenant.id,
+        summary: `Tenant "${input.restaurantName}" registered`,
+        metadata: { slug: input.slug, vertical: input.vertical }, actorType: "user" },
+      tx,
+    );
 
     return { tenantId: tenant.id, ownerUserId: owner.id };
   });

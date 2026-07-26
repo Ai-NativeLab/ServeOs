@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requirePosDevice } from "@/server/pos/require-device";
 import { PosAuthError } from "@/server/pos/errors";
 import { transitionStatus } from "@/server/ordering/service";
+import { webFingerprint } from "@/server/audit/fingerprint";
 import type { OrderStatus } from "@/server/ordering/schema";
 
 const ALLOWED: OrderStatus[] = ["confirmed", "preparing", "ready", "completed", "cancelled"];
@@ -27,6 +28,7 @@ export async function POST(req: NextRequest) {
     body.toStatus as OrderStatus,
     device.createdByUserId,
     "POS",
+    { fingerprint: webFingerprint(req) },
   );
   return NextResponse.json({ id: order.id, status: order.status });
 }

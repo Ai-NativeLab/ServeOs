@@ -25,6 +25,8 @@ import {
   ProductNotFoundError,
   InvalidModifierRulesError,
 } from "./errors";
+import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
+import { emptyFingerprint } from "@/server/audit/fingerprint";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -35,6 +37,16 @@ function groupBy<T>(arr: T[], key: (item: T) => string): Record<string, T[]> {
     (result[k] ??= []).push(item);
   }
   return result;
+}
+
+/** The AuditContext for a catalog mutation. actorUserId null (backfill/seed) is
+ *  fine — recordAuditEvent then records `system`. */
+function auditCtx(tenantId: string, audit?: AuditActorInput) {
+  return { tenantId, actorUserId: audit?.actorUserId ?? null, fingerprint: audit?.fingerprint ?? emptyFingerprint() };
+}
+/** Every catalog event carries the actor's roleKey (null for system) in metadata. */
+function auditMeta(audit: AuditActorInput | undefined, extra: Record<string, unknown> = {}) {
+  return { roleKey: audit?.roleKey ?? null, ...extra };
 }
 
 // ── categories ───────────────────────────────────────────────────────────────
@@ -48,32 +60,44 @@ export async function listCategories(tenantId: string): Promise<Category[]> {
   );
 }
 
-export async function createCategory(tenantId: string, input: CreateCategoryInput): Promise<Category> {
-  const [row] = await withTenant(tenantId, (tx) =>
-    tx.insert(categories).values({ ...input, tenantId }).returning(),
-  );
-  return row;
+export async function createCategory(tenantId: string, input: CreateCategoryInput, audit?: AuditActorInput): Promise<Category> {
+  return withTenant(tenantId, async (tx) => {
+    const [row] = await tx.insert(categories).values({ ...input, tenantId }).returning();
+    await recordAuditEvent(auditCtx(tenantId, audit), {
+      action: "catalog.category.created", entityType: "category", entityId: row.id,
+      summary: `Category "${row.nameEn}" created`, metadata: auditMeta(audit), actorType: audit?.actorType,
+    }, tx);
+    return row;
+  });
 }
 
-export async function updateCategory(tenantId: string, categoryId: string, input: UpdateCategoryInput): Promise<Category> {
-  const [row] = await withTenant(tenantId, (tx) =>
-    tx.update(categories)
+export async function updateCategory(tenantId: string, categoryId: string, input: UpdateCategoryInput, audit?: AuditActorInput): Promise<Category> {
+  return withTenant(tenantId, async (tx) => {
+    const [row] = await tx.update(categories)
       .set(input)
       .where(and(eq(categories.id, categoryId), eq(categories.tenantId, tenantId)))
-      .returning(),
-  );
-  if (!row) throw new Error("Category not found");
-  return row;
+      .returning();
+    if (!row) throw new Error("Category not found");
+    await recordAuditEvent(auditCtx(tenantId, audit), {
+      action: "catalog.category.updated", entityType: "category", entityId: row.id,
+      summary: `Category "${row.nameEn}" updated`, metadata: auditMeta(audit), actorType: audit?.actorType,
+    }, tx);
+    return row;
+  });
 }
 
-export async function deleteCategory(tenantId: string, categoryId: string): Promise<void> {
+export async function deleteCategory(tenantId: string, categoryId: string, audit?: AuditActorInput): Promise<void> {
   const [{ value }] = await withTenant(tenantId, (tx) =>
     tx.select({ value: count() }).from(products).where(eq(products.categoryId, categoryId)),
   );
   if (Number(value) > 0) throw new CategoryNotEmptyError();
-  await withTenant(tenantId, (tx) =>
-    tx.delete(categories).where(and(eq(categories.id, categoryId), eq(categories.tenantId, tenantId))),
-  );
+  await withTenant(tenantId, async (tx) => {
+    await tx.delete(categories).where(and(eq(categories.id, categoryId), eq(categories.tenantId, tenantId)));
+    await recordAuditEvent(auditCtx(tenantId, audit), {
+      action: "catalog.category.deleted", entityType: "category", entityId: categoryId,
+      summary: `Category deleted`, metadata: auditMeta(audit), actorType: audit?.actorType,
+    }, tx);
+  });
 }
 
 // ── products ─────────────────────────────────────────────────────────────────
@@ -114,33 +138,56 @@ export async function getProduct(tenantId: string, productId: string): Promise<P
   };
 }
 
-export async function createProduct(tenantId: string, input: CreateProductInput): Promise<Product> {
+export async function createProduct(tenantId: string, input: CreateProductInput, audit?: AuditActorInput): Promise<Product> {
   const [{ value }] = await withTenant(tenantId, (tx) =>
     tx.select({ value: count() }).from(products),
   );
   await checkQuota(tenantId, "products", Number(value));
-  const [row] = await withTenant(tenantId, (tx) =>
-    tx.insert(products).values({ ...input, tenantId }).returning(),
-  );
-  return row;
+  return withTenant(tenantId, async (tx) => {
+    const [row] = await tx.insert(products).values({ ...input, tenantId }).returning();
+    await recordAuditEvent(auditCtx(tenantId, audit), {
+      action: "catalog.product.created", entityType: "product", entityId: row.id,
+      summary: `Product "${row.nameEn}" created`,
+      metadata: auditMeta(audit, { basePrice: row.basePrice }), actorType: audit?.actorType,
+    }, tx);
+    return row;
+  });
 }
 
-export async function updateProduct(tenantId: string, productId: string, input: UpdateProductInput): Promise<Product> {
-  const [row] = await withTenant(tenantId, (tx) =>
-    tx.update(products)
+export async function updateProduct(tenantId: string, productId: string, input: UpdateProductInput, audit?: AuditActorInput): Promise<Product> {
+  return withTenant(tenantId, async (tx) => {
+    const [before] = await tx.select().from(products).where(eq(products.id, productId)).limit(1);
+    const [row] = await tx.update(products)
       .set(input)
       .where(and(eq(products.id, productId), eq(products.tenantId, tenantId)))
-      .returning(),
-  );
-  if (!row) throw new ProductNotFoundError();
-  return row;
+      .returning();
+    if (!row) throw new ProductNotFoundError();
+    await recordAuditEvent(auditCtx(tenantId, audit), {
+      action: "catalog.product.updated", entityType: "product", entityId: row.id,
+      summary: `Product "${row.nameEn}" updated`, metadata: auditMeta(audit), actorType: audit?.actorType,
+    }, tx);
+    // A price move is its own event so the log answers "who changed the price?"
+    // directly, without diffing generic update rows.
+    if (before && before.basePrice !== row.basePrice) {
+      await recordAuditEvent(auditCtx(tenantId, audit), {
+        action: "catalog.product.price_changed", entityType: "product", entityId: row.id,
+        summary: `Price ${before.basePrice} → ${row.basePrice}`,
+        metadata: auditMeta(audit, { before: before.basePrice, after: row.basePrice }), actorType: audit?.actorType,
+      }, tx);
+    }
+    return row;
+  });
 }
 
-export async function deleteProduct(tenantId: string, productId: string): Promise<void> {
-  const [row] = await withTenant(tenantId, (tx) =>
-    tx.delete(products).where(and(eq(products.id, productId), eq(products.tenantId, tenantId))).returning({ id: products.id }),
-  );
-  if (!row) throw new ProductNotFoundError();
+export async function deleteProduct(tenantId: string, productId: string, audit?: AuditActorInput): Promise<void> {
+  await withTenant(tenantId, async (tx) => {
+    const [row] = await tx.delete(products).where(and(eq(products.id, productId), eq(products.tenantId, tenantId))).returning({ id: products.id });
+    if (!row) throw new ProductNotFoundError();
+    await recordAuditEvent(auditCtx(tenantId, audit), {
+      action: "catalog.product.deleted", entityType: "product", entityId: productId,
+      summary: `Product deleted`, metadata: auditMeta(audit), actorType: audit?.actorType,
+    }, tx);
+  });
 }
 
 // ── modifier groups ───────────────────────────────────────────────────────────
@@ -155,34 +202,40 @@ export type ModifierGroupInput = {
   sortOrder?: number;
 };
 
-export async function upsertModifierGroup(tenantId: string, productId: string, input: ModifierGroupInput): Promise<ModifierGroup> {
+export async function upsertModifierGroup(tenantId: string, productId: string, input: ModifierGroupInput, audit?: AuditActorInput): Promise<ModifierGroup> {
   const tenant = await getTenantById(tenantId);
   if (tenant) requireCapability(tenant.vertical as VerticalId, "modifiers");
 
   if (input.minSelections > input.maxSelections) throw new InvalidModifierRulesError();
   if (input.required && input.minSelections < 1) throw new InvalidModifierRulesError();
 
-  if (input.id) {
-    const [row] = await withTenant(tenantId, (tx) =>
-      tx.update(modifierGroups)
+  return withTenant(tenantId, async (tx) => {
+    let row: ModifierGroup | undefined;
+    if (input.id) {
+      [row] = await tx.update(modifierGroups)
         .set({ nameEn: input.nameEn, nameAr: input.nameAr, required: input.required, minSelections: input.minSelections, maxSelections: input.maxSelections, sortOrder: input.sortOrder ?? 0 })
         .where(and(eq(modifierGroups.id, input.id!), eq(modifierGroups.tenantId, tenantId), eq(modifierGroups.productId, productId)))
-        .returning(),
-    );
-    if (!row) throw new Error("Modifier group not found");
+        .returning();
+      if (!row) throw new Error("Modifier group not found");
+    } else {
+      [row] = await tx.insert(modifierGroups).values({ tenantId, productId, nameEn: input.nameEn, nameAr: input.nameAr, required: input.required, minSelections: input.minSelections, maxSelections: input.maxSelections, sortOrder: input.sortOrder ?? 0 }).returning();
+    }
+    await recordAuditEvent(auditCtx(tenantId, audit), {
+      action: "catalog.modifier_group.upserted", entityType: "modifier_group", entityId: row.id,
+      summary: `Modifier group "${row.nameEn}" saved`, metadata: auditMeta(audit, { productId }), actorType: audit?.actorType,
+    }, tx);
     return row;
-  }
-
-  const [row] = await withTenant(tenantId, (tx) =>
-    tx.insert(modifierGroups).values({ tenantId, productId, nameEn: input.nameEn, nameAr: input.nameAr, required: input.required, minSelections: input.minSelections, maxSelections: input.maxSelections, sortOrder: input.sortOrder ?? 0 }).returning(),
-  );
-  return row;
+  });
 }
 
-export async function deleteModifierGroup(tenantId: string, groupId: string): Promise<void> {
-  await withTenant(tenantId, (tx) =>
-    tx.delete(modifierGroups).where(and(eq(modifierGroups.id, groupId), eq(modifierGroups.tenantId, tenantId))),
-  );
+export async function deleteModifierGroup(tenantId: string, groupId: string, audit?: AuditActorInput): Promise<void> {
+  await withTenant(tenantId, async (tx) => {
+    await tx.delete(modifierGroups).where(and(eq(modifierGroups.id, groupId), eq(modifierGroups.tenantId, tenantId)));
+    await recordAuditEvent(auditCtx(tenantId, audit), {
+      action: "catalog.modifier_group.deleted", entityType: "modifier_group", entityId: groupId,
+      summary: `Modifier group deleted`, metadata: auditMeta(audit), actorType: audit?.actorType,
+    }, tx);
+  });
 }
 
 // ── modifier options ──────────────────────────────────────────────────────────
@@ -196,28 +249,34 @@ export type ModifierOptionInput = {
   sortOrder?: number;
 };
 
-export async function upsertModifierOption(tenantId: string, groupId: string, input: ModifierOptionInput): Promise<ModifierOption> {
-  if (input.id) {
-    const [row] = await withTenant(tenantId, (tx) =>
-      tx.update(modifierOptions)
+export async function upsertModifierOption(tenantId: string, groupId: string, input: ModifierOptionInput, audit?: AuditActorInput): Promise<ModifierOption> {
+  return withTenant(tenantId, async (tx) => {
+    let row: ModifierOption | undefined;
+    if (input.id) {
+      [row] = await tx.update(modifierOptions)
         .set({ nameEn: input.nameEn, nameAr: input.nameAr, priceDelta: input.priceDelta ?? "0", isDefault: input.isDefault ?? false, sortOrder: input.sortOrder ?? 0 })
         .where(and(eq(modifierOptions.id, input.id!), eq(modifierOptions.tenantId, tenantId)))
-        .returning(),
-    );
-    if (!row) throw new Error("Modifier option not found");
+        .returning();
+      if (!row) throw new Error("Modifier option not found");
+    } else {
+      [row] = await tx.insert(modifierOptions).values({ tenantId, modifierGroupId: groupId, nameEn: input.nameEn, nameAr: input.nameAr, priceDelta: input.priceDelta ?? "0", isDefault: input.isDefault ?? false, sortOrder: input.sortOrder ?? 0 }).returning();
+    }
+    await recordAuditEvent(auditCtx(tenantId, audit), {
+      action: "catalog.modifier_option.upserted", entityType: "modifier_option", entityId: row.id,
+      summary: `Modifier option "${row.nameEn}" saved`, metadata: auditMeta(audit, { modifierGroupId: groupId }), actorType: audit?.actorType,
+    }, tx);
     return row;
-  }
-
-  const [row] = await withTenant(tenantId, (tx) =>
-    tx.insert(modifierOptions).values({ tenantId, modifierGroupId: groupId, nameEn: input.nameEn, nameAr: input.nameAr, priceDelta: input.priceDelta ?? "0", isDefault: input.isDefault ?? false, sortOrder: input.sortOrder ?? 0 }).returning(),
-  );
-  return row;
+  });
 }
 
-export async function deleteModifierOption(tenantId: string, optionId: string): Promise<void> {
-  await withTenant(tenantId, (tx) =>
-    tx.delete(modifierOptions).where(and(eq(modifierOptions.id, optionId), eq(modifierOptions.tenantId, tenantId))),
-  );
+export async function deleteModifierOption(tenantId: string, optionId: string, audit?: AuditActorInput): Promise<void> {
+  await withTenant(tenantId, async (tx) => {
+    await tx.delete(modifierOptions).where(and(eq(modifierOptions.id, optionId), eq(modifierOptions.tenantId, tenantId)));
+    await recordAuditEvent(auditCtx(tenantId, audit), {
+      action: "catalog.modifier_option.deleted", entityType: "modifier_option", entityId: optionId,
+      summary: `Modifier option deleted`, metadata: auditMeta(audit), actorType: audit?.actorType,
+    }, tx);
+  });
 }
 
 // ── branch availability ───────────────────────────────────────────────────────
@@ -228,6 +287,7 @@ export async function setBranchAvailability(
   productId: string,
   available: boolean,
   priceOverride?: number,
+  audit?: AuditActorInput,
 ): Promise<void> {
   await withTenant(tenantId, async (tx) => {
     if (available && priceOverride === undefined) {
@@ -245,6 +305,11 @@ export async function setBranchAvailability(
           set: { isAvailable: available, priceOverride: priceOverride !== undefined ? String(priceOverride) : null },
         });
     }
+    await recordAuditEvent(auditCtx(tenantId, audit), {
+      action: "catalog.branch_availability.changed", entityType: "product", entityId: productId,
+      summary: `Availability at branch ${available ? "enabled" : "disabled"}`,
+      metadata: auditMeta(audit, { branchId, available, priceOverride: priceOverride ?? null }), actorType: audit?.actorType,
+    }, tx);
   });
 }
 

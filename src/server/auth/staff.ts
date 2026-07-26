@@ -1,5 +1,8 @@
 import { and, eq, ne, or } from "drizzle-orm";
 import { db } from "@/db/client";
+import { withTenant } from "@/db/with-tenant";
+import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
+import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { users, roles, userRoles, sessions, type User } from "./schema";
 import { hashPassword } from "./password";
 import { StaffContactTakenError } from "./errors";
@@ -33,7 +36,7 @@ export async function listStaff(tenantId: string): Promise<StaffMember[]> {
   }));
 }
 
-export async function createStaff(tenantId: string, input: CreateStaffInput): Promise<User> {
+export async function createStaff(tenantId: string, input: CreateStaffInput, audit?: AuditActorInput): Promise<User> {
   const email = input.email?.trim() || null;
   const phone = input.phone?.trim() || null;
   if (!email && !phone) throw new Error("Staff member needs an email or phone");
@@ -43,7 +46,9 @@ export async function createStaff(tenantId: string, input: CreateStaffInput): Pr
     phone ? eq(users.phone, phone) : null,
   ].filter((c): c is NonNullable<typeof c> => c !== null);
 
-  return db.transaction(async (tx) => {
+  // withTenant (not db.transaction): control tables have no RLS, so the writes
+  // are unaffected, and the audit insert now has app.tenant_id.
+  return withTenant(tenantId, async (tx) => {
     const [existing] = await tx
       .select({ id: users.id })
       .from(users)
@@ -56,26 +61,51 @@ export async function createStaff(tenantId: string, input: CreateStaffInput): Pr
 
     const [user] = await tx.insert(users).values({ tenantId, name: input.name, email, phone, passwordHash }).returning();
     await tx.insert(userRoles).values({ userId: user.id, roleId: role.id });
+    await recordAuditEvent(
+      { tenantId, actorUserId: audit?.actorUserId ?? null, fingerprint: audit?.fingerprint ?? emptyFingerprint() },
+      { action: "staff.invited", entityType: "staff", entityId: user.id,
+        summary: `Staff "${input.name}" invited as ${input.roleKey}`,
+        metadata: { roleKey: input.roleKey, actorRoleKey: audit?.roleKey ?? null }, actorType: audit?.actorType },
+      tx,
+    );
     return user;
   });
 }
 
-export async function setStaffRole(tenantId: string, userId: string, roleKey: StaffRoleKey): Promise<void> {
-  await db.transaction(async (tx) => {
+export async function setStaffRole(tenantId: string, userId: string, roleKey: StaffRoleKey, audit?: AuditActorInput): Promise<void> {
+  await withTenant(tenantId, async (tx) => {
     const [target] = await tx.select().from(users).where(and(eq(users.id, userId), eq(users.tenantId, tenantId))).limit(1);
     if (!target) throw new Error("Staff member not found");
+    const [beforeRole] = await tx.select({ key: roles.key })
+      .from(userRoles).innerJoin(roles, eq(roles.id, userRoles.roleId))
+      .where(eq(userRoles.userId, userId)).limit(1);
     const role = await getOrCreateTenantRole(tx, tenantId, roleKey);
     await tx.delete(userRoles).where(eq(userRoles.userId, userId));
     await tx.insert(userRoles).values({ userId, roleId: role.id });
+    await recordAuditEvent(
+      { tenantId, actorUserId: audit?.actorUserId ?? null, fingerprint: audit?.fingerprint ?? emptyFingerprint() },
+      { action: "staff.role_changed", entityType: "staff", entityId: userId,
+        summary: `Role ${beforeRole?.key ?? "?"} → ${roleKey}`,
+        metadata: { before: beforeRole?.key ?? null, after: roleKey, actorRoleKey: audit?.roleKey ?? null }, actorType: audit?.actorType },
+      tx,
+    );
   });
 }
 
-export async function deactivateStaff(tenantId: string, userId: string): Promise<void> {
-  const [target] = await db
-    .update(users)
-    .set({ status: "inactive" })
-    .where(and(eq(users.id, userId), eq(users.tenantId, tenantId)))
-    .returning({ id: users.id });
-  if (!target) throw new Error("Staff member not found");
-  await db.delete(sessions).where(eq(sessions.userId, userId));
+export async function deactivateStaff(tenantId: string, userId: string, audit?: AuditActorInput): Promise<void> {
+  await withTenant(tenantId, async (tx) => {
+    const [target] = await tx
+      .update(users)
+      .set({ status: "inactive" })
+      .where(and(eq(users.id, userId), eq(users.tenantId, tenantId)))
+      .returning({ id: users.id });
+    if (!target) throw new Error("Staff member not found");
+    await tx.delete(sessions).where(eq(sessions.userId, userId));
+    await recordAuditEvent(
+      { tenantId, actorUserId: audit?.actorUserId ?? null, fingerprint: audit?.fingerprint ?? emptyFingerprint() },
+      { action: "staff.deactivated", entityType: "staff", entityId: userId,
+        summary: `Staff deactivated`, metadata: { sessionsRevoked: true, actorRoleKey: audit?.roleKey ?? null }, actorType: audit?.actorType },
+      tx,
+    );
+  });
 }
