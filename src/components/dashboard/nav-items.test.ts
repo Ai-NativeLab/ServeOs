@@ -7,9 +7,15 @@ describe("dashboardNavItems", () => {
     expect(hrefs).toEqual(["/dashboard/orders"]);
   });
 
-  it("shows owners the full nav including Home and Settings", () => {
+  it("shows owners the full nav including Home, Settings, and Audit", () => {
     const labels = dashboardNavItems(["owner"]).map((i) => i.label);
-    expect(labels).toEqual(["Home", "Analytics", "Orders", "Menu", "Branches", "Banners", "Settings"]);
+    expect(labels).toEqual(["Home", "Analytics", "Orders", "Menu", "Branches", "Banners", "Settings", "Audit"]);
+  });
+
+  it("shows Audit to owner and manager but never staff (audit:view)", () => {
+    expect(dashboardNavItems(["owner"]).map((i) => i.href)).toContain("/dashboard/audit");
+    expect(dashboardNavItems(["manager"]).map((i) => i.href)).toContain("/dashboard/audit");
+    expect(dashboardNavItems(["staff"]).map((i) => i.href)).not.toContain("/dashboard/audit");
   });
 
   it("points Settings at the new settings hub", () => {
