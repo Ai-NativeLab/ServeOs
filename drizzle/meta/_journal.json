@@ -127,6 +127,13 @@
       "when": 1785023500259,
       "tag": "0017_strong_madame_masque",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1785097217261,
+      "tag": "0018_gorgeous_rocket_racer",
+      "breakpoints": true
     }
   ]
 }
