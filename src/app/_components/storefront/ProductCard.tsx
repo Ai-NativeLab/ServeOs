@@ -24,7 +24,8 @@ export function ProductCard({
     >
       <div className="relative aspect-[4/3] w-full">
         {product.imageUrl
-          ? <img src={product.imageUrl} alt="" loading="lazy" className="sf-img h-full w-full" />
+          ? /* eslint-disable-next-line @next/next/no-img-element */
+            <img src={product.imageUrl} alt="" loading="lazy" className="sf-img h-full w-full" />
           : <div className="sf-img h-full w-full" />}
         {badge && <span className="absolute left-2 top-2"><Badge kind={badge} /></span>}
       </div>

@@ -23,6 +23,7 @@ export function LangProvider({ children }: { children: React.ReactNode }) {
   // the server always renders English; a returning Arabic visitor flips on mount).
   useEffect(() => {
     const saved = readSavedLocale();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrating client-only saved locale after mount (server always renders English)
     if (saved) setLocaleState(saved);
   }, []);
 

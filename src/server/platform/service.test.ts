@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { users } from "@/server/auth/schema";
@@ -8,9 +8,6 @@ import { subscriptions } from "@/server/subscription/schema";
 import { auditLogs } from "./audit.schema";
 import { seedDefaultPlans } from "@/server/subscription";
 import { registerTenant } from "@/server/onboarding";
-import { branches } from "@/server/branches/schema";
-import { products } from "@/server/catalog/schema";
-import { orders } from "@/server/ordering/schema";
 import { listPendingApplications, approveTenant, rejectTenant, suspendTenant } from "./service";
 import {
   listTenants, getTenantDetail, listAuditLogs, activateTenant,

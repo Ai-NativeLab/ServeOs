@@ -19,6 +19,7 @@ export function ProductSheet({
 
   useEffect(() => {
     if (product) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting selection/quantity when a new product opens
       setSelected(product.modifierGroups.flatMap((g) => g.options).filter((o) => o.isDefault).map((o) => o.id));
       setQuantity(1);
     }

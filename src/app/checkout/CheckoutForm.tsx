@@ -52,6 +52,7 @@ export function CheckoutForm({
     const sync = () => setCart(loadCart());
     sync();
     const saved = loadCustomer();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrating client-only saved customer details after mount
     setName(saved.name);
     setPhone(saved.phone);
     setAddress(saved.address);
@@ -151,7 +152,7 @@ export function CheckoutForm({
           href={`/checkout?slug=${encodeURIComponent(slug)}&branch=${cart.branchId}`}
           className="mt-4 inline-flex rounded-full bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-all hover:bg-primary/90 active:scale-[0.98]"
         >
-          Continue with your cart's branch →
+          Continue with your cart&apos;s branch →
         </a>
       </div>
     );
@@ -291,7 +292,7 @@ export function CheckoutForm({
         </div>
         {minShortfall > 0 && (
           <p className="mt-3 rounded-lg bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive">
-            Add {formatMoney(minShortfall, currency)} more to reach this area's minimum order.
+            Add {formatMoney(minShortfall, currency)} more to reach this area&apos;s minimum order.
           </p>
         )}
       </div>
