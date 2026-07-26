@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { requireMenuPermission } from "../menu-permission";
+import { recordFinancialView } from "@/server/audit/read-events";
+import { actionAudit } from "@/server/audit/action-context";
 import {
   getRevenueTrend, getTopProducts, getOrdersByStatus, getFulfillmentSplit,
   getAverageOrderValue, getPeakHours,
@@ -27,7 +29,8 @@ export default async function AnalyticsPage({
 }: {
   searchParams: Promise<{ range?: string }>;
 }) {
-  const { tenantId } = await requireMenuPermission();
+  const ctx = await requireMenuPermission();
+  const tenantId = ctx.tenantId;
   const { range } = await searchParams;
   const days = parseRange(range);
 
@@ -39,6 +42,9 @@ export default async function AnalyticsPage({
     getAverageOrderValue(tenantId, days),
     getPeakHours(tenantId, days),
   ]);
+
+  // Opening the financial report is a sensitive read — log THAT it was viewed.
+  await recordFinancialView(tenantId, await actionAudit(ctx));
 
   if (revenueTrend.length === 0) {
     return (
