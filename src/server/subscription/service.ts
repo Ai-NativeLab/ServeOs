@@ -1,5 +1,8 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
+import { withTenant } from "@/db/with-tenant";
+import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
+import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { plans, subscriptions, type Subscription } from "./schema";
 
 const TRIAL_DAYS = 14;
@@ -14,29 +17,48 @@ const ALLOWED: Record<Status, Status[]> = {
   canceled: [],
 };
 
-export async function startTrial(tenantId: string, planKey: string): Promise<Subscription> {
+export async function startTrial(tenantId: string, planKey: string, audit?: AuditActorInput): Promise<Subscription> {
   const [plan] = await db.select().from(plans).where(eq(plans.key, planKey)).limit(1);
   if (!plan) throw new Error(`Unknown plan: ${planKey}`);
   const trialEndsAt = new Date(Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
-  const [sub] = await db
-    .insert(subscriptions)
-    .values({ tenantId, planId: plan.id, status: "trialing", trialEndsAt })
-    .returning();
-  return sub;
+  // subscriptions has no RLS; the withTenant wrap is for the audit insert's app.tenant_id.
+  return withTenant(tenantId, async (tx) => {
+    const [sub] = await tx
+      .insert(subscriptions)
+      .values({ tenantId, planId: plan.id, status: "trialing", trialEndsAt })
+      .returning();
+    await recordAuditEvent(
+      { tenantId, actorUserId: audit?.actorUserId ?? null, fingerprint: audit?.fingerprint ?? emptyFingerprint() },
+      { action: "subscription.trial_started", entityType: "subscription", entityId: sub.id,
+        summary: `Trial started on ${planKey}`, metadata: { planKey, roleKey: audit?.roleKey ?? null }, actorType: audit?.actorType },
+      tx,
+    );
+    return sub;
+  });
 }
 
-export async function transition(subscriptionId: string, next: Status): Promise<Subscription> {
+export async function transition(subscriptionId: string, next: Status, audit?: AuditActorInput): Promise<Subscription> {
   const [current] = await db.select().from(subscriptions).where(eq(subscriptions.id, subscriptionId)).limit(1);
   if (!current) throw new Error("Subscription not found");
   if (!ALLOWED[current.status].includes(next)) {
     throw new Error(`Invalid transition: ${current.status} -> ${next}`);
   }
-  const [updated] = await db
-    .update(subscriptions)
-    .set({ status: next })
-    .where(eq(subscriptions.id, subscriptionId))
-    .returning();
-  return updated;
+  return withTenant(current.tenantId, async (tx) => {
+    const [updated] = await tx
+      .update(subscriptions)
+      .set({ status: next })
+      .where(eq(subscriptions.id, subscriptionId))
+      .returning();
+    // A job-driven transition (no audit actor) records as `system`.
+    await recordAuditEvent(
+      { tenantId: current.tenantId, actorUserId: audit?.actorUserId ?? null, fingerprint: audit?.fingerprint ?? emptyFingerprint() },
+      { action: "subscription.status_changed", entityType: "subscription", entityId: subscriptionId,
+        summary: `Subscription ${current.status} → ${next}`,
+        metadata: { before: current.status, after: next, roleKey: audit?.roleKey ?? null }, actorType: audit?.actorType ?? "system" },
+      tx,
+    );
+    return updated;
+  });
 }
 
 export async function getActiveSubscription(tenantId: string): Promise<Subscription | null> {

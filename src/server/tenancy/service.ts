@@ -1,5 +1,8 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
+import { withTenant } from "@/db/with-tenant";
+import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
+import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { tenants, type NewTenant, type Tenant } from "./schema";
 
 const RESERVED = new Set(["app", "admin", "www", "api"]);
@@ -20,11 +23,37 @@ export type UpdateTenantProfileInput = Partial<
   Pick<Tenant, "name" | "logoUrl" | "coverImageUrl" | "primaryColor" | "defaultLocale" | "timezone" | "tagline" | "cuisine">
 >;
 
-/** tenants is a control table → plain db, same as createTenant. */
-export async function updateTenantProfile(tenantId: string, input: UpdateTenantProfileInput): Promise<Tenant> {
-  const [row] = await db.update(tenants).set(input).where(eq(tenants.id, tenantId)).returning();
-  if (!row) throw new Error(`Tenant not found: ${tenantId}`);
-  return row;
+/** tenants is a control table (no RLS); the withTenant wrap is for the audit
+ *  insert's app.tenant_id — the profile update itself is unaffected. */
+export async function updateTenantProfile(tenantId: string, input: UpdateTenantProfileInput, audit?: AuditActorInput): Promise<Tenant> {
+  return withTenant(tenantId, async (tx) => {
+    const [before] = await tx.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+    const [row] = await tx.update(tenants).set(input).where(eq(tenants.id, tenantId)).returning();
+    if (!row) throw new Error(`Tenant not found: ${tenantId}`);
+    const ctx = { tenantId, actorUserId: audit?.actorUserId ?? null, fingerprint: audit?.fingerprint ?? emptyFingerprint() };
+    await recordAuditEvent(ctx, {
+      action: "settings.profile_updated", entityType: "tenant", entityId: tenantId,
+      summary: `Profile updated`, metadata: { roleKey: audit?.roleKey ?? null }, actorType: audit?.actorType,
+    }, tx);
+    const themeChanged = before && (
+      (input.logoUrl !== undefined && input.logoUrl !== before.logoUrl) ||
+      (input.coverImageUrl !== undefined && input.coverImageUrl !== before.coverImageUrl) ||
+      (input.primaryColor !== undefined && input.primaryColor !== before.primaryColor)
+    );
+    if (themeChanged) {
+      await recordAuditEvent(ctx, {
+        action: "settings.theme_changed", entityType: "tenant", entityId: tenantId,
+        summary: `Theme updated`,
+        metadata: {
+          before: { logoUrl: before!.logoUrl, coverImageUrl: before!.coverImageUrl, primaryColor: before!.primaryColor },
+          after: { logoUrl: row.logoUrl, coverImageUrl: row.coverImageUrl, primaryColor: row.primaryColor },
+          roleKey: audit?.roleKey ?? null,
+        },
+        actorType: audit?.actorType,
+      }, tx);
+    }
+    return row;
+  });
 }
 
 /** Extracts the subdomain slug from a host, or null if it's the root / reserved host. */

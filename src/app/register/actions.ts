@@ -1,10 +1,12 @@
 "use server";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { registerTenant } from "@/server/onboarding";
 import type { VerticalId } from "@/server/verticals";
 import { createSession } from "@/server/auth/session";
 import { SESSION_COOKIE } from "@/server/auth/current-user";
+import { recordAuthEvent } from "@/server/audit/auth-events";
+import { headersFingerprint } from "@/server/audit/fingerprint";
 
 export async function registerAction(formData: FormData) {
   const vertical = String(formData.get("vertical") || "restaurant");
@@ -18,6 +20,9 @@ export async function registerAction(formData: FormData) {
     vertical: vertical as VerticalId,
   });
   const token = await createSession(result.ownerUserId, "dashboard");
+  // tenant.registered (genesis) already came from registerTenant; this records the
+  // owner's first sign-in.
+  await recordAuthEvent(result.tenantId, "auth.login", { actorUserId: result.ownerUserId, fingerprint: headersFingerprint(await headers()) });
   (await cookies()).set(SESSION_COOKIE, token, { httpOnly: true, sameSite: "lax", path: "/" });
   redirect("/dashboard");
 }
