@@ -77,6 +77,10 @@ export async function seedPosContext(role: "owner" | "manager" | "staff" = "owne
       cashierUserId: cashierUser.id,
       cashierName: cashierUser.name,
       permissions: session.permissions,
+      fingerprint: {
+        deviceId: device.deviceId, deviceTokenHash: "test-token-hash",
+        appVersion: "test-1.0.0", ip: "127.0.0.1", userAgent: "vitest",
+      },
     },
     tenantId: t.id,
     branchId: branch.id,

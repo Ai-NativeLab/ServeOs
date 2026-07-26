@@ -9,6 +9,7 @@ import { createPairingCode, redeemPairingCode } from "./service";
 import { signInCashier } from "./cashier";
 import { requirePosCashier, assertPermission } from "./require-cashier";
 import { PosCashierError, PosForbiddenError } from "./errors";
+import { sha256Hex } from "@/server/audit/canonical";
 
 let n = 0;
 
@@ -70,6 +71,30 @@ describe("requirePosCashier", () => {
     await expect(
       requirePosCashier(reqWith({ Authorization: `Bearer ${s.deviceToken}` })),
     ).rejects.toThrow(PosCashierError);
+  });
+
+  it("captures a fingerprint: hashed device token, device id, and app version", async () => {
+    const s = await seedDeviceAndCashier("owner");
+
+    // No X-POS-App-Version header → older POS build → appVersion null (still audits).
+    const ctx = await requirePosCashier(reqWith({
+      Authorization: `Bearer ${s.deviceToken}`,
+      "X-POS-Cashier": s.cashierToken,
+    }));
+    // The raw device token is never stored — only its SHA-256, so a leaked audit
+    // dump cannot be replayed to authenticate.
+    expect(ctx.fingerprint.deviceTokenHash).toBe(sha256Hex(s.deviceToken));
+    expect(ctx.fingerprint.deviceTokenHash).not.toBe(s.deviceToken);
+    expect(ctx.fingerprint.deviceId).toBe(ctx.deviceId);
+    expect(ctx.fingerprint.appVersion).toBeNull();
+
+    // With the header present, the build version is recorded.
+    const ctxWithVersion = await requirePosCashier(reqWith({
+      Authorization: `Bearer ${s.deviceToken}`,
+      "X-POS-Cashier": s.cashierToken,
+      "X-POS-App-Version": "pos-9.9",
+    }));
+    expect(ctxWithVersion.fingerprint.appVersion).toBe("pos-9.9");
   });
 });
 
