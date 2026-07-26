@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getTenantBySlug } from "@/server/tenancy";
 import { cancelOrderByToken } from "@/server/ordering/service";
+import { webFingerprint } from "@/server/audit/fingerprint";
 import { DomainError } from "@/shared/errors";
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ token: string }> }) {
@@ -12,7 +13,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
   if (!tenant) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   try {
-    const order = await cancelOrderByToken(tenant.id, token);
+    const order = await cancelOrderByToken(tenant.id, token, { fingerprint: webFingerprint(req) });
     return NextResponse.json({ status: order.status });
   } catch (e) {
     if (e instanceof DomainError) {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePosDevice } from "@/server/pos/require-device";
 import { signInCashier } from "@/server/pos/cashier";
+import { webFingerprint } from "@/server/audit/fingerprint";
 import { PosAuthError, PosCashierError } from "@/server/pos/errors";
 
 export async function POST(req: NextRequest) {
@@ -18,7 +19,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const res = await signInCashier(device.tenantId, email, password);
+    const res = await signInCashier(device.tenantId, email, password, { fingerprint: webFingerprint(req) });
     return NextResponse.json(res);
   } catch (e) {
     if (e instanceof PosCashierError) return NextResponse.json({ error: e.message }, { status: 401 });
