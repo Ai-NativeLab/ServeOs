@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import Link from "next/link";
 import { loginAction } from "./actions";
 
 const inputStyle: CSSProperties = {
@@ -32,13 +33,13 @@ export default async function LoginPage({
       }}
     >
       <div style={{ background: "#1e293b", borderRadius: 12, padding: 40, width: "100%", maxWidth: 400 }}>
-        <a
+        <Link
           href="/"
           style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 28, textDecoration: "none" }}
         >
           <div style={{ width: 24, height: 24, background: "#f97316", borderRadius: 6 }} />
           <span style={{ color: "#fff", fontWeight: 700, fontSize: 16 }}>ServeOS</span>
-        </a>
+        </Link>
 
         <h1 style={{ color: "#fff", fontSize: 22, fontWeight: 700, margin: 0 }}>Welcome back</h1>
         <p style={{ color: "#64748b", fontSize: 14, marginTop: 4, marginBottom: 24 }}>

@@ -58,7 +58,7 @@ export function CartDrawer({
 
           {preorderOnly && cart.lines.length > 0 && (
             <p className="mt-2 text-xs text-muted-foreground">
-              The restaurant is closed right now — you'll pick a time at checkout.
+              The restaurant is closed right now — you&apos;ll pick a time at checkout.
             </p>
           )}
 

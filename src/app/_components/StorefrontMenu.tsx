@@ -41,6 +41,7 @@ export function StorefrontMenu({
     const wanted = new URLSearchParams(window.location.search).get("product");
     if (!wanted) return;
     const product = menu.categories.flatMap((c) => c.products).find((p) => p.id === wanted);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- opening a deep-linked product (?product=) from the URL on mount
     if (product) setActiveProduct(product);
     const params = new URLSearchParams(window.location.search);
     params.delete("product");

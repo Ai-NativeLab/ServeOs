@@ -3,9 +3,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { Button } from "@/components/ui/button";
 import { SubmitButton } from "@/components/dashboard/SubmitButton";
 import { adminSignOutAction } from "@/app/admin/actions";
-import type { NavItem } from "@/components/dashboard/nav-items";
 
-export function AdminTopbar({ userName, items }: { userName: string; items: NavItem[] }) {
+export function AdminTopbar({ userName }: { userName: string }) {
   return (
     <header className="h-14 flex items-center justify-between gap-3 border-b bg-card px-4">
       <div className="ml-auto flex items-center gap-3">

@@ -129,7 +129,7 @@ export function StatusPoller({
             <AlertDialogHeader>
               <AlertDialogTitle>Cancel this order?</AlertDialogTitle>
               <AlertDialogDescription>
-                This can't be undone. You can only cancel while the restaurant hasn't confirmed yet.
+                This can&apos;t be undone. You can only cancel while the restaurant hasn&apos;t confirmed yet.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>

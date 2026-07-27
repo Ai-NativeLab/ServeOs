@@ -29,7 +29,7 @@ describe("tenancy service", () => {
   });
 
   it("derived currency/timezone win over caller-supplied values", async () => {
-    const t = await createTenant({ slug: "eg-co", name: "EG Co", country: "EG", currency: "USD", timezone: "America/New_York" } as any);
+    const t = await createTenant({ slug: "eg-co", name: "EG Co", country: "EG", currency: "USD", timezone: "America/New_York" });
     expect(t.currency).toBe("EGP");
     expect(t.timezone).toBe("Africa/Cairo");
   });
