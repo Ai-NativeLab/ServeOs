@@ -23,8 +23,10 @@ function loadCustomer(): SavedCustomer {
   }
 }
 
+export type OfflineMethodOption = { type: string; label: string; payToDetail: string | null };
+
 export function CheckoutForm({
-  slug, branchId, branchName, pricing, currency, openNow, slots,
+  slug, branchId, branchName, pricing, currency, openNow, slots, methods,
 }: {
   slug: string;
   branchId: string;
@@ -33,6 +35,7 @@ export function CheckoutForm({
   currency: string;
   openNow: boolean;
   slots: SlotOption[];
+  methods: OfflineMethodOption[];
 }) {
   const [cart, setCart] = useState<Cart>({ branchId: null, lines: [] });
   const [fulfillment, setFulfillment] = useState<"pickup" | "delivery">("delivery");
@@ -45,6 +48,8 @@ export function CheckoutForm({
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [notes, setNotes] = useState("");
+  const [payMethod, setPayMethod] = useState<string>("cash");
+  const [payRef, setPayRef] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -77,6 +82,8 @@ export function CheckoutForm({
   const daySlots = slots.filter((s) => s.day === slotDay);
   const hasTomorrow = slots.some((s) => s.day === "Tomorrow");
   const branchMismatch = cart.lines.length > 0 && cart.branchId !== null && cart.branchId !== branchId;
+  const selectedMethod = methods.find((m) => m.type === payMethod) ?? null;
+  const missingPaymentRef = selectedMethod !== null && !payRef.trim();
 
   async function submit() {
     setError(null);
@@ -96,6 +103,10 @@ export function CheckoutForm({
       setError("That time is no longer available — please pick a new one.");
       return;
     }
+    if (missingPaymentRef) {
+      setError("Please enter your payment reference.");
+      return;
+    }
     setSubmitting(true);
     try {
       const res = await fetch("/api/orders", {
@@ -107,6 +118,8 @@ export function CheckoutForm({
           areaId: fulfillment === "delivery" ? areaId : undefined,
           addressText: fulfillment === "delivery" ? address : undefined,
           scheduledFor: when === "scheduled" ? slotIso : undefined,
+          paymentMethod: payMethod,
+          paymentReference: selectedMethod ? payRef.trim() : undefined,
           lines: cart.lines.map((l) => ({
             productId: l.productId, variantId: l.variantId, quantity: l.quantity, selectedOptionIds: l.selectedOptionIds,
           })),
@@ -296,14 +309,52 @@ export function CheckoutForm({
         )}
       </div>
 
+      <div className="card-lift space-y-2 rounded-2xl border border-border bg-card p-4">
+        <div className="grid gap-1.5">
+          <Label htmlFor="co-payment">Payment</Label>
+          <select
+            id="co-payment"
+            value={payMethod}
+            onChange={(e) => {
+              setPayMethod(e.target.value);
+              setPayRef("");
+            }}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-base outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 md:text-sm"
+          >
+            <option value="cash">Cash on delivery</option>
+            {methods.map((m) => (
+              <option key={m.type} value={m.type}>{m.label}</option>
+            ))}
+          </select>
+        </div>
+        {selectedMethod && (
+          <div className="rounded-lg border border-border bg-muted/40 p-3 text-sm">
+            <p className="text-ink">
+              {selectedMethod.payToDetail ? (
+                <>Send payment to <span className="font-semibold">{selectedMethod.payToDetail}</span>, then enter your reference below.</>
+              ) : (
+                "Enter your payment reference below."
+              )}
+            </p>
+            <Input
+              value={payRef}
+              onChange={(e) => setPayRef(e.target.value)}
+              placeholder="Transaction reference"
+              aria-invalid={missingPaymentRef}
+              className="mt-2"
+            />
+          </div>
+        )}
+      </div>
+
       {error && <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive">{error}</p>}
 
       <Button
         onClick={submit}
-        disabled={submitting || !name || !phone || minShortfall > 0}
+        disabled={submitting || !name || !phone || minShortfall > 0 || missingPaymentRef}
         className="card-lift w-full rounded-full py-6 text-base transition-all active:scale-[0.98]"
       >
-        {submitting ? "Placing…" : `Place order (Cash) — ${formatMoney(totals.total, currency)}`}
+        {submitting ? "Placing…" : `Place order (${selectedMethod ? selectedMethod.label : "Cash"}) — ${formatMoney(totals.total, currency)}`}
       </Button>
       <p className="text-xs text-muted-foreground">Final price is confirmed by the restaurant.</p>
     </div>

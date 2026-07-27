@@ -61,3 +61,12 @@ export async function getPlanForTenant(tenantId: string) {
 export async function listPlans() {
   return db.select().from(plans).orderBy(plans.priceMonthly);
 }
+
+/** Set the tenant's subscription active on a plan for a 1-month period (manual confirm). */
+export async function activateSubscriptionForPlan(tenantId: string, planId: string): Promise<void> {
+  const now = new Date();
+  const end = new Date(now); end.setMonth(end.getMonth() + 1);
+  await db.update(subscriptions)
+    .set({ planId, status: "active", currentPeriodStart: now, currentPeriodEnd: end })
+    .where(eq(subscriptions.tenantId, tenantId));
+}
