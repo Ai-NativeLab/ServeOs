@@ -4,6 +4,14 @@ import tailwindcss from "@tailwindcss/vite";
 import electron from "vite-plugin-electron/simple";
 import path from "node:path";
 
+// VS Code's integrated terminal exports ELECTRON_RUN_AS_NODE=1 for child node
+// processes. vite-plugin-electron spawns electron inheriting this env, which
+// makes electron run as plain Node — require("electron") then returns the binary
+// path string, so `app` is undefined and app.whenReady() throws on launch.
+// Clearing it here (before the plugin spawns electron) lets `npm run dev` open
+// the real GUI from any terminal. No-op where the var isn't set.
+delete process.env.ELECTRON_RUN_AS_NODE;
+
 export default defineConfig({
   plugins: [
     react(),
