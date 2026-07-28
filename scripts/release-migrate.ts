@@ -20,7 +20,10 @@ config({ path: process.env.ENV_FILE ?? ".env.local", override: false });
 async function main() {
   const target = process.env.VERCEL_ENV;
 
-  if (target !== "production") {
+  // Kept in src/db so the rule is unit-tested — this branch is the only thing
+  // stopping a pull request from migrating production.
+  const { shouldReleaseMigrate } = await import("../src/db/release-guard");
+  if (!shouldReleaseMigrate(target)) {
     console.log(`release-migrate: VERCEL_ENV=${target ?? "unset"} — skipping migrations (production only).`);
     return;
   }
