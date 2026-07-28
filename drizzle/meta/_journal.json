@@ -122,17 +122,17 @@
       "breakpoints": true
     },
     {
-      "idx": 17,
+      "idx": 18,
       "version": "7",
       "when": 1785023500259,
-      "tag": "0017_strong_madame_masque",
+      "tag": "0018_strong_madame_masque",
       "breakpoints": true
     },
     {
-      "idx": 18,
+      "idx": 19,
       "version": "7",
       "when": 1785097217261,
-      "tag": "0018_gorgeous_rocket_racer",
+      "tag": "0019_gorgeous_rocket_racer",
       "breakpoints": true
     }
   ]
