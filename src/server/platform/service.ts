@@ -17,8 +17,6 @@ export type EnsureSuperAdminResult = {
   roleCreated: boolean;
   /** This user was not linked to super_admin before now. */
   roleGranted: boolean;
-  /** Always false — this repairs an existing user, it never creates one. */
-  created: false;
 };
 
 /**
@@ -60,7 +58,7 @@ export async function ensurePlatformSuperAdmin(email: string): Promise<EnsureSup
       .limit(1);
     if (!link) await tx.insert(userRoles).values({ userId: user.id, roleId: role.id });
 
-    return { userId: user.id, roleCreated, roleGranted: !link, created: false as const };
+    return { userId: user.id, roleCreated, roleGranted: !link };
   });
 }
 

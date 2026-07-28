@@ -135,7 +135,7 @@ describe("ensurePlatformSuperAdmin", () => {
 
     const res = await ensurePlatformSuperAdmin("a@serveos.com");
 
-    expect(res).toMatchObject({ userId: u.id, created: false, roleGranted: true });
+    expect(res).toMatchObject({ userId: u.id, roleGranted: true });
     expect(await loadUserRoleKeys(u.id)).toEqual(["super_admin"]);
   });
 

@@ -18,6 +18,10 @@ config({ path: process.env.ENV_FILE ?? ".env.local", override: true });
 const args = process.argv.slice(2);
 const FIX = args.includes("--fix");
 const emailFlag = args.indexOf("--email");
+if (emailFlag !== -1 && !args[emailFlag + 1]) {
+  console.error("--email needs a value, e.g. --email admin@serveos.com");
+  process.exit(1);
+}
 const EMAIL = emailFlag !== -1 ? args[emailFlag + 1] : "admin@serveos.com";
 
 async function main() {
