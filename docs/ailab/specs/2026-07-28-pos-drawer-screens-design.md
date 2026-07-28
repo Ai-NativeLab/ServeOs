@@ -1,7 +1,7 @@
 # ServeOS — POS Drawer Screens Design
 
 **Date:** 2026-07-28
-**Status:** PARKED — spec'd, not scheduled. Resume only after the roadmap's spec'd work is complete.
+**Status:** IMPLEMENTED (2026-07-28) — built as specified; see the "Built" note at the end for the two details that only surfaced during implementation.
 **Scope:** The Electron POS front end for Spec **2 (Shifts & Cash Drawer)**. Spec 2 shipped the tables, services, and `/api/pos/v1/shifts/*` routes; a cashier still has no way to reach any of it. This spec covers opening a drawer, moving cash in and out, reading the live X-report, and counting the drawer closed. It builds **no new server behaviour** — every rule already exists and is tested behind the API.
 
 ## Context
@@ -84,6 +84,25 @@ The existing `409` on a cash tender becomes an explicit "Open a drawer to take c
 - **`apps/pos/src/drawer/counting.ts`** — pure: denominations to total, counted-total parsing and validation, over/short labelling. Unit-tested like `cart.ts`, including the case where a denomination pad disagrees with a typed total (the client-side mirror of `CashCountMismatchError`).
 - **No component tests**, per the non-goal above.
 - **Manual acceptance** walks the Spec 2 acceptance path from the till: open with a float, ring a cash sale, move cash in and out, read the X-report twice and confirm it does not change, count mid-shift, close and read the Z-report, and confirm a blind-close cashier sees no variance while a manager does.
+
+## Built
+
+Two things only became clear while building, both worth recording:
+
+1. **Electron's IPC serializes a thrown `Error` down to its message** — custom
+   properties such as `code` do not cross the boundary. The pre-existing
+   `e.code = "TOTAL_MISMATCH"` in `recordSale` therefore never reached the
+   renderer either. The drawer calls return a `DrawerResult` discriminated union
+   instead, which is what lets the renderer tell *needs a manager* from *already
+   closed* structurally rather than by matching error strings.
+2. **The cash guard is a state check, not an error handler.** Rather than
+   catching the server's 409, the payment screen is told whether a drawer is open
+   and blocks a cash tender up front, offering to open one. The server still
+   enforces; this only means the cashier learns before the customer hands over
+   notes. It also avoids depending on a server message string.
+
+Shipped as `CloseDrawerModal` rather than a full-screen `CloseDrawerScreen` —
+the close is a focused interruption of the drawer view, not a destination.
 
 ## Open questions
 
