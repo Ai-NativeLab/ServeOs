@@ -113,6 +113,36 @@ test databases confirmed 19/19 applied afterwards with no re-application.
 
 ---
 
+## The release step
+
+Detection is not enough on its own: production drifted because **nothing in the
+pipeline applied migrations**. Vercel's Git integration deploys on merge and runs
+`next build`, so a merge shipped code while the schema stayed behind. On
+2026-07-28 that left production missing `0017_gigantic_fantastic_four` entirely —
+16 objects absent — which broke Home, Orders and Payments together.
+
+`scripts/release-migrate.ts`, wired in as `vercel-build`, closes that gap:
+
+```
+"vercel-build": "tsx scripts/release-migrate.ts && next build"
+```
+
+- It runs **during the build**, so migrations complete before Vercel activates
+  the deployment. Anything running after activation races live traffic against a
+  schema that has not caught up.
+- It **fails the build** when a migration fails or the schema is still
+  incomplete, so a broken schema cannot serve a request.
+- It runs **only when `VERCEL_ENV=production`**. Preview deployments typically
+  share the production database, so migrating from a feature branch would apply
+  unshipped schema to production — the failure mode this whole document exists
+  to prevent.
+- It requires `DATABASE_URL` to be visible **at build time**. Vercel variables
+  marked *Sensitive* are runtime-only; if that is the case the step fails with an
+  explicit message rather than silently skipping.
+
+Both entry points share `migrateAndVerify` (`src/db/run-migrations.ts`), so the
+migrate and its verification cannot come apart in one path but not the other.
+
 ## What this does not do
 
 - It does not reorder or auto-repair anything. Out-of-order DDL is not always
