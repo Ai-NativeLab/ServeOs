@@ -34,9 +34,12 @@ async function main() {
   const unjournaled = findUnjournaledMigrations(migrationsDir);
   if (unjournaled.length) {
     console.error(
-      `\n${unjournaled.length} migration file(s) are not listed in ${migrationsDir}/meta/_journal.json,`,
-      "\nso nothing will ever apply them:",
-      ...unjournaled.map((tag) => `\n    ${tag}.sql`),
+      [
+        "",
+        `${unjournaled.length} migration file(s) are not listed in ${migrationsDir}/meta/_journal.json,`,
+        "so nothing will ever apply them:",
+        ...unjournaled.map((tag) => `    ${tag}.sql`),
+      ].join("\n"),
     );
   }
 
