@@ -49,13 +49,13 @@ async function main() {
     return;
   }
 
+  const { splitStatements, partitionEnumAdditions } = await import("../src/db/migration-sql");
+
   const sql = readFileSync(`${migrationsDir}/${entry.tag}.sql`, "utf8");
-  const statements = sql.split("--> statement-breakpoint").map((s) => s.trim()).filter(Boolean);
+  const statements = splitStatements(sql);
   // `ALTER TYPE … ADD VALUE` cannot share a transaction with statements that use
   // the new value, so it runs first, on its own, and is skipped if already present.
-  const isEnumAdd = (s: string) => /ALTER\s+TYPE[\s\S]*ADD\s+VALUE/i.test(s);
-  const enumAdds = statements.filter(isEnumAdd);
-  const rest = statements.filter((s) => !isEnumAdd(s));
+  const { enumAdditions: enumAdds, rest } = partitionEnumAdditions(statements);
 
   console.log(`${tag}: ${statements.length} statement(s), when=${entry.when}`);
   console.log(`ledger row to insert: hash=${entry.hash.slice(0, 12)}… created_at=${entry.when}`);
@@ -77,9 +77,7 @@ async function main() {
     return;
   }
 
-  for (const stmt of enumAdds) {
-    const type = /ALTER\s+TYPE\s+"?public"?\."?(\w+)"?/i.exec(stmt)?.[1];
-    const value = /ADD\s+VALUE\s+'([^']+)'/i.exec(stmt)?.[1];
+  for (const { statement, type, value } of enumAdds) {
     const present = await pool.query(
       `select 1 from pg_enum e join pg_type t on t.oid = e.enumtypid
         where t.typname = $1 and e.enumlabel = $2`,
@@ -89,7 +87,7 @@ async function main() {
       console.log(`  skip (exists): ${type}.${value}`);
       continue;
     }
-    await pool.query(stmt);
+    await pool.query(statement);
     console.log(`  added enum value: ${type}.${value}`);
   }
 
