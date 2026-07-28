@@ -70,6 +70,14 @@ export class ShiftClosedError extends Error {
   }
 }
 
+/** Thrown when a drawer movement's amount contradicts its type. */
+export class CashMovementError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CashMovementError";
+  }
+}
+
 /** Thrown when a count's denominations do not sum to the counted total. */
 export class CashCountMismatchError extends Error {
   constructor(message = "Denominations do not sum to the counted total") {
