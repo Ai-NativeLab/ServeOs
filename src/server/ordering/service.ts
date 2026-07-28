@@ -505,7 +505,17 @@ export async function markPaid(tenantId: string, orderId: string, userId: string
  * already blocks confirm-after-reject; the status exclusion here is defense in depth
  * against any other path that could cancel/reject an order without first resolving
  * its pending_verification payment. */
-export async function confirmOrderPayment(tenantId: string, orderId: string, _userId: string): Promise<Order> {
+/**
+ * `userId` is the human who accepted the money, or null when a provider
+ * callback resolved it — a webhook has no person behind it, and recording a
+ * synthetic id as though it were one would put a lie in the audit chain.
+ */
+export async function confirmOrderPayment(
+  tenantId: string,
+  orderId: string,
+  userId: string | null,
+  audit?: { fingerprint: AuditFingerprint },
+): Promise<Order> {
   return withTenant(tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
     if (!order) throw new OrderNotFoundError();
@@ -522,6 +532,31 @@ export async function confirmOrderPayment(tenantId: string, orderId: string, _us
       ))
       .returning();
     if (!updated) throw new PaymentAlreadyResolvedError();
+
+    // Accepting money is a financial state change with a named actor, so it
+    // belongs in the chain (D1). The rejection path is audited too, via the
+    // cancellation it delegates to.
+    await recordAuditEvent(
+      {
+        tenantId,
+        branchId: updated.branchId,
+        actorUserId: userId,
+        fingerprint: audit?.fingerprint ?? emptyFingerprint(),
+      },
+      {
+        action: "payment.confirmed",
+        entityType: "order",
+        entityId: orderId,
+        summary: `Offline payment confirmed for order #${updated.orderNumber}`,
+        metadata: {
+          paymentMethod: updated.paymentMethod,
+          paymentReference: updated.paymentReference ?? null,
+          total: updated.total,
+        },
+        actorType: userId ? "user" : "system",
+      },
+      tx,
+    );
     return updated;
   });
 }

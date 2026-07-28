@@ -85,10 +85,30 @@ export async function listPlans() {
 }
 
 /** Set the tenant's subscription active on a plan for a 1-month period (manual confirm). */
-export async function activateSubscriptionForPlan(tenantId: string, planId: string): Promise<void> {
+export async function activateSubscriptionForPlan(
+  tenantId: string,
+  planId: string,
+  audit?: AuditActorInput,
+): Promise<void> {
   const now = new Date();
   const end = new Date(now); end.setMonth(end.getMonth() + 1);
-  await db.update(subscriptions)
-    .set({ planId, status: "active", currentPeriodStart: now, currentPeriodEnd: end })
-    .where(eq(subscriptions.tenantId, tenantId));
+  // subscriptions has no RLS; the withTenant wrap is for the audit insert's app.tenant_id.
+  await withTenant(tenantId, async (tx) => {
+    const [sub] = await tx.update(subscriptions)
+      .set({ planId, status: "active", currentPeriodStart: now, currentPeriodEnd: end })
+      .where(eq(subscriptions.tenantId, tenantId))
+      .returning();
+    await recordAuditEvent(
+      { tenantId, actorUserId: audit?.actorUserId ?? null, fingerprint: audit?.fingerprint ?? emptyFingerprint() },
+      {
+        action: "subscription.activated",
+        entityType: "subscription",
+        entityId: sub?.id ?? tenantId,
+        summary: "Subscription activated",
+        metadata: { planId, roleKey: audit?.roleKey ?? null },
+        actorType: audit?.actorType,
+      },
+      tx,
+    );
+  });
 }

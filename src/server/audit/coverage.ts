@@ -98,6 +98,11 @@ export const AUDIT_ALLOWLIST: Record<string, string> = {
   // emits tenant.registered. createTenant is a bare control-table insert used by
   // seeds/tooling with no tenant context to attribute an actor to.
   "service.createTenant": "bootstrap insert; tenant.registered emitted by registerTenant",
+  // The rejection's own write only claims the paymentStatus; the domain event is
+  // the cancellation it then delegates to, which emits order.status_changed with
+  // the same actor and reason. Confirming, which has no such delegate, emits
+  // payment.confirmed directly.
+  "service.rejectOrderPayment": "order.status_changed emitted by the transitionStatus it delegates to",
   // Forward references — land with later specs; the guardrail enforces they emit then.
   "forward:refund.*": "Spec 3 refunds must emit refund.* via recordAuditEvent",
   "forward:inventory.*": "Spec 8 ledger/lot/count must emit inventory.*",

@@ -51,9 +51,13 @@ async function setup(slug: string) {
  * "0000...aa" id is a stand-in for a system/provider actor, distinct from the
  * human `user.id` the dashboard action passes, to show the seam doesn't care
  * who the caller is. */
-const PROVIDER_SYSTEM_USER_ID = "00000000-0000-0000-0000-0000000000aa";
+/**
+ * A provider callback has no human behind it, so it confirms with a null actor.
+ * The audit chain then records the confirmation as `system` rather than
+ * attributing it to a person who does not exist.
+ */
 async function providerWebhookConfirm(tenantId: string, orderId: string) {
-  return confirmOrderPayment(tenantId, orderId, PROVIDER_SYSTEM_USER_ID);
+  return confirmOrderPayment(tenantId, orderId, null);
 }
 
 describe("confirm-seam is provider-agnostic", () => {
