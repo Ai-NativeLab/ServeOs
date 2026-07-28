@@ -1,19 +1,22 @@
 import { describe, it, expect } from "vitest";
 import { eq } from "drizzle-orm";
+import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { orders } from "@/server/ordering/schema";
 import { getCheckoutPricing } from "@/server/tenancy/settings";
 import { computeCartTotals } from "@/lib/order-totals";
 import { orderPayments, posAdjustmentEvents } from "./tender-schema";
-import { PosForbiddenError, PosSaleError } from "./errors";
+import { posOrderReceipts } from "./schema";
+import { NoOpenShiftError, PosForbiddenError, PosSaleError } from "./errors";
 import { TotalMismatchError } from "@/server/ordering/errors";
 import { issueGrant } from "./grants";
 import { recordSale, addTender } from "./record-sale";
-import { seedPosContext } from "./test-helpers";
+import { seedPosContext, openShiftForCtx } from "./test-helpers";
 
 describe("recordSale", () => {
   it("records a cash sale with change and marks it paid", async () => {
     const { ctx, productId, total } = await seedPosContext("owner");
+    await openShiftForCtx(ctx);
     const res = await recordSale(ctx, {
       clientOrderId: "s-1",
       lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
@@ -31,6 +34,7 @@ describe("recordSale", () => {
 
   it("records a split payment across two tenders", async () => {
     const { ctx, productId, total } = await seedPosContext("owner");
+    await openShiftForCtx(ctx);
     const half = Math.round((total / 2) * 100) / 100;
     const res = await recordSale(ctx, {
       clientOrderId: "s-2",
@@ -73,6 +77,7 @@ describe("recordSale", () => {
 
   it("is idempotent on clientOrderId", async () => {
     const { ctx, productId, total } = await seedPosContext("owner");
+    await openShiftForCtx(ctx);
     const input = {
       clientOrderId: "dup",
       lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
@@ -90,6 +95,7 @@ describe("recordSale", () => {
 
   it("rejects a stale total and creates nothing", async () => {
     const { ctx, productId } = await seedPosContext("owner");
+    await openShiftForCtx(ctx);
     await expect(recordSale(ctx, {
       clientOrderId: "s-5",
       lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
@@ -130,9 +136,68 @@ describe("recordSale", () => {
   });
 });
 
+describe("recordSale — shift stamping", () => {
+  it("stamps every tender with the device's open shift", async () => {
+    const { ctx, productId, total } = await seedPosContext("owner");
+    const shift = await openShiftForCtx(ctx);
+    const half = Math.round((total / 2) * 100) / 100;
+
+    const res = await recordSale(ctx, {
+      clientOrderId: "stamp-1",
+      lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: total,
+      payments: [
+        { clientPaymentId: "p-a", method: "cash", amount: half, tenderedAmount: half },
+        { clientPaymentId: "p-b", method: "card", amount: total - half },
+      ],
+    });
+
+    const tenders = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(orderPayments).where(eq(orderPayments.orderId, res.orderId)));
+    expect(tenders).toHaveLength(2);
+    expect(tenders.map((t) => t.shiftId)).toEqual([shift.id, shift.id]);
+  });
+
+  it("refuses a cash sale with no open shift, writing no order, tender, or receipt", async () => {
+    const { ctx, productId, total } = await seedPosContext("owner");
+
+    await expect(recordSale(ctx, {
+      clientOrderId: "no-shift",
+      lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: total,
+      payments: [{ clientPaymentId: "p-1", method: "cash", amount: total, tenderedAmount: total }],
+    })).rejects.toBeInstanceOf(NoOpenShiftError);
+
+    // Refused before placeOrder, so there is no orphan order to reconcile later.
+    const written = await withTenant(ctx.tenantId, (tx) => tx.select().from(orders));
+    expect(written).toHaveLength(0);
+    const tenders = await withTenant(ctx.tenantId, (tx) => tx.select().from(orderPayments));
+    expect(tenders).toHaveLength(0);
+    const receipts = await db.select().from(posOrderReceipts)
+      .where(eq(posOrderReceipts.clientOrderId, "no-shift"));
+    expect(receipts).toHaveLength(0);
+  });
+
+  it("allows a card-only sale with no open shift, leaving shiftId null", async () => {
+    const { ctx, productId, total } = await seedPosContext("owner");
+
+    const res = await recordSale(ctx, {
+      clientOrderId: "card-no-shift",
+      lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: total,
+      payments: [{ clientPaymentId: "p-1", method: "card", amount: total }],
+    });
+
+    const tenders = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(orderPayments).where(eq(orderPayments.orderId, res.orderId)));
+    expect(tenders[0].shiftId).toBeNull();
+  });
+});
+
 describe("addTender", () => {
   it("tops up a partially paid sale to paid", async () => {
     const { ctx, productId, total } = await seedPosContext("owner");
+    await openShiftForCtx(ctx);
     const sale = await recordSale(ctx, {
       clientOrderId: "top-1",
       lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
@@ -150,6 +215,7 @@ describe("addTender", () => {
 
   it("is idempotent on clientPaymentId", async () => {
     const { ctx, productId, total } = await seedPosContext("owner");
+    await openShiftForCtx(ctx);
     const sale = await recordSale(ctx, {
       clientOrderId: "top-2",
       lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
@@ -175,5 +241,43 @@ describe("addTender", () => {
     await expect(addTender(ctx, sale.orderId, {
       clientPaymentId: "p-2", method: "card", amount: total,
     })).rejects.toThrow(PosSaleError);
+  });
+
+  it("stamps the top-up tender with the open shift", async () => {
+    const { ctx, productId, total } = await seedPosContext("owner");
+    const shift = await openShiftForCtx(ctx);
+    const sale = await recordSale(ctx, {
+      clientOrderId: "top-4",
+      lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: total,
+      payments: [{ clientPaymentId: "p-1", method: "card", amount: 1 }],
+    });
+
+    await addTender(ctx, sale.orderId, {
+      clientPaymentId: "p-2", method: "cash", amount: total - 1, tenderedAmount: total - 1,
+    });
+
+    const tenders = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(orderPayments).where(eq(orderPayments.orderId, sale.orderId)));
+    const topUp = tenders.find((t) => t.clientPaymentId === "p-2")!;
+    expect(topUp.shiftId).toBe(shift.id);
+  });
+
+  it("refuses a cash top-up with no open shift", async () => {
+    const { ctx, productId, total } = await seedPosContext("owner");
+    const sale = await recordSale(ctx, {
+      clientOrderId: "top-5",
+      lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: total,
+      payments: [{ clientPaymentId: "p-1", method: "card", amount: 1 }],
+    });
+
+    await expect(addTender(ctx, sale.orderId, {
+      clientPaymentId: "p-2", method: "cash", amount: 1,
+    })).rejects.toBeInstanceOf(NoOpenShiftError);
+
+    const tenders = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(orderPayments).where(eq(orderPayments.orderId, sale.orderId)));
+    expect(tenders).toHaveLength(1); // only the original card tender
   });
 });

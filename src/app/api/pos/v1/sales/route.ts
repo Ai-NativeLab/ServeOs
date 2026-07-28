@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePosCashier, assertPermission } from "@/server/pos/require-cashier";
 import { recordSale, type RecordSaleInput } from "@/server/pos/record-sale";
-import { PosAuthError, PosCashierError, PosForbiddenError, PosSaleError } from "@/server/pos/errors";
+import { NoOpenShiftError, PosAuthError, PosCashierError, PosForbiddenError, PosSaleError } from "@/server/pos/errors";
 import { TotalMismatchError, OrderValidationError, OutOfStockError } from "@/server/ordering/errors";
 
 export async function POST(req: NextRequest) {
@@ -44,6 +44,11 @@ export async function POST(req: NextRequest) {
         { error: "Prices have changed — review the cart", expected: e.expected, actual: e.actual },
         { status: 409 },
       );
+    }
+    // 409, like the stale-total case: the till must open a drawer and retry,
+    // not treat this as a malformed sale.
+    if (e instanceof NoOpenShiftError) {
+      return NextResponse.json({ error: "Open a shift before taking cash" }, { status: 409 });
     }
     if (e instanceof PosForbiddenError) return NextResponse.json({ error: e.message }, { status: 403 });
     if (e instanceof PosSaleError) return NextResponse.json({ error: e.message }, { status: 400 });
