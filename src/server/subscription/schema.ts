@@ -27,6 +27,7 @@ export const plans = pgTable("plans", {
   isActive: text("is_active").notNull().default("true"),
   limits: jsonb("limits").$type<PlanLimits>().notNull(),
   features: jsonb("features").$type<PlanFeatures>().notNull(),
+  lemonSqueezyVariantId: text("lemon_squeezy_variant_id"),
 });
 
 export const subscriptionStatus = pgEnum("subscription_status", [
@@ -46,6 +47,8 @@ export const subscriptions = pgTable("subscriptions", {
   currentPeriodStart: timestamp("current_period_start", { withTimezone: true }),
   currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }),
   provider: text("provider").notNull().default("manual"),
+  providerSubscriptionId: text("provider_subscription_id"),
+  providerCustomerId: text("provider_customer_id"),
 });
 
 export const usageCounters = pgTable("usage_counters", {

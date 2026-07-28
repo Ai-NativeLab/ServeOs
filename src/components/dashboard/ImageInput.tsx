@@ -65,7 +65,7 @@ export function ImageInput({
     }
   }
 
-  const previewClass = aspect === "wide" ? "aspect-[3/1]" : "size-24";
+  const previewClass = aspect === "wide" ? "aspect-[3/1] w-full" : "size-24 shrink-0";
 
   return (
     <div className="grid gap-2">
@@ -76,7 +76,7 @@ export function ImageInput({
           min-content (~347px) otherwise blows out the parent form's grid track at
           360px viewports, dragging every input past the card edge. */}
       <div className="flex flex-wrap items-start gap-3">
-        <div className={cn("shrink-0 overflow-hidden rounded-lg border border-input bg-secondary", previewClass)}>
+        <div className={cn("overflow-hidden rounded-lg border border-input bg-secondary", previewClass)}>
           {value ? (
             /* eslint-disable-next-line @next/next/no-img-element */
             <img src={value} alt="" className="size-full object-cover" />
