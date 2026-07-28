@@ -591,6 +591,12 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true
+        },
+        "lemon_squeezy_variant_id": {
+          "name": "lemon_squeezy_variant_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -664,6 +670,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'manual'"
+        },
+        "provider_subscription_id": {
+          "name": "provider_subscription_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider_customer_id": {
+          "name": "provider_customer_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -827,9 +845,50 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "plan_id": {
+          "name": "plan_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payment_reference": {
+          "name": "payment_reference",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payment_proof_url": {
+          "name": "payment_proof_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider_ref": {
+          "name": "provider_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "invoices_one_outstanding_per_tenant": {
+          "name": "invoices_one_outstanding_per_tenant",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "status in ('open','pending_verification')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "invoices_tenant_id_tenants_id_fk": {
           "name": "invoices_tenant_id_tenants_id_fk",
@@ -863,6 +922,19 @@
           "tableTo": "users",
           "columnsFrom": [
             "marked_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "invoices_plan_id_plans_id_fk": {
+          "name": "invoices_plan_id_plans_id_fk",
+          "tableFrom": "invoices",
+          "tableTo": "plans",
+          "columnsFrom": [
+            "plan_id"
           ],
           "columnsTo": [
             "id"
@@ -2400,6 +2472,24 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "payment_reference": {
+          "name": "payment_reference",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payment_proof_url": {
+          "name": "payment_proof_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payment_provider_ref": {
+          "name": "payment_provider_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -3560,6 +3650,107 @@
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
+    },
+    "public.tenant_offline_methods": {
+      "name": "tenant_offline_methods",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pay_to_detail": {
+          "name": "pay_to_detail",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "sort_order": {
+          "name": "sort_order",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "tenant_offline_methods_tenant_type_unique": {
+          "name": "tenant_offline_methods_tenant_type_unique",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "tenant_offline_methods_tenant_id_tenants_id_fk": {
+          "name": "tenant_offline_methods_tenant_id_tenants_id_fk",
+          "tableFrom": "tenant_offline_methods",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
     }
   },
   "enums": {
@@ -3600,6 +3791,7 @@
       "schema": "public",
       "values": [
         "open",
+        "pending_verification",
         "paid",
         "void"
       ]
@@ -3647,7 +3839,10 @@
       "name": "payment_method",
       "schema": "public",
       "values": [
-        "cash"
+        "cash",
+        "instapay",
+        "vodafone_cash",
+        "mobile_wallet"
       ]
     },
     "public.payment_status": {
@@ -3655,6 +3850,7 @@
       "schema": "public",
       "values": [
         "unpaid",
+        "pending_verification",
         "partially_paid",
         "paid"
       ]
