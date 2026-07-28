@@ -247,6 +247,10 @@ export async function recordMidShiftCount(
   }
 
   return withTenant(ctx.tenantId, async (tx) => {
+    // Same drawer lock as the close, so a count either lands before the close
+    // or sees the closed drawer — never straddles it.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${shiftId})::bigint)`);
+
     const [shift] = await tx.select().from(posShifts).where(eq(posShifts.id, shiftId)).limit(1);
     if (!shift) throw new NoOpenShiftError();
     if (shift.status === "closed") throw new ShiftClosedError();
@@ -321,6 +325,11 @@ export async function closeShift(
   const canManage = holdsPermission || authorizer !== null;
 
   return withTenant(ctx.tenantId, async (tx) => {
+    // Serialize closes of this drawer, the way openShift serializes opens —
+    // keyed on the shift because a close may name any shift, not just the one
+    // open on this device.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${shiftId})::bigint)`);
+
     const [shift] = await tx.select().from(posShifts).where(eq(posShifts.id, shiftId)).limit(1);
     if (!shift) throw new NoOpenShiftError();
     if (shift.status === "closed") throw new ShiftClosedError();
@@ -351,9 +360,16 @@ export async function closeShift(
       .returning();
 
     const closedAt = new Date();
-    await tx.update(posShifts)
+    // The `status = 'open'` guard is the real serialization point: a writer that
+    // closed this drawer first leaves no matching row, so this close rolls back
+    // whole — no second closing count, no second shift.close event, no rival
+    // Z-report. Same discipline the ordering service uses for status
+    // transitions, and it holds even against a writer that skipped the lock.
+    const [transitioned] = await tx.update(posShifts)
       .set({ status: "closed", closedAt, closedByUserId: ctx.cashierUserId })
-      .where(eq(posShifts.id, shiftId));
+      .where(and(eq(posShifts.id, shiftId), eq(posShifts.status, "open")))
+      .returning({ id: posShifts.id });
+    if (!transitioned) throw new ShiftClosedError();
 
     await recordAuditEvent(shiftAuditCtx(ctx), {
       action: "shift.close",

@@ -3,7 +3,8 @@ import { money } from "@/server/ordering/service";
 import { recordAuditEvent } from "@/server/audit/service";
 import { getShiftPolicy } from "@/server/tenancy/settings";
 import type { Permission } from "@/server/rbac/permissions";
-import { cashMovements, type CashMovement, type CashMovementType } from "./shift-schema";
+import { and, eq } from "drizzle-orm";
+import { cashMovements, posShifts, type CashMovement, type CashMovementType } from "./shift-schema";
 import { CashMovementError, NoOpenShiftError } from "./errors";
 import { resolveAuthorizer } from "./grants";
 import { findOpenShift, shiftAuditCtx } from "./shifts";
@@ -41,8 +42,10 @@ export async function recordCashMovement(
   }
   const signed = input.type === "pay_in" ? magnitude : input.type === "no_sale" ? 0 : -magnitude;
 
-  const shift = await findOpenShift(ctx.tenantId, ctx.deviceId);
-  if (!shift) throw new NoOpenShiftError();
+  // Cheap pre-check so "there is no drawer" is reported before a manager's
+  // single-use grant would be spent. The authoritative read is inside the
+  // transaction below.
+  if (!(await findOpenShift(ctx.tenantId, ctx.deviceId))) throw new NoOpenShiftError();
 
   // Routine pay-outs are the cashier's own call; a large one is a manager's.
   // resolveAuthorizer returns the cashier when they hold reconciliation:manage,
@@ -55,6 +58,18 @@ export async function recordCashMovement(
   }
 
   return withTenant(ctx.tenantId, async (tx) => {
+    // Re-resolve the drawer on THIS transaction and lock the row: a close that
+    // is mid-flight blocks us until it commits (we then see 'closed' and
+    // refuse), and a close that starts after us waits until this movement is
+    // committed, so it cannot count a drawer that is still moving.
+    const [shift] = await tx
+      .select()
+      .from(posShifts)
+      .where(and(eq(posShifts.deviceId, ctx.deviceId), eq(posShifts.status, "open")))
+      .limit(1)
+      .for("update");
+    if (!shift) throw new NoOpenShiftError();
+
     const [row] = await tx
       .insert(cashMovements)
       .values({

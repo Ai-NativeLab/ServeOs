@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { and, eq } from "drizzle-orm";
+import { pool } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { auditEvents } from "@/server/audit/schema";
 import { tenantSettings } from "@/server/tenancy/schema";
@@ -284,6 +285,50 @@ describe("closeShift", () => {
 
     expect(z.flagged).toBe(true);
     expect(z.approvedByUserId).toBe(managerId);
+  });
+
+  it("loses cleanly to a concurrent writer that closes the drawer first", async () => {
+    const { ctx, shift, expected } = await tradedShift();
+
+    // A competing transaction closes the drawer but does not commit yet, so our
+    // close still reads status='open' and only collides at the UPDATE. Two
+    // winners here would mean two closing counts and two conflicting Z-reports.
+    const rival = await pool.connect();
+    try {
+      await rival.query("BEGIN");
+      await rival.query("SELECT set_config('app.tenant_id', $1, true)", [ctx.tenantId]);
+      await rival.query(
+        `UPDATE pos_shifts SET status='closed', closed_at=now(), closed_by_user_id=$2 WHERE id=$1`,
+        [shift.id, ctx.cashierUserId],
+      );
+
+      const closing = closeShift(ctx, shift.id, { count: { countedTotal: expected } });
+
+      // Wait until our close is genuinely blocked on the rival's row lock —
+      // that is the interleaving this test exists to produce.
+      let blocked = false;
+      for (let i = 0; i < 200 && !blocked; i++) {
+        const { rows } = await rival.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted",
+        );
+        blocked = rows[0].n > 0;
+        if (!blocked) await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(blocked).toBe(true);
+
+      await rival.query("COMMIT");
+      await expect(closing).rejects.toBeInstanceOf(ShiftClosedError);
+    } finally {
+      rival.release();
+    }
+
+    const closing = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(cashCounts).where(eq(cashCounts.kind, "closing")));
+    expect(closing).toHaveLength(0); // the losing close rolled back entirely
+
+    const events = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(auditEvents).where(eq(auditEvents.action, "shift.close")));
+    expect(events).toHaveLength(0);
   });
 
   it("emits shift.close carrying the variance, the flag and the approver", async () => {
