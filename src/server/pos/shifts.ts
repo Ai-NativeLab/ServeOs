@@ -5,7 +5,10 @@ import { money } from "@/server/ordering/service";
 import { recordAuditEvent, type AuditContext } from "@/server/audit/service";
 import { getShiftPolicy } from "@/server/tenancy/settings";
 import type { Permission } from "@/server/rbac/permissions";
-import { posShifts, cashCounts, cashMovements, type PosShift, type CashMovementType } from "./shift-schema";
+import {
+  posShifts, cashCounts, cashMovements,
+  type PosShift, type CashCount, type CashMovementType,
+} from "./shift-schema";
 import { orderPayments, posAdjustmentEvents, type OrderPayment } from "./tender-schema";
 import { resolveAuthorizer } from "./grants";
 import {
@@ -227,6 +230,60 @@ export async function buildXReport(tenantId: string, shift: PosShift): Promise<X
   return withTenant(tenantId, async (tx) => {
     const { core, expected } = await gatherShift(tx, shift);
     return { kind: "x", ...core, cash: { expected } };
+  });
+}
+
+/**
+ * A count taken without closing — the drawer is verified mid-shift and keeps
+ * trading. Same expected cash as the close would use; the shift is untouched.
+ */
+export async function recordMidShiftCount(
+  ctx: PosCashierContext,
+  shiftId: string,
+  count: { countedTotal: number; denominations?: Record<string, number> },
+): Promise<CashCount> {
+  if (count.denominations && sumDenominations(count.denominations) !== round2(count.countedTotal)) {
+    throw new CashCountMismatchError();
+  }
+
+  return withTenant(ctx.tenantId, async (tx) => {
+    const [shift] = await tx.select().from(posShifts).where(eq(posShifts.id, shiftId)).limit(1);
+    if (!shift) throw new NoOpenShiftError();
+    if (shift.status === "closed") throw new ShiftClosedError();
+
+    const { expected } = await gatherShift(tx, shift);
+    const counted = round2(count.countedTotal);
+    const variance = computeVariance(counted, expected);
+
+    const [row] = await tx
+      .insert(cashCounts)
+      .values({
+        tenantId: ctx.tenantId,
+        shiftId,
+        kind: "mid_shift",
+        countedTotal: money(counted),
+        expectedTotal: money(expected),
+        variance: money(variance),
+        denominations: count.denominations ?? null,
+        byUserId: ctx.cashierUserId,
+      })
+      .returning();
+
+    await recordAuditEvent(shiftAuditCtx(ctx), {
+      action: "count",
+      entityType: "cash_count",
+      entityId: row.id,
+      summary: `Mid-shift count (variance ${money(variance)})`,
+      metadata: {
+        shiftId,
+        expected: money(expected),
+        counted: money(counted),
+        variance: money(variance),
+      },
+      actorType: "user",
+    }, tx);
+
+    return row;
   });
 }
 

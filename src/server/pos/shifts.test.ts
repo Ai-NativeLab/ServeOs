@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { auditEvents } from "@/server/audit/schema";
 import { tenantSettings } from "@/server/tenancy/schema";
-import { openShift, findOpenShift, closeShift, buildXReport } from "./shifts";
+import { openShift, findOpenShift, closeShift, buildXReport, recordMidShiftCount } from "./shifts";
 import { recordCashMovement } from "./cash-movements";
 import { recordSale } from "./record-sale";
 import { issueGrant } from "./grants";
@@ -303,6 +303,42 @@ describe("closeShift", () => {
       flagged: true,
       approvedByUserId: ctx.cashierUserId,
     });
+  });
+});
+
+describe("recordMidShiftCount", () => {
+  it("records a mid_shift count against the live expected without closing", async () => {
+    const { ctx, shift, expected } = await tradedShift();
+
+    const count = await recordMidShiftCount(ctx, shift.id, { countedTotal: expected - 3 });
+
+    expect(count.kind).toBe("mid_shift");
+    expect(count.expectedTotal).toBe(expected.toFixed(2));
+    expect(count.countedTotal).toBe((expected - 3).toFixed(2));
+    expect(count.variance).toBe("-3.00");
+
+    const [still] = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(posShifts).where(eq(posShifts.id, shift.id)));
+    expect(still.status).toBe("open");
+    expect(still.closedAt).toBeNull();
+  });
+
+  it("appends exactly one count audit event", async () => {
+    const { ctx, shift, expected } = await tradedShift();
+    await recordMidShiftCount(ctx, shift.id, { countedTotal: expected });
+
+    const events = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(auditEvents).where(eq(auditEvents.action, "count")));
+    expect(events).toHaveLength(1);
+    expect(events[0].entityType).toBe("cash_count");
+  });
+
+  it("refuses to count a closed shift", async () => {
+    const { ctx, shift, expected } = await tradedShift();
+    await closeShift(ctx, shift.id, { count: { countedTotal: expected } });
+
+    await expect(recordMidShiftCount(ctx, shift.id, { countedTotal: expected }))
+      .rejects.toBeInstanceOf(ShiftClosedError);
   });
 });
 
