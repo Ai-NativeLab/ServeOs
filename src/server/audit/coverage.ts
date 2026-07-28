@@ -11,6 +11,7 @@ export const AUDITED_SERVICE_FILES = [
   "src/server/pos/cashier.ts",
   "src/server/pos/held-tickets.ts",
   "src/server/pos/service.ts",
+  "src/server/pos/shifts.ts",
   "src/server/catalog/service.ts",
   "src/server/catalog/variants.ts",
   "src/server/branches/service.ts",
