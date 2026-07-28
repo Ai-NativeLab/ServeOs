@@ -49,6 +49,10 @@ export const subscriptions = pgTable("subscriptions", {
   provider: text("provider").notNull().default("manual"),
   providerSubscriptionId: text("provider_subscription_id"),
   providerCustomerId: text("provider_customer_id"),
+  // When the subscription began. Platform MRR-over-time needs a start date, and
+  // every other table records one; this column was missing, so the admin
+  // overview's trend query referenced a column that did not exist.
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const usageCounters = pgTable("usage_counters", {
