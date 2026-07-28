@@ -62,3 +62,4 @@ export const cashCounts = pgTable("cash_counts", {
 export type PosShift = typeof posShifts.$inferSelect;
 export type CashMovement = typeof cashMovements.$inferSelect;
 export type CashCount = typeof cashCounts.$inferSelect;
+export type CashMovementType = (typeof cashMovementTypeEnum.enumValues)[number];

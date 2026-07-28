@@ -3,14 +3,14 @@ import { money } from "@/server/ordering/service";
 import { recordAuditEvent } from "@/server/audit/service";
 import { getShiftPolicy } from "@/server/tenancy/settings";
 import type { Permission } from "@/server/rbac/permissions";
-import { cashMovements, cashMovementTypeEnum, type CashMovement } from "./shift-schema";
+import { cashMovements, type CashMovement, type CashMovementType } from "./shift-schema";
 import { CashMovementError, NoOpenShiftError } from "./errors";
 import { resolveAuthorizer } from "./grants";
 import { findOpenShift, shiftAuditCtx } from "./shifts";
 import { round2 } from "./shift-math";
 import type { PosCashierContext } from "./require-cashier";
 
-export type CashMovementType = (typeof cashMovementTypeEnum.enumValues)[number];
+export type { CashMovementType };
 
 export type CashMovementInput = {
   type: CashMovementType;
