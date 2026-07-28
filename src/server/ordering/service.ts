@@ -16,6 +16,9 @@ import { sanitizeHttpUrl } from "@/lib/safe-url";
 import { orders, orderItems, orderStatusEvents, type SelectedModifier, type Order, type OrderWithItems, type OrderDetail, type OrderStatus } from "./schema";
 import { canTransition } from "./state-machine";
 import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, OutOfStockError, TotalMismatchError } from "./errors";
+import { recordAuditEvent, type AuditFingerprint } from "@/server/audit/service";
+import { emptyFingerprint } from "@/server/audit/fingerprint";
+import type { AuditActorType } from "@/server/audit/canonical";
 
 export type PlaceOrderLine = {
   productId: string;
@@ -47,6 +50,7 @@ export type PlaceOrderInput = {
   orderDiscountReason?: string;
   /** What the client displayed. Compared, never trusted. */
   expectedTotal?: number;
+  audit?: { fingerprint: AuditFingerprint; actorUserId?: string | null; actorType?: AuditActorType };
 };
 export type PlaceOrderResult = {
   orderId: string;
@@ -286,6 +290,21 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       .returning({ id: orderItems.id });
     await tx.insert(orderStatusEvents).values({ tenantId, orderId: order.id, fromStatus: null, toStatus: "pending" });
 
+    await recordAuditEvent(
+      {
+        tenantId, branchId: input.branchId,
+        actorUserId: input.audit?.actorUserId ?? input.cashierUserId ?? null,
+        fingerprint: input.audit?.fingerprint ?? emptyFingerprint(),
+      },
+      {
+        action: "order.placed", entityType: "order", entityId: order.id,
+        summary: `Order #${orderNumber} placed (${input.channel ?? "web"})`,
+        metadata: { orderNumber, channel: input.channel ?? "web", total: money(totals.total) },
+        actorType: input.audit?.actorType ?? (input.cashierUserId ? "user" : "customer"),
+      },
+      tx,
+    );
+
     return { orderId: order.id, orderNumber, statusToken, total: totals.total, itemIds: inserted.map((i) => i.id) };
   });
 
@@ -327,7 +346,7 @@ async function restockOrderItems(tx: Parameters<Parameters<typeof withTenant>[1]
  * Policy: only while still `pending` — once the restaurant confirms, the
  * customer escalates via phone/WhatsApp instead. Dashboard cancels keep their
  * wider state-machine rights via transitionStatus. */
-export async function cancelOrderByToken(tenantId: string, token: string): Promise<Order> {
+export async function cancelOrderByToken(tenantId: string, token: string, audit?: { fingerprint: AuditFingerprint }): Promise<Order> {
   const tenant = await getTenantById(tenantId);
   const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalId);
   return withTenant(tenantId, async (tx) => {
@@ -350,6 +369,12 @@ export async function cancelOrderByToken(tenantId: string, token: string): Promi
       tenantId, orderId: order.id, fromStatus: order.status, toStatus: "cancelled",
       changedByUserId: null, reason: "cancelled_by_customer",
     });
+    await recordAuditEvent(
+      { tenantId, branchId: updated.branchId, actorUserId: null, fingerprint: audit?.fingerprint ?? emptyFingerprint() },
+      { action: "order.cancelled", entityType: "order", entityId: order.id,
+        summary: `Order cancelled by customer`, metadata: { reason: "cancelled_by_customer" }, actorType: "customer" },
+      tx,
+    );
     return updated;
   });
 }
@@ -413,7 +438,7 @@ export async function ordersThisMonthCount(tenantId: string): Promise<number> {
   return Number(row.c);
 }
 
-export async function transitionStatus(tenantId: string, orderId: string, to: OrderStatus, userId: string, reason?: string): Promise<Order> {
+export async function transitionStatus(tenantId: string, orderId: string, to: OrderStatus, userId: string, reason?: string, audit?: { fingerprint: AuditFingerprint }): Promise<Order> {
   const tenant = await getTenantById(tenantId);
   const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalId);
   return withTenant(tenantId, async (tx) => {
@@ -429,11 +454,18 @@ export async function transitionStatus(tenantId: string, orderId: string, to: Or
     if (!updated) throw new InvalidTransitionError(order.status, to);
     if (to === "cancelled" || to === "rejected") await restockOrderItems(tx, orderId, caps);
     await tx.insert(orderStatusEvents).values({ tenantId, orderId, fromStatus: order.status, toStatus: to, changedByUserId: userId, reason: reason ?? null });
+    await recordAuditEvent(
+      { tenantId, branchId: updated.branchId, actorUserId: userId, fingerprint: audit?.fingerprint ?? emptyFingerprint() },
+      { action: "order.status_changed", entityType: "order", entityId: orderId,
+        summary: `Order status ${order.status} → ${to}`,
+        metadata: { before: order.status, after: to, reason: reason ?? null }, actorType: "user" },
+      tx,
+    );
     return updated;
   });
 }
 
-export async function markPaid(tenantId: string, orderId: string, _userId: string): Promise<Order> {
+export async function markPaid(tenantId: string, orderId: string, userId: string, audit?: { fingerprint: AuditFingerprint }): Promise<Order> {
   return withTenant(tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
     if (!order) throw new OrderNotFoundError();
@@ -451,6 +483,12 @@ export async function markPaid(tenantId: string, orderId: string, _userId: strin
     const [updated] = await tx.update(orders)
       .set({ paymentStatus: "paid", updatedAt: new Date() })
       .where(eq(orders.id, orderId)).returning();
+    await recordAuditEvent(
+      { tenantId, branchId: updated.branchId, actorUserId: userId, fingerprint: audit?.fingerprint ?? emptyFingerprint() },
+      { action: "order.marked_paid", entityType: "order", entityId: orderId,
+        summary: `Order marked paid`, metadata: { total: updated.total }, actorType: "user" },
+      tx,
+    );
     return updated;
   });
 }
@@ -467,7 +505,17 @@ export async function markPaid(tenantId: string, orderId: string, _userId: strin
  * already blocks confirm-after-reject; the status exclusion here is defense in depth
  * against any other path that could cancel/reject an order without first resolving
  * its pending_verification payment. */
-export async function confirmOrderPayment(tenantId: string, orderId: string, _userId: string): Promise<Order> {
+/**
+ * `userId` is the human who accepted the money, or null when a provider
+ * callback resolved it — a webhook has no person behind it, and recording a
+ * synthetic id as though it were one would put a lie in the audit chain.
+ */
+export async function confirmOrderPayment(
+  tenantId: string,
+  orderId: string,
+  userId: string | null,
+  audit?: { fingerprint: AuditFingerprint },
+): Promise<Order> {
   return withTenant(tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
     if (!order) throw new OrderNotFoundError();
@@ -484,6 +532,31 @@ export async function confirmOrderPayment(tenantId: string, orderId: string, _us
       ))
       .returning();
     if (!updated) throw new PaymentAlreadyResolvedError();
+
+    // Accepting money is a financial state change with a named actor, so it
+    // belongs in the chain (D1). The rejection path is audited too, via the
+    // cancellation it delegates to.
+    await recordAuditEvent(
+      {
+        tenantId,
+        branchId: updated.branchId,
+        actorUserId: userId,
+        fingerprint: audit?.fingerprint ?? emptyFingerprint(),
+      },
+      {
+        action: "payment.confirmed",
+        entityType: "order",
+        entityId: orderId,
+        summary: `Offline payment confirmed for order #${updated.orderNumber}`,
+        metadata: {
+          paymentMethod: updated.paymentMethod,
+          paymentReference: updated.paymentReference ?? null,
+          total: updated.total,
+        },
+        actorType: userId ? "user" : "system",
+      },
+      tx,
+    );
     return updated;
   });
 }

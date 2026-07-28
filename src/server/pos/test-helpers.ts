@@ -10,7 +10,17 @@ import { getCheckoutPricing } from "@/server/tenancy/settings";
 import { computeCartTotals } from "@/lib/order-totals";
 import { createPairingCode, redeemPairingCode, resolveDevice } from "./service";
 import { signInCashier } from "./cashier";
+import { openShift } from "./shifts";
+import type { PosShift } from "./shift-schema";
 import type { PosCashierContext } from "./require-cashier";
+
+/**
+ * Opens a drawer for a fixture. Cash cannot be taken without one, so any test
+ * that rings a cash tender starts here.
+ */
+export function openShiftForCtx(ctx: PosCashierContext, openingFloat = 200): Promise<PosShift> {
+  return openShift(ctx, { openingFloat });
+}
 
 let n = 0;
 
@@ -77,6 +87,10 @@ export async function seedPosContext(role: "owner" | "manager" | "staff" = "owne
       cashierUserId: cashierUser.id,
       cashierName: cashierUser.name,
       permissions: session.permissions,
+      fingerprint: {
+        deviceId: device.deviceId, deviceTokenHash: "test-token-hash",
+        appVersion: "test-1.0.0", ip: "127.0.0.1", userAgent: "vitest",
+      },
     },
     tenantId: t.id,
     branchId: branch.id,

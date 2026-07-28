@@ -2,13 +2,14 @@
 import { revalidatePath } from "next/cache";
 import { requireBillingPermission } from "../billing-permission";
 import { requestPlanUpgrade } from "@/server/tenancy/settings";
+import { actionAudit } from "@/server/audit/action-context";
 import { createPlanInvoice, submitInvoiceProof, listInvoicesForTenant } from "@/server/billing/service";
 import { OutstandingInvoiceExistsError } from "@/server/billing/errors";
 import type { Invoice } from "@/server/billing/schema";
 
 export async function requestUpgradeAction(planKey: string) {
-  const { tenantId } = await requireBillingPermission();
-  await requestPlanUpgrade(tenantId, planKey);
+  const ctx = await requireBillingPermission();
+  await requestPlanUpgrade(ctx.tenantId, planKey, await actionAudit(ctx));
   revalidatePath("/dashboard/settings/billing");
 }
 

@@ -42,6 +42,7 @@ export default async function PublishMenuPage() {
 
       <Card className="p-5 max-w-xl">
         <h2 className="eyebrow text-primary mb-3">QR code</h2>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={qrDataUrl}
           alt="QR code linking to your storefront"

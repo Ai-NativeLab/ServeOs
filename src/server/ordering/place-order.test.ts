@@ -445,7 +445,7 @@ describe("placeOrder — POS extensions", () => {
 
 describe("confirmOrderPayment / rejectOrderPayment", () => {
   it("confirms an offline order payment → paid, idempotently", async () => {
-    const { t, branch, pizza } = await setup("cf1");
+    const { t, branch, pizza, user } = await setup("cf1");
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
     await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
     const res = await placeOrder(t.id, {
@@ -454,15 +454,15 @@ describe("confirmOrderPayment / rejectOrderPayment", () => {
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
     const { confirmOrderPayment, getOrder } = await import("./service");
-    await confirmOrderPayment(t.id, res.orderId, "00000000-0000-0000-0000-000000000001");
+    await confirmOrderPayment(t.id, res.orderId, user.id);
     expect((await getOrder(t.id, res.orderId)).paymentStatus).toBe("paid");
     const { PaymentAlreadyResolvedError } = await import("@/server/payments/offline");
-    await expect(confirmOrderPayment(t.id, res.orderId, "00000000-0000-0000-0000-000000000001"))
+    await expect(confirmOrderPayment(t.id, res.orderId, user.id))
       .rejects.toThrow(PaymentAlreadyResolvedError);
   });
 
   it("rejecting an offline order payment cancels + restocks", async () => {
-    const { t, branch, pizza } = await setup("cf2");
+    const { t, branch, pizza, user } = await setup("cf2");
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
     await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
     const res = await placeOrder(t.id, {
@@ -471,12 +471,12 @@ describe("confirmOrderPayment / rejectOrderPayment", () => {
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
     const { rejectOrderPayment, getOrder } = await import("./service");
-    const o = await rejectOrderPayment(t.id, res.orderId, "00000000-0000-0000-0000-000000000001", "no funds received");
+    const o = await rejectOrderPayment(t.id, res.orderId, user.id, "no funds received");
     expect(o.status).toBe("cancelled");
   });
 
   it("reject then confirm is refused", async () => {
-    const { t, branch, pizza } = await setup("cf3");
+    const { t, branch, pizza, user } = await setup("cf3");
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
     await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
     const res = await placeOrder(t.id, {
@@ -486,8 +486,8 @@ describe("confirmOrderPayment / rejectOrderPayment", () => {
     });
     const { confirmOrderPayment, rejectOrderPayment, getOrder } = await import("./service");
     const { PaymentAlreadyResolvedError } = await import("@/server/payments/offline");
-    await rejectOrderPayment(t.id, res.orderId, "00000000-0000-0000-0000-000000000001", "no funds received");
-    await expect(confirmOrderPayment(t.id, res.orderId, "00000000-0000-0000-0000-000000000001"))
+    await rejectOrderPayment(t.id, res.orderId, user.id, "no funds received");
+    await expect(confirmOrderPayment(t.id, res.orderId, user.id))
       .rejects.toThrow(PaymentAlreadyResolvedError);
     const order = await getOrder(t.id, res.orderId);
     expect(order.status).toBe("cancelled");
@@ -495,7 +495,7 @@ describe("confirmOrderPayment / rejectOrderPayment", () => {
   });
 
   it("confirm then reject is refused", async () => {
-    const { t, branch, pizza } = await setup("cf4");
+    const { t, branch, pizza, user } = await setup("cf4");
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
     await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
     const res = await placeOrder(t.id, {
@@ -505,8 +505,8 @@ describe("confirmOrderPayment / rejectOrderPayment", () => {
     });
     const { confirmOrderPayment, rejectOrderPayment, getOrder } = await import("./service");
     const { PaymentAlreadyResolvedError } = await import("@/server/payments/offline");
-    await confirmOrderPayment(t.id, res.orderId, "00000000-0000-0000-0000-000000000001");
-    await expect(rejectOrderPayment(t.id, res.orderId, "00000000-0000-0000-0000-000000000001", "no funds received"))
+    await confirmOrderPayment(t.id, res.orderId, user.id);
+    await expect(rejectOrderPayment(t.id, res.orderId, user.id, "no funds received"))
       .rejects.toThrow(PaymentAlreadyResolvedError);
     const order = await getOrder(t.id, res.orderId);
     expect(order.paymentStatus).toBe("paid");
@@ -516,7 +516,7 @@ describe("confirmOrderPayment / rejectOrderPayment", () => {
 
 describe("listAwaitingPaymentOrders", () => {
   it("returns only pending_verification orders, newest first", async () => {
-    const { t, branch, pizza } = await setup("aw1");
+    const { t, branch, pizza, user } = await setup("aw1");
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
     await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
 
@@ -544,7 +544,7 @@ describe("listAwaitingPaymentOrders", () => {
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
     const { confirmOrderPayment, listAwaitingPaymentOrders } = await import("./service");
-    await confirmOrderPayment(t.id, confirmed.orderId, "00000000-0000-0000-0000-000000000001");
+    await confirmOrderPayment(t.id, confirmed.orderId, user.id);
 
     // Force a deterministic newest/oldest gap, independent of wall-clock timing between inserts.
     const { withTenant } = await import("@/db/with-tenant");
@@ -577,7 +577,7 @@ describe("placeOrder paymentProofUrl sanitization", () => {
 
 describe("markPaid vs offline payment authorization gate", () => {
   it("refuses to mark an offline pending_verification order paid, bypassing the payments:confirm gate", async () => {
-    const { t, branch, pizza } = await setup("mp1");
+    const { t, branch, pizza, user } = await setup("mp1");
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
     await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
     const res = await placeOrder(t.id, {
@@ -587,7 +587,7 @@ describe("markPaid vs offline payment authorization gate", () => {
     });
     const { markPaid, getOrder } = await import("./service");
     const { InvalidTransitionError } = await import("./errors");
-    await expect(markPaid(t.id, res.orderId, "00000000-0000-0000-0000-000000000001")).rejects.toThrow(InvalidTransitionError);
+    await expect(markPaid(t.id, res.orderId, user.id)).rejects.toThrow(InvalidTransitionError);
     const order = await getOrder(t.id, res.orderId);
     expect(order.paymentStatus).toBe("pending_verification");
   });
@@ -595,7 +595,7 @@ describe("markPaid vs offline payment authorization gate", () => {
 
 describe("rejectOrderPayment atomicity", () => {
   it("refuses to reject once the order has reached a non-cancellable terminal status, without touching paymentStatus", async () => {
-    const { t, branch, pizza } = await setup("rp1");
+    const { t, branch, pizza, user } = await setup("rp1");
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
     await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
     const res = await placeOrder(t.id, {
@@ -605,7 +605,7 @@ describe("rejectOrderPayment atomicity", () => {
     });
     const { transitionStatus, rejectOrderPayment, getOrder } = await import("./service");
     const { InvalidTransitionError } = await import("./errors");
-    const userId = "00000000-0000-0000-0000-000000000001";
+    const userId = user.id;
     // Advance the fulfillment status all the way to "completed" — a reachable
     // terminal status per the real state machine (pending → confirmed →
     // preparing → ready → completed for pickup) — WITHOUT resolving the
@@ -628,7 +628,7 @@ describe("rejectOrderPayment atomicity", () => {
   });
 
   it("exactly one of concurrent confirm/reject wins, and the order never ends up cancelled+paid", async () => {
-    const { t, branch, pizza } = await setup("rp2");
+    const { t, branch, pizza, user } = await setup("rp2");
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
     await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
     const res = await placeOrder(t.id, {
@@ -637,7 +637,7 @@ describe("rejectOrderPayment atomicity", () => {
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
     const { confirmOrderPayment, rejectOrderPayment, getOrder } = await import("./service");
-    const userId = "00000000-0000-0000-0000-000000000001";
+    const userId = user.id;
     const results = await Promise.allSettled([
       confirmOrderPayment(t.id, res.orderId, userId),
       rejectOrderPayment(t.id, res.orderId, userId, "no funds received"),

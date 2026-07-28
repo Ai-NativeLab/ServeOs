@@ -13,10 +13,11 @@ import {
   setBranchAvailability,
 } from "@/server/catalog/service";
 import { upsertVariant, deleteVariant, setProductStock } from "@/server/catalog/variants";
+import { actionAudit } from "@/server/audit/action-context";
 
 export async function createProductAction(formData: FormData) {
-  const { tenantId } = await requireMenuPermission();
-  await createProduct(tenantId, {
+  const ctx = await requireMenuPermission();
+  await createProduct(ctx.tenantId, {
     categoryId: String(formData.get("categoryId")),
     nameEn: String(formData.get("nameEn")),
     nameAr: String(formData.get("nameAr")),
@@ -24,18 +25,18 @@ export async function createProductAction(formData: FormData) {
     descriptionEn: formData.get("descriptionEn") ? String(formData.get("descriptionEn")) : undefined,
     descriptionAr: formData.get("descriptionAr") ? String(formData.get("descriptionAr")) : undefined,
     imageUrl: formData.get("imageUrl") ? String(formData.get("imageUrl")) : undefined,
-  });
+  }, await actionAudit(ctx));
   revalidatePath("/dashboard/menu");
   redirect("/dashboard/menu");
 }
 
 export async function updateProductAction(productId: string, formData: FormData) {
-  const { tenantId } = await requireMenuPermission();
+  const ctx = await requireMenuPermission();
   const isPublished = formData.get("isPublished") === "true";
   const isFeatured = formData.get("isFeatured") === "true";
   const hasRetailFields = formData.has("retailFields");
   const trackStock = formData.get("trackStock") === "true";
-  await updateProduct(tenantId, productId, {
+  await updateProduct(ctx.tenantId, productId, {
     nameEn: String(formData.get("nameEn")),
     nameAr: String(formData.get("nameAr")),
     basePrice: String(formData.get("basePrice")),
@@ -54,51 +55,51 @@ export async function updateProductAction(productId: string, formData: FormData)
             : null,
         }
       : {}),
-  });
+  }, await actionAudit(ctx));
   revalidatePath("/dashboard/menu");
   redirect(`/dashboard/menu/products/${productId}`);
 }
 
 export async function deleteProductAction(productId: string) {
-  const { tenantId } = await requireMenuPermission();
-  await deleteProduct(tenantId, productId);
+  const ctx = await requireMenuPermission();
+  await deleteProduct(ctx.tenantId, productId, await actionAudit(ctx));
   revalidatePath("/dashboard/menu");
   redirect("/dashboard/menu");
 }
 
 export async function upsertModifierGroupAction(productId: string, formData: FormData) {
-  const { tenantId } = await requireMenuPermission();
-  await upsertModifierGroup(tenantId, productId, {
+  const ctx = await requireMenuPermission();
+  await upsertModifierGroup(ctx.tenantId, productId, {
     id: formData.get("id") ? String(formData.get("id")) : undefined,
     nameEn: String(formData.get("nameEn")),
     nameAr: String(formData.get("nameAr")),
     required: formData.get("required") === "true",
     minSelections: Number(formData.get("minSelections") ?? 0),
     maxSelections: Number(formData.get("maxSelections") ?? 1),
-  });
+  }, await actionAudit(ctx));
   revalidatePath(`/dashboard/menu/products/${productId}`);
 }
 
 export async function deleteModifierGroupAction(productId: string, groupId: string) {
-  const { tenantId } = await requireMenuPermission();
-  await deleteModifierGroup(tenantId, groupId);
+  const ctx = await requireMenuPermission();
+  await deleteModifierGroup(ctx.tenantId, groupId, await actionAudit(ctx));
   revalidatePath(`/dashboard/menu/products/${productId}`);
 }
 
 export async function upsertModifierOptionAction(productId: string, groupId: string, formData: FormData) {
-  const { tenantId } = await requireMenuPermission();
-  await upsertModifierOption(tenantId, groupId, {
+  const ctx = await requireMenuPermission();
+  await upsertModifierOption(ctx.tenantId, groupId, {
     id: formData.get("id") ? String(formData.get("id")) : undefined,
     nameEn: String(formData.get("nameEn")),
     nameAr: String(formData.get("nameAr")),
     priceDelta: String(formData.get("priceDelta") ?? "0"),
-  });
+  }, await actionAudit(ctx));
   revalidatePath(`/dashboard/menu/products/${productId}`);
 }
 
 export async function deleteModifierOptionAction(productId: string, optionId: string) {
-  const { tenantId } = await requireMenuPermission();
-  await deleteModifierOption(tenantId, optionId);
+  const ctx = await requireMenuPermission();
+  await deleteModifierOption(ctx.tenantId, optionId, await actionAudit(ctx));
   revalidatePath(`/dashboard/menu/products/${productId}`);
 }
 
@@ -108,34 +109,34 @@ export async function setBranchAvailabilityAction(
   available: boolean,
   priceOverride?: number,
 ) {
-  const { tenantId } = await requireMenuPermission();
-  await setBranchAvailability(tenantId, branchId, productId, available, priceOverride);
+  const ctx = await requireMenuPermission();
+  await setBranchAvailability(ctx.tenantId, branchId, productId, available, priceOverride, await actionAudit(ctx));
   revalidatePath(`/dashboard/menu/products/${productId}`);
 }
 
 export async function upsertVariantAction(productId: string, formData: FormData) {
-  const { tenantId } = await requireMenuPermission();
+  const ctx = await requireMenuPermission();
   const stockRaw = formData.get("stockQuantity");
-  await upsertVariant(tenantId, productId, {
+  await upsertVariant(ctx.tenantId, productId, {
     id: formData.get("id") ? String(formData.get("id")) : undefined,
     nameEn: String(formData.get("nameEn")),
     nameAr: String(formData.get("nameAr")),
     sku: formData.get("sku") ? String(formData.get("sku")) : null,
     price: String(formData.get("price")),
     stockQuantity: stockRaw !== null && stockRaw !== "" ? Number(stockRaw) : null,
-  });
+  }, await actionAudit(ctx));
   revalidatePath(`/dashboard/menu/products/${productId}`);
 }
 
 export async function deleteVariantAction(productId: string, variantId: string) {
-  const { tenantId } = await requireMenuPermission();
-  await deleteVariant(tenantId, variantId);
+  const ctx = await requireMenuPermission();
+  await deleteVariant(ctx.tenantId, variantId, await actionAudit(ctx));
   revalidatePath(`/dashboard/menu/products/${productId}`);
 }
 
 export async function setProductStockAction(productId: string, formData: FormData) {
-  const { tenantId } = await requireMenuPermission();
+  const ctx = await requireMenuPermission();
   const raw = formData.get("stockQuantity");
-  await setProductStock(tenantId, productId, raw !== null && raw !== "" ? Number(raw) : null);
+  await setProductStock(ctx.tenantId, productId, raw !== null && raw !== "" ? Number(raw) : null, await actionAudit(ctx));
   revalidatePath("/dashboard/menu");
 }

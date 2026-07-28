@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePosCashier, assertPermission } from "@/server/pos/require-cashier";
 import { addTender, type TenderInput } from "@/server/pos/record-sale";
-import { PosAuthError, PosCashierError, PosForbiddenError, PosSaleError } from "@/server/pos/errors";
+import { NoOpenShiftError, PosAuthError, PosCashierError, PosForbiddenError, PosSaleError } from "@/server/pos/errors";
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -27,6 +27,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const receipt = await addTender(ctx, id, body as TenderInput);
     return NextResponse.json(receipt);
   } catch (e) {
+    if (e instanceof NoOpenShiftError) {
+      return NextResponse.json({ error: "Open a shift before taking cash" }, { status: 409 });
+    }
     if (e instanceof PosSaleError) return NextResponse.json({ error: e.message }, { status: 400 });
     throw e;
   }

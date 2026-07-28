@@ -1,14 +1,23 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { LoginScreen } from "./screens/LoginScreen";
 import { CashierSignIn } from "./screens/CashierSignIn";
 import { OrderScreen } from "./screens/OrderScreen";
 import { OrdersQueue } from "./screens/OrdersQueue";
 import { HeldTickets } from "./screens/HeldTickets";
+import { DrawerScreen } from "./screens/DrawerScreen";
+import { OpenDrawerScreen } from "./screens/OpenDrawerScreen";
 import type { CartLine } from "./order/cart";
 
-type View = "order" | "queue" | "held";
+type View = "order" | "queue" | "held" | "drawer";
 export type Cashier = { name: string; permissions: string[] };
 type RecalledDraft = { lines: CartLine[]; orderDiscount: number };
+
+const TABS: { view: View; label: string }[] = [
+  { view: "order", label: "Take order" },
+  { view: "queue", label: "Live orders" },
+  { view: "held", label: "Parked" },
+  { view: "drawer", label: "Drawer" },
+];
 
 export function App() {
   const [paired, setPaired] = useState<boolean | null>(null);
@@ -17,6 +26,10 @@ export function App() {
   const [view, setView] = useState<View>("order");
   const [recalled, setRecalled] = useState<RecalledDraft | null>(null);
   const [recallNonce, setRecallNonce] = useState(0);
+  // null while we have not asked the server yet — the drawer prompt must not
+  // flash before we know whether one is already open.
+  const [hasOpenShift, setHasOpenShift] = useState<boolean | null>(null);
+  const [skippedDrawer, setSkippedDrawer] = useState(false);
 
   useEffect(() => {
     window.pos.isPaired().then(async (p) => {
@@ -27,6 +40,19 @@ export function App() {
       }
     });
   }, []);
+
+  const refreshShift = useCallback(async () => {
+    const { shift } = await window.pos.currentShift();
+    setHasOpenShift(Boolean(shift));
+  }, []);
+
+  // A drawer belongs to the till, not the person — but each cashier taking over
+  // should be told where it stands, so we re-read on sign-in. Resetting on
+  // sign-OUT happens in the handler below, where the event actually occurs.
+  useEffect(() => {
+    if (!cashier) return;
+    window.pos.currentShift().then(({ shift }) => setHasOpenShift(Boolean(shift)));
+  }, [cashier]);
 
   if (paired === null) {
     return <div className="min-h-screen grid place-items-center bg-background text-sm text-muted-foreground">Loading…</div>;
@@ -47,40 +73,49 @@ export function App() {
     return <CashierSignIn branchName={branchName} onSignedIn={setCashier} />;
   }
 
+  if (hasOpenShift === null) {
+    return <div className="min-h-screen grid place-items-center bg-background text-sm text-muted-foreground">Checking the drawer…</div>;
+  }
+
+  // Offered, not forced: card-only selling is legitimate without a drawer, and
+  // the server refuses cash when there is none.
+  if (!hasOpenShift && !skippedDrawer) {
+    return (
+      <OpenDrawerScreen
+        branchName={branchName}
+        onOpened={() => setHasOpenShift(true)}
+        onSkip={() => setSkippedDrawer(true)}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       <header className="flex items-center justify-between border-b border-border bg-card px-4 h-14">
         <div className="flex items-center gap-3">
           <span className="font-display text-base font-bold">Serve<span className="text-primary">OS</span> POS</span>
           <span className="text-sm text-muted-foreground">{branchName}</span>
+          {!hasOpenShift && <span className="rounded-md bg-secondary px-2 py-0.5 text-xs text-muted-foreground">No drawer</span>}
         </div>
         <nav className="flex items-center gap-1">
+          {TABS.map((tab) => (
+            <button
+              key={tab.view}
+              onClick={() => setView(tab.view)}
+              className={view === tab.view
+                ? "rounded-lg bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground"
+                : "rounded-lg px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-secondary"}
+            >
+              {tab.label}
+            </button>
+          ))}
           <button
-            onClick={() => setView("order")}
-            className={view === "order"
-              ? "rounded-lg bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground"
-              : "rounded-lg px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-secondary"}
-          >
-            Take order
-          </button>
-          <button
-            onClick={() => setView("queue")}
-            className={view === "queue"
-              ? "rounded-lg bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground"
-              : "rounded-lg px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-secondary"}
-          >
-            Live orders
-          </button>
-          <button
-            onClick={() => setView("held")}
-            className={view === "held"
-              ? "rounded-lg bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground"
-              : "rounded-lg px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-secondary"}
-          >
-            Parked
-          </button>
-          <button
-            onClick={async () => { await window.pos.signOutCashier(); setCashier(null); }}
+            onClick={async () => {
+              await window.pos.signOutCashier();
+              setCashier(null);
+              setHasOpenShift(null);
+              setSkippedDrawer(false);
+            }}
             className="ml-2 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-secondary"
           >
             {cashier.name} · Sign out
@@ -92,6 +127,8 @@ export function App() {
           key={recallNonce}
           branchName={branchName}
           cashier={cashier}
+          hasOpenShift={hasOpenShift}
+          onNeedDrawer={() => setView("drawer")}
           recalled={recalled}
           onCartConsumed={() => setRecalled(null)}
         />
@@ -106,6 +143,7 @@ export function App() {
           }}
         />
       )}
+      {view === "drawer" && <DrawerScreen branchName={branchName} onChanged={refreshShift} />}
     </div>
   );
 }

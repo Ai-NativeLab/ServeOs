@@ -16,6 +16,8 @@ export function dashboardNavItems(roleKeys: RoleKey[], catalogLabel = "Menu"): N
   if (has("menu:manage")) items.push({ label: "Branches", href: "/dashboard/branches", icon: "store" });
   if (has("menu:manage")) items.push({ label: "Banners", href: "/dashboard/banners", icon: "image" });
   if (has("fulfillment:manage")) items.push({ label: "Settings", href: "/dashboard/settings", icon: "settings" });
+  // Audit log is an oversight surface — owner + manager (audit:view), never staff.
+  if (has("audit:view")) items.push({ label: "Audit", href: "/dashboard/audit", icon: "audit" });
 
   return items;
 }

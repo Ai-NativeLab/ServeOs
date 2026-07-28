@@ -13,7 +13,8 @@ export function FeaturedCard({ product, currency, interactive, onOpen }: {
       className="card-lift relative block h-44 w-full overflow-hidden rounded-2xl text-left disabled:opacity-100 sm:h-52"
     >
       {product.imageUrl
-        ? <img src={product.imageUrl} alt="" width={800} height={416} loading="lazy" className="h-full w-full object-cover" />
+        ? /* eslint-disable-next-line @next/next/no-img-element */
+          <img src={product.imageUrl} alt="" width={800} height={416} loading="lazy" className="h-full w-full object-cover" />
         : <div className="h-full w-full bg-secondary" />}
       <div className="absolute inset-0 bg-gradient-to-r from-ink/85 via-ink/40 to-transparent" />
       <div className="absolute inset-y-0 left-0 flex max-w-[75%] flex-col justify-end p-4 sm:p-5">

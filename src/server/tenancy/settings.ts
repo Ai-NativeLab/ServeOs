@@ -1,11 +1,32 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
+import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
+import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { tenants, tenantSettings } from "./schema";
 import { InvalidWhatsappNumberError } from "./errors";
 import { getCapabilities } from "@/server/verticals/registry";
 import type { VerticalId } from "@/server/verticals/types";
 import type { CheckoutPricing } from "@/lib/order-totals";
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+function auditCtx(tenantId: string, audit?: AuditActorInput) {
+  return { tenantId, actorUserId: audit?.actorUserId ?? null, fingerprint: audit?.fingerprint ?? emptyFingerprint() };
+}
+
+/**
+ * How this tenant runs its drawers. `blindClose` withholds expected/variance
+ * from a cashier closing without `reconciliation:manage`; the thresholds are in
+ * tenant currency — a pay-out above `payoutThreshold` needs a manager, and a
+ * close whose |variance| exceeds `varianceThreshold` is flagged. Zero means
+ * "no threshold", which is the default.
+ */
+export type ShiftPolicy = {
+  blindClose: boolean;
+  payoutThreshold: number;
+  varianceThreshold: number;
+};
 
 export type TenantSettingsData = {
   vatRate?: number;
@@ -14,6 +35,7 @@ export type TenantSettingsData = {
   serviceChargeRate?: number;
   whatsappNumber?: string;
   upgradeRequest?: { planKey: string; requestedAt: string };
+  shiftPolicy?: Partial<ShiftPolicy>;
 };
 
 const E164_RE = /^\+[1-9]\d{6,14}$/;
@@ -26,18 +48,22 @@ export async function getTenantSettings(tenantId: string): Promise<TenantSetting
   return (row?.data as TenantSettingsData | undefined) ?? {};
 }
 
-/** Merges `patch` into the tenant's settings bag, creating the row if needed.
- * Keys set to `undefined` in `patch` are dropped from the stored JSON. */
+/** Merges `patch` into the tenant's settings bag on the given tx, creating the
+ * row if needed. Keys set to `undefined` in `patch` are dropped from the JSON. */
+async function applySettingsPatch(tx: Tx, tenantId: string, patch: Partial<TenantSettingsData>): Promise<TenantSettingsData> {
+  const [row] = await tx.select().from(tenantSettings).where(eq(tenantSettings.tenantId, tenantId)).limit(1);
+  const before: TenantSettingsData = (row?.data as TenantSettingsData | undefined) ?? {};
+  const data: TenantSettingsData = { ...before, ...patch };
+  if (row) {
+    await tx.update(tenantSettings).set({ data }).where(eq(tenantSettings.id, row.id));
+  } else {
+    await tx.insert(tenantSettings).values({ tenantId, data });
+  }
+  return before;
+}
+
 async function patchTenantSettings(tenantId: string, patch: Partial<TenantSettingsData>): Promise<void> {
-  await withTenant(tenantId, async (tx) => {
-    const [row] = await tx.select().from(tenantSettings).where(eq(tenantSettings.tenantId, tenantId)).limit(1);
-    const data: TenantSettingsData = { ...((row?.data as TenantSettingsData | undefined) ?? {}), ...patch };
-    if (row) {
-      await tx.update(tenantSettings).set({ data }).where(eq(tenantSettings.id, row.id));
-    } else {
-      await tx.insert(tenantSettings).values({ tenantId, data });
-    }
-  });
+  await withTenant(tenantId, (tx) => applySettingsPatch(tx, tenantId, patch));
 }
 
 export async function setVatRate(tenantId: string, vatRate: number): Promise<void> {
@@ -87,18 +113,96 @@ export async function getWhatsappNumber(tenantId: string): Promise<string | null
 }
 
 /** Pass `null` to disable click-to-chat (removes the stored number). */
-export async function setWhatsappNumber(tenantId: string, number: string | null): Promise<void> {
+export async function setWhatsappNumber(tenantId: string, number: string | null, audit?: AuditActorInput): Promise<void> {
   if (number !== null && !E164_RE.test(number)) {
     throw new InvalidWhatsappNumberError(number);
   }
-  await patchTenantSettings(tenantId, { whatsappNumber: number ?? undefined });
+  await withTenant(tenantId, async (tx) => {
+    await applySettingsPatch(tx, tenantId, { whatsappNumber: number ?? undefined });
+    await recordAuditEvent(auditCtx(tenantId, audit), {
+      action: "settings.whatsapp_changed", entityType: "settings", entityId: "whatsapp",
+      summary: number ? "WhatsApp number set" : "WhatsApp number cleared",
+      metadata: { hasNumber: number !== null, roleKey: audit?.roleKey ?? null }, actorType: audit?.actorType,
+    }, tx);
+  });
 }
 
-export async function requestPlanUpgrade(tenantId: string, planKey: string): Promise<void> {
-  await patchTenantSettings(tenantId, { upgradeRequest: { planKey, requestedAt: new Date().toISOString() } });
+export async function requestPlanUpgrade(tenantId: string, planKey: string, audit?: AuditActorInput): Promise<void> {
+  await withTenant(tenantId, async (tx) => {
+    await applySettingsPatch(tx, tenantId, { upgradeRequest: { planKey, requestedAt: new Date().toISOString() } });
+    await recordAuditEvent(auditCtx(tenantId, audit), {
+      action: "subscription.upgrade_requested", entityType: "subscription", entityId: "upgrade_request",
+      summary: `Upgrade to ${planKey} requested`,
+      metadata: { planKey, roleKey: audit?.roleKey ?? null }, actorType: audit?.actorType,
+    }, tx);
+  });
+}
+
+export type TaxSettingsPatch = {
+  vatEnabled?: boolean;
+  vatRate?: number;
+  pricesIncludeVat?: boolean;
+  serviceChargeRate?: number | null;
+};
+
+/**
+ * One tax-settings write + one snapshot audit event (composing the low-level
+ * setters, which are allowlisted). Emits settings.vat_changed always, and
+ * settings.service_charge_changed when the service charge actually moved —
+ * both carrying {before, after}.
+ */
+export async function updateTaxSettings(tenantId: string, patch: TaxSettingsPatch, audit?: AuditActorInput): Promise<void> {
+  if (patch.serviceChargeRate !== undefined && patch.serviceChargeRate !== null &&
+      (Number.isNaN(patch.serviceChargeRate) || patch.serviceChargeRate < 0 || patch.serviceChargeRate > 100)) {
+    throw new Error(`Invalid service charge rate: ${patch.serviceChargeRate}`);
+  }
+  await withTenant(tenantId, async (tx) => {
+    const before = await applySettingsPatch(tx, tenantId, {
+      vatEnabled: patch.vatEnabled,
+      vatRate: patch.vatRate,
+      pricesIncludeVat: patch.pricesIncludeVat,
+      serviceChargeRate: patch.serviceChargeRate === null ? undefined : patch.serviceChargeRate,
+    });
+    const after: TenantSettingsData = { ...before,
+      ...(patch.vatEnabled !== undefined ? { vatEnabled: patch.vatEnabled } : {}),
+      ...(patch.vatRate !== undefined ? { vatRate: patch.vatRate } : {}),
+      ...(patch.pricesIncludeVat !== undefined ? { pricesIncludeVat: patch.pricesIncludeVat } : {}),
+      ...(patch.serviceChargeRate !== undefined ? { serviceChargeRate: patch.serviceChargeRate ?? undefined } : {}),
+    };
+    const ctx = auditCtx(tenantId, audit);
+    await recordAuditEvent(ctx, {
+      action: "settings.vat_changed", entityType: "settings", entityId: "tax",
+      summary: `VAT settings updated`,
+      metadata: {
+        before: before.vatRate ?? null, after: after.vatRate ?? null,
+        vatEnabled: after.vatEnabled ?? null, pricesIncludeVat: after.pricesIncludeVat ?? null,
+        roleKey: audit?.roleKey ?? null,
+      },
+      actorType: audit?.actorType,
+    }, tx);
+    const beforeSc = typeof before.serviceChargeRate === "number" ? before.serviceChargeRate : null;
+    const afterSc = typeof after.serviceChargeRate === "number" ? after.serviceChargeRate : null;
+    if (beforeSc !== afterSc) {
+      await recordAuditEvent(ctx, {
+        action: "settings.service_charge_changed", entityType: "settings", entityId: "service_charge",
+        summary: `Service charge ${beforeSc ?? "∅"} → ${afterSc ?? "∅"}`,
+        metadata: { before: beforeSc, after: afterSc, roleKey: audit?.roleKey ?? null }, actorType: audit?.actorType,
+      }, tx);
+    }
+  });
 }
 
 export async function getUpgradeRequest(tenantId: string): Promise<TenantSettingsData["upgradeRequest"] | null> {
   const settings = await getTenantSettings(tenantId);
   return settings.upgradeRequest ?? null;
+}
+
+/** The tenant's drawer policy, with every field defaulted. */
+export async function getShiftPolicy(tenantId: string): Promise<ShiftPolicy> {
+  const stored = (await getTenantSettings(tenantId)).shiftPolicy;
+  return {
+    blindClose: stored?.blindClose ?? false,
+    payoutThreshold: stored?.payoutThreshold ?? 0,
+    varianceThreshold: stored?.varianceThreshold ?? 0,
+  };
 }

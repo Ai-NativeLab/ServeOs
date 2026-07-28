@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import path from "node:path";
-import { PosMain, type RecordSaleInput } from "./pos-main";
+import { PosMain, type RecordSaleInput, type CashMovementInput } from "./pos-main";
 
 const isDev = !!process.env.VITE_DEV_SERVER_URL;
 
@@ -41,6 +41,14 @@ app.whenReady().then(() => {
   ipcMain.handle("pos:holdTicket", (_e, label: string, draft: unknown) => posMain!.holdTicket(label, draft));
   ipcMain.handle("pos:listHeldTickets", () => posMain!.listHeldTickets());
   ipcMain.handle("pos:discardTicket", (_e, id: string) => posMain!.discardTicket(id));
+  ipcMain.handle("pos:openShift", (_e, openingFloat: number, denominations?: Record<string, number>) =>
+    posMain!.openShift(openingFloat, denominations));
+  ipcMain.handle("pos:currentShift", () => posMain!.currentShift());
+  ipcMain.handle("pos:countDrawer", (_e, countedTotal: number, denominations?: Record<string, number>) =>
+    posMain!.countDrawer(countedTotal, denominations));
+  ipcMain.handle("pos:closeShift", (_e, countedTotal: number, denominations?: Record<string, number>, grant?: string) =>
+    posMain!.closeShift(countedTotal, denominations, grant));
+  ipcMain.handle("pos:cashMovement", (_e, input: CashMovementInput) => posMain!.cashMovement(input));
 
   createWindow();
 });

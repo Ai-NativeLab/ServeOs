@@ -7,6 +7,7 @@ export function RecentOrderStrip({ slug }: { slug: string }) {
 
   useEffect(() => {
     const current = loadRecentOrders();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrating client-only localStorage after mount (server renders empty)
     setOrders(current);
     // Refresh each entry's status once per page view; prune on the next load.
     current.forEach((o) => {

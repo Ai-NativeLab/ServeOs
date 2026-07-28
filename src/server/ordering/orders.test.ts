@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { db } from "@/db/client";
 import { tenants } from "@/server/tenancy/schema";
+import { users } from "@/server/auth/schema";
 import { seedDefaultPlans } from "@/server/subscription/plans.seed";
 import { startTrial } from "@/server/subscription/service";
 import { createBranch, updateBranchOrdering } from "@/server/branches/service";
@@ -18,7 +19,10 @@ async function setup(slug: string) {
   const prod = await createProduct(t.id, { nameEn: "Pie", nameAr: "فطيرة", basePrice: "100", categoryId: cat.id });
   await updateProduct(t.id, prod.id, { isPublished: true });
   const order = await placeOrder(t.id, { branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1", lines: [{ productId: prod.id, quantity: 1, selectedOptionIds: [] }] });
-  return { t, branch, pizza: prod, order, userId: "00000000-0000-0000-0000-000000000001" };
+  // A real staff row: audit_events.actor_user_id is FK-constrained to users, so
+  // status transitions must record an actor that actually exists.
+  const [staff] = await db.insert(users).values({ tenantId: t.id, name: "Staff", email: `staff-${slug}@x.com`, status: "active" }).returning();
+  return { t, branch, pizza: prod, order, userId: staff.id };
 }
 
 describe("orders queries + transitions", () => {
@@ -36,28 +40,28 @@ describe("orders queries + transitions", () => {
   });
 
   it("legal transition pending→confirmed writes a status event", async () => {
-    const { t, order } = await setup("o3");
-    await transitionStatus(t.id, order.orderId, "confirmed", "00000000-0000-0000-0000-000000000001");
+    const { t, order, userId } = await setup("o3");
+    await transitionStatus(t.id, order.orderId, "confirmed", userId);
     const detail = await getOrder(t.id, order.orderId);
     expect(detail.status).toBe("confirmed");
     expect(detail.events.map((e) => e.toStatus)).toContain("confirmed");
   });
 
   it("illegal transition throws", async () => {
-    const { t, order } = await setup("o4");
-    await expect(transitionStatus(t.id, order.orderId, "completed", "00000000-0000-0000-0000-000000000001")).rejects.toThrow(InvalidTransitionError);
+    const { t, order, userId } = await setup("o4");
+    await expect(transitionStatus(t.id, order.orderId, "completed", userId)).rejects.toThrow(InvalidTransitionError);
   });
 
   it("cancel records the reason", async () => {
-    const { t, order } = await setup("o5");
-    const cancelled = await transitionStatus(t.id, order.orderId, "cancelled", "00000000-0000-0000-0000-000000000001", "out of stock");
+    const { t, order, userId } = await setup("o5");
+    const cancelled = await transitionStatus(t.id, order.orderId, "cancelled", userId, "out of stock");
     expect(cancelled.status).toBe("cancelled");
     expect(cancelled.cancelReason).toBe("out of stock");
   });
 
   it("markPaid flips payment independently of status", async () => {
-    const { t, order } = await setup("o6");
-    const paid = await markPaid(t.id, order.orderId, "00000000-0000-0000-0000-000000000001");
+    const { t, order, userId } = await setup("o6");
+    const paid = await markPaid(t.id, order.orderId, userId);
     expect(paid.paymentStatus).toBe("paid");
     expect(paid.status).toBe("pending");
   });
