@@ -32,11 +32,16 @@ function cashChips(remaining: number): number[] {
 export function PaymentScreen({
   total,
   cashierName,
+  hasOpenShift,
+  onNeedDrawer,
   onCancel,
   onComplete,
 }: {
   total: number;
   cashierName: string;
+  /** Cash needs an open drawer. The server enforces it; this is the affordance. */
+  hasOpenShift: boolean;
+  onNeedDrawer: () => void;
   onCancel: () => void;
   onComplete: (tenders: TenderDraft[]) => Promise<void>;
 }) {
@@ -53,6 +58,13 @@ export function PaymentScreen({
   const entered = Number(entry || 0);
 
   function addTender(handedOver: number) {
+    // Cash must land in an accounted drawer. The server refuses it outright;
+    // stopping here means the cashier finds out before they ring the sale,
+    // not after the customer has handed over notes.
+    if (method === "cash" && !hasOpenShift) {
+      setError("Open a drawer before taking cash");
+      return;
+    }
     // A cash tender may exceed what is due (that is what change IS). A card
     // tender may not — the amount applied is capped at what remains.
     const applied = method === "cash" ? Math.min(handedOver, remaining) : handedOver;
@@ -124,6 +136,20 @@ export function PaymentScreen({
           )}
 
           {error && <p role="alert" className="mt-4 text-sm text-destructive">{error}</p>}
+
+          {!hasOpenShift && (
+            <div className="mt-4 rounded-xl border border-border bg-background p-3">
+              <p className="text-sm text-muted-foreground">
+                No drawer is open, so this till can only take card payments.
+              </p>
+              <button
+                onClick={onNeedDrawer}
+                className="mt-2 w-full rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground"
+              >
+                Open drawer
+              </button>
+            </div>
+          )}
         </section>
 
         <section className="rounded-2xl border border-border bg-card p-6">

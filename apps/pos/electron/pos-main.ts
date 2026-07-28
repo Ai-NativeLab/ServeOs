@@ -66,6 +66,65 @@ export type SaleReceipt = {
 };
 export type HeldTicket = { id: string; label: string; draftJson: unknown; createdAt: string };
 
+export type PosShiftSummary = {
+  id: string;
+  status: "open" | "closed";
+  openingFloat: string;
+  openedAt: string;
+  openedByUserId: string;
+  closedByUserId: string | null;
+  closedAt: string | null;
+};
+export type TenderTotal = { method: "cash" | "card" | "other"; amount: number; tips: number; count: number };
+export type CashMovementType = "pay_in" | "pay_out" | "safe_drop" | "no_sale";
+export type MovementTotal = { type: CashMovementType; total: number; count: number };
+
+/**
+ * The X/Z projection as the server builds it. `cash.expected` and
+ * `cash.variance` are null when blind close withholds them — the till renders
+ * what it is given and never derives a hidden number.
+ */
+export type ShiftReport = {
+  kind: "x" | "z";
+  shiftId: string;
+  openedAt: string;
+  openedByUserId: string;
+  openingFloat: number;
+  tenders: TenderTotal[];
+  movements: MovementTotal[];
+  salesCount: number;
+  discountTotal: number;
+  voidTotal: number;
+  refundTotal: number;
+  cash: { expected: number | null; counted?: number; variance?: number | null };
+  flagged?: boolean;
+  approvedByUserId?: string | null;
+  closedByUserId?: string;
+  closedAt?: string;
+};
+export type CashCountRow = { id: string; kind: string; countedTotal: string; expectedTotal: string; variance: string };
+export type CashMovementRow = {
+  id: string; type: CashMovementType; amount: string; reasonCode: string;
+  authorizedByUserId: string | null;
+};
+
+/**
+ * Electron's IPC serializes a thrown Error down to its message — custom
+ * properties do not survive the boundary. So the drawer calls return an outcome
+ * the renderer can branch on structurally, rather than matching error strings.
+ */
+export type DrawerResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; code: "conflict" | "needs_manager" | "bad_count" | "error"; message: string };
+
+export type CashMovementInput = {
+  type: CashMovementType;
+  amount: number;
+  reasonCode: string;
+  reasonText?: string;
+  grant?: string;
+};
+
 /**
  * Online-first POS glue: talks straight to the cloud backend. No local
  * database — the offline store/sync engine lives (parked) in electron/_offline
@@ -264,6 +323,68 @@ export class PosMain {
       method: "POST",
       headers: this.authHeaders(),
       body: JSON.stringify({ orderId, toStatus }),
+    });
+  }
+
+  /** Maps the drawer routes' status codes onto something the renderer can branch on. */
+  private async drawerCall<T>(path: string, init: RequestInit): Promise<DrawerResult<T>> {
+    if (!this.device) return { ok: false, code: "error", message: "Not paired" };
+    if (!this.cashier) return { ok: false, code: "error", message: "No cashier signed in" };
+    try {
+      const res = await fetch(`${this.baseUrl}/api/pos/v1/shifts/${path}`, {
+        ...init,
+        headers: this.authHeaders(),
+      });
+      const body = (await res.json().catch(() => ({}))) as { error?: string } & Record<string, unknown>;
+      if (res.ok) return { ok: true, data: body as T };
+      const code =
+        res.status === 403 ? "needs_manager" :
+        res.status === 409 ? "conflict" :
+        res.status === 400 ? "bad_count" : "error";
+      return { ok: false, code, message: body.error ?? `Request failed (${res.status})` };
+    } catch (e) {
+      return { ok: false, code: "error", message: e instanceof Error ? e.message : "Network error" };
+    }
+  }
+
+  openShift(openingFloat: number, denominations?: Record<string, number>): Promise<DrawerResult<{ shift: PosShiftSummary }>> {
+    return this.drawerCall("open", { method: "POST", body: JSON.stringify({ openingFloat, denominations }) });
+  }
+
+  /** The live X-report. Reading it records nothing and never resets. */
+  async currentShift(): Promise<{ shift: PosShiftSummary | null; report: ShiftReport | null }> {
+    if (!this.device || !this.cashier) return { shift: null, report: null };
+    try {
+      const res = await fetch(`${this.baseUrl}/api/pos/v1/shifts/current`, { headers: this.authHeaders() });
+      if (!res.ok) return { shift: null, report: null };
+      return (await res.json()) as { shift: PosShiftSummary | null; report: ShiftReport | null };
+    } catch {
+      return { shift: null, report: null };
+    }
+  }
+
+  countDrawer(countedTotal: number, denominations?: Record<string, number>): Promise<DrawerResult<{ count: CashCountRow; report: ShiftReport }>> {
+    return this.drawerCall("current", { method: "POST", body: JSON.stringify({ countedTotal, denominations }) });
+  }
+
+  closeShift(countedTotal: number, denominations?: Record<string, number>, grant?: string): Promise<DrawerResult<{ report: ShiftReport }>> {
+    return this.drawerCall("close", {
+      method: "POST",
+      body: JSON.stringify({
+        count: { countedTotal, denominations },
+        grants: grant ? [{ permission: "reconciliation:manage", token: grant }] : undefined,
+      }),
+    });
+  }
+
+  cashMovement(input: CashMovementInput): Promise<DrawerResult<{ movement: CashMovementRow }>> {
+    const { grant, ...movement } = input;
+    return this.drawerCall("movements", {
+      method: "POST",
+      body: JSON.stringify({
+        ...movement,
+        grants: grant ? [{ permission: "reconciliation:manage", token: grant }] : undefined,
+      }),
     });
   }
 

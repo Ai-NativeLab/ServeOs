@@ -4,6 +4,12 @@ import type {
   RecordSaleInput,
   SaleReceipt,
   HeldTicket,
+  PosShiftSummary,
+  ShiftReport,
+  CashCountRow,
+  CashMovementRow,
+  CashMovementInput,
+  DrawerResult,
 } from "./pos-main";
 
 export type OrderSummary = {
@@ -40,6 +46,11 @@ export interface PosBridge {
   holdTicket(label: string, draft: unknown): Promise<{ id: string }>;
   listHeldTickets(): Promise<HeldTicket[]>;
   discardTicket(id: string): Promise<void>;
+  openShift(openingFloat: number, denominations?: Record<string, number>): Promise<DrawerResult<{ shift: PosShiftSummary }>>;
+  currentShift(): Promise<{ shift: PosShiftSummary | null; report: ShiftReport | null }>;
+  countDrawer(countedTotal: number, denominations?: Record<string, number>): Promise<DrawerResult<{ count: CashCountRow; report: ShiftReport }>>;
+  closeShift(countedTotal: number, denominations?: Record<string, number>, grant?: string): Promise<DrawerResult<{ report: ShiftReport }>>;
+  cashMovement(input: CashMovementInput): Promise<DrawerResult<{ movement: CashMovementRow }>>;
 }
 
 contextBridge.exposeInMainWorld("pos", {
@@ -60,4 +71,12 @@ contextBridge.exposeInMainWorld("pos", {
   holdTicket: (label: string, draft: unknown) => ipcRenderer.invoke("pos:holdTicket", label, draft),
   listHeldTickets: () => ipcRenderer.invoke("pos:listHeldTickets"),
   discardTicket: (id: string) => ipcRenderer.invoke("pos:discardTicket", id),
+  openShift: (openingFloat: number, denominations?: Record<string, number>) =>
+    ipcRenderer.invoke("pos:openShift", openingFloat, denominations),
+  currentShift: () => ipcRenderer.invoke("pos:currentShift"),
+  countDrawer: (countedTotal: number, denominations?: Record<string, number>) =>
+    ipcRenderer.invoke("pos:countDrawer", countedTotal, denominations),
+  closeShift: (countedTotal: number, denominations?: Record<string, number>, grant?: string) =>
+    ipcRenderer.invoke("pos:closeShift", countedTotal, denominations, grant),
+  cashMovement: (input: CashMovementInput) => ipcRenderer.invoke("pos:cashMovement", input),
 } satisfies PosBridge);
