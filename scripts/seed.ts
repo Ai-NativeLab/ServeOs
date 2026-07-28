@@ -54,7 +54,7 @@ async function main() {
   const { hashPassword } = await import("../src/server/auth/password");
   const { seedDefaultPlans } = await import("../src/server/subscription");
   const { registerTenant } = await import("../src/server/onboarding");
-  const { approveTenant } = await import("../src/server/platform");
+  const { approveTenant, ensurePlatformSuperAdmin } = await import("../src/server/platform");
 
   await seedDefaultPlans();
 
@@ -66,9 +66,11 @@ async function main() {
       .insert(users)
       .values({ tenantId: null, name: "Platform Admin", email: adminEmail, passwordHash: await hashPassword("admin1234") })
       .returning();
-    const [role] = await db.insert(roles).values({ tenantId: null, key: "super_admin", name: "Super Admin" }).returning();
-    await db.insert(userRoles).values({ userId: admin.id, roleId: role.id });
   }
+  // Deliberately outside the create branch: the role grant used to live inside
+  // it, so an admin row created without its role could never be repaired by
+  // re-running the seed.
+  await ensurePlatformSuperAdmin(adminEmail);
 
   // ── Demo restaurant: Pizza Roma ─────────────────────────────────────────────
   const demoSlug = "roma";
