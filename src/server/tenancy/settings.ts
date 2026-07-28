@@ -15,6 +15,19 @@ function auditCtx(tenantId: string, audit?: AuditActorInput) {
   return { tenantId, actorUserId: audit?.actorUserId ?? null, fingerprint: audit?.fingerprint ?? emptyFingerprint() };
 }
 
+/**
+ * How this tenant runs its drawers. `blindClose` withholds expected/variance
+ * from a cashier closing without `reconciliation:manage`; the thresholds are in
+ * tenant currency — a pay-out above `payoutThreshold` needs a manager, and a
+ * close whose |variance| exceeds `varianceThreshold` is flagged. Zero means
+ * "no threshold", which is the default.
+ */
+export type ShiftPolicy = {
+  blindClose: boolean;
+  payoutThreshold: number;
+  varianceThreshold: number;
+};
+
 export type TenantSettingsData = {
   vatRate?: number;
   vatEnabled?: boolean;
@@ -22,6 +35,7 @@ export type TenantSettingsData = {
   serviceChargeRate?: number;
   whatsappNumber?: string;
   upgradeRequest?: { planKey: string; requestedAt: string };
+  shiftPolicy?: Partial<ShiftPolicy>;
 };
 
 const E164_RE = /^\+[1-9]\d{6,14}$/;
@@ -181,4 +195,14 @@ export async function updateTaxSettings(tenantId: string, patch: TaxSettingsPatc
 export async function getUpgradeRequest(tenantId: string): Promise<TenantSettingsData["upgradeRequest"] | null> {
   const settings = await getTenantSettings(tenantId);
   return settings.upgradeRequest ?? null;
+}
+
+/** The tenant's drawer policy, with every field defaulted. */
+export async function getShiftPolicy(tenantId: string): Promise<ShiftPolicy> {
+  const stored = (await getTenantSettings(tenantId)).shiftPolicy;
+  return {
+    blindClose: stored?.blindClose ?? false,
+    payoutThreshold: stored?.payoutThreshold ?? 0,
+    varianceThreshold: stored?.varianceThreshold ?? 0,
+  };
 }

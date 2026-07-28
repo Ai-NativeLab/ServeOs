@@ -31,12 +31,18 @@ function sweep(now: number): void {
   for (const [token, s] of sessions) if (s.expiresAt <= now) sessions.delete(token);
 }
 
-/** Union of the POS permissions granted by any of the user's roles. */
+/**
+ * Union of the counter permissions granted by any of the user's roles — the
+ * `pos:*` family plus `reconciliation:manage`, which a manager needs at the
+ * till to close another cashier's drawer or approve an over-threshold pay-out.
+ */
 export async function posPermissionsFor(userId: string): Promise<Permission[]> {
   const roleKeys = await loadUserRoleKeys(userId);
   const all = new Set<Permission>();
   for (const key of roleKeys) {
-    for (const p of ROLE_PERMISSIONS[key] ?? []) if (p.startsWith("pos:")) all.add(p);
+    for (const p of ROLE_PERMISSIONS[key] ?? []) {
+      if (p.startsWith("pos:") || p === "reconciliation:manage") all.add(p);
+    }
   }
   return [...all];
 }

@@ -24,7 +24,10 @@ export async function POST(req: NextRequest) {
   if (!email || !password || !permission) {
     return NextResponse.json({ error: "Missing email, password, or permission" }, { status: 400 });
   }
-  if (!PERMISSIONS.includes(permission as Permission) || !permission.startsWith("pos:")) {
+  // Only counter permissions are grantable at the till: the `pos:*` family plus
+  // reconciliation:manage (cross-cashier close, over-threshold pay-out).
+  const grantable = permission.startsWith("pos:") || permission === "reconciliation:manage";
+  if (!PERMISSIONS.includes(permission as Permission) || !grantable) {
     return NextResponse.json({ error: "Unknown permission" }, { status: 400 });
   }
 
