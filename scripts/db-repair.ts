@@ -32,21 +32,24 @@ async function main() {
   const { pool } = await import("../src/db/client");
   const { getMigrationStatus, readJournal } = await import("../src/db/migration-status");
 
-  const entry = readJournal("drizzle").find((e) => e.tag === tag);
+  // Same MIGRATIONS_DIR override as db:check, so a database running another
+  // branch's code is repaired against THAT branch's migrations.
+  const migrationsDir = process.env.MIGRATIONS_DIR ?? "drizzle";
+  const entry = readJournal(migrationsDir).find((e) => e.tag === tag);
   if (!entry) {
     console.error(`No migration tagged "${tag}" in drizzle/meta/_journal.json.`);
     await pool.end();
     process.exit(1);
   }
 
-  const status = await getMigrationStatus(pool);
+  const status = await getMigrationStatus(pool, migrationsDir);
   if (status.applied.some((e) => e.hash === entry.hash)) {
     console.log(`${tag} is already recorded as applied — nothing to do.`);
     await pool.end();
     return;
   }
 
-  const sql = readFileSync(`drizzle/${entry.tag}.sql`, "utf8");
+  const sql = readFileSync(`${migrationsDir}/${entry.tag}.sql`, "utf8");
   const statements = sql.split("--> statement-breakpoint").map((s) => s.trim()).filter(Boolean);
   // `ALTER TYPE … ADD VALUE` cannot share a transaction with statements that use
   // the new value, so it runs first, on its own, and is skipped if already present.
