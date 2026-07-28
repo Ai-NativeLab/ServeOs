@@ -33,11 +33,15 @@ const reasonLabel = (code: string) => code.replace(/_/g, " ");
 export function OrderScreen({
   branchName,
   cashier,
+  hasOpenShift,
+  onNeedDrawer,
   recalled,
   onCartConsumed,
 }: {
   branchName: string;
   cashier: Cashier;
+  hasOpenShift: boolean;
+  onNeedDrawer: () => void;
   recalled?: RecalledDraft | null;
   onCartConsumed?: () => void;
 }) {
@@ -281,6 +285,8 @@ export function OrderScreen({
       <PaymentScreen
         total={totals.total}
         cashierName={cashier.name}
+        hasOpenShift={hasOpenShift}
+        onNeedDrawer={onNeedDrawer}
         onCancel={() => setView("cart")}
         onComplete={completeSale}
       />

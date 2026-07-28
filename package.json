@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "vercel-build": "tsx scripts/release-migrate.ts && next build",
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
@@ -13,6 +14,9 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:migrate:test": "ENV_FILE=.env.test tsx scripts/migrate.ts",
+    "db:check": "tsx scripts/db-check.ts",
+    "db:check:test": "ENV_FILE=.env.test tsx scripts/db-check.ts",
+    "db:repair": "tsx scripts/db-repair.ts",
     "db:seed": "tsx scripts/seed.ts",
     "test:e2e": "playwright test",
     "pos:dev": "npm run dev -w pos",

@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { db } from "@/db/client";
-import { tenants } from "./schema";
+import { withTenant } from "@/db/with-tenant";
+import { tenants, tenantSettings } from "./schema";
 import {
   getVatRate, setVatRate, getTenantSettings, getWhatsappNumber, setWhatsappNumber,
   requestPlanUpgrade, getUpgradeRequest, getCheckoutPricing, setServiceChargeRate,
+  getShiftPolicy,
 } from "./settings";
 import { InvalidWhatsappNumberError } from "./errors";
 import type { VerticalId } from "@/server/verticals";
@@ -97,6 +99,44 @@ describe("setServiceChargeRate validation", () => {
     expect((await getTenantSettings(t.id)).serviceChargeRate).toBe(15);
     await setServiceChargeRate(t.id, null);
     expect((await getTenantSettings(t.id)).serviceChargeRate).toBeUndefined();
+  });
+});
+
+describe("tenant shift policy", () => {
+  it("defaults to an open (non-blind) close with no thresholds", async () => {
+    const t = await makeTenant("shift-policy-default");
+    expect(await getShiftPolicy(t.id)).toEqual({
+      blindClose: false,
+      payoutThreshold: 0,
+      varianceThreshold: 0,
+    });
+  });
+
+  it("round-trips a stored policy", async () => {
+    const t = await makeTenant("shift-policy-stored");
+    await withTenant(t.id, (tx) =>
+      tx.insert(tenantSettings).values({
+        tenantId: t.id,
+        data: { shiftPolicy: { blindClose: true, payoutThreshold: 500, varianceThreshold: 20 } },
+      }),
+    );
+    expect(await getShiftPolicy(t.id)).toEqual({
+      blindClose: true,
+      payoutThreshold: 500,
+      varianceThreshold: 20,
+    });
+  });
+
+  it("fills in defaults for a partially stored policy", async () => {
+    const t = await makeTenant("shift-policy-partial");
+    await withTenant(t.id, (tx) =>
+      tx.insert(tenantSettings).values({ tenantId: t.id, data: { shiftPolicy: { blindClose: true } } }),
+    );
+    expect(await getShiftPolicy(t.id)).toEqual({
+      blindClose: true,
+      payoutThreshold: 0,
+      varianceThreshold: 0,
+    });
   });
 });
 

@@ -6,8 +6,10 @@ import { orders } from "@/server/ordering/schema";
 import type { Permission } from "@/server/rbac/permissions";
 import { posOrderReceipts } from "./schema";
 import { orderPayments, posAdjustmentEvents } from "./tender-schema";
+import { posShifts } from "./shift-schema";
+import { findOpenShift } from "./shifts";
 import { resolveAuthorizer } from "./grants";
-import { PosSaleError } from "./errors";
+import { NoOpenShiftError, PosSaleError } from "./errors";
 import type { PosCashierContext } from "./require-cashier";
 import { recordAuditEvent } from "@/server/audit/service";
 
@@ -78,6 +80,12 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
     };
   }
 
+  // Cash must land in an accounted drawer. Resolve the device's shift once,
+  // before placeOrder, so a refusal leaves no orphan order behind. Card/other
+  // tenders are allowed with no shift and simply carry a null shiftId.
+  const shift = await findOpenShift(ctx.tenantId, ctx.deviceId);
+  if (!shift && input.payments.some((p) => p.method === "cash")) throw new NoOpenShiftError();
+
   // Authorize every discount BEFORE writing anything. resolveAuthorizer throws
   // PosForbiddenError when the cashier lacks the permission and has no grant.
   const grantFor = (p: Permission) => input.grants?.find((g) => g.permission === p)?.token;
@@ -133,6 +141,7 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
       changeAmount: p.method === "cash" ? money(change) : null,
       reference: p.reference ?? null,
       takenByUserId: ctx.cashierUserId,
+      shiftId: shift?.id ?? null,
       clientPaymentId: p.clientPaymentId,
     };
   });
@@ -252,6 +261,14 @@ export async function addTender(
       if (paidBefore + tender.amount > total + 0.001) {
         throw new PosSaleError("Tender exceeds the amount due");
       }
+      // Resolved on this tx so the stamp and the tender commit together. Only a
+      // genuinely new tender needs a drawer — a retry of one already recorded
+      // must stay idempotent even if that shift has since closed.
+      const [shift] = await tx.select().from(posShifts)
+        .where(and(eq(posShifts.deviceId, ctx.deviceId), eq(posShifts.status, "open")))
+        .limit(1);
+      if (tender.method === "cash" && !shift) throw new NoOpenShiftError();
+
       const change = tender.method === "cash" && tender.tenderedAmount !== undefined
         ? Math.max(0, round2(tender.tenderedAmount - tender.amount))
         : 0;
@@ -265,6 +282,7 @@ export async function addTender(
         changeAmount: tender.method === "cash" ? money(change) : null,
         reference: tender.reference ?? null,
         takenByUserId: ctx.cashierUserId,
+        shiftId: shift?.id ?? null,
         clientPaymentId: tender.clientPaymentId,
       });
     }

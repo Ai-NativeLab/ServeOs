@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { requireFeature, incrementUsage } from "@/server/entitlements/service";
 import { getCheckoutPricing } from "@/server/tenancy/settings";
@@ -10,6 +10,9 @@ import { branches, deliveryAreas } from "@/server/branches/schema";
 import { products, modifierGroups, modifierOptions, branchProductAvailability, productVariants } from "@/server/catalog/schema";
 import { InvalidVariantError } from "@/server/catalog/errors";
 import { getCapabilities, type VerticalId } from "@/server/verticals";
+import { isMethodEnabled } from "@/server/payments/offline/methods";
+import { PaymentMethodNotEnabledError, InvalidProofError, PaymentAlreadyResolvedError } from "@/server/payments/offline";
+import { sanitizeHttpUrl } from "@/lib/safe-url";
 import { orders, orderItems, orderStatusEvents, type SelectedModifier, type Order, type OrderWithItems, type OrderDetail, type OrderStatus } from "./schema";
 import { canTransition } from "./state-machine";
 import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, OutOfStockError, TotalMismatchError } from "./errors";
@@ -38,6 +41,9 @@ export type PlaceOrderInput = {
   scheduledFor?: string;
   lines: PlaceOrderLine[];
   now?: Date;
+  paymentMethod?: "cash" | "instapay" | "vodafone_cash" | "mobile_wallet";
+  paymentReference?: string;
+  paymentProofUrl?: string;
   channel?: "web" | "pos";
   cashierUserId?: string;
   orderDiscountAmount?: number;
@@ -60,9 +66,28 @@ export function money(n: number): string {
   return (Math.round(n * 100) / 100).toFixed(2);
 }
 
+/** Only http(s) URLs are safe to persist/render as an href — a customer-supplied
+ * `javascript:`/`data:` proof URL would be stored XSS the first time a merchant
+ * clicks "View screenshot" in the payments queue. Anything else is dropped (stored
+ * as null) rather than trusted; the reference/screenshot are informational only
+ * per the manual-payments spec, never authoritative. */
+const sanitizeProofUrl = sanitizeHttpUrl;
+
 export async function placeOrder(tenantId: string, input: PlaceOrderInput): Promise<PlaceOrderResult> {
   if (!input.lines || input.lines.length === 0) throw new OrderValidationError("empty cart");
   if (!input.customerName.trim() || !input.customerPhone.trim()) throw new OrderValidationError("missing customer details");
+
+  const paymentMethod = input.paymentMethod ?? "cash";
+  let paymentStatus: "unpaid" | "pending_verification" = "unpaid";
+  let paymentReference: string | null = null;
+  let paymentProofUrl: string | null = null;
+  if (paymentMethod !== "cash") {
+    if (!(await isMethodEnabled(tenantId, paymentMethod))) throw new PaymentMethodNotEnabledError(paymentMethod);
+    if (!input.paymentReference?.trim()) throw new InvalidProofError();
+    paymentStatus = "pending_verification";
+    paymentReference = input.paymentReference.trim();
+    paymentProofUrl = sanitizeProofUrl(input.paymentProofUrl);
+  }
 
   await requireFeature(tenantId, "online_ordering");
   const pricing = await getCheckoutPricing(tenantId);
@@ -240,6 +265,10 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
     const [order] = await tx.insert(orders).values({
       tenantId, branchId: input.branchId, orderNumber,
       fulfillmentType: input.fulfillmentType, status: "pending",
+      paymentMethod,
+      paymentStatus,
+      paymentReference,
+      paymentProofUrl,
       channel: input.channel ?? "web",
       cashierUserId: input.cashierUserId ?? null,
       customerName: input.customerName.trim(), customerPhone: input.customerPhone.trim(), notes: input.notes?.trim() || null,
@@ -373,6 +402,13 @@ export async function listOrders(tenantId: string, opts: ListOrdersOpts): Promis
   });
 }
 
+/** Orders sitting in the merchant's manual-payment review queue (offline transfer proof pending), newest first. */
+export async function listAwaitingPaymentOrders(tenantId: string): Promise<Order[]> {
+  return withTenant(tenantId, (tx) =>
+    tx.select().from(orders).where(eq(orders.paymentStatus, "pending_verification")).orderBy(desc(orders.placedAt)),
+  );
+}
+
 /** The compact order shape the dashboard list (SSR + polling endpoint) renders. */
 export type OrderRow = Pick<Order, "id" | "orderNumber" | "customerName" | "fulfillmentType" | "total" | "status" | "paymentStatus"> & {
   scheduledFor: string | null;
@@ -437,6 +473,13 @@ export async function markPaid(tenantId: string, orderId: string, userId: string
     if (order.status === "cancelled" || order.status === "rejected") {
       throw new InvalidTransitionError(order.status, "paid");
     }
+    // An offline payment awaiting verification must be resolved via
+    // confirmOrderPayment/the payments queue (owner/manager-gated), not this
+    // cash mark-paid path (staff-gated on orders:manage) — otherwise staff
+    // could side-step the payments:confirm authorization boundary.
+    if (order.paymentStatus === "pending_verification") {
+      throw new InvalidTransitionError(order.paymentStatus, "paid");
+    }
     const [updated] = await tx.update(orders)
       .set({ paymentStatus: "paid", updatedAt: new Date() })
       .where(eq(orders.id, orderId)).returning();
@@ -448,4 +491,107 @@ export async function markPaid(tenantId: string, orderId: string, userId: string
     );
     return updated;
   });
+}
+
+/** Merchant confirms an offline payment: pending_verification → paid. Guarded + idempotent.
+ * No orderStatusEvents row: that table's toStatus tracks order.status (the fulfillment
+ * state machine), not paymentStatus, and there's no unchanged-status audit row to write —
+ * the guarded UPDATE (WHERE paymentStatus = 'pending_verification') is itself the audit
+ * trail / idempotency source of truth.
+ *
+ * The guard also excludes terminal order states (cancelled/rejected) so a confirm can
+ * never land on an order that's already been rejected: rejectOrderPayment claims
+ * paymentStatus → 'unpaid' before it cancels, so the paymentStatus half of the guard
+ * already blocks confirm-after-reject; the status exclusion here is defense in depth
+ * against any other path that could cancel/reject an order without first resolving
+ * its pending_verification payment. */
+/**
+ * `userId` is the human who accepted the money, or null when a provider
+ * callback resolved it — a webhook has no person behind it, and recording a
+ * synthetic id as though it were one would put a lie in the audit chain.
+ */
+export async function confirmOrderPayment(
+  tenantId: string,
+  orderId: string,
+  userId: string | null,
+  audit?: { fingerprint: AuditFingerprint },
+): Promise<Order> {
+  return withTenant(tenantId, async (tx) => {
+    const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+    if (!order) throw new OrderNotFoundError();
+    if (order.paymentStatus !== "pending_verification") throw new PaymentAlreadyResolvedError();
+    // Mirrors markPaid's terminal-state guard: a cancelled/rejected order can't be paid.
+    if (order.status === "cancelled" || order.status === "rejected") throw new PaymentAlreadyResolvedError();
+    // Guarded UPDATE serializes against concurrent writers (see cancelOrderByToken).
+    const [updated] = await tx.update(orders)
+      .set({ paymentStatus: "paid", updatedAt: new Date() })
+      .where(and(
+        eq(orders.id, orderId),
+        eq(orders.paymentStatus, "pending_verification"),
+        notInArray(orders.status, ["cancelled", "rejected"]),
+      ))
+      .returning();
+    if (!updated) throw new PaymentAlreadyResolvedError();
+
+    // Accepting money is a financial state change with a named actor, so it
+    // belongs in the chain (D1). The rejection path is audited too, via the
+    // cancellation it delegates to.
+    await recordAuditEvent(
+      {
+        tenantId,
+        branchId: updated.branchId,
+        actorUserId: userId,
+        fingerprint: audit?.fingerprint ?? emptyFingerprint(),
+      },
+      {
+        action: "payment.confirmed",
+        entityType: "order",
+        entityId: orderId,
+        summary: `Offline payment confirmed for order #${updated.orderNumber}`,
+        metadata: {
+          paymentMethod: updated.paymentMethod,
+          paymentReference: updated.paymentReference ?? null,
+          total: updated.total,
+        },
+        actorType: userId ? "user" : "system",
+      },
+      tx,
+    );
+    return updated;
+  });
+}
+
+/** Merchant rejects an offline payment: cancel the order + restock.
+ * Before touching anything, we verify the downstream cancel would actually succeed
+ * (canTransition(order.status, "cancelled", ...)) — if the order is already in a
+ * terminal/non-cancellable status this throws InvalidTransitionError immediately,
+ * with zero mutation. Without this pre-check, a half-applied write was possible:
+ * the claim below would flip paymentStatus to 'unpaid' (dropping the order out of
+ * the awaiting-payment queue) and only then would transitionStatus discover the
+ * cancel is invalid and throw — leaving the order stuck as unpaid with no cancel
+ * and no restock. This pre-check makes reject all-or-nothing for that case.
+ *
+ * Once the pre-check passes, we atomically CLAIM the payment (guarded UPDATE
+ * paymentStatus 'pending_verification' → 'unpaid') in its own withTenant
+ * transaction — this is the serialization point: it moves paymentStatus off
+ * pending_verification so a racing confirmOrderPayment can no longer win (its
+ * guard requires paymentStatus = 'pending_verification'). Only once the claim
+ * succeeds do we cancel + restock, reusing the dashboard cancel path (guarded
+ * UPDATE + restock + status-event audit row) already in transitionStatus, so
+ * cancelling for a bad/missing payment looks identical to any other dashboard
+ * cancel in the order's history. */
+export async function rejectOrderPayment(tenantId: string, orderId: string, userId: string, reason?: string): Promise<Order> {
+  await withTenant(tenantId, async (tx) => {
+    const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+    if (!order) throw new OrderNotFoundError();
+    if (!canTransition(order.status, "cancelled", order.fulfillmentType)) {
+      throw new InvalidTransitionError(order.status, "cancelled");
+    }
+    const [claimed] = await tx.update(orders)
+      .set({ paymentStatus: "unpaid", updatedAt: new Date() })
+      .where(and(eq(orders.id, orderId), eq(orders.paymentStatus, "pending_verification")))
+      .returning();
+    if (!claimed) throw new PaymentAlreadyResolvedError();
+  });
+  return transitionStatus(tenantId, orderId, "cancelled", userId, reason ?? "offline_payment_rejected");
 }

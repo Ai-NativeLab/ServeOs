@@ -124,8 +124,22 @@
     {
       "idx": 17,
       "version": "7",
+      "when": 1785012529536,
+      "tag": "0017_gigantic_fantastic_four",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
       "when": 1785023500259,
-      "tag": "0017_strong_madame_masque",
+      "tag": "0018_strong_madame_masque",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1785097217261,
+      "tag": "0019_gorgeous_rocket_racer",
       "breakpoints": true
     }
   ]

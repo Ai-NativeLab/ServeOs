@@ -27,3 +27,11 @@ describe("audit:view", () => {
     expect(ROLE_PERMISSIONS.staff).not.toContain("audit:view");
   });
 });
+
+describe("reconciliation:manage", () => {
+  it("is held by owner and manager, not staff", () => {
+    expect(ROLE_PERMISSIONS.owner).toContain("reconciliation:manage");
+    expect(ROLE_PERMISSIONS.manager).toContain("reconciliation:manage");
+    expect(ROLE_PERMISSIONS.staff).not.toContain("reconciliation:manage");
+  });
+});

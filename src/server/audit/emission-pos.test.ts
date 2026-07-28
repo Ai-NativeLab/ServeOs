@@ -14,7 +14,7 @@ import { signInCashier } from "@/server/pos/cashier";
 import { holdTicket, discardHeldTicket } from "@/server/pos/held-tickets";
 import { createPairingCode, redeemPairingCode, revokeDevice, resolveDevice } from "@/server/pos/service";
 import { PosCashierError } from "@/server/pos/errors";
-import { seedPosContext } from "@/server/pos/test-helpers";
+import { seedPosContext, openShiftForCtx } from "@/server/pos/test-helpers";
 
 async function eventsFor(tenantId: string, action: string) {
   return withTenant(tenantId, (tx) =>
@@ -39,6 +39,7 @@ async function seedCashierUser() {
 describe("audit emission — POS", () => {
   it("recordSale emits sale.recorded and one discount.line_applied per discounted line", async () => {
     const { ctx, productId, tenantId } = await seedPosContext("owner");
+    await openShiftForCtx(ctx);
     const pricing = await getCheckoutPricing(tenantId);
     const expectedTotal = computeCartTotals(pricing, [{ unitPrice: 100, quantity: 1, discountAmount: 10 }], 0).total;
     await recordSale(ctx, {
@@ -54,6 +55,7 @@ describe("audit emission — POS", () => {
 
   it("addTender emits payment.tender_added", async () => {
     const { ctx, productId, tenantId, total } = await seedPosContext("owner");
+    await openShiftForCtx(ctx);
     const sale = await recordSale(ctx, {
       clientOrderId: "sale-2",
       lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
