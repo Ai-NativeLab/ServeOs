@@ -44,6 +44,19 @@ describe("platform analytics", () => {
     expect(days).toEqual([...days].sort((a, b) => a - b));
   });
 
+  it("returns plain dates, so the MRR axis matches the signups chart", async () => {
+    // Both series feed X axes on the same admin overview screen. generate_series
+    // yields timestamptz, so without a cast this renders 31 labels like
+    // "2026-07-25 11:10:10.978+03" beside the signups chart's clean dates.
+    await seedDefaultPlans();
+    await registerTenant({ restaurantName: "Axis Co", slug: "axis-co", country: "EG", ownerName: "A", email: "a@axis.com", password: "x", vertical: "restaurant" });
+
+    const [trend, signups] = [await getPlatformMrrTrend(30), await getPlatformSignups(30)];
+
+    expect(trend[0].day).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(signups[0].day).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
   it("counts a subscription only from the day it was created", async () => {
     await seedDefaultPlans();
     const { tenantId } = await registerTenant({ restaurantName: "Backdated Co", slug: "backdated-co", country: "EG", ownerName: "B", email: "b@backdated.com", password: "x", vertical: "restaurant" });
