@@ -48,7 +48,9 @@ export default async function AdminLoginPage({
 
         {error && (
           <p style={{ color: "#f87171", fontSize: 13, marginBottom: 16 }}>
-            Invalid email or password.
+            {error === "not_admin"
+              ? "That account is not a platform admin. Retyping the password will not help — it needs the super admin role."
+              : "Invalid email or password."}
           </p>
         )}
 

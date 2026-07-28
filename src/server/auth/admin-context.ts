@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { validateSession } from "./session";
 import { loadUserRoleKeys, SESSION_COOKIE } from "./current-user";
 import { assertSuperAdmin } from "./require-role";
-import { NotSignedInError, isAdminAuthError } from "./errors";
+import { NotSignedInError, adminAuthRedirectPath } from "./errors";
 import type { User } from "./schema";
 
 /**
@@ -20,10 +20,10 @@ export async function requireSuperAdmin(): Promise<User> {
 }
 
 /**
- * Page/layout-safe variant. An *expected* auth failure (signed out, or missing
- * the super_admin role) becomes a redirect to the login form. Anything else —
- * a DB outage, schema drift, a bug — keeps throwing so `admin/error.tsx` shows
- * it with a digest.
+ * Page/layout-safe variant. An *expected* auth failure routes the visitor
+ * somewhere useful — the login form when signed out, the no-access page when
+ * signed in without the role. Anything else — a DB outage, schema drift, a
+ * bug — keeps throwing so `admin/error.tsx` shows it with a digest.
  *
  * Every admin page must use this rather than bare `requireSuperAdmin`: layouts
  * and pages render in parallel, so a layout that catches on its own does not
@@ -33,7 +33,8 @@ export async function requireSuperAdminOrRedirect(): Promise<User> {
   try {
     return await requireSuperAdmin();
   } catch (e) {
-    if (isAdminAuthError(e)) redirect("/admin/login");
+    const destination = adminAuthRedirectPath(e);
+    if (destination) redirect(destination);
     throw e;
   }
 }

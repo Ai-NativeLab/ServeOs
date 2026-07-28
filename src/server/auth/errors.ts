@@ -31,12 +31,24 @@ export class ForbiddenError extends Error {
   }
 }
 
+/** Where an admin surface should send someone after `e`, or null to rethrow. */
+export const ADMIN_LOGIN_PATH = "/admin/login";
+export const ADMIN_NO_ACCESS_PATH = "/admin/no-access";
+
 /**
- * True only for the two *expected* ways admin auth fails. Everything else — a
- * DB outage, schema drift, a plain bug — must keep propagating to an error
- * boundary rather than being reinterpreted as "signed out", which would send a
- * real incident round the login redirect and hide it.
+ * Maps the two *expected* admin auth failures to where the visitor should go.
+ * Returns null for everything else — a DB outage, schema drift, a plain bug —
+ * so it keeps propagating to an error boundary instead of being reinterpreted
+ * as "signed out", which would send a real incident round the login redirect
+ * and hide it.
+ *
+ * The two cases deliberately differ. Someone signed out needs the login form.
+ * Someone signed in without the role does not: re-prompting for credentials
+ * that are already correct renders a clean form and reads as a password
+ * problem, which is precisely how the missing-role failure disguised itself.
  */
-export function isAdminAuthError(e: unknown): boolean {
-  return e instanceof NotSignedInError || e instanceof ForbiddenError;
+export function adminAuthRedirectPath(e: unknown): string | null {
+  if (e instanceof NotSignedInError) return ADMIN_LOGIN_PATH;
+  if (e instanceof ForbiddenError) return ADMIN_NO_ACCESS_PATH;
+  return null;
 }
