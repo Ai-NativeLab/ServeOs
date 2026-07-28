@@ -19,7 +19,8 @@ config({ path: process.env.ENV_FILE ?? ".env.local", override: true });
 
 async function main() {
   const { pool } = await import("../src/db/client");
-  const { getMigrationStatus, formatMigrationStatus } = await import("../src/db/migration-status");
+  const { getMigrationStatus, formatMigrationStatus, findUnjournaledMigrations } =
+    await import("../src/db/migration-status");
 
   const migrationsDir = process.env.MIGRATIONS_DIR ?? "drizzle";
   const status = await getMigrationStatus(pool, migrationsDir);
@@ -27,7 +28,19 @@ async function main() {
 
   console.log(`${process.env.ENV_FILE ?? ".env.local"} (migrations: ${migrationsDir})`);
   console.log(formatMigrationStatus(status));
-  if (status.pending.length) process.exit(1);
+
+  // Reported separately because it cannot be reported above: a migration the
+  // journal does not list never enters the status report at all.
+  const unjournaled = findUnjournaledMigrations(migrationsDir);
+  if (unjournaled.length) {
+    console.error(
+      `\n${unjournaled.length} migration file(s) are not listed in ${migrationsDir}/meta/_journal.json,`,
+      "\nso nothing will ever apply them:",
+      ...unjournaled.map((tag) => `\n    ${tag}.sql`),
+    );
+  }
+
+  if (status.pending.length || unjournaled.length) process.exit(1);
 }
 
 main().catch((e) => {
