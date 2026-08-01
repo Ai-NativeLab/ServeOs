@@ -1,7 +1,11 @@
 "use client";
 import { useState, type CSSProperties } from "react";
 import { registerAction } from "./actions";
-import { VERTICAL_IDS, VERTICAL_ACCENTS, type VerticalId } from "@/server/verticals";
+import {
+  VERTICAL_IDS,
+  VERTICAL_ACCENTS,
+  type VerticalId,
+} from "@/server/verticals";
 
 const NAME_LABEL: Record<VerticalId, string> = {
   restaurant: "Restaurant name",
@@ -17,10 +21,21 @@ const CARD_LABEL: Record<VerticalId, string> = {
 };
 
 const inputStyle: CSSProperties = {
-  background: "#0f172a", border: "1px solid #334155", borderRadius: 6,
-  padding: "10px 12px", color: "#f1f5f9", fontSize: 14, width: "100%", boxSizing: "border-box",
+  background: "#0f172a",
+  border: "1px solid #334155",
+  borderRadius: 6,
+  padding: "10px 12px",
+  color: "#f1f5f9",
+  fontSize: 14,
+  width: "100%",
+  boxSizing: "border-box",
 };
-const labelStyle: CSSProperties = { color: "#94a3b8", fontSize: 12, fontWeight: 500, marginBottom: 4 };
+const labelStyle: CSSProperties = {
+  color: "#94a3b8",
+  fontSize: 12,
+  fontWeight: 500,
+  marginBottom: 4,
+};
 
 export function RegisterForm() {
   const [vertical, setVertical] = useState<VerticalId>("restaurant");
@@ -36,10 +51,14 @@ export function RegisterForm() {
               key={v}
               onClick={() => setVertical(v)}
               style={{
-                padding: "10px 12px", borderRadius: 8,
+                padding: "10px 12px",
+                borderRadius: 8,
                 border: `1px solid ${active ? accent : "#334155"}`,
                 background: active ? `${accent}1A` : "transparent",
-                color: active ? accent : "#94a3b8", fontWeight: 600, cursor: "pointer", fontSize: 13,
+                color: active ? accent : "#94a3b8",
+                fontWeight: 600,
+                cursor: "pointer",
+                fontSize: 13,
               }}
             >
               {CARD_LABEL[v]}
@@ -51,7 +70,12 @@ export function RegisterForm() {
 
       <label style={{ display: "grid" }}>
         <span style={labelStyle}>{NAME_LABEL[vertical]}</span>
-        <input name="restaurantName" placeholder="Roma Ristorante" required style={inputStyle} />
+        <input
+          name="restaurantName"
+          placeholder="Roma Ristorante"
+          required
+          style={inputStyle}
+        />
       </label>
       <label style={{ display: "grid" }}>
         <span style={labelStyle}>Subdomain</span>
@@ -65,7 +89,10 @@ export function RegisterForm() {
         <select
           name="country"
           defaultValue="EG"
-          style={{ ...inputStyle, appearance: "auto" as CSSProperties["appearance"] }}
+          style={{
+            ...inputStyle,
+            appearance: "auto" as CSSProperties["appearance"],
+          }}
         >
           <option value="EG">Egypt</option>
           <option value="SA">Saudi Arabia</option>
@@ -73,7 +100,12 @@ export function RegisterForm() {
       </label>
       <label style={{ display: "grid" }}>
         <span style={labelStyle}>Your name</span>
-        <input name="ownerName" placeholder="Ahmed Hassan" required style={inputStyle} />
+        <input
+          name="ownerName"
+          placeholder="Ahmed Hassan"
+          required
+          style={inputStyle}
+        />
       </label>
       <label style={{ display: "grid" }}>
         <span style={labelStyle}>Email</span>
@@ -81,13 +113,27 @@ export function RegisterForm() {
       </label>
       <label style={{ display: "grid" }}>
         <span style={labelStyle}>Password</span>
-        <input name="password" type="password" placeholder="Min. 8 characters" required style={inputStyle} />
+        <input
+          name="password"
+          type="password"
+          placeholder="Min. 8 characters"
+          required
+          style={inputStyle}
+        />
       </label>
       <button
         type="submit"
         style={{
-          marginTop: 8, background: accent, color: "#14120F", fontSize: 14, fontWeight: 600,
-          padding: 11, borderRadius: 6, border: "none", cursor: "pointer", width: "100%",
+          marginTop: 8,
+          background: accent,
+          color: "#14120F",
+          fontSize: 14,
+          fontWeight: 600,
+          padding: 11,
+          borderRadius: 6,
+          border: "none",
+          cursor: "pointer",
+          width: "100%",
         }}
       >
         Start free trial

@@ -37,7 +37,7 @@ export async function getPlatformMrrTrend(days: number): Promise<MrrPoint[]> {
   const { rows } = await db.execute<{ day: string; mrr: string }>(sql`
     SELECT d.day, COALESCE(SUM(p.price_monthly::numeric), 0) AS mrr
     FROM generate_series(${since}, now(), '1 day') AS d(day)
-    LEFT JOIN subscriptions s ON s.status IN ('active','trialing') AND s.created_at <= d.day
+    LEFT JOIN subscriptions s ON s.status IN ('active','trialing') AND s.current_period_start <= d.day
     LEFT JOIN plans p ON p.id = s.plan_id
     GROUP BY d.day ORDER BY d.day
   `);

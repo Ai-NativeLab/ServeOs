@@ -16,7 +16,7 @@ export default async function TenantDetailPage({ params }: { params: Promise<{ i
   const detail = await getTenantDetail(id);
   if (!detail) notFound();
   const { tenant, plan, subscription, branchCount, productCount, publishedProductCount, orderCount } = detail;
-  const audit = await listAuditLogs({ tenantId: id, limit: 25 });
+  const {rows: audit} = await listAuditLogs({ tenantId: id, limit: 25 });
 
   return (
     <>

@@ -4,11 +4,18 @@ import { getPublishedMenu } from "@/server/catalog/service";
 import { getActiveBanners } from "@/server/banners/service";
 import { listBranches, listDeliveryAreas } from "@/server/branches/service";
 import { hasFeature } from "@/server/entitlements/service";
-import { getBranchOpenState, isBranchOrderableAt } from "@/server/branches/slots";
+import {
+  getBranchOpenState,
+  isBranchOrderableAt,
+} from "@/server/branches/slots";
 import { getWhatsappNumber } from "@/server/tenancy/settings";
 import { getPopularProductIds } from "@/server/catalog/popular";
 import { formatMoney } from "@/lib/money";
-import { selectStorefrontTemplate, getVerticalTerms, type VerticalId } from "@/server/verticals";
+import {
+  selectStorefrontTemplate,
+  getVerticalTerms,
+  type VerticalId,
+} from "@/server/verticals";
 import { RestaurantStorefront } from "./_components/storefront/templates/RestaurantStorefront";
 import { RetailStorefront } from "./_components/storefront/templates/RetailStorefront";
 import { PharmacyStorefront } from "./_components/storefront/templates/PharmacyStorefront";
@@ -42,17 +49,29 @@ export default async function Home({
       );
     }
     if (!isTenantServable(tenant)) {
-      const terms = getVerticalTerms(selectStorefrontTemplate(tenant.vertical as VerticalId));
+      const terms = getVerticalTerms(
+        selectStorefrontTemplate(tenant.vertical as VerticalId),
+      );
       return (
         <main className="grid min-h-screen place-items-center bg-background p-6">
-          <EmptyState title={tenant.name} description={terms.gettingReadyBody.en} />
+          <EmptyState
+            title={tenant.name}
+            description={terms.gettingReadyBody.en}
+          />
         </main>
       );
     }
 
     const { branch: branchId } = await searchParams;
 
-    const [banners, menu, branches, orderingEnabled, whatsappNumber, popularSet] = await Promise.all([
+    const [
+      banners,
+      menu,
+      branches,
+      orderingEnabled,
+      whatsappNumber,
+      popularSet,
+    ] = await Promise.all([
       getActiveBanners(tenant.id),
       getPublishedMenu(tenant.id, branchId),
       listBranches(tenant.id),
@@ -62,17 +81,25 @@ export default async function Home({
     ]);
 
     const activeBranch =
-      branches.length === 1 ? branches[0] : (branches.find((b) => b.id === branchId) ?? null);
+      branches.length === 1
+        ? branches[0]
+        : (branches.find((b) => b.id === branchId) ?? null);
     const now = new Date();
-    const openState = activeBranch ? getBranchOpenState(activeBranch, tenant.timezone, now) : null;
-    const paused = activeBranch ? !activeBranch.isActive || !activeBranch.acceptingOrders : false;
+    const openState = activeBranch
+      ? getBranchOpenState(activeBranch, tenant.timezone, now)
+      : null;
+    const paused = activeBranch
+      ? !activeBranch.isActive || !activeBranch.acceptingOrders
+      : false;
     const branchSummaries = branches.map((b) => ({
       id: b.id,
       name: b.name,
       open: isBranchOrderableAt(b, tenant.timezone, now),
     }));
 
-    const areas = activeBranch ? await listDeliveryAreas(tenant.id, activeBranch.id) : [];
+    const areas = activeBranch
+      ? await listDeliveryAreas(tenant.id, activeBranch.id)
+      : [];
     const activeAreas = areas.filter((a) => a.isActive);
 
     const openLabel = !openState
