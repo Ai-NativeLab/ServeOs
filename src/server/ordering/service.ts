@@ -44,7 +44,7 @@ export type PlaceOrderInput = {
   paymentMethod?: "cash" | "instapay" | "vodafone_cash" | "mobile_wallet";
   paymentReference?: string;
   paymentProofUrl?: string;
-  channel?: "web" | "pos";
+  channel?: "web" | "pos" | "whatsapp";
   cashierUserId?: string;
   orderDiscountAmount?: number;
   orderDiscountReason?: string;

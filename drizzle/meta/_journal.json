@@ -169,6 +169,13 @@
       "when": 1785704862124,
       "tag": "0023_free_madame_web",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1785705523340,
+      "tag": "0024_parched_grey_gargoyle",
+      "breakpoints": true
     }
   ]
 }
