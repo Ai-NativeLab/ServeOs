@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, boolean, pgEnum, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, boolean, pgEnum, uniqueIndex, index, jsonb } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { tenants } from "@/server/tenancy/schema";
 
@@ -33,3 +33,22 @@ export const whatsappAccounts = pgTable("whatsapp_accounts", {
 
 export type WhatsappAccount = typeof whatsappAccounts.$inferSelect;
 export type WhatsappAccountStatus = (typeof whatsappAccountStatusEnum.enumValues)[number];
+
+export const whatsappDirectionEnum = pgEnum("whatsapp_direction", ["inbound", "outbound"]);
+
+/** Inbound + outbound log. The unique providerMessageId is the replay guard. */
+export const whatsappMessages = pgTable("whatsapp_messages", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  waId: text("wa_id").notNull(),
+  direction: whatsappDirectionEnum("direction").notNull(),
+  providerMessageId: text("provider_message_id").notNull(),
+  payload: jsonb("payload").$type<Record<string, unknown>>(),
+  deliveryStatus: text("delivery_status"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("whatsapp_messages_provider_id").on(t.providerMessageId),
+  index("whatsapp_messages_tenant_wa").on(t.tenantId, t.waId),
+]);
+
+export type WhatsappMessage = typeof whatsappMessages.$inferSelect;
