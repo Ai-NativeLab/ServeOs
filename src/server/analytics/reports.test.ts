@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { withTenant } from "@/db/with-tenant";
+import { posAdjustmentEvents } from "@/server/pos/tender-schema";
 import { placeOrder, transitionStatus } from "@/server/ordering/service";
 import { getCheckoutPricing } from "@/server/tenancy/settings";
 import { computeCartTotals } from "@/lib/order-totals";
@@ -12,6 +14,8 @@ import {
   getSalesByPaymentMethod,
   getDiscountsGiven,
   getTendersAndTips,
+  getRefundsAndVoids,
+  getReconciliationSummary,
 } from "./service";
 
 /**
@@ -114,6 +118,44 @@ describe("cross-channel sales aggregations", () => {
     expect(t.tips).toBeCloseTo(5, 2);
     expect(t.cashTendered).toBeCloseTo(discounted + 20, 2);
     expect(t.cashChange).toBeCloseTo(20, 2);
+  });
+
+  it("getRefundsAndVoids reads voids from pos_adjustment_events; refunds null until Spec 3", async () => {
+    const { ctx, tenantId, productId, managerId, total } = await seedPosContext("owner");
+    await openShiftForCtx(ctx);
+    const sale = await recordSale(ctx, {
+      clientOrderId: "void-1",
+      lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: total,
+      payments: [{ clientPaymentId: "vp-1", method: "cash", amount: total, tenderedAmount: total }],
+    });
+
+    // No void-recording API exists yet (Spec 3 owns it); the append-only
+    // adjustment trail is the source of truth, so the fixture writes it.
+    await withTenant(tenantId, (tx) =>
+      tx.insert(posAdjustmentEvents).values([
+        {
+          tenantId, orderId: sale.orderId, type: "line_void", amount: "30",
+          reasonCode: "wrong_item", byUserId: ctx.cashierUserId, authorizedByUserId: managerId,
+        },
+        {
+          tenantId, orderId: sale.orderId, type: "order_void", amount: "50",
+          reasonCode: "customer_changed_mind", byUserId: ctx.cashierUserId, authorizedByUserId: managerId,
+        },
+      ]),
+    );
+
+    const rv = await getRefundsAndVoids(tenantId, 30);
+    expect(rv.voids.reduce((s, v) => s + v.count, 0)).toBe(2);
+    expect(rv.voids.find((v) => v.type === "line_void")!.amount).toBeCloseTo(30, 2);
+    expect(rv.voids.find((v) => v.type === "order_void")!.amount).toBeCloseTo(50, 2);
+    // refunds table does not exist yet → hidden (null), never zero and never an error.
+    expect(rv.refunds).toBeNull();
+  });
+
+  it("getReconciliationSummary degrades to [] while reconciliation_runs is absent (Spec 7)", async () => {
+    const { tenantId } = await seedPosContext("owner");
+    await expect(getReconciliationSummary(tenantId, 30)).resolves.toEqual([]);
   });
 
   it("RLS: a second tenant's orders never leak into any breakdown", async () => {

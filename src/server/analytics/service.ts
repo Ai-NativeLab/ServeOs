@@ -2,6 +2,7 @@ import { sql, eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { tenants } from "@/server/tenancy/schema";
+import { tableExists } from "./deps";
 
 async function getTenantTimezone(tenantId: string): Promise<string> {
   const [t] = await db.select({ timezone: tenants.timezone }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
@@ -279,6 +280,102 @@ export async function getTendersAndTips(tenantId: string, days: number): Promise
       cashTendered: Number(s?.cash_tendered ?? 0),
       cashChange: Number(s?.cash_change ?? 0),
     };
+  });
+}
+
+export type RefundsAndVoids = {
+  voids: { type: string; amount: number; count: number }[];
+  /** null = Spec 3 not shipped — hide the sub-section rather than claiming "zero refunds". */
+  refunds: { amount: number; count: number; byReason: { reasonCode: string; amount: number; count: number }[] } | null;
+};
+
+export async function getRefundsAndVoids(tenantId: string, days: number): Promise<RefundsAndVoids> {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  return withTenant(tenantId, async (tx) => {
+    const { rows: voidRows } = await tx.execute<{ type: string; amount: string; count: string }>(sql`
+      SELECT e.type, COALESCE(SUM(e.amount), 0) AS amount, COUNT(*) AS count
+      FROM pos_adjustment_events e
+      JOIN orders o ON o.id = e.order_id
+      WHERE e.type IN ('line_void', 'order_void') AND o.placed_at >= ${since}
+      GROUP BY e.type
+      ORDER BY e.type
+    `);
+    const voids = voidRows.map((r) => ({ type: r.type, amount: Number(r.amount), count: Number(r.count) }));
+
+    if (!(await tableExists(tx, "refunds"))) return { voids, refunds: null };
+
+    // Spec 3's canonical shape: refunds(id, order_id, total, created_at) with
+    // refund_lines carrying reason codes. Lights up when Spec 3 migrates.
+    const [{ rows: totals }, { rows: reasons }] = await Promise.all([
+      tx.execute<{ amount: string; count: string }>(sql`
+        SELECT COALESCE(SUM(r.total), 0) AS amount, COUNT(*) AS count
+        FROM refunds r WHERE r.created_at >= ${since}
+      `),
+      tx.execute<{ reason_code: string; amount: string; count: string }>(sql`
+        SELECT rl.reason_code, COALESCE(SUM(rl.amount), 0) AS amount, COUNT(*) AS count
+        FROM refund_lines rl
+        JOIN refunds r ON r.id = rl.refund_id
+        WHERE r.created_at >= ${since}
+        GROUP BY rl.reason_code
+        ORDER BY amount DESC
+      `),
+    ]);
+    return {
+      voids,
+      refunds: {
+        amount: Number(totals[0]?.amount ?? 0),
+        count: Number(totals[0]?.count ?? 0),
+        byReason: reasons.map((r) => ({ reasonCode: r.reason_code, amount: Number(r.amount), count: Number(r.count) })),
+      },
+    };
+  });
+}
+
+export type ReconciliationSummaryRow = {
+  day: string;
+  expectedCash: number;
+  countedCash: number;
+  variance: number;
+  matchedSettlementLines: number;
+  unmatchedSettlementLines: number;
+  fees: number;
+};
+
+/**
+ * Financial (reports:financial). cash_counts (Spec 2) and settlement_batches
+ * (Spec 6) FEED reconciliation runs; this report only reads the runs (Spec 7).
+ * Returns [] until reconciliation_runs migrates.
+ */
+export async function getReconciliationSummary(tenantId: string, days: number): Promise<ReconciliationSummaryRow[]> {
+  const timezone = await getTenantTimezone(tenantId);
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  return withTenant(tenantId, async (tx) => {
+    if (!(await tableExists(tx, "reconciliation_runs"))) return [];
+    const { rows } = await tx.execute<{
+      day: string; expected_cash: string; counted_cash: string; variance: string;
+      matched: string; unmatched: string; fees: string;
+    }>(sql`
+      SELECT (rr.run_for AT TIME ZONE ${timezone})::date AS day,
+             COALESCE(SUM(rr.expected_cash), 0) AS expected_cash,
+             COALESCE(SUM(rr.counted_cash), 0) AS counted_cash,
+             COALESCE(SUM(rr.counted_cash - rr.expected_cash), 0) AS variance,
+             COALESCE(SUM(rr.matched_settlement_lines), 0) AS matched,
+             COALESCE(SUM(rr.unmatched_settlement_lines), 0) AS unmatched,
+             COALESCE(SUM(rr.fees), 0) AS fees
+      FROM reconciliation_runs rr
+      WHERE rr.run_for >= ${since}
+      GROUP BY day
+      ORDER BY day
+    `);
+    return rows.map((r) => ({
+      day: r.day,
+      expectedCash: Number(r.expected_cash),
+      countedCash: Number(r.counted_cash),
+      variance: Number(r.variance),
+      matchedSettlementLines: Number(r.matched),
+      unmatchedSettlementLines: Number(r.unmatched),
+      fees: Number(r.fees),
+    }));
   });
 }
 
