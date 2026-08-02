@@ -155,42 +155,44 @@ export default async function AuditPage({
       </div>
       <Card>
         <CardContent className="pt-4">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Time</TableHead>
-                <TableHead>Action</TableHead>
-                <TableHead>Tenant</TableHead>
-                <TableHead>Target</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((a) => (
-                <TableRow key={a.id}>
-                  <TableCell>
-                    {a.createdAt.toISOString().slice(0, 16).replace("T", " ")}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="outline">{a.action}</Badge>
-                  </TableCell>
-                  <TableCell>{a.tenantName ?? "—"}</TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {a.target ?? "—"}
-                  </TableCell>
-                </TableRow>
-              ))}
-              {rows.length === 0 && (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
                 <TableRow>
-                  <TableCell
-                    colSpan={4}
-                    className="text-center text-muted-foreground py-6"
-                  >
-                    No events.
-                  </TableCell>
+                  <TableHead>Time</TableHead>
+                  <TableHead>Action</TableHead>
+                  <TableHead>Tenant</TableHead>
+                  <TableHead>Target</TableHead>
                 </TableRow>
-              )}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {rows.map((a) => (
+                  <TableRow key={a.id}>
+                    <TableCell>
+                      {a.createdAt.toISOString().slice(0, 16).replace("T", " ")}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="outline">{a.action}</Badge>
+                    </TableCell>
+                    <TableCell>{a.tenantName ?? "—"}</TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {a.target ?? "—"}
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {rows.length === 0 && (
+                  <TableRow>
+                    <TableCell
+                      colSpan={4}
+                      className="text-center text-muted-foreground py-6"
+                    >
+                      No events.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
           <Pagination
             page={page}
             pageSize={PAGE_SIZE}
