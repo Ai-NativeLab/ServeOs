@@ -8,6 +8,16 @@ async function getTenantTimezone(tenantId: string): Promise<string> {
   return t?.timezone ?? "Africa/Cairo";
 }
 
+/**
+ * The status filter every revenue measure carries. Cancelled and rejected
+ * orders are not revenue; everything else — including in-flight orders —
+ * counts as committed demand. getOrdersByStatus and getPeakHours deliberately
+ * do NOT use this: one reports cancellations, the other measures demand
+ * timing. Definitions: docs/ailab/specs/reporting-metrics.md.
+ */
+const SOLD = sql`status NOT IN ('cancelled', 'rejected')`;
+const SOLD_O = sql`o.status NOT IN ('cancelled', 'rejected')`;
+
 export type RevenueTrendPoint = { day: string; revenue: number; orderCount: number };
 
 export async function getRevenueTrend(tenantId: string, days: number): Promise<RevenueTrendPoint[]> {
@@ -19,7 +29,7 @@ export async function getRevenueTrend(tenantId: string, days: number): Promise<R
              COALESCE(SUM(total), 0) AS revenue,
              COUNT(*) AS order_count
       FROM orders
-      WHERE placed_at >= ${since}
+      WHERE placed_at >= ${since} AND ${SOLD}
       GROUP BY day
       ORDER BY day
     `);
@@ -38,7 +48,7 @@ export async function getTopProducts(tenantId: string, days: number, limit = 10)
              SUM(oi.line_total) AS revenue
       FROM order_items oi
       JOIN orders o ON o.id = oi.order_id
-      WHERE o.placed_at >= ${since}
+      WHERE o.placed_at >= ${since} AND ${SOLD_O}
       GROUP BY oi.product_id, oi.name_en
       ORDER BY revenue DESC
       LIMIT ${limit}
@@ -65,7 +75,7 @@ export async function getFulfillmentSplit(tenantId: string, days: number): Promi
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   return withTenant(tenantId, async (tx) => {
     const { rows } = await tx.execute<{ fulfillment_type: string; count: string }>(sql`
-      SELECT fulfillment_type, COUNT(*) AS count FROM orders WHERE placed_at >= ${since} GROUP BY fulfillment_type
+      SELECT fulfillment_type, COUNT(*) AS count FROM orders WHERE placed_at >= ${since} AND ${SOLD} GROUP BY fulfillment_type
     `);
     return rows.map((r) => ({ fulfillmentType: r.fulfillment_type, count: Number(r.count) }));
   });
@@ -78,8 +88,8 @@ export async function getAverageOrderValue(tenantId: string, days: number): Prom
   const previousSince = new Date(since.getTime() - days * 24 * 60 * 60 * 1000);
   return withTenant(tenantId, async (tx) => {
     const [{ rows: currentRows }, { rows: previousRows }] = await Promise.all([
-      tx.execute<{ avg: string }>(sql`SELECT COALESCE(AVG(total), 0) AS avg FROM orders WHERE placed_at >= ${since}`),
-      tx.execute<{ avg: string }>(sql`SELECT COALESCE(AVG(total), 0) AS avg FROM orders WHERE placed_at >= ${previousSince} AND placed_at < ${since}`),
+      tx.execute<{ avg: string }>(sql`SELECT COALESCE(AVG(total), 0) AS avg FROM orders WHERE placed_at >= ${since} AND ${SOLD}`),
+      tx.execute<{ avg: string }>(sql`SELECT COALESCE(AVG(total), 0) AS avg FROM orders WHERE placed_at >= ${previousSince} AND placed_at < ${since} AND ${SOLD}`),
     ]);
     return { current: Number(currentRows[0]?.avg ?? 0), previous: Number(previousRows[0]?.avg ?? 0) };
   });

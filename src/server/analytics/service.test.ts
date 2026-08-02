@@ -145,6 +145,51 @@ describe("analytics service", () => {
     expect(aCell!.count).toBeGreaterThanOrEqual(1);
   });
 
+  it("excludes cancelled and rejected orders from every revenue measure, but not from the status report", async () => {
+    const { t, branch, prod, userId } = await setup("a3");
+
+    const place = () =>
+      placeOrder(t.id, {
+        branchId: branch.id, fulfillmentType: "pickup",
+        customerName: "X", customerPhone: "9",
+        lines: [{ productId: prod.id, quantity: 1, selectedOptionIds: [] }],
+      });
+
+    // One order that completes, one the shop rejects, one the customer cancels.
+    const done = await place();
+    for (const to of ["confirmed", "preparing", "ready", "completed"] as const) {
+      await transitionStatus(t.id, done.orderId, to, userId);
+    }
+    const rejected = await place();
+    await transitionStatus(t.id, rejected.orderId, "rejected", userId, "out_of_stock");
+    const cancelled = await place();
+    await transitionStatus(t.id, cancelled.orderId, "cancelled", userId, "customer_changed_mind");
+
+    const days = 7;
+
+    // Revenue counts only the completed order (114 = 100 + 14% VAT).
+    // See docs/ailab/specs/reporting-metrics.md — revenue excludes cancelled/rejected.
+    const trend = await getRevenueTrend(t.id, days);
+    expect(trend.reduce((s, p) => s + p.revenue, 0)).toBeCloseTo(114, 1);
+    expect(trend.reduce((s, p) => s + p.orderCount, 0)).toBe(1);
+
+    const top = await getTopProducts(t.id, days);
+    expect(top[0].quantity).toBe(1); // not 3
+
+    const aov = await getAverageOrderValue(t.id, days);
+    expect(aov.current).toBeCloseTo(114, 1); // an average over sold orders only
+
+    const split = await getFulfillmentSplit(t.id, days);
+    expect(split.reduce((s, r) => s + r.count, 0)).toBe(1);
+
+    // getOrdersByStatus counts everything — reporting cancellations is its job.
+    const byStatus = await getOrdersByStatus(t.id, days);
+    const map = Object.fromEntries(byStatus.map((s) => [s.status, s.count]));
+    expect(map.completed).toBe(1);
+    expect(map.rejected).toBe(1);
+    expect(map.cancelled).toBe(1);
+  });
+
   it("returns empty/zero results when no orders exist in range", async () => {
     const { t } = await setup("a2");
     const days = 7;
