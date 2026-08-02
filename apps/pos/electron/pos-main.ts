@@ -108,6 +108,28 @@ export type CashMovementRow = {
   authorizedByUserId: string | null;
 };
 
+/** The branch's business-day X report, as served by /api/pos/v1/reports/x. */
+export type DayReport = {
+  window: { from: string; to: string };
+  grossSales: number;
+  orderCount: number;
+  tenders: { method: string; amount: number; count: number }[];
+  tips: number;
+  discounts: number;
+  voids: number;
+  refunds: number;
+  perCashier: { cashierUserId: string; cashierName: string | null; sales: number; orders: number }[];
+  expectedDrawerCash: number;
+};
+
+/** The Z: the same totals tied to a shift. Null countedCash = not counted yet. */
+export type DayZReport = DayReport & {
+  shiftId: string | null;
+  countedCash: number | null;
+  overShort: number | null;
+  frozen: boolean;
+};
+
 /**
  * Electron's IPC serializes a thrown Error down to its message — custom
  * properties do not survive the boundary. So the drawer calls return an outcome
@@ -360,6 +382,31 @@ export class PosMain {
       return (await res.json()) as { shift: PosShiftSummary | null; report: ShiftReport | null };
     } catch {
       return { shift: null, report: null };
+    }
+  }
+
+  /** Business-day X report for this branch. Read-only and repeatable. */
+  async xReport(): Promise<DayReport | null> {
+    if (!this.device || !this.cashier) return null;
+    try {
+      const res = await fetch(`${this.baseUrl}/api/pos/v1/reports/x`, { headers: this.authHeaders() });
+      if (!res.ok) return null;
+      return (await res.json()) as DayReport;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Z report — this device's shift (or a named one). */
+  async zReport(shiftId?: string): Promise<DayZReport | null> {
+    if (!this.device || !this.cashier) return null;
+    try {
+      const qs = shiftId ? `?shiftId=${encodeURIComponent(shiftId)}` : "";
+      const res = await fetch(`${this.baseUrl}/api/pos/v1/reports/z${qs}`, { headers: this.authHeaders() });
+      if (!res.ok) return null;
+      return (await res.json()) as DayZReport;
+    } catch {
+      return null;
     }
   }
 
