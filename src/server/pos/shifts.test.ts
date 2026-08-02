@@ -287,6 +287,50 @@ describe("closeShift", () => {
     expect(z.approvedByUserId).toBe(managerId);
   });
 
+  it("counts a drawer movement that commits while the close is in flight", async () => {
+    const { ctx, shift, expected } = await tradedShift();
+
+    // The money is really in the till, so the closing count must include it.
+    // A close that reads the drawer before this lands and writes its count
+    // afterwards persists a figure that never existed — and cash_counts is the
+    // record Spec 7 reconciles against, not a display value.
+    const rival = await pool.connect();
+    try {
+      await rival.query("BEGIN");
+      await rival.query("SELECT set_config('app.tenant_id', $1, true)", [ctx.tenantId]);
+      // The same row lock recordCashMovement takes before it inserts.
+      await rival.query("SELECT id FROM pos_shifts WHERE id = $1 FOR UPDATE", [shift.id]);
+      await rival.query(
+        `INSERT INTO cash_movements (tenant_id, shift_id, type, amount, reason_code, by_user_id)
+         VALUES ($1, $2, 'pay_out', '-25.00', 'supplier', $3)`,
+        [ctx.tenantId, shift.id, ctx.cashierUserId],
+      );
+
+      const closing = closeShift(ctx, shift.id, { count: { countedTotal: expected - 25 } });
+
+      // Wait until the close is genuinely blocked on the rival's row lock.
+      let blocked = false;
+      for (let i = 0; i < 200 && !blocked; i++) {
+        const { rows } = await rival.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted",
+        );
+        blocked = rows[0].n > 0;
+        if (!blocked) await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(blocked).toBe(true);
+
+      await rival.query("COMMIT");
+      await closing;
+    } finally {
+      rival.release();
+    }
+
+    const [count] = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(cashCounts).where(eq(cashCounts.kind, "closing")));
+    expect(count.expectedTotal).toBe((expected - 25).toFixed(2));
+    expect(count.variance).toBe("0.00");
+  });
+
   it("loses cleanly to a concurrent writer that closes the drawer first", async () => {
     const { ctx, shift, expected } = await tradedShift();
 
@@ -366,6 +410,43 @@ describe("recordMidShiftCount", () => {
       tx.select().from(posShifts).where(eq(posShifts.id, shift.id)));
     expect(still.status).toBe("open");
     expect(still.closedAt).toBeNull();
+  });
+
+  it("counts a drawer movement that commits while the count is in flight", async () => {
+    const { ctx, shift, expected } = await tradedShift();
+
+    // Same defect shape as the close: a mid-shift count also persists a
+    // cash_counts row built from an unlocked read.
+    const rival = await pool.connect();
+    try {
+      await rival.query("BEGIN");
+      await rival.query("SELECT set_config('app.tenant_id', $1, true)", [ctx.tenantId]);
+      await rival.query("SELECT id FROM pos_shifts WHERE id = $1 FOR UPDATE", [shift.id]);
+      await rival.query(
+        `INSERT INTO cash_movements (tenant_id, shift_id, type, amount, reason_code, by_user_id)
+         VALUES ($1, $2, 'pay_out', '-25.00', 'supplier', $3)`,
+        [ctx.tenantId, shift.id, ctx.cashierUserId],
+      );
+
+      const counting = recordMidShiftCount(ctx, shift.id, { countedTotal: expected - 25 });
+
+      let blocked = false;
+      for (let i = 0; i < 200 && !blocked; i++) {
+        const { rows } = await rival.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted",
+        );
+        blocked = rows[0].n > 0;
+        if (!blocked) await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(blocked).toBe(true);
+
+      await rival.query("COMMIT");
+      const count = await counting;
+      expect(count.expectedTotal).toBe((expected - 25).toFixed(2));
+      expect(count.variance).toBe("0.00");
+    } finally {
+      rival.release();
+    }
   });
 
   it("appends exactly one count audit event", async () => {
