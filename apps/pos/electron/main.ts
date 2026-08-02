@@ -49,6 +49,8 @@ app.whenReady().then(() => {
   ipcMain.handle("pos:closeShift", (_e, countedTotal: number, denominations?: Record<string, number>, grant?: string) =>
     posMain!.closeShift(countedTotal, denominations, grant));
   ipcMain.handle("pos:cashMovement", (_e, input: CashMovementInput) => posMain!.cashMovement(input));
+  ipcMain.handle("pos:xReport", () => posMain!.xReport());
+  ipcMain.handle("pos:zReport", (_e, shiftId?: string) => posMain!.zReport(shiftId));
 
   createWindow();
 });

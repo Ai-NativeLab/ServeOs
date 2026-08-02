@@ -1,26 +1,20 @@
-import Link from "next/link";
-import { requireMenuPermission } from "../menu-permission";
+import { requireReportsPermission } from "./reports-permission";
 import { recordFinancialView } from "@/server/audit/read-events";
 import { actionAudit } from "@/server/audit/action-context";
 import {
   getRevenueTrend, getTopProducts, getOrdersByStatus, getFulfillmentSplit,
-  getAverageOrderValue, getPeakHours,
+  getAverageOrderValue, getPeakHours, getSalesByChannel,
 } from "@/server/analytics/service";
 import { orderStatusMeta } from "@/lib/order-status";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
 } from "@/components/ui/table";
 import { RevenueChart } from "./RevenueChart";
-
-const RANGES = ["7", "30", "90"] as const;
-
-function parseRange(value: unknown): number {
-  return RANGES.includes(value as (typeof RANGES)[number]) ? Number(value) : 30;
-}
+import { ReportsNav } from "./ReportsNav";
+import { parseRange } from "./range";
 
 const DOW_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -29,18 +23,19 @@ export default async function AnalyticsPage({
 }: {
   searchParams: Promise<{ range?: string }>;
 }) {
-  const ctx = await requireMenuPermission();
+  const ctx = await requireReportsPermission();
   const tenantId = ctx.tenantId;
   const { range } = await searchParams;
   const days = parseRange(range);
 
-  const [revenueTrend, topProducts, byStatus, fulfillment, aov, peak] = await Promise.all([
+  const [revenueTrend, topProducts, byStatus, fulfillment, aov, peak, byChannel] = await Promise.all([
     getRevenueTrend(tenantId, days),
     getTopProducts(tenantId, days),
     getOrdersByStatus(tenantId, days),
     getFulfillmentSplit(tenantId, days),
     getAverageOrderValue(tenantId, days),
     getPeakHours(tenantId, days),
+    getSalesByChannel(tenantId, days),
   ]);
 
   // Opening the financial report is a sensitive read — log THAT it was viewed.
@@ -67,20 +62,30 @@ export default async function AnalyticsPage({
         eyebrow="Insights"
         title="Analytics"
         description="Track revenue, top products, and order patterns over time."
-        action={
-          <div className="flex items-center gap-1.5">
-            {RANGES.map((r) => (
-              <Button key={r} asChild variant={r === String(days) ? "default" : "outline"} size="sm">
-                <Link href={`/dashboard/analytics?range=${r}`}>{r}d</Link>
-              </Button>
-            ))}
-          </div>
-        }
+        action={<ReportsNav current="/dashboard/analytics" days={days} />}
       />
 
       <Card className="p-5 mb-6">
         <h2 className="eyebrow text-primary mb-3">Revenue &amp; order volume</h2>
         <RevenueChart data={revenueTrend} />
+      </Card>
+
+      {/* Base plan — sales by channel carries no entitlement gate. */}
+      <Card className="p-5 mb-6">
+        <h2 className="eyebrow text-primary mb-3">Sales by channel</h2>
+        <div className="flex gap-3">
+          {byChannel.map((c) => (
+            <div key={c.channel} className="flex-1 rounded-lg border bg-card p-3">
+              <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                {c.channel === "pos" ? "POS" : "Online"}
+              </div>
+              <div className="font-display text-2xl font-bold text-ink">{c.revenue.toFixed(2)}</div>
+              <div className="text-xs text-muted-foreground">
+                {c.orderCount} order{c.orderCount === 1 ? "" : "s"} · AOV {c.averageOrderValue.toFixed(2)}
+              </div>
+            </div>
+          ))}
+        </div>
       </Card>
 
       <div className="grid gap-6 mb-6 lg:grid-cols-2">

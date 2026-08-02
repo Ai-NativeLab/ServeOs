@@ -1,0 +1,203 @@
+import { describe, it, expect } from "vitest";
+import { withTenant } from "@/db/with-tenant";
+import { posAdjustmentEvents } from "@/server/pos/tender-schema";
+import { placeOrder, transitionStatus } from "@/server/ordering/service";
+import { getCheckoutPricing } from "@/server/tenancy/settings";
+import { computeCartTotals } from "@/lib/order-totals";
+import { recordSale } from "@/server/pos/record-sale";
+import { seedPosContext, openShiftForCtx } from "@/server/pos/test-helpers";
+import {
+  getRevenueTrend,
+  getSalesByChannel,
+  getSalesByBranch,
+  getSalesByCashier,
+  getSalesByPaymentMethod,
+  getDiscountsGiven,
+  getTendersAndTips,
+  getRefundsAndVoids,
+  getReconciliationSummary,
+  getInventoryValuation,
+  getInventoryConsumption,
+  getInventoryWastage,
+  getCountVariance,
+  getLowStock,
+  getSpendBySupplier,
+  getReceivedVsInvoiced,
+} from "./service";
+
+/**
+ * A tenant with real traffic on BOTH channels:
+ *  - POS sale 1 — cash, line discount 10 (promo), tendered 20 over → change 20
+ *  - POS sale 2 — card, tip 5
+ *  - two web pickup orders (qty 1 and qty 2), no cashier
+ *  - one CANCELLED web order — must be invisible to every money measure
+ *    (docs/ailab/specs/reporting-metrics.md)
+ */
+async function seedMixed() {
+  const { ctx, tenantId, branchId, productId, managerId, total } = await seedPosContext("owner");
+  await openShiftForCtx(ctx); // 200.00 float; cash tenders need an open drawer
+
+  const pricing = await getCheckoutPricing(tenantId);
+  const discounted = computeCartTotals(pricing, [{ unitPrice: 100, quantity: 1, discountAmount: 10 }], 0).total;
+
+  await recordSale(ctx, {
+    clientOrderId: "rep-cash",
+    lines: [{ productId, quantity: 1, selectedOptionIds: [], discountAmount: 10, discountReason: "promo" }],
+    expectedTotal: discounted,
+    payments: [{ clientPaymentId: "rp-1", method: "cash", amount: discounted, tenderedAmount: discounted + 20 }],
+  });
+  await recordSale(ctx, {
+    clientOrderId: "rep-card",
+    lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+    expectedTotal: total,
+    payments: [{ clientPaymentId: "rp-2", method: "card", amount: total, tipAmount: 5, reference: "4242" }],
+  });
+
+  const webOrder = (n: string, quantity: number) =>
+    placeOrder(tenantId, {
+      branchId, fulfillmentType: "pickup",
+      customerName: n, customerPhone: n,
+      lines: [{ productId, quantity, selectedOptionIds: [] }],
+    });
+  await webOrder("W1", 1);
+  await webOrder("W2", 2);
+  const dead = await webOrder("W3", 5); // big on purpose: leaking it is loud
+  await transitionStatus(tenantId, dead.orderId, "cancelled", managerId, "customer_changed_mind");
+
+  return { ctx, tenantId, total, discounted };
+}
+
+describe("cross-channel sales aggregations", () => {
+  it("slices the same four sold orders by channel, branch, cashier, method, discount and tender", async () => {
+    const { ctx, tenantId, total, discounted } = await seedMixed();
+    const days = 7;
+
+    // 1. By channel — 2 web + 2 pos, cancelled excluded, AOV = revenue/count.
+    const byChannel = await getSalesByChannel(tenantId, days);
+    const web = byChannel.find((r) => r.channel === "web")!;
+    const pos = byChannel.find((r) => r.channel === "pos")!;
+    expect(web.orderCount).toBe(2);
+    expect(pos.orderCount).toBe(2);
+    expect(pos.revenue).toBeCloseTo(discounted + total, 2);
+    expect(pos.averageOrderValue).toBeCloseTo(pos.revenue / pos.orderCount, 2);
+    expect(web.averageOrderValue).toBeCloseTo(web.revenue / web.orderCount, 2);
+
+    // 2. CROSS-CHANNEL PARITY — the invariant that proves the union:
+    //    combined revenue == Σ per-channel revenue.
+    const trend = await getRevenueTrend(tenantId, days);
+    const combined = trend.reduce((s, p) => s + p.revenue, 0);
+    const summed = byChannel.reduce((s, r) => s + r.revenue, 0);
+    expect(summed).toBeCloseTo(combined, 2);
+
+    // 3. By branch — one branch carries all four sold orders.
+    const byBranch = await getSalesByBranch(tenantId, days);
+    expect(byBranch).toHaveLength(1);
+    expect(byBranch[0].branchName).toBe("Main");
+    expect(byBranch[0].orderCount).toBe(4);
+    expect(byBranch[0].revenue).toBeCloseTo(combined, 2);
+
+    // 4. By cashier — the null bucket IS the web/online row.
+    const byCashier = await getSalesByCashier(tenantId, days);
+    const mine = byCashier.find((r) => r.cashierUserId === ctx.cashierUserId)!;
+    const online = byCashier.find((r) => r.cashierUserId === null)!;
+    expect(mine.orderCount).toBe(2);
+    expect(mine.cashierName).toBe(ctx.cashierName);
+    expect(online.orderCount).toBe(2);
+    expect(online.cashierName).toBeNull();
+
+    // 5. By payment method — sums order_payments.amount per method.
+    const byMethod = await getSalesByPaymentMethod(tenantId, days);
+    expect(byMethod.find((r) => r.method === "cash")!.amount).toBeCloseTo(discounted, 2);
+    expect(byMethod.find((r) => r.method === "card")!.amount).toBeCloseTo(total, 2);
+
+    // 6. Discounts — the promo line discount, by reason and by cashier.
+    const d = await getDiscountsGiven(tenantId, days);
+    expect(d.total).toBeCloseTo(10, 2);
+    expect(d.byReason).toEqual([{ reasonCode: "promo", amount: 10, count: 1 }]);
+    expect(d.byCashier).toHaveLength(1);
+    expect(d.byCashier[0].cashierUserId).toBe(ctx.cashierUserId);
+    expect(d.byCashier[0].amount).toBeCloseTo(10, 2);
+
+    // 7. Tenders & tips — tips ride tenders and are not revenue.
+    const t = await getTendersAndTips(tenantId, days);
+    expect(t.byMethod.find((r) => r.method === "cash")!.amount).toBeCloseTo(discounted, 2);
+    expect(t.byMethod.find((r) => r.method === "card")!.count).toBe(1);
+    expect(t.tips).toBeCloseTo(5, 2);
+    expect(t.cashTendered).toBeCloseTo(discounted + 20, 2);
+    expect(t.cashChange).toBeCloseTo(20, 2);
+  });
+
+  it("getRefundsAndVoids reads voids from pos_adjustment_events; refunds null until Spec 3", async () => {
+    const { ctx, tenantId, productId, managerId, total } = await seedPosContext("owner");
+    await openShiftForCtx(ctx);
+    const sale = await recordSale(ctx, {
+      clientOrderId: "void-1",
+      lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: total,
+      payments: [{ clientPaymentId: "vp-1", method: "cash", amount: total, tenderedAmount: total }],
+    });
+
+    // No void-recording API exists yet (Spec 3 owns it); the append-only
+    // adjustment trail is the source of truth, so the fixture writes it.
+    await withTenant(tenantId, (tx) =>
+      tx.insert(posAdjustmentEvents).values([
+        {
+          tenantId, orderId: sale.orderId, type: "line_void", amount: "30",
+          reasonCode: "wrong_item", byUserId: ctx.cashierUserId, authorizedByUserId: managerId,
+        },
+        {
+          tenantId, orderId: sale.orderId, type: "order_void", amount: "50",
+          reasonCode: "customer_changed_mind", byUserId: ctx.cashierUserId, authorizedByUserId: managerId,
+        },
+      ]),
+    );
+
+    const rv = await getRefundsAndVoids(tenantId, 30);
+    expect(rv.voids.reduce((s, v) => s + v.count, 0)).toBe(2);
+    expect(rv.voids.find((v) => v.type === "line_void")!.amount).toBeCloseTo(30, 2);
+    expect(rv.voids.find((v) => v.type === "order_void")!.amount).toBeCloseTo(50, 2);
+    // refunds table does not exist yet → hidden (null), never zero and never an error.
+    expect(rv.refunds).toBeNull();
+  });
+
+  it("getReconciliationSummary degrades to [] while reconciliation_runs is absent (Spec 7)", async () => {
+    const { tenantId } = await seedPosContext("owner");
+    await expect(getReconciliationSummary(tenantId, 30)).resolves.toEqual([]);
+  });
+
+  it("every inventory + purchasing report returns [] (dependency guard) until Specs 8/9 ship", async () => {
+    const { tenantId } = await seedPosContext("owner");
+    const guarded: [string, () => Promise<unknown[]>][] = [
+      ["getInventoryValuation", () => getInventoryValuation(tenantId)],
+      ["getInventoryConsumption", () => getInventoryConsumption(tenantId, 30)],
+      ["getInventoryWastage", () => getInventoryWastage(tenantId, 30)],
+      ["getCountVariance", () => getCountVariance(tenantId, 30)],
+      ["getLowStock", () => getLowStock(tenantId)],
+      ["getSpendBySupplier", () => getSpendBySupplier(tenantId, 30)],
+      ["getReceivedVsInvoiced", () => getReceivedVsInvoiced(tenantId, 30)],
+    ];
+    for (const [name, fn] of guarded) {
+      await expect(fn(), name).resolves.toEqual([]);
+    }
+  });
+
+  it("RLS: a second tenant's orders never leak into any breakdown", async () => {
+    const { tenantId } = await seedMixed();
+
+    // A rival tenant rings its own sale...
+    const rival = await seedPosContext("owner");
+    await openShiftForCtx(rival.ctx);
+    await recordSale(rival.ctx, {
+      clientOrderId: "rival-1",
+      lines: [{ productId: rival.productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: rival.total,
+      payments: [{ clientPaymentId: "rv-1", method: "cash", amount: rival.total, tenderedAmount: rival.total }],
+    });
+
+    // ...and the first tenant's numbers do not move.
+    const byChannel = await getSalesByChannel(tenantId, 7);
+    expect(byChannel.reduce((s, r) => s + r.orderCount, 0)).toBe(4);
+    const byCashier = await getSalesByCashier(tenantId, 7);
+    expect(byCashier.some((r) => r.cashierUserId === rival.ctx.cashierUserId)).toBe(false);
+  });
+});

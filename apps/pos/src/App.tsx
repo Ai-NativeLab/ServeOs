@@ -6,9 +6,11 @@ import { OrdersQueue } from "./screens/OrdersQueue";
 import { HeldTickets } from "./screens/HeldTickets";
 import { DrawerScreen } from "./screens/DrawerScreen";
 import { OpenDrawerScreen } from "./screens/OpenDrawerScreen";
+import { XReportScreen } from "./screens/XReport";
+import { ZReportScreen } from "./screens/ZReport";
 import type { CartLine } from "./order/cart";
 
-type View = "order" | "queue" | "held" | "drawer";
+type View = "order" | "queue" | "held" | "drawer" | "reports";
 export type Cashier = { name: string; permissions: string[] };
 type RecalledDraft = { lines: CartLine[]; orderDiscount: number };
 
@@ -17,6 +19,7 @@ const TABS: { view: View; label: string }[] = [
   { view: "queue", label: "Live orders" },
   { view: "held", label: "Parked" },
   { view: "drawer", label: "Drawer" },
+  { view: "reports", label: "Reports" },
 ];
 
 export function App() {
@@ -144,6 +147,32 @@ export function App() {
         />
       )}
       {view === "drawer" && <DrawerScreen branchName={branchName} onChanged={refreshShift} />}
+      {view === "reports" && <ReportsTab />}
+    </div>
+  );
+}
+
+/** X is the peek, Z is the close — two screens, one toggle. */
+function ReportsTab() {
+  const [kind, setKind] = useState<"x" | "z">("x");
+  return (
+    <div className="px-4">
+      <div className="mx-auto mt-6 flex w-full max-w-xl items-center gap-1 rounded-lg bg-secondary p-1">
+        {(["x", "z"] as const).map((k) => (
+          <button
+            key={k}
+            onClick={() => setKind(k)}
+            className={
+              kind === k
+                ? "flex-1 rounded-md bg-card px-3 py-1.5 text-sm font-semibold text-ink shadow-sm"
+                : "flex-1 rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground"
+            }
+          >
+            {k === "x" ? "X report — mid-shift" : "Z report — close"}
+          </button>
+        ))}
+      </div>
+      {kind === "x" ? <XReportScreen /> : <ZReportScreen />}
     </div>
   );
 }

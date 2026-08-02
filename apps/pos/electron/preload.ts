@@ -10,6 +10,8 @@ import type {
   CashMovementRow,
   CashMovementInput,
   DrawerResult,
+  DayReport,
+  DayZReport,
 } from "./pos-main";
 
 export type OrderSummary = {
@@ -51,6 +53,8 @@ export interface PosBridge {
   countDrawer(countedTotal: number, denominations?: Record<string, number>): Promise<DrawerResult<{ count: CashCountRow; report: ShiftReport }>>;
   closeShift(countedTotal: number, denominations?: Record<string, number>, grant?: string): Promise<DrawerResult<{ report: ShiftReport }>>;
   cashMovement(input: CashMovementInput): Promise<DrawerResult<{ movement: CashMovementRow }>>;
+  xReport(): Promise<DayReport | null>;
+  zReport(shiftId?: string): Promise<DayZReport | null>;
 }
 
 contextBridge.exposeInMainWorld("pos", {
@@ -79,4 +83,6 @@ contextBridge.exposeInMainWorld("pos", {
   closeShift: (countedTotal: number, denominations?: Record<string, number>, grant?: string) =>
     ipcRenderer.invoke("pos:closeShift", countedTotal, denominations, grant),
   cashMovement: (input: CashMovementInput) => ipcRenderer.invoke("pos:cashMovement", input),
+  xReport: () => ipcRenderer.invoke("pos:xReport"),
+  zReport: (shiftId?: string) => ipcRenderer.invoke("pos:zReport", shiftId),
 } satisfies PosBridge);
