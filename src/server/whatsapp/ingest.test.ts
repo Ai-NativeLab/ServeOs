@@ -7,6 +7,7 @@ import { seedDefaultPlans } from "@/server/subscription/plans.seed";
 import { startTrial } from "@/server/subscription/service";
 import { whatsappAccounts, whatsappMessages } from "./schema";
 import { ingestWebhook } from "./ingest";
+import { FakeWhatsAppProvider } from "./fake-provider";
 
 const SECRET = "app-secret";
 const sign = (b: string) => "sha256=" + createHmac("sha256", SECRET).update(b).digest("hex");
@@ -44,7 +45,7 @@ describe("ingestWebhook", () => {
   it("rejects an unsigned payload without writing anything", async () => {
     await seedLinkedTenant("wa-ing-1", "pn-i1");
     const body = payload("pn-i1", "wamid.unsigned");
-    await expect(ingestWebhook(body, null)).rejects.toThrow(/signature/i);
+    await expect(ingestWebhook(body, null, new FakeWhatsAppProvider())).rejects.toThrow(/signature/i);
     const rows = await db.select().from(whatsappMessages);
     expect(rows.find((r) => r.providerMessageId === "wamid.unsigned")).toBeUndefined();
   });
@@ -52,19 +53,19 @@ describe("ingestWebhook", () => {
   it("accepts a signed message for a linked tenant", async () => {
     await seedLinkedTenant("wa-ing-2", "pn-i2");
     const body = payload("pn-i2", "wamid.ok");
-    expect(await ingestWebhook(body, sign(body))).toEqual({ accepted: 1, skipped: 0 });
+    expect(await ingestWebhook(body, sign(body), new FakeWhatsAppProvider())).toEqual({ accepted: 1, skipped: 0 });
   });
 
   it("skips a replayed message", async () => {
     await seedLinkedTenant("wa-ing-3", "pn-i3");
     const body = payload("pn-i3", "wamid.replay");
-    await ingestWebhook(body, sign(body));
-    expect(await ingestWebhook(body, sign(body))).toEqual({ accepted: 0, skipped: 1 });
+    await ingestWebhook(body, sign(body), new FakeWhatsAppProvider());
+    expect(await ingestWebhook(body, sign(body), new FakeWhatsAppProvider())).toEqual({ accepted: 0, skipped: 1 });
   });
 
   it("skips a message for an unknown phone number id", async () => {
     const body = payload("pn-unknown", "wamid.orphan");
-    expect(await ingestWebhook(body, sign(body))).toEqual({ accepted: 0, skipped: 1 });
+    expect(await ingestWebhook(body, sign(body), new FakeWhatsAppProvider())).toEqual({ accepted: 0, skipped: 1 });
   });
 
   it("routes each entry of a multi-tenant batch to its own tenant", async () => {
@@ -77,7 +78,7 @@ describe("ingestWebhook", () => {
         JSON.parse(payload("pn-i5", "wamid.b2")).entry[0],
       ],
     });
-    expect(await ingestWebhook(merged, sign(merged))).toEqual({ accepted: 2, skipped: 0 });
+    expect(await ingestWebhook(merged, sign(merged), new FakeWhatsAppProvider())).toEqual({ accepted: 2, skipped: 0 });
 
     // whatsapp_messages carries FORCE RLS, so each tenant's read proves both
     // the routing AND the isolation: t1 sees exactly its message, never t2's.
@@ -91,6 +92,6 @@ describe("ingestWebhook", () => {
     await seedLinkedTenant("wa-ing-6", "pn-i6");
     await db.update(tenants).set({ status: "suspended" });
     const body = payload("pn-i6", "wamid.susp");
-    expect(await ingestWebhook(body, sign(body))).toEqual({ accepted: 0, skipped: 1 });
+    expect(await ingestWebhook(body, sign(body), new FakeWhatsAppProvider())).toEqual({ accepted: 0, skipped: 1 });
   });
 });

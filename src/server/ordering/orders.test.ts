@@ -8,6 +8,9 @@ import { createBranch, updateBranchOrdering } from "@/server/branches/service";
 import { createCategory, createProduct, updateProduct } from "@/server/catalog/service";
 import { placeOrder, getOrderByToken, getOrder, listOrders, transitionStatus, markPaid, pendingOrderCount, ordersThisMonthCount } from "./service";
 import { InvalidTransitionError } from "./errors";
+import { withTenant } from "@/db/with-tenant";
+import { orders } from "./schema";
+import { eq } from "drizzle-orm";
 
 async function setup(slug: string) {
   const [t] = await db.insert(tenants).values({ slug, name: "T", country: "EG" }).returning();
@@ -26,6 +29,17 @@ async function setup(slug: string) {
 }
 
 describe("orders queries + transitions", () => {
+  it("records a whatsapp order on the whatsapp channel", async () => {
+    const { t, branch, pizza } = await setup("o-wa");
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "Ahmed", customerPhone: "+201111111111",
+      channel: "whatsapp", lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const [row] = await withTenant(t.id, (tx) =>
+      tx.select().from(orders).where(eq(orders.id, res.orderId)));
+    expect(row.channel).toBe("whatsapp");
+  });
+
   it("getOrderByToken returns the order with items and computed total", async () => {
     const { t, order } = await setup("o1");
     const found = await getOrderByToken(t.id, order.statusToken);

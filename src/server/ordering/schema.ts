@@ -6,7 +6,7 @@ export const orderStatusEnum = pgEnum("order_status", [
   "pending", "confirmed", "preparing", "ready", "out_for_delivery", "completed", "rejected", "cancelled",
 ]);
 export const fulfillmentTypeEnum = pgEnum("fulfillment_type", ["pickup", "delivery"]);
-export const orderChannelEnum = pgEnum("order_channel", ["web", "pos"]);
+export const orderChannelEnum = pgEnum("order_channel", ["web", "pos", "whatsapp"]);
 export const paymentStatusEnum = pgEnum("payment_status", ["unpaid", "pending_verification", "partially_paid", "paid"]);
 export const paymentMethodEnum = pgEnum("payment_method", ["cash", "instapay", "vodafone_cash", "mobile_wallet"]);
 

@@ -4,6 +4,9 @@ import { hasFeature } from "@/server/entitlements/service";
 import { verifyWebhookSignature } from "./signature";
 import { parseWebhook } from "./payload";
 import { resolveAccount, recordInbound } from "./routing";
+import { handleInbound } from "./runner";
+import { CloudApiProvider } from "./cloud-api-provider";
+import type { WhatsAppProvider } from "./provider";
 
 export class WebhookSignatureError extends Error {
   constructor() { super("invalid webhook signature"); }
@@ -20,7 +23,11 @@ function appSecret(): string {
  * Meta POST can batch entries belonging to different tenants, so resolving once
  * per request would process one tenant's message under another's RLS context.
  */
-export async function ingestWebhook(rawBody: string, signature: string | null): Promise<{ accepted: number; skipped: number }> {
+export async function ingestWebhook(
+  rawBody: string,
+  signature: string | null,
+  provider: WhatsAppProvider = new CloudApiProvider(),
+): Promise<{ accepted: number; skipped: number }> {
   if (!verifyWebhookSignature(rawBody, signature, appSecret())) throw new WebhookSignatureError();
 
   let parsed;
@@ -42,8 +49,12 @@ export async function ingestWebhook(rawBody: string, signature: string | null): 
     if (!(await hasFeature(account.tenantId, "whatsapp"))) { skipped++; continue; }
 
     const fresh = await withTenant(account.tenantId, (tx) => recordInbound(account, msg, tx));
-    if (fresh) accepted++; else skipped++;
-    // Phase 2 drives the reducer here, for `fresh` messages only.
+    if (fresh) {
+      accepted++;
+      await handleInbound(account, msg, provider);
+    } else {
+      skipped++;
+    }
   }
 
   // Status callbacks never touch conversation state.

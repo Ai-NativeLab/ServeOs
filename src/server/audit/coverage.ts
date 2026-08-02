@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
  */
 export const AUDITED_SERVICE_FILES = [
   "src/server/whatsapp/linking.ts",
+  "src/server/whatsapp/runner.ts",
   "src/server/ordering/service.ts",
   "src/server/pos/record-sale.ts",
   "src/server/pos/cashier.ts",
@@ -91,6 +92,10 @@ export function enumerateMutatingSymbols(): MutatingSymbol[] {
  * specs; the guardrail will fail those PRs if the mutation ships without one.
  */
 export const AUDIT_ALLOWLIST: Record<string, string> = {
+  // Conversation rows are the bot's internal cursor, not a domain mutation.
+  // The domain event — the order — is audited inside the same turn:
+  // runPlaceOrder emits whatsapp.order_placed on the caller's tx.
+  "runner.handleInbound": "whatsapp.order_placed emitted by runPlaceOrder on the placing turn",
   // Session primitives are not domain actions; auth.login / auth.logout are
   // emitted at the action boundary (loginAction / registerAction / signOutAction).
   "session.createSession": "auth.login emitted by login/register actions",
