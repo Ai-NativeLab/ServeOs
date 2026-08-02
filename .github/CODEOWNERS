@@ -1,0 +1,10 @@
+# Default: everything routes to the repo owner for review.
+* @mohanedsayed
+
+# Admin console front-end is shared with the FE track (Milestone: Admin Console UI/UX).
+/src/app/admin/ @mohanedsayed @AAhmedGaber
+/src/components/admin/ @mohanedsayed @AAhmedGaber
+
+# Money paths and tenant isolation stay owner-reviewed.
+/src/server/ @mohanedsayed
+/drizzle/ @mohanedsayed

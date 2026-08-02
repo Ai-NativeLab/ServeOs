@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Roadmap & spec sequencing
+    url: https://github.com/Ai-NativeLab/ServeOs/blob/main/docs/ROADMAP.md
+    about: Check where a feature sits in the spec sequence before filing it as new work.
