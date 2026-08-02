@@ -3,7 +3,9 @@
     "allow": [
       "Bash(git add *)",
       "Bash(git checkout *)",
-      "Bash(npm install *)"
+      "Bash(npm install *)",
+      "Bash(gh pr merge *)",
+      "Bash(GH_TOKEN=$(gh auth token --user mohanedsayed) gh pr merge *)"
     ]
   }
 }
