@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
  * exactly these. The audit module itself is not listed — it is the writer.
  */
 export const AUDITED_SERVICE_FILES = [
+  "src/server/whatsapp/linking.ts",
   "src/server/ordering/service.ts",
   "src/server/pos/record-sale.ts",
   "src/server/pos/cashier.ts",
