@@ -4,6 +4,7 @@ import { getPublishedMenu } from "@/server/catalog/service";
 import { getTenantById } from "@/server/tenancy/service";
 import { listBranches } from "@/server/branches/service";
 import { mintHandoff } from "./handoff";
+import { lastWhatsappCart, CONVERSATION_TTL_MS } from "./reorder";
 import { placeOrder } from "@/server/ordering/service";
 import { recordAuditEvent } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
@@ -47,8 +48,17 @@ export async function handleInbound(
     // independent, so delivery order is not guaranteed.
     if (conv.lastInboundAt && msg.timestamp * 1000 < conv.lastInboundAt.getTime()) return [];
 
+    // Never resume a cart blind: prices move, items get unpublished, branches
+    // close. Past the TTL the conversation restarts.
+    const stale = conv.updatedAt.getTime() < Date.now() - CONVERSATION_TTL_MS;
+    if (stale && conv.state !== "idle") {
+      conv = { ...conv, state: "idle", cart: [], branchId: null, customerName: null };
+    }
+
     const branches = (await listBranches(tenantId)).map((b) => ({ id: b.id, name: b.name }));
     const catalog = await loadCatalogSlice(tenantId, conv.branchId);
+    // Only idle offers "same as last time" — no reason to pay for the query mid-order.
+    const lastCart = conv.state === "idle" ? await lastWhatsappCart(tenantId, msg.waId) : null;
 
     const out = reduce({
       state: conv.state,
@@ -60,6 +70,7 @@ export async function handleInbound(
       branchId: conv.branchId,
       profileName: msg.profileName ?? conv.profileName,
       customerName: conv.customerName,
+      lastCart,
     });
 
     // Effects run before the state write so a failure rolls the whole turn back.

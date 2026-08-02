@@ -20,6 +20,8 @@ export type ReducerInput = {
   branchId: string | null;
   profileName: string | null;
   customerName: string | null;
+  /** This number's last WhatsApp order, supplied by the runner in idle only. */
+  lastCart?: CartLine[] | null;
 };
 
 export type Effect = { kind: "placeOrder" } | { kind: "mintHandoff" };
@@ -155,7 +157,25 @@ export function reduce(input: ReducerInput): ReducerOutput {
 
   switch (input.state) {
     case "idle": {
-      if (!tap) return reprompt(input, 'Say "menu" to start an order.');
+      if (tap?.action === "reorder") {
+        const cart = input.lastCart ?? [];
+        if (cart.length === 0) return reprompt(input, "Those items aren't available any more — let's start fresh.");
+        return keep(input, [cartSummary(input, cart)], { nextState: "cart", nextCart: cart });
+      }
+      if (!tap) {
+        if (input.lastCart && input.lastCart.length > 0) {
+          const v = nextVersion(input);
+          return keep(input, [{
+            kind: "buttons",
+            body: "Welcome back! Order the same as last time?",
+            buttons: [
+              { id: actionId("reorder", v, "yes"), title: "Same as last time" },
+              { id: actionId("start", v, "fresh"), title: "Something else" },
+            ],
+          }], { nextState: "idle" });
+        }
+        return reprompt(input, 'Say "menu" to start an order.');
+      }
       // One branch means no choice worth asking for.
       if (input.branches.length === 1) {
         return keep(input, [categoryList({ ...input, branchId: input.branches[0].id })], {
