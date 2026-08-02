@@ -234,8 +234,8 @@ npm run test:e2e       # Playwright smoke tests
 
 Prod passwords are **not listed here** — this is a shared org repo. Until the rotation
 above is run they are the seed defaults from the local table, which is precisely why it
-should be run. Once rotated, the platform admin password exists only in the password manager of whoever ran it;
-password manager; check an environment's health with `npm run admin:check` (read-only)
+should be run. Once rotated, the platform admin password exists only in the password manager of
+whoever ran it; check an environment's health with `npm run admin:check` (read-only)
 rather than looking it up. The remaining accounts are in the private setup artifact:
 
 > https://claude.ai/code/artifact/a2e0998a-89e7-4515-8dda-9d4a9874d36c
