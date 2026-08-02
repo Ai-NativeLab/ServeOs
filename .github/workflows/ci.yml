@@ -1,0 +1,112 @@
+name: CI
+
+# Vercel's check builds the app and applies migrations. It never runs vitest, so
+# until this existed a PR could break the entire suite and still show green —
+# which is how the drawer-close race (#64) reached main.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # apps/pos keeps electron as a devDependency for the desktop build. Nothing in
+  # CI builds or runs it, and its postinstall fetches a ~100 MB binary.
+  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+
+jobs:
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # `next typegen` regenerates next-env.d.ts and .next/types — both gitignored,
+      # both named in tsconfig's `include`, so neither exists on a fresh checkout.
+      # Nothing under src/ uses the route-type helpers today, so tsc would pass
+      # without this; it is here because it is the recipe the Next 16 docs give for
+      # CI, and it keeps this check equivalent to what `next build` validates the
+      # first time someone reaches for PageProps or LayoutProps.
+      - name: Generate Next route types
+        run: npx next typegen
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        # The suite is DB-backed: test-global-setup.ts applies the migrations and
+        # test-setup.ts truncates every table between tests, so an empty database
+        # is all this needs — no seed step.
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Connecting as the container's `postgres` superuser would make every
+      # tenant-isolation test pass without evaluating a single RLS policy. The
+      # bootstrap creates a NOSUPERUSER/NOBYPASSRLS role instead, and fails the
+      # job if that role somehow gains either attribute.
+      - name: Create the non-superuser role and test database
+        env:
+          PGPASSWORD: postgres
+        run: psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -f scripts/ci-db-bootstrap.sql
+
+      # .env.test is gitignored, and both the vitest setup files and the db
+      # scripts read it through dotenv, so CI has to write its own.
+      - name: Write .env.test
+        run: |
+          {
+            echo 'DATABASE_URL=postgresql://serveos_ci:serveos_ci@localhost:5432/serveos_test'
+            echo 'ROOT_DOMAIN=serveos.localhost'
+          } > .env.test
+
+      # Ahead of the suite so a migration failure is its own red step rather than
+      # an opaque crash inside vitest's globalSetup.
+      - name: Apply migrations
+        run: npm run db:migrate:test
+
+      - name: Check for migration drift
+        run: npm run db:check:test
+
+      # Deliberately serial: vitest.config.ts sets fileParallelism: false because
+      # every test file shares this one database and truncates it between tests.
+      # Do not shard or parallelise this step — the files would destroy each
+      # other's fixtures.
+      - name: Test
+        run: npm run test
