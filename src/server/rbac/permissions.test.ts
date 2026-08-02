@@ -35,3 +35,16 @@ describe("reconciliation:manage", () => {
     expect(ROLE_PERMISSIONS.staff).not.toContain("reconciliation:manage");
   });
 });
+
+describe("reports permissions", () => {
+  it("reports:view + reports:financial are held by owner and manager", () => {
+    for (const role of ["owner", "manager"] as const) {
+      expect(ROLE_PERMISSIONS[role]).toContain("reports:view");
+      expect(ROLE_PERMISSIONS[role]).toContain("reports:financial");
+    }
+  });
+  it("neither is held by staff", () => {
+    expect(ROLE_PERMISSIONS.staff).not.toContain("reports:view");
+    expect(ROLE_PERMISSIONS.staff).not.toContain("reports:financial");
+  });
+});
