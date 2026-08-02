@@ -41,7 +41,7 @@ const retail: VerticalDescriptor = {
     statusPreparing: { en: "Being packed", ar: "قيد التجهيز" },
     statusReady: { en: "Ready for collection", ar: "جاهز للاستلام" },
   },
-  storefront: { template: "shop", showWhatsapp: false },
+  storefront: { template: "shop", showWhatsapp: true },
   checkout: { adjustments: ["vat"] },
 };
 
@@ -61,7 +61,7 @@ const pharmacy: VerticalDescriptor = {
     statusPreparing: { en: "Being packed", ar: "قيد التجهيز" },
     statusReady: { en: "Ready for collection", ar: "جاهز للاستلام" },
   },
-  storefront: { template: "shop", showWhatsapp: false },
+  storefront: { template: "shop", showWhatsapp: true },
   checkout: { adjustments: ["vat"] },
 };
 
@@ -81,7 +81,7 @@ const timber: VerticalDescriptor = {
     statusPreparing: { en: "Being packed", ar: "قيد التجهيز" },
     statusReady: { en: "Ready for collection", ar: "جاهز للاستلام" },
   },
-  storefront: { template: "shop", showWhatsapp: false },
+  storefront: { template: "shop", showWhatsapp: true },
   checkout: { adjustments: ["vat"] },
 };
 

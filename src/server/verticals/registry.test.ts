@@ -54,9 +54,9 @@ describe("vertical registry", () => {
     expect(new Set(Object.values(VERTICAL_ACCENTS)).size).toBe(4);
   });
 
-  it("only the restaurant shows the WhatsApp CTA", () => {
+  it("shows the WhatsApp CTA on every vertical — the bot handles variants since Phase 2", () => {
     (Object.keys(VERTICAL_STOREFRONT_COPY) as VerticalId[]).forEach((v) => {
-      expect(VERTICAL_STOREFRONT_COPY[v].showWhatsapp).toBe(v === "restaurant");
+      expect(VERTICAL_STOREFRONT_COPY[v].showWhatsapp).toBe(true);
     });
   });
 
@@ -64,5 +64,11 @@ describe("vertical registry", () => {
     expect(selectStorefrontTemplate("retail")).toBe("retail");
     expect(selectStorefrontTemplate(null)).toBe("restaurant");
     expect(selectStorefrontTemplate("bogus" as VerticalId)).toBe("restaurant");
+  });
+
+  it("offers WhatsApp on every vertical now that the bot handles variants", () => {
+    for (const id of VERTICAL_IDS) {
+      expect(getVerticalDescriptor(id).storefront.showWhatsapp).toBe(true);
+    }
   });
 });

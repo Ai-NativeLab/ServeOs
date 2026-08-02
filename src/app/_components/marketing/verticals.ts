@@ -54,7 +54,7 @@ const restaurant: VerticalDef = {
         "Your menu online, orders everywhere — customers order by scanning a table QR, messaging WhatsApp, or your own ordering page. No app to install, and it all lands in one dashboard.",
       features: [
         { icon: QrCode, title: "QR Menu & Ordering", description: "Every table gets a menu customers can browse and order from in seconds." },
-        { icon: MessageCircle, title: "WhatsApp Ordering", description: "No app required — customers order straight from a chat they already have open.", roadmap: true },
+        { icon: MessageCircle, title: "WhatsApp Ordering", description: "No app required — customers order straight from a chat they already have open." },
         { icon: CalendarCheck, title: "Table Reservations", description: "Take bookings without a phone tied up all service.", roadmap: true },
         { icon: Monitor, title: "Point of Sale", description: "One system for online orders and in-house sales — nothing to reconcile by hand." },
         { icon: Package, title: "Inventory Control", description: "Stock updates as orders come in, so you know what's running low.", roadmap: true },
@@ -84,7 +84,7 @@ const restaurant: VerticalDef = {
         "قائمتك أونلاين وطلباتك في كل مكان — يطلب عملاؤك بمسح رمز QR على الطاولة، أو عبر واتساب، أو من صفحة الطلب الخاصة بك. دون أي تطبيق، وكل شيء يصل إلى لوحة تحكم واحدة.",
       features: [
         { icon: QrCode, title: "قائمة وطلب عبر QR", description: "كل طاولة تحصل على قائمة يتصفحها العملاء ويطلبون منها في ثوانٍ." },
-        { icon: MessageCircle, title: "الطلب عبر واتساب", description: "دون تطبيق — يطلب العملاء مباشرة من محادثة مفتوحة لديهم بالفعل.", roadmap: true },
+        { icon: MessageCircle, title: "الطلب عبر واتساب", description: "دون تطبيق — يطلب العملاء مباشرة من محادثة مفتوحة لديهم بالفعل." },
         { icon: CalendarCheck, title: "حجز الطاولات", description: "استقبل الحجوزات دون انشغال الهاتف طوال الخدمة.", roadmap: true },
         { icon: Monitor, title: "نقطة البيع", description: "نظام واحد للطلبات أونلاين والمبيعات داخل المطعم — دون مطابقة يدوية." },
         { icon: Package, title: "إدارة المخزون", description: "يتحدث المخزون مع كل طلب، فتعرف ما الذي أوشك على النفاد.", roadmap: true },
