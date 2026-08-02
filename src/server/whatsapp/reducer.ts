@@ -90,6 +90,24 @@ function productList(input: ReducerInput, categoryId: string): OutboundMessage {
   return { kind: "list", body: "Pick an item.", button: "Choose", rows };
 }
 
+function confirmSummary(input: ReducerInput, name: string): OutboundMessage {
+  const v = nextVersion(input);
+  const lines = input.cart.map((l) => {
+    const p = input.catalog.products.find((x) => x.id === l.productId);
+    return `${l.quantity}× ${p ? truncateTitle(p.name) : "item"}`;
+  }).join("\n");
+  // No total here: the runner re-prices at confirm time and passes expectedTotal
+  // to placeOrder, so the chat never quotes a number the server would not charge.
+  return {
+    kind: "buttons",
+    body: `Pickup order for ${name}:\n${lines}\n\nConfirm?`,
+    buttons: [
+      { id: actionId("confirm", v, "yes"), title: "Confirm" },
+      { id: actionId("confirm", v, "no"), title: "Back" },
+    ],
+  };
+}
+
 function cartSummary(input: ReducerInput, cart: CartLine[]): OutboundMessage {
   const v = nextVersion(input);
   const names = cart.map((l) => {
@@ -193,8 +211,69 @@ export function reduce(input: ReducerInput): ReducerOutput {
       const cart = [...input.cart, { productId: variant.productId, variantId: variant.id, quantity: 1 }];
       return keep(input, [cartSummary(input, cart)], { nextState: "cart", nextCart: cart });
     }
-  }
 
-  // States cart/fulfillment/contact/confirm/placed arrive in Tasks 12-15.
-  return reprompt(input, "Sorry, I didn't get that.");
+    case "cart": {
+      if (!tap) return reprompt(input, 'Tap "Checkout" when you\'re ready.');
+      if (tap.action === "more") return keep(input, [categoryList(input)], { nextState: "categories" });
+      if (tap.action === "checkout") {
+        const v = nextVersion(input);
+        return keep(input, [{
+          kind: "buttons", body: "Pickup or delivery?",
+          buttons: [
+            { id: actionId("ful", v, "pickup"), title: "Pickup" },
+            { id: actionId("ful", v, "delivery"), title: "Delivery" },
+          ],
+        }], { nextState: "fulfillment" });
+      }
+      return reprompt(input, 'Tap "Checkout" when you\'re ready.');
+    }
+
+    case "fulfillment": {
+      if (!tap || tap.action !== "ful") return reprompt(input, "Pickup or delivery?");
+      if (tap.payload === "delivery") {
+        // placeOrder requires deliveryAddressText; no list can produce an
+        // Egyptian landmark address, so delivery finishes on the storefront.
+        return keep(input, [{ kind: "text", body: "For delivery I'll send you a link with your basket ready — you can add your address there." }], {
+          effects: [{ kind: "mintHandoff" }],
+        });
+      }
+      const v = nextVersion(input);
+      const profile = input.profileName ?? "your name";
+      return keep(input, [{
+        kind: "buttons", body: "Almost done — what name should we put on the order?",
+        buttons: [
+          { id: actionId("name", v, "profile"), title: `Use ${profile}`.slice(0, 20) },
+          { id: actionId("name", v, "type"), title: "Type a name" },
+        ],
+      }], { nextState: "contact" });
+    }
+
+    case "contact": {
+      // The ONE bounded free-text field: stored verbatim, never parsed.
+      if (inbound.kind === "text") {
+        const name = inbound.text.trim().slice(0, 120);
+        if (!name) return reprompt(input, "Please send a name for the order.");
+        return keep(input, [confirmSummary(input, name)], { nextState: "confirm", nextCustomerName: name });
+      }
+      if (tap?.action === "name" && tap.payload === "profile" && input.profileName) {
+        return keep(input, [confirmSummary(input, input.profileName)], {
+          nextState: "confirm", nextCustomerName: input.profileName,
+        });
+      }
+      if (tap?.action === "name" && tap.payload === "type") {
+        return keep(input, [{ kind: "text", body: "Sure — send me the name to put on the order." }]);
+      }
+      return reprompt(input, "What name should we put on the order?");
+    }
+
+    case "confirm": {
+      if (!tap || tap.action !== "confirm") return reprompt(input, 'Tap "Confirm" to place the order.');
+      if (tap.payload !== "yes") return keep(input, [cartSummary(input, input.cart)], { nextState: "cart" });
+      if (input.cart.length === 0) return reprompt(input, "Your basket is empty.");
+      return keep(input, [], { effects: [{ kind: "placeOrder" }] });
+    }
+
+    case "placed":
+      return reset(input, 'Your last order is on its way. Say "menu" to start a new one.');
+  }
 }
