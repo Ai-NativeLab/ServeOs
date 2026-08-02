@@ -1,7 +1,9 @@
 import { sql, and, eq } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { getPublishedMenu } from "@/server/catalog/service";
+import { getTenantById } from "@/server/tenancy/service";
 import { listBranches } from "@/server/branches/service";
+import { mintHandoff } from "./handoff";
 import { placeOrder } from "@/server/ordering/service";
 import { recordAuditEvent } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
@@ -69,7 +71,13 @@ export async function handleInbound(
           conv.branchId, out.nextCustomerName ?? conv.customerName,
         );
       }
-      // mintHandoff is Task 14.
+      if (effect.kind === "mintHandoff") {
+        const cart = out.nextCart.length ? out.nextCart : conv.cart;
+        const token = await mintHandoff(tenantId, msg.waId, out.nextBranchId ?? conv.branchId, cart);
+        const tenant = await getTenantById(tenantId);
+        const url = `https://${tenant?.slug}.${process.env.ROOT_DOMAIN ?? "serveos.com"}/?handoff=${token}`;
+        out.outbound.push({ kind: "text", body: `Finish your order here:\n${url}` });
+      }
     }
 
     const [updated] = await tx.update(whatsappConversations)

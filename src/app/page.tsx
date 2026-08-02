@@ -9,6 +9,10 @@ import { getWhatsappNumber } from "@/server/tenancy/settings";
 import { getPopularProductIds } from "@/server/catalog/popular";
 import { formatMoney } from "@/lib/money";
 import { selectStorefrontTemplate, getVerticalTerms, type VerticalId } from "@/server/verticals";
+import { redeemHandoff } from "@/server/whatsapp/handoff";
+import { HandoffCartSeed } from "./_components/storefront/HandoffCartSeed";
+import type { PublishedMenu } from "@/server/catalog/schema";
+import type { CartLine as StoreCartLine } from "./_components/cart";
 import { RestaurantStorefront } from "./_components/storefront/templates/RestaurantStorefront";
 import { RetailStorefront } from "./_components/storefront/templates/RetailStorefront";
 import { PharmacyStorefront } from "./_components/storefront/templates/PharmacyStorefront";
@@ -26,7 +30,7 @@ import { VerticalProvider } from "./_components/marketing/VerticalProvider";
 export default async function Home({
   searchParams,
 }: {
-  searchParams: Promise<{ branch?: string }>;
+  searchParams: Promise<{ branch?: string; handoff?: string }>;
 }) {
   const h = await headers();
   const surface = h.get("x-surface");
@@ -50,7 +54,13 @@ export default async function Home({
       );
     }
 
-    const { branch: branchId } = await searchParams;
+    const { branch: branchId, handoff } = await searchParams;
+
+    // A WhatsApp cart handed to the storefront. Redeemed server-side,
+    // single-use, and scoped by RLS to THIS host's tenant — a token minted for
+    // another tenant returns null here rather than rendering their cart under
+    // our brand. The tenant comes from the host header, never from the token.
+    const handoffToken = handoff ? await redeemHandoff(tenant.id, handoff) : null;
 
     const [banners, menu, branches, orderingEnabled, whatsappNumber, popularSet] = await Promise.all([
       getActiveBanners(tenant.id),
@@ -109,8 +119,17 @@ export default async function Home({
       timber: TimberStorefront,
     }[resolvedVertical];
 
+    // Resolve the handed-off id-only lines against the published menu NOW, so
+    // the seeded cart carries current names and prices — a line whose product
+    // has since unpublished simply drops out.
+    const handoffLines = handoffToken ? resolveHandoffLines(menu, handoffToken.cart) : [];
+
     return (
-      <Template
+      <>
+        {handoffLines.length > 0 && (
+          <HandoffCartSeed branchId={handoffToken?.branchId ?? activeBranch?.id ?? null} lines={handoffLines} />
+        )}
+        <Template
         tenant={{
           name: tenant.name,
           logoUrl: tenant.logoUrl,
@@ -133,7 +152,8 @@ export default async function Home({
         openLabel={openLabel}
         etaLabel={etaLabel}
         minOrderLabel={minOrderLabel}
-      />
+        />
+      </>
     );
   }
 
@@ -151,4 +171,35 @@ export default async function Home({
       </VerticalProvider>
     </LangProvider>
   );
+}
+
+/**
+ * Maps a WhatsApp handoff's id-only cart lines onto the published menu,
+ * producing the display-ready lines the storefront cart store expects.
+ * Unresolvable lines (product unpublished since the chat) are dropped.
+ */
+function resolveHandoffLines(
+  menu: PublishedMenu,
+  cart: { productId: string; variantId?: string; quantity: number }[],
+): StoreCartLine[] {
+  const products = menu.categories.flatMap((c) => c.products);
+  const lines: StoreCartLine[] = [];
+  for (const l of cart) {
+    const p = products.find((x) => x.id === l.productId);
+    if (!p) continue;
+    const v = l.variantId ? p.variants.find((x) => x.id === l.variantId) : undefined;
+    if (l.variantId && !v) continue;
+    lines.push({
+      productId: p.id,
+      variantId: v?.id,
+      variantNameEn: v?.nameEn,
+      nameEn: p.nameEn,
+      nameAr: p.nameAr,
+      quantity: l.quantity,
+      unitPrice: v?.price ?? p.effectivePrice,
+      selectedOptionIds: [],
+      modifierSummaryEn: "",
+    });
+  }
+  return lines;
 }
