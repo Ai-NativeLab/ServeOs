@@ -2,11 +2,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { marketingDict, type Locale, type MarketingCopy } from "./i18n";
 
-type LangContextValue = {
-  locale: Locale;
-  setLocale: (l: Locale) => void;
-  t: MarketingCopy;
-};
+type LangContextValue = { locale: Locale; setLocale: (l: Locale) => void; t: MarketingCopy };
 
 const LangContext = createContext<LangContextValue | null>(null);
 const STORAGE_KEY = "serveos.marketing.locale";
@@ -25,8 +21,6 @@ export function LangProvider({ children }: { children: React.ReactNode }) {
 
   // Hydrate the saved preference after mount (localStorage is client-only, so
   // the server always renders English; a returning Arabic visitor flips on mount).
-
-  
   useEffect(() => {
     const saved = readSavedLocale();
     // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrating client-only saved locale after mount (server always renders English)
@@ -66,9 +60,7 @@ export function LangProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <LangContext.Provider
-      value={{ locale, setLocale, t: marketingDict[locale] }}
-    >
+    <LangContext.Provider value={{ locale, setLocale, t: marketingDict[locale] }}>
       {children}
     </LangContext.Provider>
   );
