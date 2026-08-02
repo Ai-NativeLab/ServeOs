@@ -1,4 +1,5 @@
-import { parseActionId } from "./ids";
+import { actionId, parseActionId } from "./ids";
+import { renderRows, truncateTitle } from "./render";
 import type { OutboundMessage } from "./provider";
 import type { InboundEvent } from "./payload";
 import type { CartLine, ConversationState } from "./schema";
@@ -64,6 +65,47 @@ function reprompt(input: ReducerInput, lead: string): ReducerOutput {
   return keep(input, [{ kind: "text", body: `${lead}\n\nReply "menu" to start over or "cancel" to stop.` }]);
 }
 
+function nextVersion(input: ReducerInput): number {
+  return input.stateVersion + 1;
+}
+
+function branchList(input: ReducerInput): OutboundMessage {
+  const v = nextVersion(input);
+  const { rows } = renderRows(input.branches.map((b) => ({ id: b.id, name: b.name })), 0, "branch", v);
+  return { kind: "list", body: "Which branch would you like to order from?", button: "Choose", rows };
+}
+
+function categoryList(input: ReducerInput): OutboundMessage {
+  const v = nextVersion(input);
+  const { rows } = renderRows(input.catalog.categories.map((c) => ({ id: c.id, name: c.name })), 0, "cat", v);
+  return { kind: "list", body: "What would you like?", button: "Browse", rows };
+}
+
+function productList(input: ReducerInput, categoryId: string): OutboundMessage {
+  const v = nextVersion(input);
+  const items = input.catalog.products
+    .filter((p) => p.categoryId === categoryId)
+    .map((p) => ({ id: p.id, name: p.name, description: `${p.price.toFixed(2)}` }));
+  const { rows } = renderRows(items, 0, "add", v);
+  return { kind: "list", body: "Pick an item.", button: "Choose", rows };
+}
+
+function cartSummary(input: ReducerInput, cart: CartLine[]): OutboundMessage {
+  const v = nextVersion(input);
+  const names = cart.map((l) => {
+    const p = input.catalog.products.find((x) => x.id === l.productId);
+    return `${l.quantity}× ${p ? truncateTitle(p.name) : "item"}`;
+  }).join("\n");
+  return {
+    kind: "buttons",
+    body: `Your order so far:\n${names}`,
+    buttons: [
+      { id: actionId("more", v, "x"), title: "Add more" },
+      { id: actionId("checkout", v, "x"), title: "Checkout" },
+    ],
+  };
+}
+
 /**
  * Pure. No I/O, no clock, no randomness — the runner supplies the catalog slice
  * and executes the effects.
@@ -91,6 +133,68 @@ export function reduce(input: ReducerInput): ReducerOutput {
     }
   }
 
-  // States are added in Tasks 11-15. Until then every state re-prompts.
+  const tap = inbound.kind === "interactive" ? parseActionId(inbound.replyId) : null;
+
+  switch (input.state) {
+    case "idle": {
+      if (!tap) return reprompt(input, 'Say "menu" to start an order.');
+      // One branch means no choice worth asking for.
+      if (input.branches.length === 1) {
+        return keep(input, [categoryList({ ...input, branchId: input.branches[0].id })], {
+          nextState: "categories", nextBranchId: input.branches[0].id,
+        });
+      }
+      return keep(input, [branchList(input)], { nextState: "branch" });
+    }
+
+    case "branch": {
+      if (!tap || tap.action !== "branch") return reprompt(input, "Please choose a branch.");
+      const branch = input.branches.find((b) => b.id === tap.payload);
+      if (!branch) return reprompt(input, "That branch is no longer available.");
+      return keep(input, [categoryList(input)], { nextState: "categories", nextBranchId: branch.id });
+    }
+
+    case "categories": {
+      if (!tap || tap.action !== "cat") return reprompt(input, "Please pick a category.");
+      const cat = input.catalog.categories.find((c) => c.id === tap.payload);
+      if (!cat) return reprompt(input, "That category is no longer available.");
+      return keep(input, [productList(input, cat.id)], { nextState: "products" });
+    }
+
+    case "products": {
+      if (!tap || tap.action !== "add") return reprompt(input, "Please pick an item.");
+      const product = input.catalog.products.find((p) => p.id === tap.payload);
+      if (!product) return reprompt(input, "That item is no longer available.");
+
+      // Anything the chat cannot configure goes to the storefront with the cart.
+      if (product.hasRequiredModifiers) {
+        return keep(input, [{ kind: "text", body: `${product.name} needs a few choices — I'll send you a link with your basket ready.` }], {
+          effects: [{ kind: "mintHandoff" }],
+        });
+      }
+      if (product.hasVariants) {
+        const v = nextVersion(input);
+        const items = input.catalog.variants
+          .filter((x) => x.productId === product.id)
+          .map((x) => ({ id: x.id, name: x.name, description: x.price.toFixed(2) }));
+        const { rows } = renderRows(items, 0, "var", v);
+        return keep(input, [{ kind: "list", body: `Which ${truncateTitle(product.name)}?`, button: "Choose", rows }], {
+          nextState: "variant", pendingProductId: product.id,
+        });
+      }
+      const cart = [...input.cart, { productId: product.id, quantity: 1 }];
+      return keep(input, [cartSummary(input, cart)], { nextState: "cart", nextCart: cart });
+    }
+
+    case "variant": {
+      if (!tap || tap.action !== "var") return reprompt(input, "Please choose an option.");
+      const variant = input.catalog.variants.find((v) => v.id === tap.payload);
+      if (!variant) return reprompt(input, "That option is no longer available.");
+      const cart = [...input.cart, { productId: variant.productId, variantId: variant.id, quantity: 1 }];
+      return keep(input, [cartSummary(input, cart)], { nextState: "cart", nextCart: cart });
+    }
+  }
+
+  // States cart/fulfillment/contact/confirm/placed arrive in Tasks 12-15.
   return reprompt(input, "Sorry, I didn't get that.");
 }
