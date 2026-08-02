@@ -2,10 +2,11 @@
 import { AdminError } from "@/components/admin/AdminError";
 
 export default function RouteError({
-  reset,
+  error,
+  unstable_retry,
 }: {
-  error: Error;
-  reset: () => void;
+  error: Error & { digest?: string };
+  unstable_retry: () => void;
 }) {
-  return <AdminError reset={reset} />;
+  return <AdminError error={error} retry={unstable_retry} />;
 }

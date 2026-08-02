@@ -1,5 +1,5 @@
 // src/app/admin/approvals/page.tsx
-import { requireSuperAdmin } from "@/server/auth/admin-context";
+import { requireSuperAdminOrRedirect } from "@/server/auth/admin-context";
 import { listPendingApplications } from "@/server/platform";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -8,7 +8,7 @@ import { SubmitButton } from "@/components/dashboard/SubmitButton";
 import { approveAction, rejectAction } from "./actions";
 
 export default async function ApprovalsPage() {
-  await requireSuperAdmin();
+  await requireSuperAdminOrRedirect();
   const pending = await listPendingApplications();
 
   return (

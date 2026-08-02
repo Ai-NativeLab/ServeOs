@@ -1,7 +1,7 @@
 // src/app/admin/tenants/[id]/page.tsx
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requireSuperAdmin } from "@/server/auth/admin-context";
+import { requireSuperAdminOrRedirect } from "@/server/auth/admin-context";
 import { getTenantDetail, listAuditLogs } from "@/server/platform";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,7 +11,7 @@ import { ConfirmActionButton } from "@/components/dashboard/ConfirmActionButton"
 import { activateTenantAction, cancelSubscriptionAction, forceActiveAction, markPaidAction, suspendTenantAction } from "./actions";
 
 export default async function TenantDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  await requireSuperAdmin();
+  await requireSuperAdminOrRedirect();
   const { id } = await params;
   const detail = await getTenantDetail(id);
   if (!detail) notFound();

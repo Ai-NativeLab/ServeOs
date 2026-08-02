@@ -31,12 +31,26 @@ export const sessions = pgTable("sessions", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const roles = pgTable("roles", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  tenantId: uuid("tenant_id").references(() => tenants.id, { onDelete: "cascade" }), // null = platform role
-  key: text("key").notNull(), // owner | manager | staff | super_admin
-  name: text("name").notNull(),
-});
+export const roles = pgTable(
+  "roles",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id").references(() => tenants.id, { onDelete: "cascade" }), // null = platform role
+    key: text("key").notNull(), // owner | manager | staff | super_admin
+    name: text("name").notNull(),
+  },
+  // Every get-or-create-role path is select-then-insert, which races: two
+  // concurrent callers both see nothing and both insert, leaving a user with
+  // the same role twice over two different role rows. These constraints make
+  // the database refuse it, so the race resolves to a conflict instead.
+  //
+  // Two indexes, not one: Postgres treats NULLs as distinct, so the composite
+  // never constrains platform roles. Same shape as users_email_platform_unique.
+  (t) => [
+    uniqueIndex("roles_key_per_tenant").on(t.tenantId, t.key),
+    uniqueIndex("roles_key_platform_unique").on(t.key).where(sql`${t.tenantId} IS NULL`),
+  ],
+);
 
 export const userRoles = pgTable(
   "user_roles",

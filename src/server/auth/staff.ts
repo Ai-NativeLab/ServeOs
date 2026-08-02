@@ -6,6 +6,7 @@ import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { users, roles, userRoles, sessions, type User } from "./schema";
 import { hashPassword } from "./password";
 import { StaffContactTakenError } from "./errors";
+import { getOrCreateRole } from "./roles";
 
 export type StaffRoleKey = "manager" | "staff";
 export type StaffMember = {
@@ -15,12 +16,8 @@ export type CreateStaffInput = { name: string; email?: string; phone?: string; p
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-async function getOrCreateTenantRole(tx: Tx, tenantId: string, key: StaffRoleKey): Promise<{ id: string }> {
-  const [existing] = await tx.select().from(roles).where(and(eq(roles.tenantId, tenantId), eq(roles.key, key))).limit(1);
-  if (existing) return existing;
-  const name = key === "manager" ? "Manager" : "Staff";
-  const [created] = await tx.insert(roles).values({ tenantId, key, name }).returning();
-  return created;
+function getOrCreateTenantRole(tx: Tx, tenantId: string, key: StaffRoleKey): Promise<{ id: string }> {
+  return getOrCreateRole(tx, tenantId, key, key === "manager" ? "Manager" : "Staff");
 }
 
 export async function listStaff(tenantId: string): Promise<StaffMember[]> {

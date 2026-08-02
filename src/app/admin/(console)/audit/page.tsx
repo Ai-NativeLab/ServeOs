@@ -1,5 +1,5 @@
 // src/app/admin/audit/page.tsx
-import { requireSuperAdmin } from "@/server/auth/admin-context";
+import { requireSuperAdminOrRedirect } from "@/server/auth/admin-context";
 import {
   listAuditLogs,
   listDistinctAuditActions,
@@ -31,7 +31,7 @@ export default async function AuditPage({
     page?: string;
   }>;
 }) {
-  await requireSuperAdmin();
+  await requireSuperAdminOrRedirect();
   const {
     action,
     tenant,

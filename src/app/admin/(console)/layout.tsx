@@ -1,17 +1,11 @@
-import { redirect } from "next/navigation";
-import { requireSuperAdmin } from "@/server/auth/admin-context";
+import { requireSuperAdminOrRedirect } from "@/server/auth/admin-context";
 import { adminNavItems } from "@/components/admin/nav-items";
 import { AdminSidebar } from "@/components/admin/AdminSidebar";
 import { AdminTopbar } from "@/components/admin/AdminTopbar";
 import { Toaster } from "@/components/ui/sonner";
 
 export default async function AdminConsoleLayout({ children }: { children: React.ReactNode }) {
-  let user;
-  try {
-    user = await requireSuperAdmin();
-  } catch {
-    redirect("/admin/login");
-  }
+  const user = await requireSuperAdminOrRedirect();
   const items = adminNavItems();
   return (
     <div className="min-h-screen flex bg-background text-foreground">

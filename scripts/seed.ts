@@ -49,12 +49,14 @@ const ROMA_MENU: Array<{
 
 async function main() {
   const { db, pool } = await import("../src/db/client");
-  const { users, roles, userRoles } = await import("../src/server/auth/schema");
+  const { users, userRoles } = await import("../src/server/auth/schema");
   const { tenants } = await import("../src/server/tenancy/schema");
   const { hashPassword } = await import("../src/server/auth/password");
   const { seedDefaultPlans } = await import("../src/server/subscription");
   const { registerTenant } = await import("../src/server/onboarding");
   const { approveTenant } = await import("../src/server/platform");
+  const { ensurePlatformSuperAdmin } = await import("../src/server/auth/platform-admin");
+  const { getOrCreateRole } = await import("../src/server/auth/roles");
 
   await seedDefaultPlans();
 
@@ -66,9 +68,11 @@ async function main() {
       .insert(users)
       .values({ tenantId: null, name: "Platform Admin", email: adminEmail, passwordHash: await hashPassword("admin1234") })
       .returning();
-    const [role] = await db.insert(roles).values({ tenantId: null, key: "super_admin", name: "Super Admin" }).returning();
-    await db.insert(userRoles).values({ userId: admin.id, roleId: role.id });
   }
+  // Deliberately outside the create branch: the role grant used to live inside
+  // it, so an admin row created without its role could never be repaired by
+  // re-running the seed.
+  await ensurePlatformSuperAdmin(adminEmail);
 
   // ── Demo restaurant: Pizza Roma ─────────────────────────────────────────────
   const demoSlug = "roma";
@@ -99,14 +103,8 @@ async function main() {
   }
 
   // ── Additional Roma staff ───────────────────────────────────────────────────
-  // Ensure tenant-scoped role rows exist (idempotent)
-  async function ensureTenantRole(tenantId: string, key: string, name: string) {
-    let [role] = await db.select().from(roles).where(and(eq(roles.tenantId, tenantId), eq(roles.key, key))).limit(1);
-    if (!role) {
-      [role] = await db.insert(roles).values({ tenantId, key, name }).returning();
-    }
-    return role;
-  }
+  const ensureTenantRole = (tenantId: string, key: string, name: string) =>
+    getOrCreateRole(db, tenantId, key, name);
 
   async function ensureUser(tenantId: string, email: string, name: string, password: string, roleKey: string, roleName: string) {
     let [user] = await db.select().from(users).where(and(eq(users.tenantId, tenantId), eq(users.email, email))).limit(1);

@@ -4,7 +4,7 @@ import { db } from "@/db/client";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { requireSuperAdmin } from "@/server/auth/admin-context";
+import { requireSuperAdminOrRedirect } from "@/server/auth/admin-context";
 import { listPendingApplications } from "@/server/platform";
 import { auditLogs } from "@/server/platform/audit.schema";
 import { tenants } from "@/server/tenancy/schema";
@@ -30,7 +30,7 @@ function Stat({ label, value }: { label: string; value: string | number }) {
 }
 
 export default async function AdminOverview() {
-  await requireSuperAdmin();
+  await requireSuperAdminOrRedirect();
   const [byStatus, signups, mrr, mrrTrend, trialsSoon, pending, recent] =
     await Promise.all([
       getTenantsByStatus(),

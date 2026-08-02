@@ -3,7 +3,7 @@
 **Date:** 2026-07-28
 **Status:** Approved (design)
 **Author:** Claude Opus 5 (with Mohaned)
-**Depends on:** `feat/pos-core-ops` (Spec 4 audit — merged into that stack via PR #24, *not* on `main`)
+**Depends on:** Spec 4 audit — now on `main` (PRs #22 and #27 merged 2026-07-28). Branch from `main`.
 
 ## 1. Goal
 

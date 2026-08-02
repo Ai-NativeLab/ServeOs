@@ -1,0 +1,2 @@
+CREATE UNIQUE INDEX "roles_key_per_tenant" ON "roles" USING btree ("tenant_id","key");--> statement-breakpoint
+CREATE UNIQUE INDEX "roles_key_platform_unique" ON "roles" USING btree ("key") WHERE "roles"."tenant_id" IS NULL;

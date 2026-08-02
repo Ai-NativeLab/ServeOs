@@ -16,7 +16,7 @@ New admin issues reference this document in their Technical notes.
 Every admin page under `src/app/admin/(console)/` follows the same recipe:
 
 1. A **server-component page** (`page.tsx`) that:
-   - calls `await requireSuperAdmin()` at the top to guard the route,
+   - calls `await requireSuperAdminOrRedirect()` at the top to guard the route,
    - awaits its `searchParams` (a `Promise` in Next 16) to read URL-driven state,
    - calls a **platform service function** to load data,
    - calls `notFound()` for unknown ids,
@@ -37,7 +37,7 @@ export default async function FeaturePage({
 }: {
   searchParams: Promise<{ q?: string }>;
 }) {
-  await requireSuperAdmin();
+  await requireSuperAdminOrRedirect();
   const { q } = await searchParams;
   const rows = await listSomething({ search: q || undefined });
 
@@ -69,9 +69,16 @@ export async function doThingAction(id: string) {
 
 ### 2.3 Guarding
 
-- Every route reuses `requireSuperAdmin()` from `src/server/auth/admin-context.ts`.
-- The console layout `src/app/admin/(console)/layout.tsx` calls it once and redirects
-  to `/admin/login` on failure; individual pages still call it (defense in depth).
+- Every **page and layout** uses `requireSuperAdminOrRedirect()` from
+  `src/server/auth/admin-context.ts` — never bare `requireSuperAdmin()`. It routes
+  an *expected* auth failure somewhere useful: signed out → `/admin/login`,
+  signed in without the role → `/admin/no-access`. Anything unexpected (DB outage,
+  schema drift, a bug) keeps throwing so `admin/error.tsx` shows it with a digest.
+  Pages call it themselves even though the layout also does — layouts and pages
+  render in parallel, so the layout's redirect cannot stop a sibling page from
+  throwing an unhandled render error.
+- **Server actions** use bare `requireSuperAdmin()` — they need the throw, not a
+  redirect (defense in depth against a stale session mutating data).
 - Unknown tenant/record ids render `notFound()` (see `tenants/[id]/page.tsx`), never
   a crash.
 
