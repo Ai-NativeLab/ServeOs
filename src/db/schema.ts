@@ -14,3 +14,4 @@ export * from "../server/payments/offline/methods.schema";
 export * from "../server/pos/tender-schema";
 export * from "../server/pos/shift-schema";
 export * from "../server/audit/schema";
+export * from "../server/whatsapp/schema";
