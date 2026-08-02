@@ -1,0 +1,93 @@
+# Restore drill: load the newest prod dump into the QA database.
+# Manual-only, confirmation-gated, and structurally unable to touch prod:
+# the only connection string used for writes is QA_DATABASE_URL.
+# Afterwards QA holds prod data — finish the drill by re-seeding QA
+# (see docs/references/backup-restore.md).
+name: db-restore-drill
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "restore-into-qa" to confirm OVERWRITING the QA database'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check confirmation phrase
+        run: |
+          if [ "${{ inputs.confirm }}" != "restore-into-qa" ]; then
+            echo "::error::confirmation phrase mismatch — nothing was touched"
+            exit 1
+          fi
+
+      - name: Install PostgreSQL 17 client (PGDG)
+        run: |
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+
+      - name: Download newest prod daily dump
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          set -euo pipefail
+          KEY=$(aws s3 ls "s3://serveos-backups/prod/daily/" | sort | tail -1 | awk '{print $4}')
+          if [ -z "$KEY" ]; then echo "::error::no prod dumps found in R2"; exit 1; fi
+          echo "Restoring: $KEY"
+          aws s3 cp "s3://serveos-backups/prod/daily/${KEY}" prod.dump
+
+      - name: Restore into QA
+        env:
+          DB_URL: ${{ secrets.QA_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          /usr/lib/postgresql/17/bin/pg_restore \
+            --clean --if-exists --no-owner --no-privileges \
+            --dbname="$DB_URL" prod.dump
+
+      - name: Hand restored objects to the app role
+        # pg_restore ran as postgres, so postgres owns everything it created.
+        # The app connects as `app` and FORCE RLS policies must apply to it,
+        # so ownership and grants have to be put back the way migrations
+        # would have left them.
+        env:
+          DB_URL: ${{ secrets.QA_DATABASE_URL }}
+        run: |
+          /usr/lib/postgresql/17/bin/psql "$DB_URL" <<'SQL'
+          do $$
+          declare r record;
+          begin
+            for r in select schemaname, tablename from pg_tables where schemaname in ('public','drizzle') loop
+              execute format('alter table %I.%I owner to app', r.schemaname, r.tablename);
+            end loop;
+            for r in select schemaname, sequencename from pg_sequences where schemaname = 'public' loop
+              execute format('alter sequence %I.%I owner to app', r.schemaname, r.sequencename);
+            end loop;
+          end $$;
+          grant usage on schema public, drizzle to app;
+          grant all on all tables in schema public, drizzle to app;
+          grant all on all sequences in schema public to app;
+          SQL
+
+      - name: Verify restored data
+        env:
+          DB_URL: ${{ secrets.QA_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          USERS=$(/usr/lib/postgresql/17/bin/psql "$DB_URL" -Atc "select count(*) from public.users")
+          TENANTS=$(/usr/lib/postgresql/17/bin/psql "$DB_URL" -Atc "select count(*) from public.tenants")
+          echo "restored users=$USERS tenants=$TENANTS"
+          if [ "$USERS" = "0" ]; then
+            echo "::error::restore completed but users is empty"
+            exit 1
+          fi

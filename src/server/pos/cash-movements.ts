@@ -58,10 +58,17 @@ export async function recordCashMovement(
   }
 
   return withTenant(ctx.tenantId, async (tx) => {
-    // Re-resolve the drawer on THIS transaction and lock the row: a close that
-    // is mid-flight blocks us until it commits (we then see 'closed' and
-    // refuse), and a close that starts after us waits until this movement is
-    // committed, so it cannot count a drawer that is still moving.
+    // Re-resolve the drawer on THIS transaction and lock the row. This is the
+    // ONLY thing serializing a movement against a close or a mid-shift count —
+    // neither of those takes it via this path, they take the same row with
+    // FOR UPDATE before they read the drawer, so whichever of us gets the row
+    // first, the other sees a settled drawer. A close mid-flight blocks us and
+    // we then see 'closed' and refuse; a close starting after us waits for this
+    // movement to commit and counts it.
+    //
+    // Do not weaken either side to an unlocked read: the close's advisory lock
+    // is keyed on the shift and this path never takes it, so the row lock is
+    // what actually holds the two apart.
     const [shift] = await tx
       .select()
       .from(posShifts)

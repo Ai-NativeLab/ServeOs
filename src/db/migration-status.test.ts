@@ -1,8 +1,21 @@
 import { describe, it, expect } from "vitest";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   compareMigrations, isUnreachable, formatMigrationStatus, readJournal,
+  findUnjournaledMigrations,
   type MigrationEntry,
 } from "./migration-status";
+
+/** A migrations folder on disk: `entries` go in the journal, `files` in the folder. */
+function fixtureFolder(entries: { idx: number; tag: string; when: number }[], files: string[]) {
+  const dir = mkdtempSync(join(tmpdir(), "journal-"));
+  mkdirSync(join(dir, "meta"));
+  writeFileSync(join(dir, "meta", "_journal.json"), JSON.stringify({ entries }));
+  for (const tag of files) writeFileSync(join(dir, `${tag}.sql`), "SELECT 1;");
+  return dir;
+}
 
 const entry = (idx: number, when: number, hash: string): MigrationEntry => ({
   idx, when, hash, tag: `${String(idx).padStart(4, "0")}_m${idx}`,
@@ -78,6 +91,45 @@ describe("formatMigrationStatus", () => {
   it("says so plainly when nothing is outstanding", () => {
     const status = compareMigrations([entry(0, 100, "a")], [{ hash: "a", createdAt: 100 }]);
     expect(formatMigrationStatus(status)).toContain("every migration on disk has been applied");
+  });
+});
+
+describe("findUnjournaledMigrations", () => {
+  it("names a migration file the journal never lists", () => {
+    // The shape that slips through: the .sql landed, the journal edit did not.
+    // compareMigrations cannot see this — the file is absent from its input.
+    const dir = fixtureFolder(
+      [{ idx: 0, tag: "0000_a", when: 100 }],
+      ["0000_a", "0001_forgotten"],
+    );
+    try {
+      expect(findUnjournaledMigrations(dir)).toEqual(["0001_forgotten"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("is quiet when the folder and the journal agree", () => {
+    const dir = fixtureFolder([{ idx: 0, tag: "0000_a", when: 100 }], ["0000_a"]);
+    try {
+      expect(findUnjournaledMigrations(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores non-SQL files sitting in the folder", () => {
+    const dir = fixtureFolder([{ idx: 0, tag: "0000_a", when: 100 }], ["0000_a"]);
+    writeFileSync(join(dir, "README.md"), "notes");
+    try {
+      expect(findUnjournaledMigrations(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("finds nothing in this repo's own migrations folder", () => {
+    expect(findUnjournaledMigrations("drizzle")).toEqual([]);
   });
 });
 

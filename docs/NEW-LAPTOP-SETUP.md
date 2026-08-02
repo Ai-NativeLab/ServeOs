@@ -195,11 +195,21 @@ npm run test:e2e       # Playwright smoke tests
 
 ## Part 3b — Production (deployed on `serveos.tech`)
 
-> ⚠️ **Security note:** the deployed Roma tenant currently runs on the **same
-> default seed passwords** (`owner1234`, `admin1234`) that ship in `scripts/seed.ts`
-> and `scripts/_prod.ts`. They work for testing today, but `admin@serveos.com /
-> admin1234` is a platform-wide super admin on the live site — **rotate it** (and
-> ideally the Roma owner) before this is anything more than a demo.
+> ⚠️ **Security note:** the deployed Roma tenant runs on the **same default seed
+> passwords** (`owner1234`, `admin1234`) that ship in `scripts/seed.ts` and
+> `scripts/_prod.ts`. `admin@serveos.com / admin1234` is a platform-wide super
+> admin on the live site.
+>
+> Rotate the platform admin with:
+>
+> ```bash
+> ENV_FILE=.env.production npm run admin:check -- --rotate
+> ```
+>
+> It generates a 192-bit password, stores only the hash, verifies the new value
+> authenticates before printing it, and shows it **once**. Put it straight into a
+> password manager — it cannot be recovered afterwards. The Roma owner still
+> needs the same treatment; there is no equivalent command for tenant users yet.
 
 ### Production URLs
 | Surface | URL |
@@ -210,14 +220,23 @@ npm run test:e2e       # Playwright smoke tests
 | Roma storefront | https://roma.serveos.tech |
 | Raw Vercel deployment | https://serve-os-puce.vercel.app |
 
-> `serveos.com` 302-redirects to `serveos.tech`. Vercel auto-deploys `main`; DB
-> migrations against Supabase are a **separate manual step** (see the deploy runbook).
+> `serveos.com` 302-redirects to `serveos.tech`. Vercel auto-deploys `main`, and
+> migrations run **during that build**, before the deployment goes live —
+> `vercel-build` runs `scripts/release-migrate.ts`, and a failed migration fails
+> the build so a half-migrated schema never serves traffic. This is no longer a
+> manual step.
+>
+> Preview deployments deliberately **skip** migrating (`release-migrate` requires
+> `VERCEL_ENV=production`, pinned by `src/db/release-guard.ts`), because preview
+> shares the production database — otherwise opening a PR would migrate prod.
 
 ### Production logins
 
-The live prod passwords are **kept out of git** (this is a shared org repo). They are
-the same seed defaults as the local table above, and the full list lives in the private
-setup artifact:
+Prod passwords are **not listed here** — this is a shared org repo. Until the rotation
+above is run they are the seed defaults from the local table, which is precisely why it
+should be run. Once rotated, the platform admin password exists only in the password manager of
+whoever ran it; check an environment's health with `npm run admin:check` (read-only)
+rather than looking it up. The remaining accounts are in the private setup artifact:
 
 > https://claude.ai/code/artifact/a2e0998a-89e7-4515-8dda-9d4a9874d36c
 

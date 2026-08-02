@@ -1,0 +1,93 @@
+# Nightly logical backups of the prod and QA databases to Cloudflare R2.
+# Retention is enforced by R2 lifecycle rules (daily 14d, weekly 90d), not here.
+name: db-backup
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      force_weekly:
+        description: "Also write this dump under weekly/ (normally Sundays only)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  R2_BUCKET: serveos-backups
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - env_name: prod
+            url_secret: PROD_DATABASE_URL
+          - env_name: qa
+            url_secret: QA_DATABASE_URL
+    steps:
+      - name: Install PostgreSQL 17 client (PGDG)
+        run: |
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+
+      - name: Row-count canary
+        # The failure this exists to catch: a role that connects fine but sees no
+        # rows (RLS misconfiguration) would otherwise upload green-but-empty dumps.
+        env:
+          DB_URL: ${{ secrets[matrix.url_secret] }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DB_URL" ]; then echo "::error::secret ${{ matrix.url_secret }} is not set"; exit 1; fi
+          USERS=$(/usr/lib/postgresql/17/bin/psql "$DB_URL" -Atc "select count(*) from public.users")
+          echo "users rows visible to backup role: $USERS"
+          if [ "$USERS" = "0" ]; then
+            echo "::error::backup role sees 0 rows in public.users — RLS/grants are wrong, refusing to back up"
+            exit 1
+          fi
+
+      - name: Dump ${{ matrix.env_name }} (public + drizzle schemas)
+        env:
+          DB_URL: ${{ secrets[matrix.url_secret] }}
+        run: |
+          set -euo pipefail
+          FILE="serveos-${{ matrix.env_name }}-$(date -u +%F).dump"
+          echo "FILE=$FILE" >> "$GITHUB_ENV"
+          /usr/lib/postgresql/17/bin/pg_dump "$DB_URL" \
+            --format=custom \
+            --schema=public --schema=drizzle \
+            --file="$FILE"
+          ls -lh "$FILE"
+          TABLES=$(/usr/lib/postgresql/17/bin/pg_restore --list "$FILE" | grep -c 'TABLE DATA')
+          echo "TABLE DATA entries: $TABLES"
+          if [ "$TABLES" -lt 5 ]; then
+            echo "::error::dump contains only $TABLES tables — refusing to upload"
+            exit 1
+          fi
+
+      - name: Upload daily to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: aws s3 cp "$FILE" "s3://${R2_BUCKET}/${{ matrix.env_name }}/daily/${FILE}"
+
+      - name: Upload weekly copy (Sundays, or forced via dispatch)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          if [ "$(date -u +%u)" = "7" ] || [ "${{ inputs.force_weekly }}" = "true" ]; then
+            aws s3 cp "$FILE" "s3://${R2_BUCKET}/${{ matrix.env_name }}/weekly/${FILE}"
+          else
+            echo "Not Sunday and not forced — skipping weekly copy."
+          fi

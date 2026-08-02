@@ -251,7 +251,10 @@ export async function recordMidShiftCount(
     // or sees the closed drawer — never straddles it.
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${shiftId})::bigint)`);
 
-    const [shift] = await tx.select().from(posShifts).where(eq(posShifts.id, shiftId)).limit(1);
+    // FOR UPDATE for the same reason the close takes it: the advisory lock does
+    // not hold off recordCashMovement, so without the row a movement can commit
+    // between this read and the count we persist below.
+    const [shift] = await tx.select().from(posShifts).where(eq(posShifts.id, shiftId)).limit(1).for("update");
     if (!shift) throw new NoOpenShiftError();
     if (shift.status === "closed") throw new ShiftClosedError();
 
@@ -330,7 +333,12 @@ export async function closeShift(
     // open on this device.
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${shiftId})::bigint)`);
 
-    const [shift] = await tx.select().from(posShifts).where(eq(posShifts.id, shiftId)).limit(1);
+    // FOR UPDATE, and before gatherShift: the advisory lock only serializes us
+    // against other closes and counts. recordCashMovement never takes it — it
+    // takes this row lock — so without holding the row from here, a movement can
+    // commit between the read below and the UPDATE further down, and the count
+    // we persist would omit cash that is really in the drawer.
+    const [shift] = await tx.select().from(posShifts).where(eq(posShifts.id, shiftId)).limit(1).for("update");
     if (!shift) throw new NoOpenShiftError();
     if (shift.status === "closed") throw new ShiftClosedError();
 

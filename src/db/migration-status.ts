@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import type { Pool } from "pg";
 
 /**
@@ -56,6 +56,28 @@ export function readJournal(migrationsFolder = "drizzle"): MigrationEntry[] {
       .update(readFileSync(`${migrationsFolder}/${entry.tag}.sql`, "utf8"))
       .digest("hex"),
   }));
+}
+
+/**
+ * Migration tags with a `.sql` file that no journal entry names.
+ *
+ * Everything downstream — the migrator, `compareMigrations`, `db:repair` —
+ * starts from `_journal.json`, so a file it does not list is not "pending", it
+ * is invisible: never applied, never reported, and absent from every count.
+ * The status report cannot show this, because a migration missing from the
+ * journal is missing from the report's own input. Hence a separate check.
+ *
+ * Hand-written migrations (`0002_fix_tenant_settings_policy_nullif.sql` is one)
+ * are added to the folder and the journal in two steps, which is where the two
+ * drift apart.
+ */
+export function findUnjournaledMigrations(migrationsFolder = "drizzle"): string[] {
+  const journaled = new Set(readJournal(migrationsFolder).map((entry) => entry.tag));
+  return readdirSync(migrationsFolder)
+    .filter((name) => name.endsWith(".sql"))
+    .map((name) => name.slice(0, -".sql".length))
+    .filter((tag) => !journaled.has(tag))
+    .sort();
 }
 
 /** Pure set comparison — no filesystem, no database. */
