@@ -1,7 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/db/client";
 import { users, type User } from "./schema";
-import { verifyPassword } from "./password";
+import { hashPassword, verifyPassword } from "./password";
 import { loadUserRoleKeys } from "./current-user";
 
 export type PlatformAdminAuthResult =
@@ -37,4 +37,20 @@ export async function authenticatePlatformAdmin(
   if (!roleKeys.includes("super_admin")) return { ok: false, reason: "not_admin" };
 
   return { ok: true, user };
+}
+
+/**
+ * Replaces a platform admin's password.
+ *
+ * Scoped to `tenantId IS NULL` for the same reason the login is: a tenant
+ * member can share the address, and a rotation that silently reset the wrong
+ * account would be worse than not rotating at all.
+ */
+export async function setPlatformAdminPassword(email: string, password: string): Promise<void> {
+  const [updated] = await db
+    .update(users)
+    .set({ passwordHash: await hashPassword(password) })
+    .where(and(eq(users.email, email), isNull(users.tenantId)))
+    .returning();
+  if (!updated) throw new Error(`No platform user with email ${email}`);
 }

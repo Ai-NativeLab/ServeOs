@@ -2,21 +2,32 @@
  * Reports — and optionally repairs — whether a platform admin actually holds
  * `super_admin`.
  *
- *   npm run admin:check                                    # .env.local, read-only
- *   ENV_FILE=.env.production npm run admin:check           # audit production
- *   ENV_FILE=.env.production npm run admin:check -- --fix  # grant the role
- *   ... -- --email someone@else.com                        # non-default account
+ *   npm run admin:check                                       # .env.local, read-only
+ *   ENV_FILE=.env.production npm run admin:check              # audit production
+ *   ENV_FILE=.env.production npm run admin:check -- --fix     # grant the role
+ *   ENV_FILE=.env.production npm run admin:check -- --rotate  # new random password
+ *   ... -- --email someone@else.com                           # non-default account
  *
- * Without --fix nothing is written. An admin who can authenticate but holds no
- * role authenticates fine and then fails every authorization check, which
- * surfaces as a bounce straight back to the login form.
+ * Without --fix or --rotate nothing is written. An admin who can authenticate
+ * but holds no role authenticates fine and then fails every authorization
+ * check, which surfaces as a bounce straight back to the login form.
+ *
+ * --rotate prints the new password ONCE and stores only its hash. There is no
+ * way to recover it afterwards; capture it before closing the terminal.
  */
+import { randomBytes } from "node:crypto";
 import { config } from "dotenv";
 
 config({ path: process.env.ENV_FILE ?? ".env.local", override: true });
 
 const args = process.argv.slice(2);
 const FIX = args.includes("--fix");
+const ROTATE = args.includes("--rotate");
+
+/** URL-safe, ~192 bits. Avoids characters that get mangled when pasted. */
+function generatePassword(): string {
+  return randomBytes(24).toString("base64url");
+}
 const emailFlag = args.indexOf("--email");
 if (emailFlag !== -1 && !args[emailFlag + 1]) {
   console.error("--email needs a value, e.g. --email admin@serveos.com");
@@ -52,6 +63,31 @@ async function main() {
   const before = await loadUserRoleKeys(user.id);
   const hasRole = before.includes("super_admin");
   console.log(`  ${hasRole ? "✓" : "✗"} roles: [${before.join(", ") || "none"}]`);
+
+  if (ROTATE) {
+    const { setPlatformAdminPassword, authenticatePlatformAdmin } = await import("../src/server/auth/admin-login");
+    const password = generatePassword();
+    await setPlatformAdminPassword(EMAIL, password);
+
+    // Prove it before printing it — a rotation that silently failed would be
+    // discovered at the worst possible moment.
+    const check = await authenticatePlatformAdmin(EMAIL, password);
+    if (!check.ok && check.reason === "invalid_credentials") {
+      console.error("\n  ✗ rotation did not take — the new password does not authenticate.");
+      await pool.end();
+      process.exit(1);
+    }
+
+    console.log("\n  ✓ password rotated and verified.");
+    console.log("\n  ┌─────────────────────────────────────────────────────────");
+    console.log(`  │ ${EMAIL}`);
+    console.log(`  │ ${password}`);
+    console.log("  └─────────────────────────────────────────────────────────");
+    console.log("\n  Shown once. Only the hash is stored — put it in your password manager now.");
+    if (!check.ok) console.log(`  Note: account still lacks super_admin (${check.reason}) — re-run with --fix.`);
+    await pool.end();
+    return;
+  }
 
   if (hasRole) {
     console.log("\nNothing to repair — this account is a working super admin.");

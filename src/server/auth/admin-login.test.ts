@@ -1,9 +1,10 @@
 import { describe, it, expect } from "vitest";
+import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { users, roles, userRoles } from "./schema";
 import { tenants } from "@/server/tenancy/schema";
 import { hashPassword } from "./password";
-import { authenticatePlatformAdmin } from "./admin-login";
+import { authenticatePlatformAdmin, setPlatformAdminPassword } from "./admin-login";
 
 async function platformUser(email: string, password = "pw1234") {
   const [u] = await db
@@ -75,5 +76,43 @@ describe("authenticatePlatformAdmin", () => {
     const res = await authenticatePlatformAdmin("nopw@serveos.com", "pw1234");
 
     expect(res).toEqual({ ok: false, reason: "invalid_credentials" });
+  });
+});
+
+describe("setPlatformAdminPassword", () => {
+  it("accepts the new password and stops accepting the old one", async () => {
+    const u = await platformUser("rotate@serveos.com", "oldpassword");
+    await grantSuperAdmin(u.id);
+
+    await setPlatformAdminPassword("rotate@serveos.com", "n3w-p4ssw0rd");
+
+    expect(await authenticatePlatformAdmin("rotate@serveos.com", "n3w-p4ssw0rd")).toMatchObject({ ok: true });
+    // The half that matters for a rotation: the leaked value must stop working.
+    expect(await authenticatePlatformAdmin("rotate@serveos.com", "oldpassword")).toEqual({
+      ok: false,
+      reason: "invalid_credentials",
+    });
+  });
+
+  it("stores a hash, never the password itself", async () => {
+    const u = await platformUser("hash@serveos.com");
+
+    await setPlatformAdminPassword("hash@serveos.com", "plaintext-secret");
+
+    const [row] = await db.select().from(users).where(eq(users.id, u.id));
+    expect(row.passwordHash).not.toContain("plaintext-secret");
+    expect(row.passwordHash?.length).toBeGreaterThan(20);
+  });
+
+  it("refuses a tenant-scoped user, so a rotation cannot hit the wrong account", async () => {
+    const [t] = await db
+      .insert(tenants)
+      .values({ name: "R", slug: "r-rotate", country: "EG", vertical: "restaurant" })
+      .returning();
+    await db
+      .insert(users)
+      .values({ tenantId: t.id, name: "Owner", email: "scoped@serveos.com", passwordHash: "x" });
+
+    await expect(setPlatformAdminPassword("scoped@serveos.com", "whatever")).rejects.toThrow(/no platform user/i);
   });
 });
