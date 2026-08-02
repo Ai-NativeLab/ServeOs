@@ -3,6 +3,5 @@ export {
   listPendingApplications, approveTenant, rejectTenant, suspendTenant,
   listTenants, getTenantDetail, listAuditLogs, activateTenant,
   cancelSubscription, forceSubscriptionActive, markSubscriptionPaid,
-  ensurePlatformSuperAdmin,
-  type TenantRow, type TenantDetail, type AuditRow, type EnsureSuperAdminResult,
+  type TenantRow, type TenantDetail, type AuditRow,
 } from "./service";

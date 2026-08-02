@@ -12,10 +12,7 @@ import { listPendingApplications, approveTenant, rejectTenant, suspendTenant } f
 import {
   listTenants, getTenantDetail, listAuditLogs, activateTenant,
   cancelSubscription, forceSubscriptionActive, markSubscriptionPaid,
-  ensurePlatformSuperAdmin,
 } from "./service";
-import { roles, userRoles } from "@/server/auth/schema";
-import { loadUserRoleKeys } from "@/server/auth/current-user";
 
 async function admin() {
   const [a] = await db.insert(users).values({ tenantId: null, name: "Root", email: "root@serveos.com" }).returning();
@@ -120,64 +117,5 @@ describe("platform tenant + billing service", () => {
 
   it("returns null for unknown tenant detail", async () => {
     expect(await getTenantDetail("00000000-0000-0000-0000-000000000000")).toBeNull();
-  });
-});
-
-describe("ensurePlatformSuperAdmin", () => {
-  it("grants super_admin to an existing platform user that is missing the role", async () => {
-    // The repair case: a half-provisioned admin. The user row exists, so any
-    // create-if-missing seed skips it forever and it can never sign in.
-    const [u] = await db
-      .insert(users)
-      .values({ tenantId: null, name: "Platform Admin", email: "a@serveos.com", passwordHash: "x" })
-      .returning();
-    expect(await loadUserRoleKeys(u.id)).toEqual([]);
-
-    const res = await ensurePlatformSuperAdmin("a@serveos.com");
-
-    expect(res).toMatchObject({ userId: u.id, roleGranted: true });
-    expect(await loadUserRoleKeys(u.id)).toEqual(["super_admin"]);
-  });
-
-  it("is idempotent — a second run grants nothing and leaves one role link", async () => {
-    await db
-      .insert(users)
-      .values({ tenantId: null, name: "Platform Admin", email: "b@serveos.com", passwordHash: "x" })
-      .returning();
-
-    await ensurePlatformSuperAdmin("b@serveos.com");
-    const second = await ensurePlatformSuperAdmin("b@serveos.com");
-
-    expect(second.roleGranted).toBe(false);
-    expect(await db.select().from(userRoles)).toHaveLength(1);
-    expect(await db.select().from(roles)).toHaveLength(1);
-  });
-
-  it("reuses an existing platform super_admin role rather than duplicating it", async () => {
-    const [r] = await db
-      .insert(roles)
-      .values({ tenantId: null, key: "super_admin", name: "Super Admin" })
-      .returning();
-    await db
-      .insert(users)
-      .values({ tenantId: null, name: "Platform Admin", email: "c@serveos.com", passwordHash: "x" })
-      .returning();
-
-    await ensurePlatformSuperAdmin("c@serveos.com");
-
-    const all = await db.select().from(roles);
-    expect(all).toHaveLength(1);
-    expect(all[0].id).toBe(r.id);
-  });
-
-  it("throws a clear error when the platform user does not exist", async () => {
-    await expect(ensurePlatformSuperAdmin("nobody@serveos.com")).rejects.toThrow(/no platform user/i);
-  });
-
-  it("ignores tenant-scoped users with the same email", async () => {
-    const [t] = await db.insert(tenants).values({ name: "R", slug: "r-scoped", country: "EG", vertical: "restaurant" }).returning();
-    await db.insert(users).values({ tenantId: t.id, name: "Owner", email: "dup@serveos.com", passwordHash: "x" });
-
-    await expect(ensurePlatformSuperAdmin("dup@serveos.com")).rejects.toThrow(/no platform user/i);
   });
 });

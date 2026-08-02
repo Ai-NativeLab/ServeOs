@@ -29,7 +29,7 @@ async function main() {
   const { db, pool } = await import("../src/db/client");
   const { users } = await import("../src/server/auth/schema");
   const { loadUserRoleKeys } = await import("../src/server/auth/current-user");
-  const { ensurePlatformSuperAdmin } = await import("../src/server/platform");
+  const { ensurePlatformSuperAdmin } = await import("../src/server/auth/platform-admin");
 
   const env = process.env.ENV_FILE ?? ".env.local";
   console.log(`${env} — platform admin: ${EMAIL}`);
