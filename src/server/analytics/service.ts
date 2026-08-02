@@ -379,6 +379,145 @@ export async function getReconciliationSummary(tenantId: string, days: number): 
   });
 }
 
+// ---------------------------------------------------------------------------
+// Inventory (Spec 8) + purchasing (Spec 9) reports. None of the source tables
+// exist yet — every function short-circuits through tableExists and returns []
+// today, then lights up with NO signature change when those specs migrate.
+// Written against the roadmap's canonical table/column names.
+// FORWARD (Spec 8/9): fixtures seeding real stock_ledger/PO rows + aggregation
+// assertions land when these tables migrate.
+// ---------------------------------------------------------------------------
+
+export type InventoryValuationRow = { itemId: string; name: string; onHand: number; unitCost: number; value: number };
+
+export async function getInventoryValuation(tenantId: string): Promise<InventoryValuationRow[]> {
+  return withTenant(tenantId, async (tx) => {
+    if (!(await tableExists(tx, "inventory_lots"))) return [];
+    const { rows } = await tx.execute<{ item_id: string; name: string; on_hand: string; unit_cost: string; value: string }>(sql`
+      SELECT l.item_id, i.name,
+             SUM(l.remaining_qty) AS on_hand,
+             AVG(l.unit_cost) AS unit_cost,
+             SUM(l.remaining_qty * l.unit_cost) AS value
+      FROM inventory_lots l JOIN inventory_items i ON i.id = l.item_id
+      GROUP BY l.item_id, i.name ORDER BY value DESC
+    `);
+    return rows.map((r) => ({ itemId: r.item_id, name: r.name, onHand: Number(r.on_hand), unitCost: Number(r.unit_cost), value: Number(r.value) }));
+  });
+}
+
+export type InventoryMovementRow = { itemId: string; name: string; quantity: number };
+
+async function sumStockMovement(tenantId: string, days: number, movementType: string): Promise<InventoryMovementRow[]> {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  return withTenant(tenantId, async (tx) => {
+    if (!(await tableExists(tx, "stock_ledger"))) return [];
+    const { rows } = await tx.execute<{ item_id: string; name: string; quantity: string }>(sql`
+      SELECT sl.item_id, i.name, SUM(ABS(sl.quantity)) AS quantity
+      FROM stock_ledger sl JOIN inventory_items i ON i.id = sl.item_id
+      WHERE sl.movement_type = ${movementType} AND sl.created_at >= ${since}
+      GROUP BY sl.item_id, i.name ORDER BY quantity DESC
+    `);
+    return rows.map((r) => ({ itemId: r.item_id, name: r.name, quantity: Number(r.quantity) }));
+  });
+}
+
+export type InventoryConsumptionRow = { itemId: string; name: string; consumed: number };
+
+export async function getInventoryConsumption(tenantId: string, days: number): Promise<InventoryConsumptionRow[]> {
+  const rows = await sumStockMovement(tenantId, days, "sale_deduction");
+  return rows.map((r) => ({ itemId: r.itemId, name: r.name, consumed: r.quantity }));
+}
+
+export type InventoryWastageRow = { itemId: string; name: string; wasted: number };
+
+export async function getInventoryWastage(tenantId: string, days: number): Promise<InventoryWastageRow[]> {
+  const rows = await sumStockMovement(tenantId, days, "waste");
+  return rows.map((r) => ({ itemId: r.itemId, name: r.name, wasted: r.quantity }));
+}
+
+export type CountVarianceRow = { countId: string; itemId: string; name: string; counted: number; expected: number; variance: number };
+
+export async function getCountVariance(tenantId: string, days: number): Promise<CountVarianceRow[]> {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  return withTenant(tenantId, async (tx) => {
+    if (!(await tableExists(tx, "stock_counts"))) return [];
+    const { rows } = await tx.execute<{ count_id: string; item_id: string; name: string; counted: string; expected: string }>(sql`
+      SELECT sc.id AS count_id, scl.item_id, i.name, scl.counted_qty AS counted, scl.expected_qty AS expected
+      FROM stock_count_lines scl
+      JOIN stock_counts sc ON sc.id = scl.stock_count_id
+      JOIN inventory_items i ON i.id = scl.item_id
+      WHERE sc.created_at >= ${since}
+      ORDER BY sc.created_at DESC
+    `);
+    return rows.map((r) => ({
+      countId: r.count_id, itemId: r.item_id, name: r.name,
+      counted: Number(r.counted), expected: Number(r.expected),
+      variance: Number(r.counted) - Number(r.expected),
+    }));
+  });
+}
+
+export type LowStockRow = { itemId: string; name: string; locationId: string; onHand: number; reorderPoint: number };
+
+export async function getLowStock(tenantId: string): Promise<LowStockRow[]> {
+  return withTenant(tenantId, async (tx) => {
+    if (!(await tableExists(tx, "inventory_lots"))) return [];
+    const { rows } = await tx.execute<{ item_id: string; name: string; location_id: string; on_hand: string; reorder_point: string }>(sql`
+      SELECT l.item_id, i.name, l.location_id, SUM(l.remaining_qty) AS on_hand, i.reorder_point
+      FROM inventory_lots l JOIN inventory_items i ON i.id = l.item_id
+      GROUP BY l.item_id, i.name, l.location_id, i.reorder_point
+      HAVING SUM(l.remaining_qty) < i.reorder_point
+      ORDER BY on_hand
+    `);
+    return rows.map((r) => ({
+      itemId: r.item_id, name: r.name, locationId: r.location_id,
+      onHand: Number(r.on_hand), reorderPoint: Number(r.reorder_point),
+    }));
+  });
+}
+
+export type SpendBySupplierRow = { supplierId: string; name: string; poCount: number; spend: number };
+
+export async function getSpendBySupplier(tenantId: string, days: number): Promise<SpendBySupplierRow[]> {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  return withTenant(tenantId, async (tx) => {
+    if (!(await tableExists(tx, "purchase_orders"))) return [];
+    const { rows } = await tx.execute<{ supplier_id: string; name: string; po_count: string; spend: string }>(sql`
+      SELECT po.supplier_id, s.name, COUNT(*) AS po_count, COALESCE(SUM(po.total), 0) AS spend
+      FROM purchase_orders po JOIN suppliers s ON s.id = po.supplier_id
+      WHERE po.created_at >= ${since}
+      GROUP BY po.supplier_id, s.name ORDER BY spend DESC
+    `);
+    return rows.map((r) => ({ supplierId: r.supplier_id, name: r.name, poCount: Number(r.po_count), spend: Number(r.spend) }));
+  });
+}
+
+export type ReceivedVsInvoicedRow = { poId: string; poNumber: string; ordered: number; received: number; invoiced: number; variance: number };
+
+export async function getReceivedVsInvoiced(tenantId: string, days: number): Promise<ReceivedVsInvoicedRow[]> {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  return withTenant(tenantId, async (tx) => {
+    if (!(await tableExists(tx, "po_receipts"))) return [];
+    const { rows } = await tx.execute<{ po_id: string; po_number: string; ordered: string; received: string; invoiced: string }>(sql`
+      SELECT po.id AS po_id, po.po_number,
+             COALESCE(po.total, 0) AS ordered,
+             COALESCE(SUM(prl.received_qty * prl.unit_cost), 0) AS received,
+             COALESCE(SUM(prl.invoiced_amount), 0) AS invoiced
+      FROM purchase_orders po
+      JOIN po_receipts pr ON pr.purchase_order_id = po.id
+      JOIN po_receipt_lines prl ON prl.po_receipt_id = pr.id
+      WHERE po.created_at >= ${since}
+      GROUP BY po.id, po.po_number
+      ORDER BY po.created_at DESC
+    `);
+    return rows.map((r) => ({
+      poId: r.po_id, poNumber: r.po_number,
+      ordered: Number(r.ordered), received: Number(r.received), invoiced: Number(r.invoiced),
+      variance: Number(r.received) - Number(r.invoiced),
+    }));
+  });
+}
+
 export type PeakHourCell = { dayOfWeek: number; hour: number; count: number };
 
 export async function getPeakHours(tenantId: string, days: number): Promise<PeakHourCell[]> {

@@ -16,6 +16,13 @@ import {
   getTendersAndTips,
   getRefundsAndVoids,
   getReconciliationSummary,
+  getInventoryValuation,
+  getInventoryConsumption,
+  getInventoryWastage,
+  getCountVariance,
+  getLowStock,
+  getSpendBySupplier,
+  getReceivedVsInvoiced,
 } from "./service";
 
 /**
@@ -156,6 +163,22 @@ describe("cross-channel sales aggregations", () => {
   it("getReconciliationSummary degrades to [] while reconciliation_runs is absent (Spec 7)", async () => {
     const { tenantId } = await seedPosContext("owner");
     await expect(getReconciliationSummary(tenantId, 30)).resolves.toEqual([]);
+  });
+
+  it("every inventory + purchasing report returns [] (dependency guard) until Specs 8/9 ship", async () => {
+    const { tenantId } = await seedPosContext("owner");
+    const guarded: [string, () => Promise<unknown[]>][] = [
+      ["getInventoryValuation", () => getInventoryValuation(tenantId)],
+      ["getInventoryConsumption", () => getInventoryConsumption(tenantId, 30)],
+      ["getInventoryWastage", () => getInventoryWastage(tenantId, 30)],
+      ["getCountVariance", () => getCountVariance(tenantId, 30)],
+      ["getLowStock", () => getLowStock(tenantId)],
+      ["getSpendBySupplier", () => getSpendBySupplier(tenantId, 30)],
+      ["getReceivedVsInvoiced", () => getReceivedVsInvoiced(tenantId, 30)],
+    ];
+    for (const [name, fn] of guarded) {
+      await expect(fn(), name).resolves.toEqual([]);
+    }
   });
 
   it("RLS: a second tenant's orders never leak into any breakdown", async () => {
