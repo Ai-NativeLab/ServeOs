@@ -32,14 +32,26 @@ export async function getPlatformMrr(): Promise<number> {
 }
 
 export type MrrPoint = { day: string; mrr: number };
+/**
+ * MRR per day over the window.
+ *
+ * Note this is a reconstruction of *today's* book projected backwards, not true
+ * historical MRR: `status` is evaluated as it stands now for every past day, so
+ * a since-churned subscription contributes nothing to any day it was actually
+ * billed. Making it truly historical needs a subscription status history.
+ *
+ * `d.day` is cast to a date because generate_series yields timestamptz, which
+ * would otherwise render as a full timestamp on the chart axis while the
+ * sibling signups series shows clean dates on the same screen.
+ */
 export async function getPlatformMrrTrend(days: number): Promise<MrrPoint[]> {
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const { rows } = await db.execute<{ day: string; mrr: string }>(sql`
-    SELECT d.day, COALESCE(SUM(p.price_monthly::numeric), 0) AS mrr
+    SELECT (d.day AT TIME ZONE 'UTC')::date AS day, COALESCE(SUM(p.price_monthly::numeric), 0) AS mrr
     FROM generate_series(${since}, now(), '1 day') AS d(day)
     LEFT JOIN subscriptions s ON s.status IN ('active','trialing') AND s.created_at <= d.day
     LEFT JOIN plans p ON p.id = s.plan_id
-    GROUP BY d.day ORDER BY d.day
+    GROUP BY 1 ORDER BY 1
   `);
   return rows.map((r) => ({ day: r.day, mrr: Number(r.mrr) }));
 }

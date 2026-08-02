@@ -1,5 +1,5 @@
 // src/app/admin/audit/page.tsx
-import { requireSuperAdmin } from "@/server/auth/admin-context";
+import { requireSuperAdminOrRedirect } from "@/server/auth/admin-context";
 import { listAuditLogs } from "@/server/platform";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -11,7 +11,7 @@ export default async function AuditPage({
 }: {
   searchParams: Promise<{ action?: string }>;
 }) {
-  await requireSuperAdmin();
+  await requireSuperAdminOrRedirect();
   const { action } = await searchParams;
   const rows = await listAuditLogs({ action: action || undefined, limit: 100 });
   const actions = Array.from(new Set(rows.map((r) => r.action))).sort();

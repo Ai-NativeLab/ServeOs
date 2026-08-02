@@ -1,5 +1,5 @@
 // src/app/admin/billing/page.tsx
-import { requireSuperAdmin } from "@/server/auth/admin-context";
+import { requireSuperAdminOrRedirect } from "@/server/auth/admin-context";
 import { listInvoicesPendingVerification } from "@/server/billing/service";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -9,7 +9,7 @@ import { isHttpUrl } from "@/lib/safe-url";
 import { confirmInvoiceAction, rejectInvoiceAction } from "./actions";
 
 export default async function BillingPage() {
-  await requireSuperAdmin();
+  await requireSuperAdminOrRedirect();
   const pending = await listInvoicesPendingVerification();
 
   return (

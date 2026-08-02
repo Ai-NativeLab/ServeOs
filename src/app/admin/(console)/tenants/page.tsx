@@ -1,6 +1,6 @@
 // src/app/admin/tenants/page.tsx
 import Link from "next/link";
-import { requireSuperAdmin } from "@/server/auth/admin-context";
+import { requireSuperAdminOrRedirect } from "@/server/auth/admin-context";
 import { listTenants } from "@/server/platform";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -17,7 +17,7 @@ export default async function TenantsPage({
 }: {
   searchParams: Promise<{ status?: string; q?: string }>;
 }) {
-  await requireSuperAdmin();
+  await requireSuperAdminOrRedirect();
   const { status, q } = await searchParams;
   const rows = await listTenants({ status: status && status !== "all" ? status : undefined, search: q || undefined });
 
