@@ -1,12 +1,21 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, ClipboardList, Store, ScrollText, CreditCard } from "lucide-react";
+import {
+  LayoutDashboard,
+  ClipboardList,
+  Store,
+  ScrollText,
+  CreditCard,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { LogoMark } from "@/components/brand/LogoMark";
 import type { NavItem } from "@/components/dashboard/nav-items";
 
-const ICONS: Record<string, React.ComponentType<{ className?: string; strokeWidth?: number }>> = {
+const ICONS: Record<
+  string,
+  React.ComponentType<{ className?: string; strokeWidth?: number }>
+> = {
   overview: LayoutDashboard,
   approvals: ClipboardList,
   billing: CreditCard,
@@ -14,7 +23,15 @@ const ICONS: Record<string, React.ComponentType<{ className?: string; strokeWidt
   audit: ScrollText,
 };
 
-export function AdminNav({ items, adminName }: { items: NavItem[]; adminName: string }) {
+export function AdminNav({
+  items,
+  adminName,
+  onNavigate = () => {},
+}: {
+  items: NavItem[];
+  adminName: string;
+  onNavigate?: () => void;
+}) {
   const pathname = usePathname();
   return (
     <div className="flex h-full w-full flex-col bg-sidebar text-sidebar-foreground">
@@ -26,15 +43,21 @@ export function AdminNav({ items, adminName }: { items: NavItem[]; adminName: st
           Serve<span className="text-sidebar-accent-foreground">OS</span>
         </span>
       </div>
-      <div className="eyebrow px-4 pb-4 text-sidebar-foreground/50 truncate">{adminName}</div>
+      <div className="eyebrow px-4 pb-4 text-sidebar-foreground/50 truncate">
+        {adminName}
+      </div>
       <nav className="flex-1 px-2 space-y-1 overflow-y-auto">
         {items.map((item) => {
           const Icon = ICONS[item.icon] ?? LayoutDashboard;
-          const active = item.href === "/admin" ? pathname === "/admin" : pathname.startsWith(item.href);
+          const active =
+            item.href === "/admin"
+              ? pathname === "/admin"
+              : pathname.startsWith(item.href);
           return (
             <Link
               key={item.href}
               href={item.href}
+              onClick={onNavigate ? () => onNavigate() : undefined}
               className={cn(
                 "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
                 active

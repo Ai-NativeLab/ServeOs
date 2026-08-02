@@ -16,6 +16,8 @@ export default async function ApprovalsPage() {
       <PageHeader title="Approvals" eyebrow="Platform" description="Pending store applications" />
       <Card>
         <CardContent className="pt-4">
+          <div className="overflow-x-auto">
+
           <Table>
             <TableHeader>
               <TableRow>
@@ -53,6 +55,7 @@ export default async function ApprovalsPage() {
               )}
             </TableBody>
           </Table>
+          </div>
         </CardContent>
       </Card>
     </>

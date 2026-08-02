@@ -8,14 +8,27 @@ import { subscriptions } from "@/server/subscription/schema";
 import { auditLogs } from "./audit.schema";
 import { seedDefaultPlans } from "@/server/subscription";
 import { registerTenant } from "@/server/onboarding";
-import { listPendingApplications, approveTenant, rejectTenant, suspendTenant } from "./service";
 import {
-  listTenants, getTenantDetail, listAuditLogs, activateTenant,
-  cancelSubscription, forceSubscriptionActive, markSubscriptionPaid,
+  listPendingApplications,
+  approveTenant,
+  rejectTenant,
+  suspendTenant,
+} from "./service";
+import {
+  listTenants,
+  getTenantDetail,
+  listAuditLogs,
+  activateTenant,
+  cancelSubscription,
+  forceSubscriptionActive,
+  markSubscriptionPaid,
 } from "./service";
 
 async function admin() {
-  const [a] = await db.insert(users).values({ tenantId: null, name: "Root", email: "root@serveos.com" }).returning();
+  const [a] = await db
+    .insert(users)
+    .values({ tenantId: null, name: "Root", email: "root@serveos.com" })
+    .returning();
   return a;
 }
 
@@ -23,7 +36,15 @@ describe("platform approval", () => {
   it("approves a tenant, activates it, marks the application, and writes an audit log", async () => {
     await seedDefaultPlans();
     const a = await admin();
-    const { tenantId } = await registerTenant({ restaurantName: "R", slug: "rest1", country: "EG", ownerName: "O", email: "o@r.com", password: "x", vertical: "restaurant" });
+    const { tenantId } = await registerTenant({
+      restaurantName: "R",
+      slug: "rest1",
+      country: "EG",
+      ownerName: "O",
+      email: "o@r.com",
+      password: "x",
+      vertical: "restaurant",
+    });
 
     const pending = await listPendingApplications();
     expect(pending).toHaveLength(1);
@@ -33,21 +54,38 @@ describe("platform approval", () => {
 
     const [t] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
     expect(t.status).toBe("active");
-    const [app] = await db.select().from(onboardingApplications).where(eq(onboardingApplications.tenantId, tenantId));
+    const [app] = await db
+      .select()
+      .from(onboardingApplications)
+      .where(eq(onboardingApplications.tenantId, tenantId));
     expect(app.status).toBe("approved");
     expect(app.reviewedBy).toBe(a.id);
-    const logs = await db.select().from(auditLogs).where(eq(auditLogs.tenantId, tenantId));
+    const logs = await db
+      .select()
+      .from(auditLogs)
+      .where(eq(auditLogs.tenantId, tenantId));
     expect(logs.map((l) => l.action)).toContain("tenant.approved");
   });
 
   it("rejects a tenant with notes", async () => {
     await seedDefaultPlans();
     const a = await admin();
-    const { tenantId } = await registerTenant({ restaurantName: "R", slug: "rest2", country: "EG", ownerName: "O", email: "o2@r.com", password: "x", vertical: "restaurant" });
+    const { tenantId } = await registerTenant({
+      restaurantName: "R",
+      slug: "rest2",
+      country: "EG",
+      ownerName: "O",
+      email: "o2@r.com",
+      password: "x",
+      vertical: "restaurant",
+    });
     await rejectTenant(tenantId, a.id, "Incomplete details");
     const [t] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
     expect(t.status).toBe("rejected");
-    const [app] = await db.select().from(onboardingApplications).where(eq(onboardingApplications.tenantId, tenantId));
+    const [app] = await db
+      .select()
+      .from(onboardingApplications)
+      .where(eq(onboardingApplications.tenantId, tenantId));
     expect(app.status).toBe("rejected");
     expect(app.reviewNotes).toBe("Incomplete details");
   });
@@ -55,11 +93,22 @@ describe("platform approval", () => {
   it("suspends a tenant and audits it", async () => {
     await seedDefaultPlans();
     const a = await admin();
-    const { tenantId } = await registerTenant({ restaurantName: "R", slug: "rest3", country: "EG", ownerName: "O", email: "o3@r.com", password: "x", vertical: "restaurant" });
+    const { tenantId } = await registerTenant({
+      restaurantName: "R",
+      slug: "rest3",
+      country: "EG",
+      ownerName: "O",
+      email: "o3@r.com",
+      password: "x",
+      vertical: "restaurant",
+    });
     await suspendTenant(tenantId, a.id);
     const [t] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
     expect(t.status).toBe("suspended");
-    const logs = await db.select().from(auditLogs).where(eq(auditLogs.tenantId, tenantId));
+    const logs = await db
+      .select()
+      .from(auditLogs)
+      .where(eq(auditLogs.tenantId, tenantId));
     expect(logs.map((l) => l.action)).toContain("tenant.suspended");
   });
 
@@ -67,13 +116,24 @@ describe("platform approval", () => {
     const a = await admin();
     const fakeId = "00000000-0000-0000-0000-000000000000";
     await expect(approveTenant(fakeId, a.id)).rejects.toThrow(/not found/i);
-    const logs = await db.select().from(auditLogs).where(eq(auditLogs.tenantId, fakeId));
+    const logs = await db
+      .select()
+      .from(auditLogs)
+      .where(eq(auditLogs.tenantId, fakeId));
     expect(logs).toHaveLength(0);
   });
 
   it("pending applications include the tenant vertical", async () => {
     await seedDefaultPlans();
-    const { tenantId } = await registerTenant({ restaurantName: "Wood & Co", slug: "adm-timber", country: "EG", ownerName: "O", email: "o@adm-timber.com", password: "x", vertical: "timber" });
+    const { tenantId } = await registerTenant({
+      restaurantName: "Wood & Co",
+      slug: "adm-timber",
+      country: "EG",
+      ownerName: "O",
+      email: "o@adm-timber.com",
+      password: "x",
+      vertical: "timber",
+    });
     const pending = await listPendingApplications();
     const row = pending.find((p) => p.tenantId === tenantId);
     expect(row?.vertical).toBe("timber");
@@ -84,9 +144,17 @@ describe("platform tenant + billing service", () => {
   it("lists, details, audits, and admin-bills a tenant", async () => {
     await seedDefaultPlans();
     const adminUser = await admin();
-    const { tenantId } = await registerTenant({ restaurantName: "Admin Co", slug: "admin-co", country: "EG", ownerName: "A", email: "a@admin.com", password: "x", vertical: "restaurant" });
+    const { tenantId } = await registerTenant({
+      restaurantName: "Admin Co",
+      slug: "admin-co",
+      country: "EG",
+      ownerName: "A",
+      email: "a@admin.com",
+      password: "x",
+      vertical: "restaurant",
+    });
 
-    const listed = await listTenants({ search: "admin-co" });
+    const {rows:listed} = await listTenants({ search: "admin-co" });
     expect(listed.find((t) => t.id === tenantId)).toBeTruthy();
 
     const detail = await getTenantDetail(tenantId);
@@ -99,23 +167,79 @@ describe("platform tenant + billing service", () => {
     expect(after?.tenant.status).toBe("active");
 
     await cancelSubscription(tenantId, adminUser.id);
-    let sub = await db.select().from(subscriptions).where(eq(subscriptions.tenantId, tenantId));
+    let sub = await db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.tenantId, tenantId));
     expect(sub[0].status).toBe("canceled");
 
     await forceSubscriptionActive(tenantId, adminUser.id);
-    sub = await db.select().from(subscriptions).where(eq(subscriptions.tenantId, tenantId));
+    sub = await db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.tenantId, tenantId));
     expect(sub[0].status).toBe("active");
 
     await markSubscriptionPaid(tenantId, adminUser.id);
-    sub = await db.select().from(subscriptions).where(eq(subscriptions.tenantId, tenantId));
+    sub = await db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.tenantId, tenantId));
     expect(sub[0].status).toBe("active");
 
-    const logs = await listAuditLogs({ tenantId });
+    const {rows:logs} = await listAuditLogs({ tenantId });
     expect(logs.length).toBeGreaterThan(0);
     expect(logs[0].tenantName).toBe("Admin Co");
   });
 
   it("returns null for unknown tenant detail", async () => {
-    expect(await getTenantDetail("00000000-0000-0000-0000-000000000000")).toBeNull();
+    expect(
+      await getTenantDetail("00000000-0000-0000-0000-000000000000"),
+    ).toBeNull();
+  });
+});
+
+describe("platform pagination", () => {
+  it("paginates listTenants with limit/offset and reports total", async () => {
+    await seedDefaultPlans();
+    for (const n of ["pg-a", "pg-b", "pg-c"]) {
+      await registerTenant({
+        restaurantName: `Page ${n}`,
+        slug: n,
+        country: "EG",
+        ownerName: "O",
+        email: `o@${n}.com`,
+        password: "x",
+        vertical: "restaurant",
+      });
+    }
+    const { rows, total } = await listTenants({ limit: 2, offset: 0 });
+    expect(rows.length).toBe(2);
+    expect(total).toBeGreaterThanOrEqual(3);
+    const second = await listTenants({ limit: 2, offset: 2 });
+    expect(second.rows.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("paginates listAuditLogs with limit/offset and reports total", async () => {
+    await seedDefaultPlans();
+    const a = await admin();
+    const { tenantId } = await registerTenant({
+      restaurantName: "PgAudit",
+      slug: "pg-audit",
+      country: "EG",
+      ownerName: "O",
+      email: "o@pg-audit.com",
+      password: "x",
+      vertical: "restaurant",
+    });
+    await suspendTenant(tenantId, a.id);
+    await activateTenant(tenantId, a.id);
+    const { rows, total } = await listAuditLogs({
+      tenantId,
+      limit: 1,
+      offset: 0,
+    });
+    expect(rows.length).toBe(1);
+    expect(total).toBe(2);
   });
 });

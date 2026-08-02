@@ -1,12 +1,32 @@
 "use client";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { SubmitButton } from "@/components/dashboard/SubmitButton";
 import { adminSignOutAction } from "@/app/admin/actions";
-
-export function AdminTopbar({ userName }: { userName: string }) {
+import { AdminMobileNav } from "./AdminMobileNav";
+import type { NavItem } from "@/components/dashboard/nav-items";
+export function AdminTopbar({
+  userName,
+  items,
+}: {
+  userName: string;
+  items: NavItem[];
+}) {
   return (
     <header className="h-14 flex items-center justify-between gap-3 border-b bg-card px-4">
+      <div className="flex items-center gap-2 md:hidden">
+        <AdminMobileNav items={items} adminName={userName} />
+        <span className="font-display text-base font-bold tracking-tight">
+          Serve<span className="text-primary">OS</span>
+        </span>
+      </div>
       <div className="ml-auto flex items-center gap-3">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -25,7 +45,10 @@ export function AdminTopbar({ userName }: { userName: string }) {
             <DropdownMenuSeparator />
             <DropdownMenuItem className="p-0">
               <form action={adminSignOutAction} className="w-full">
-                <SubmitButton variant="ghost" className="w-full justify-start px-2 h-8 font-normal">
+                <SubmitButton
+                  variant="ghost"
+                  className="w-full justify-start px-2 h-8 font-normal"
+                >
                   Sign out
                 </SubmitButton>
               </form>
