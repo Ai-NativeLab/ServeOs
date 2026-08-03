@@ -23,14 +23,14 @@ export function Hero({
           </div>
         </div>
       </div>
-      <div className="relative -mt-9 flex items-end gap-3 px-4 sm:px-6">
+      <div className="relative flex items-end gap-3 px-4 sm:px-6">
         {logoUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={logoUrl} alt="" width={72} height={72} className="size-[72px] flex-none rounded-2xl border-4 border-background object-cover shadow-lg" />
+          <img src={logoUrl} alt="" width={72} height={72} className="-mt-9 size-[72px] flex-none rounded-2xl border-4 border-background object-cover shadow-lg" />
         ) : (
-          <LogoMark className="size-[72px] flex-none rounded-2xl border-4 border-background bg-background text-ink shadow-lg" />
+          <LogoMark className="-mt-9 size-[72px] flex-none rounded-2xl border-4 border-background bg-background text-ink shadow-lg" />
         )}
-        <div className="pb-1">
+        <div className="pt-2 pb-1">
           <h1 className="font-display text-2xl font-extrabold leading-none text-ink sm:text-3xl">{name}</h1>
           {(cuisine || area || tagline) && (
             <p className="mt-1.5 text-sm text-muted-foreground">
