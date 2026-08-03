@@ -8,6 +8,9 @@ export const orderStatusEnum = pgEnum("order_status", [
 export const fulfillmentTypeEnum = pgEnum("fulfillment_type", ["pickup", "delivery"]);
 export const orderChannelEnum = pgEnum("order_channel", ["web", "pos", "whatsapp"]);
 export const paymentStatusEnum = pgEnum("payment_status", ["unpaid", "pending_verification", "partially_paid", "paid"]);
+/** P3: pharmacist review is a SEPARATE axis from order_status (decision R2) —
+ *  it gates pending -> confirmed without adding a status every vertical sees. */
+export const rxReviewStatusEnum = pgEnum("rx_review_status", ["not_required", "pending", "approved", "rejected"]);
 export const paymentMethodEnum = pgEnum("payment_method", ["cash", "instapay", "vodafone_cash", "mobile_wallet"]);
 
 export type OrderStatus = (typeof orderStatusEnum.enumValues)[number];
@@ -30,6 +33,7 @@ export const orders = pgTable("orders", {
   customerPhone: text("customer_phone").notNull(),
   notes: text("notes"),
   cashierUserId: uuid("cashier_user_id"),
+  rxReviewStatus: rxReviewStatusEnum("rx_review_status").notNull().default("not_required"),
   /** P2: set when a signed-in customer checks out; guest orders stay null forever. */
   customerId: uuid("customer_id"),
   discountAmount: numeric("discount_amount").notNull().default("0"),

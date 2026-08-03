@@ -225,6 +225,13 @@
       "when": 1785756062467,
       "tag": "0031_stiff_rick_jones",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1785758776572,
+      "tag": "0032_slippery_mandroid",
+      "breakpoints": true
     }
   ]
 }

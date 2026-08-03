@@ -15,7 +15,7 @@ describe("dashboardNavItems", () => {
   it("shows owners the full nav including Home, Payments, Settings, Audit and Customers", () => {
     const labels = dashboardNavItems(["owner"]).map((i) => i.label);
     expect(labels).toEqual([
-      "Home", "Analytics", "Orders", "Payments", "Menu", "Branches", "Banners", "Settings", "Audit", "Customers",
+      "Home", "Analytics", "Orders", "Payments", "Menu", "Branches", "Banners", "Settings", "Audit", "Customers", "Prescriptions",
     ]);
   });
 
@@ -35,5 +35,14 @@ describe("dashboardNavItems", () => {
     expect(labels).toContain("Home");
     expect(labels).toContain("Payments");
     expect(labels).toContain("Settings");
+  });
+});
+
+describe("prescriptions nav (P3)", () => {
+  it("shows Prescriptions to a pharmacist and to owners, never manager or staff", () => {
+    expect(dashboardNavItems(["pharmacist"]).map((i) => i.href)).toContain("/dashboard/prescriptions");
+    expect(dashboardNavItems(["owner"]).map((i) => i.href)).toContain("/dashboard/prescriptions");
+    expect(dashboardNavItems(["manager"]).map((i) => i.href)).not.toContain("/dashboard/prescriptions");
+    expect(dashboardNavItems(["staff"]).map((i) => i.href)).not.toContain("/dashboard/prescriptions");
   });
 });

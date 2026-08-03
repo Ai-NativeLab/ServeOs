@@ -4,7 +4,7 @@ import { CapabilityNotEnabledError } from "./errors";
 const restaurant: VerticalDescriptor = {
   key: "restaurant",
   accent: "#F0522B",
-  capabilities: { modifiers: true, variants: false, stockTracking: false, serviceCharge: true, dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false },
+  capabilities: { modifiers: true, variants: false, stockTracking: false, serviceCharge: true, dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false, prescriptionUpload: false, pharmacistReview: false, taxClasses: false },
   terminology: {
     businessNoun: { en: "restaurant", ar: "مطعم" },
     catalogNoun: { en: "Menu", ar: "القائمة" },
@@ -28,7 +28,7 @@ const restaurant: VerticalDescriptor = {
 const retail: VerticalDescriptor = {
   key: "retail",
   accent: "#2DD4C4",
-  capabilities: { modifiers: false, variants: true, stockTracking: true, serviceCharge: false, dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false },
+  capabilities: { modifiers: false, variants: true, stockTracking: true, serviceCharge: false, dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false, prescriptionUpload: false, pharmacistReview: false, taxClasses: false },
   terminology: {
     businessNoun: { en: "store", ar: "متجر" },
     catalogNoun: { en: "Products", ar: "المنتجات" },
@@ -48,7 +48,7 @@ const retail: VerticalDescriptor = {
 const pharmacy: VerticalDescriptor = {
   key: "pharmacy",
   accent: "#38D08C",
-  capabilities: { modifiers: false, variants: true, stockTracking: true, serviceCharge: false, dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false },
+  capabilities: { modifiers: false, variants: true, stockTracking: true, serviceCharge: false, dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false, prescriptionUpload: true, pharmacistReview: true, taxClasses: false },
   terminology: {
     businessNoun: { en: "pharmacy", ar: "صيدلية" },
     catalogNoun: { en: "Products", ar: "المنتجات" },
@@ -68,7 +68,7 @@ const pharmacy: VerticalDescriptor = {
 const timber: VerticalDescriptor = {
   key: "timber",
   accent: "#E8A33D",
-  capabilities: { modifiers: false, variants: true, stockTracking: true, serviceCharge: false, dimensionalProducts: true, unitsOfMeasure: true, tradeAccounts: true },
+  capabilities: { modifiers: false, variants: true, stockTracking: true, serviceCharge: false, dimensionalProducts: true, unitsOfMeasure: true, tradeAccounts: true, prescriptionUpload: false, pharmacistReview: false, taxClasses: false },
   terminology: {
     businessNoun: { en: "yard", ar: "منشرة" },
     catalogNoun: { en: "Yard", ar: "المخزون" },

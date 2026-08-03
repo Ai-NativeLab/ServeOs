@@ -34,6 +34,13 @@ export function ShopProductCard({
             Out of stock
           </span>
         )}
+        {/* P3: a customer should know a script is needed BEFORE they get to
+            checkout and hit the gate. */}
+        {product.requiresPrescription && (
+          <span className="absolute right-2 top-2 rounded-full bg-status-pending/20 px-2 py-0.5 text-[11px] font-medium text-status-pending-fg">
+            Rx
+          </span>
+        )}
       </div>
       <div className="flex flex-1 flex-col p-3">
         {product.brand && <span className="eyebrow truncate text-[10px] text-muted-foreground">{product.brand}</span>}

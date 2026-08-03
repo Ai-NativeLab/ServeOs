@@ -29,19 +29,27 @@ describe("vertical registry", () => {
     expect(caps).toEqual({
       modifiers: true, variants: false, stockTracking: false, serviceCharge: true,
       dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false,
+      prescriptionUpload: false, pharmacistReview: false, taxClasses: false,
     });
     expect(getVerticalDescriptor("restaurant").storefront.template).toBe("menu");
   });
 
-  it("retail and pharmacy: variants/stock on, modifiers off, shop template, no P4 flags", () => {
-    for (const key of ["retail", "pharmacy"] as VerticalId[]) {
-      const caps = getCapabilities(key);
-      expect(caps, key).toEqual({
-        modifiers: false, variants: true, stockTracking: true, serviceCharge: false,
-        dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false,
-      });
-      expect(getVerticalDescriptor(key).storefront.template, key).toBe("shop");
-    }
+  it("retail: variants/stock on, modifiers off, shop template, no P3/P4 flags", () => {
+    expect(getCapabilities("retail")).toEqual({
+      modifiers: false, variants: true, stockTracking: true, serviceCharge: false,
+      dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false,
+      prescriptionUpload: false, pharmacistReview: false, taxClasses: false,
+    });
+    expect(getVerticalDescriptor("retail").storefront.template).toBe("shop");
+  });
+
+  it("pharmacy: shop template plus the P3 Rx flags, no P4 flags", () => {
+    expect(getCapabilities("pharmacy")).toEqual({
+      modifiers: false, variants: true, stockTracking: true, serviceCharge: false,
+      dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false,
+      prescriptionUpload: true, pharmacistReview: true, taxClasses: false,
+    });
+    expect(getVerticalDescriptor("pharmacy").storefront.template).toBe("shop");
   });
 
   it("timber: variants/stock on, modifiers off, shop template, ALL P4 flags on", () => {
@@ -49,6 +57,7 @@ describe("vertical registry", () => {
     expect(caps).toEqual({
       modifiers: false, variants: true, stockTracking: true, serviceCharge: false,
       dimensionalProducts: true, unitsOfMeasure: true, tradeAccounts: true,
+      prescriptionUpload: false, pharmacistReview: false, taxClasses: false,
     });
     expect(getVerticalDescriptor("timber").storefront.template).toBe("shop");
   });
@@ -96,6 +105,19 @@ describe("P4 capability flags", () => {
       expect(caps.dimensionalProducts).toBe(expected);
       expect(caps.unitsOfMeasure).toBe(expected);
       expect(caps.tradeAccounts).toBe(expected);
+    }
+  });
+});
+
+describe("P3 capability flags", () => {
+  it("prescription upload and pharmacist review are pharmacy-only", () => {
+    for (const id of VERTICAL_IDS) {
+      const caps = getCapabilities(id);
+      const expected = id === "pharmacy";
+      expect(caps.prescriptionUpload, id).toBe(expected);
+      expect(caps.pharmacistReview, id).toBe(expected);
+      // taxClasses ships in the fast-follow — off everywhere for now.
+      expect(caps.taxClasses, id).toBe(false);
     }
   });
 });
