@@ -18,6 +18,7 @@ import { canTransition } from "./state-machine";
 import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, OutOfStockError, TotalMismatchError } from "./errors";
 import { recordAuditEvent, type AuditFingerprint } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
+import { enqueueStatusUpdate } from "@/server/whatsapp/status-updates";
 import type { AuditActorType } from "@/server/audit/canonical";
 
 export type PlaceOrderLine = {
@@ -453,6 +454,10 @@ export async function transitionStatus(tenantId: string, orderId: string, to: Or
       .returning();
     if (!updated) throw new InvalidTransitionError(order.status, to);
     if (to === "cancelled" || to === "rejected") await restockOrderItems(tx, orderId, caps);
+    // WhatsApp orders announce confirmed/ready/out_for_delivery back into the
+    // chat — enqueued here so the row commits with the transition, sent later
+    // by the scheduled worker (Phase 3, D7).
+    await enqueueStatusUpdate(tx, updated, to);
     await tx.insert(orderStatusEvents).values({ tenantId, orderId, fromStatus: order.status, toStatus: to, changedByUserId: userId, reason: reason ?? null });
     await recordAuditEvent(
       { tenantId, branchId: updated.branchId, actorUserId: userId, fingerprint: audit?.fingerprint ?? emptyFingerprint() },
