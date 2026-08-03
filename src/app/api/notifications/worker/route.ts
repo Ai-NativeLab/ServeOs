@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { activeEmailProvider } from "@/server/email";
 import { drainOutbox } from "@/server/notifications/worker";
+import { drainWhatsappStatus } from "@/server/whatsapp/status-worker";
+import { CloudApiProvider } from "@/server/whatsapp/cloud-api-provider";
 
 /**
  * The outbox drain, fired by Vercel Cron (vercel.json). CRON_SECRET-gated:
@@ -13,6 +15,9 @@ export async function GET(req: NextRequest) {
   if (!secret || req.headers.get("authorization") !== `Bearer ${secret}`) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
-  const result = await drainOutbox(activeEmailProvider());
-  return NextResponse.json(result);
+  // One scheduled tick, two outboxes: transactional email and WhatsApp
+  // order-status messages share the drain discipline and the cron slot.
+  const email = await drainOutbox(activeEmailProvider());
+  const whatsapp = await drainWhatsappStatus(new CloudApiProvider());
+  return NextResponse.json({ email, whatsapp });
 }

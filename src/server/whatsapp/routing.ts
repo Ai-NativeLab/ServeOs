@@ -32,3 +32,12 @@ export async function recordInbound(account: WhatsappAccount, msg: InboundMessag
   }).onConflictDoNothing({ target: whatsappMessages.providerMessageId }).returning({ id: whatsappMessages.id });
   return inserted.length > 0;
 }
+
+/** The tenant's ACTIVE account — the sender identity for outbound status
+ *  messages. Control-plane read, like resolveAccount. */
+export async function resolveAccountForTenant(tenantId: string): Promise<WhatsappAccount | null> {
+  const [row] = await db.select().from(whatsappAccounts)
+    .where(and(eq(whatsappAccounts.tenantId, tenantId), eq(whatsappAccounts.status, "active")))
+    .limit(1);
+  return row ?? null;
+}

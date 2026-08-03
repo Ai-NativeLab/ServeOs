@@ -95,3 +95,32 @@ describe("ingestWebhook", () => {
     expect(await ingestWebhook(body, sign(body), new FakeWhatsAppProvider())).toEqual({ accepted: 0, skipped: 1 });
   });
 });
+
+describe("delivery status callbacks", () => {
+  it("stamps deliveryStatus onto the logged outbound message", async () => {
+    const tenantId = await seedLinkedTenant("wa-ing-7", "pn-i7");
+    await withTenant(tenantId, (tx) => tx.insert(whatsappMessages).values({
+      tenantId, waId: "201111111111", direction: "outbound",
+      providerMessageId: "wamid.out.st1", payload: { body: "Order #1 confirmed" },
+    }));
+
+    const body = JSON.stringify({
+      object: "whatsapp_business_account",
+      entry: [{
+        id: "e1",
+        changes: [{
+          field: "messages",
+          value: {
+            metadata: { phone_number_id: "pn-i7" },
+            statuses: [{ id: "wamid.out.st1", status: "delivered", timestamp: "1750000000" }],
+          },
+        }],
+      }],
+    });
+    await ingestWebhook(body, sign(body), new FakeWhatsAppProvider());
+
+    const [row] = await withTenant(tenantId, (tx) =>
+      tx.select().from(whatsappMessages));
+    expect(row.deliveryStatus).toBe("delivered");
+  });
+});
