@@ -14,6 +14,8 @@ export const branches = pgTable("branches", {
   name: text("name").notNull(),
   address: text("address"),
   phone: text("phone"),
+  /** Reply-To for supplier correspondence (Spec 5); tenant contactEmail is the fallback. */
+  replyToEmail: text("reply_to_email"),
   isActive: boolean("is_active").notNull().default(true),
   acceptingOrders: boolean("accepting_orders").notNull().default(true),
   openingHours: jsonb("opening_hours").$type<OpeningHours>().notNull().default([]),
