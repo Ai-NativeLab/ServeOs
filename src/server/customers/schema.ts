@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, pgEnum, uniqueIndex, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, boolean, numeric, pgEnum, uniqueIndex, index } from "drizzle-orm/pg-core";
 import { tenants } from "@/server/tenancy/schema";
 
 export const customerStatusEnum = pgEnum("customer_status", ["active", "disabled"]);
@@ -16,6 +16,10 @@ export const customers = pgTable("customers", {
   phone: text("phone"),
   passwordHash: text("password_hash").notNull(),
   defaultAddressText: text("default_address_text"),
+  // P4 trade accounts (decision T5): a flat per-order discount %, set by staff
+  // — never self-service. Gated at use by the tenant's tradeAccounts capability.
+  tradeApproved: boolean("trade_approved").notNull().default(false),
+  tradeDiscountPercent: numeric("trade_discount_percent"),
   status: customerStatusEnum("status").notNull().default("active"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

@@ -6,6 +6,7 @@ import { getCheckoutPricing } from "@/server/tenancy/settings";
 import { computeOrderTotals, computeLineTotal } from "@/lib/order-totals";
 import { computeDimensionalUnitPrice } from "@/server/catalog/dimensional-pricing";
 import { isDimensionalUom } from "@/server/catalog/uom";
+import { customers } from "@/server/customers/schema";
 import { isBranchOrderableAt, isWithinSchedulingHorizon, MIN_LEAD_MINUTES } from "@/server/branches/slots";
 import { getTenantById } from "@/server/tenancy";
 import { branches, deliveryAreas } from "@/server/branches/schema";
@@ -267,12 +268,27 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       deliveryAddress = input.addressText.trim();
     }
 
+    // 3b. Trade-account discount (P4, decision T5) — a flat % off the gross
+    // subtotal, folded into the SAME orderDiscountAmount slot rather than a
+    // new pipeline. Capability-gated: a trade-approved customer on a
+    // non-timber tenant gets nothing, and a guest (no customerId) never does.
+    let tradeDiscountAmount = 0;
+    if (input.customerId && caps.tradeAccounts) {
+      const [customer] = await tx.select({
+        tradeApproved: customers.tradeApproved,
+        tradeDiscountPercent: customers.tradeDiscountPercent,
+      }).from(customers).where(eq(customers.id, input.customerId)).limit(1);
+      if (customer?.tradeApproved && customer.tradeDiscountPercent) {
+        tradeDiscountAmount = Math.round(subtotal * (Number(customer.tradeDiscountPercent) / 100) * 100) / 100;
+      }
+    }
+
     // 4. Totals — single source of money math (src/lib/order-totals.ts).
     // Each line was already reduced by its own discount via computeLineTotal
     // above, so `subtotal` here is the line-discounted total. The order-level
     // discount further reduces that before computeOrderTotals — called
     // exactly once — applies the service charge and VAT to the final base.
-    const orderDiscount = Math.min(Math.max(0, input.orderDiscountAmount ?? 0), subtotal);
+    const orderDiscount = Math.min(Math.max(0, (input.orderDiscountAmount ?? 0) + tradeDiscountAmount), subtotal);
     const totals = computeOrderTotals(pricing, subtotal - orderDiscount, deliveryFee);
 
     // The register must never quietly charge a different amount than the one
