@@ -335,14 +335,14 @@ export function OrderScreen({
                     onClick={() => openProduct(p)}
                     className="flex flex-col overflow-hidden rounded-xl border border-border bg-card text-left transition hover:shadow-sm"
                   >
-                    <div className="aspect-[4/3] w-full bg-secondary">
+                    <div className="h-28 w-full shrink-0 bg-secondary">
                       {p.imageUrl ? (
                         <img src={p.imageUrl} alt={p.nameEn} className="h-full w-full object-cover" />
                       ) : null}
                     </div>
                     <div className="flex flex-1 flex-col p-2.5">
                       <span className="text-sm font-semibold text-ink line-clamp-2">{p.nameEn}</span>
-                      <span className="mt-1 text-sm font-medium text-primary">
+                      <span className="mt-auto pt-1 font-mono text-sm font-bold text-accent-foreground">
                         {p.effectivePrice.toFixed(2)}
                       </span>
                     </div>

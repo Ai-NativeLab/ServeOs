@@ -1,8 +1,17 @@
 @import "tailwindcss";
+@import "@fontsource/bricolage-grotesque/600.css";
+@import "@fontsource/bricolage-grotesque/700.css";
+@import "@fontsource/bricolage-grotesque/800.css";
+@import "@fontsource/space-grotesk/400.css";
+@import "@fontsource/space-grotesk/500.css";
+@import "@fontsource/space-grotesk/700.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "@fontsource/jetbrains-mono/700.css";
 
 /* Maps the design tokens below to Tailwind v4 color/radius utilities
-   (bg-background, text-ink, bg-primary, …). Fonts fall back to system
-   fonts — the POS does not load the web app's Next-hosted fonts. */
+   (bg-background, text-ink, bg-primary, …). Fonts are bundled via
+   @fontsource so the till never depends on a font CDN. */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -31,41 +40,44 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
-  --color-status-pending: #e8a33d;
-  --color-status-pending-fg: #8f6410;
+  --color-status-pending: #f5be5c;
+  --color-status-pending-fg: #f5be5c;
   --color-status-ready: #38d08c;
-  --color-status-ready-fg: #177a4f;
-  --color-status-danger: #ce2c2c;
-  --color-status-danger-fg: #a22222;
-  --font-sans: ui-sans-serif, system-ui, sans-serif;
-  --font-display: ui-sans-serif, system-ui, sans-serif;
-  --font-mono: ui-monospace, monospace;
+  --color-status-ready-fg: #38d08c;
+  --color-status-danger: #f26d5f;
+  --color-status-danger-fg: #f26d5f;
+  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Bricolage Grotesque", "Space Grotesk", ui-sans-serif, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
 }
 
+/* The POS design is the brand's one fully dark surface (Brand System §03):
+   canvas #140D08, surface #211610, elevated #2C1F16, white-alpha hairlines,
+   and the lifted hue set for text/status on dark. */
 :root {
-  --background: #fbf7f2;
-  --foreground: #3a332c;
-  --card: #fffdfb;
-  --card-foreground: #3a332c;
-  --popover: #fffdfb;
-  --popover-foreground: #3a332c;
+  --background: #140d08;
+  --foreground: #fbf1ec;
+  --card: #211610;
+  --card-foreground: #fbf1ec;
+  --popover: #2c1f16;
+  --popover-foreground: #fbf1ec;
   --primary: #f0522b;
   --primary-foreground: #ffffff;
-  --secondary: #f4ede4;
-  --secondary-foreground: #1a0f0a;
-  --muted: #f4ede4;
-  --muted-foreground: #948676;
-  --accent: #fbe3da;
-  --accent-foreground: #1a0f0a;
-  --destructive: #ce2c2c;
-  --border: rgba(26, 15, 10, 0.09);
-  --input: rgba(26, 15, 10, 0.12);
-  --ring: #f0522b;
-  --ink: #1a0f0a;
+  --secondary: #2c1f16;
+  --secondary-foreground: #fbf1ec;
+  --muted: #2c1f16;
+  --muted-foreground: rgba(251, 241, 236, 0.55);
+  --accent: rgba(240, 82, 43, 0.16);
+  --accent-foreground: #ff6b45;
+  --destructive: #f26d5f;
+  --border: rgba(255, 255, 255, 0.07);
+  --input: rgba(255, 255, 255, 0.1);
+  --ring: #ff6b45;
+  --ink: #fbf1ec;
   --radius: 0.75rem;
   --sidebar: #17100b;
   --sidebar-foreground: #fbf1ec;
@@ -77,7 +89,33 @@
   --sidebar-ring: #f0522b;
 }
 
+@layer base {
+  /* Tailwind v4 defaults border/divide color to currentColor; snap bare
+     `border`/`divide-*` to the dark hairline (same rule as the web app). */
+  *,
+  ::before,
+  ::after {
+    border-color: var(--border);
+  }
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--background);
+    color: var(--foreground);
+  }
+}
+
 @media print {
+  /* The app is dark; paper is not. Re-flip the tokens so the receipt's
+     token-styled text prints black-on-white on the thermal printer. */
+  :root {
+    --background: #ffffff;
+    --foreground: #000000;
+    --card: #ffffff;
+    --card-foreground: #000000;
+    --ink: #000000;
+    --muted-foreground: #444444;
+    --border: rgba(0, 0, 0, 0.2);
+  }
   body * {
     visibility: hidden;
   }
