@@ -19,6 +19,8 @@ export const tenants = pgTable("tenants", {
   currency: text("currency").notNull().default("EGP"),
   defaultLocale: text("default_locale").notNull().default("ar"),
   timezone: text("timezone").notNull().default("Africa/Cairo"),
+  /** Fallback Reply-To when a branch has none (Spec 5). */
+  contactEmail: text("contact_email"),
   customDomain: text("custom_domain").unique(),
   logoUrl: text("logo_url"),
   coverImageUrl: text("cover_image_url"),
