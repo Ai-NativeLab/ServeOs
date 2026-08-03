@@ -106,3 +106,30 @@ export const cartHandoffTokens = pgTable("cart_handoff_tokens", {
 export type WhatsappConversation = typeof whatsappConversations.$inferSelect;
 export type ConversationState = (typeof whatsappStateEnum.enumValues)[number];
 export type CartHandoffToken = typeof cartHandoffTokens.$inferSelect;
+
+export const whatsappStatusQueueEnum = pgEnum("whatsapp_status_queue_status", ["queued", "sent", "skipped", "failed"]);
+
+/**
+ * Store-and-forward for proactive order-status messages (Phase 3, D7).
+ * Enqueued on the transitionStatus tx; drained by the scheduled worker —
+ * Spec 5's discipline with a customer (waId) recipient, which is why this
+ * does not ride notification_outbox's tenant-user model.
+ */
+export const whatsappStatusQueue = pgTable("whatsapp_status_queue", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  orderId: uuid("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  waId: text("wa_id").notNull(),
+  body: text("body").notNull(),
+  status: whatsappStatusQueueEnum("status").notNull().default("queued"),
+  /** template_required (outside the 24h window) | account_unlinked */
+  skipReason: text("skip_reason"),
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  /** Provider message id once sent — joins delivery callbacks back. */
+  wamid: text("wamid"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+}, (t) => [index("whatsapp_status_queue_claim").on(t.status, t.nextAttemptAt)]);
+
+export type WhatsappStatusQueueRow = typeof whatsappStatusQueue.$inferSelect;

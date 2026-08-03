@@ -49,7 +49,7 @@ describe("parseWebhook", () => {
       }],
     });
     expect(messages).toHaveLength(0);
-    expect(statuses).toEqual([{ providerMessageId: "wamid.out.1", status: "delivered" }]);
+    expect(statuses).toEqual([{ phoneNumberId: "pn-A", providerMessageId: "wamid.out.1", status: "delivered" }]);
   });
 
   it("maps an interactive reply to its stable id, not its localized title", () => {

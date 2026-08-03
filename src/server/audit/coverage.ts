@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 export const AUDITED_SERVICE_FILES = [
   "src/server/whatsapp/linking.ts",
   "src/server/whatsapp/runner.ts",
+  "src/server/whatsapp/status-worker.ts",
   "src/server/notifications/service.ts",
   "src/server/notifications/worker.ts",
   "src/server/ordering/service.ts",

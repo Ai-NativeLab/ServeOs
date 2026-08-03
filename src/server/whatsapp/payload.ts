@@ -14,7 +14,7 @@ export type InboundMessage = {
   event: InboundEvent;
 };
 
-export type StatusUpdate = { providerMessageId: string; status: string };
+export type StatusUpdate = { phoneNumberId: string; providerMessageId: string; status: string };
 
 function asArray(v: unknown): unknown[] {
   return Array.isArray(v) ? v : [];
@@ -63,7 +63,7 @@ export function parseWebhook(payload: unknown): { messages: InboundMessage[]; st
 
       for (const s of asArray(value.statuses)) {
         const st = s as { id?: string; status?: string };
-        if (st.id && st.status) statuses.push({ providerMessageId: st.id, status: st.status });
+        if (st.id && st.status) statuses.push({ phoneNumberId, providerMessageId: st.id, status: st.status });
       }
 
       const contacts = asArray(value.contacts) as { profile?: { name?: string }; wa_id?: string }[];

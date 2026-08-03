@@ -3,7 +3,9 @@ import { getTenantById, isTenantServable } from "@/server/tenancy/service";
 import { hasFeature } from "@/server/entitlements/service";
 import { verifyWebhookSignature } from "./signature";
 import { parseWebhook } from "./payload";
+import { eq } from "drizzle-orm";
 import { resolveAccount, recordInbound } from "./routing";
+import { whatsappMessages } from "./schema";
 import { handleInbound } from "./runner";
 import { CloudApiProvider } from "./cloud-api-provider";
 import type { WhatsAppProvider } from "./provider";
@@ -57,9 +59,15 @@ export async function ingestWebhook(
     }
   }
 
-  // Status callbacks never touch conversation state.
+  // Status callbacks never touch conversation state — they only stamp the
+  // delivery state onto the logged outbound message (Phase 3).
   for (const st of parsed.statuses) {
-    void st; // Phase 2 Task 16 updates whatsapp_messages.deliveryStatus.
+    const account = await resolveAccount(st.phoneNumberId);
+    if (!account) continue;
+    await withTenant(account.tenantId, (tx) =>
+      tx.update(whatsappMessages)
+        .set({ deliveryStatus: st.status })
+        .where(eq(whatsappMessages.providerMessageId, st.providerMessageId)));
   }
 
   return { accepted, skipped };
