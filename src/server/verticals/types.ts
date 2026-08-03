@@ -12,6 +12,12 @@ export type VerticalCapabilities = {
   unitsOfMeasure: boolean;
   /** P4: a customer can be trade-approved for a per-order discount %. */
   tradeAccounts: boolean;
+  /** P3 (pharmacy): customers upload a prescription for Rx-flagged products. */
+  prescriptionUpload: boolean;
+  /** P3: an Rx order is gated on pharmacist review before fulfilment. */
+  pharmacistReview: boolean;
+  /** P3 fast-follow: per-line tax classes (VAT-exempt medicines). */
+  taxClasses: boolean;
 };
 
 export type LocalizedLabel = { en: string; ar: string };

@@ -332,6 +332,7 @@ export async function getPublishedMenu(tenantId: string, branchId?: string): Pro
           descriptionAr: products.descriptionAr,
           basePrice: products.basePrice,
           unitOfMeasure: products.unitOfMeasure,
+          requiresPrescription: products.requiresPrescription,
           imageUrl: products.imageUrl,
           brand: products.brand,
           sku: products.sku,
@@ -370,6 +371,7 @@ export async function getPublishedMenu(tenantId: string, branchId?: string): Pro
         descriptionAr: r.descriptionAr,
         basePrice: r.bpaPriceOverride ?? r.basePrice,
         unitOfMeasure: r.unitOfMeasure,
+        requiresPrescription: r.requiresPrescription,
         imageUrl: r.imageUrl,
         brand: r.brand,
         sku: r.sku,
@@ -417,6 +419,7 @@ export async function getPublishedMenu(tenantId: string, branchId?: string): Pro
         descriptionAr: p.descriptionAr,
         effectivePrice: Number(p.basePrice),
         unitOfMeasure: p.unitOfMeasure,
+        requiresPrescription: p.requiresPrescription,
         imageUrl: p.imageUrl,
         brand: p.brand,
         variants: (variantsByProduct[p.id] ?? []).map((v) => ({

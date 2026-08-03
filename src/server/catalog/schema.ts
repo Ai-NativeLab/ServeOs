@@ -32,6 +32,8 @@ export const products = pgTable("products", {
   imageUrl: text("image_url"),
   brand: text("brand"),
   sku: text("sku"),
+  /** P3: prescription-only medicine. Capability-gated to pharmacy. */
+  requiresPrescription: boolean("requires_prescription").notNull().default(false),
   trackStock: boolean("track_stock").notNull().default(false),
   stockQuantity: integer("stock_quantity"),
   isFeatured: boolean("is_featured").notNull().default(false),
@@ -121,6 +123,8 @@ export interface PublishedMenu {
       /** P4: set only for dimensional products — effectivePrice is then the
        *  price PER UNIT OF MEASURE, not a fixed each-price. */
       unitOfMeasure: UnitOfMeasure | null;
+      /** P3: prescription-only — the storefront badges it and gates checkout. */
+      requiresPrescription: boolean;
       imageUrl: string | null;
       brand: string | null;
       inStock: boolean;
