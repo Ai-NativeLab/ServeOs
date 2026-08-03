@@ -7,6 +7,7 @@ import { computeOrderTotals, computeLineTotal } from "@/lib/order-totals";
 import { computeDimensionalUnitPrice } from "@/server/catalog/dimensional-pricing";
 import { isDimensionalUom } from "@/server/catalog/uom";
 import { customers } from "@/server/customers/schema";
+import { prescriptions } from "@/server/prescriptions/schema";
 import { isBranchOrderableAt, isWithinSchedulingHorizon, MIN_LEAD_MINUTES } from "@/server/branches/slots";
 import { getTenantById } from "@/server/tenancy";
 import { branches, deliveryAreas } from "@/server/branches/schema";
@@ -128,6 +129,10 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
 
     // 2. Validate each line against the catalog; build snapshots.
     let subtotal = 0;
+    // P3: does this cart contain anything prescription-only? Only meaningful
+    // where the vertical actually reviews scripts — a retail tenant with a
+    // stray flag is untouched.
+    let hasRxLine = false;
     const itemsToInsert: Array<{ productId: string; variantId: string | null; variantNameEn: string | null; variantNameAr: string | null; nameEn: string; nameAr: string; unitBasePrice: string; quantity: number; lineTotal: string; discountAmount: string; selectedModifiers: SelectedModifier[]; dimensions: PlaceOrderLine["dimensions"] | null }> = [];
 
     for (const line of input.lines) {
@@ -140,6 +145,8 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
         .where(and(eq(branchProductAvailability.branchId, input.branchId), eq(branchProductAvailability.productId, product.id))).limit(1);
       if (avail && !avail.isAvailable) throw new OrderValidationError("product unavailable at branch");
       const effectiveBase = avail?.priceOverride ?? product.basePrice;
+
+      if (product.requiresPrescription && caps.pharmacistReview) hasRxLine = true;
 
       let unit: number;
       let selected: Array<typeof modifierOptions.$inferSelect> = [];
@@ -308,9 +315,30 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
     const statusToken = randomUUID();
 
     // 6. Insert order + items + initial status event
+    // P3: an Rx cart needs an owner for the compliance trail (decision R3) and
+    // a script on file before it can be placed at all.
+    let pendingRxId: string | null = null;
+    if (hasRxLine) {
+      if (!input.customerId) {
+        throw new OrderValidationError("prescription items require a signed-in customer account");
+      }
+      const [pendingRx] = await tx.select({ id: prescriptions.id }).from(prescriptions)
+        .where(and(
+          eq(prescriptions.tenantId, tenantId),
+          eq(prescriptions.customerId, input.customerId),
+          eq(prescriptions.status, "pending"),
+          isNull(prescriptions.orderId),
+        ))
+        .orderBy(desc(prescriptions.createdAt))
+        .limit(1);
+      if (!pendingRx) throw new OrderValidationError("a prescription must be uploaded before ordering these items");
+      pendingRxId = pendingRx.id;
+    }
+
     const [order] = await tx.insert(orders).values({
       tenantId, branchId: input.branchId, orderNumber,
       fulfillmentType: input.fulfillmentType, status: "pending",
+      rxReviewStatus: hasRxLine ? "pending" : "not_required",
       paymentMethod,
       paymentStatus,
       paymentReference,
@@ -331,6 +359,12 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       statusToken,
       scheduledFor,
     }).returning();
+
+    // Bind the script to the order it cleared for — the review decision then
+    // moves this exact order's gate, never a later unrelated one.
+    if (pendingRxId) {
+      await tx.update(prescriptions).set({ orderId: order.id }).where(eq(prescriptions.id, pendingRxId));
+    }
 
     const inserted = await tx.insert(orderItems)
       .values(itemsToInsert.map((i) => ({ ...i, tenantId, orderId: order.id })))
@@ -492,6 +526,12 @@ export async function transitionStatus(tenantId: string, orderId: string, to: Or
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
     if (!order) throw new OrderNotFoundError();
     if (!canTransition(order.status, to, order.fulfillmentType)) throw new InvalidTransitionError(order.status, to);
+    // P3: a script still awaiting (or refused by) a pharmacist blocks release
+    // into fulfilment. Cancelling/rejecting stays available — a blocked order
+    // must never be stuck.
+    if (order.rxReviewStatus === "pending" && to !== "cancelled" && to !== "rejected") {
+      throw new InvalidTransitionError(order.status, to);
+    }
     const setCancel = (to === "cancelled" || to === "rejected") && reason ? { cancelReason: reason } : {};
     // Guarded UPDATE serializes against concurrent writers (see cancelOrderByToken).
     const [updated] = await tx.update(orders)
