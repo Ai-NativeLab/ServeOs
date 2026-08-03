@@ -1,7 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
 import type { PublishedMenu } from "@/server/catalog/schema";
-import { addLine, loadCart, setLineQuantity, cartSubtotal, type Cart } from "@/app/_components/cart";
+import { addLine, loadCart, setLineQuantity, cartSubtotal, type Cart, type CartLine } from "@/app/_components/cart";
+import { computeDimensionalUnitPrice } from "@/server/catalog/dimensional-pricing";
+import { isDimensionalUom } from "@/server/catalog/uom-values";
 import { type MenuProduct } from "@/app/_components/storefront/ProductCard";
 import { CartBar } from "@/app/_components/storefront/CartBar";
 import { BranchPickSheet } from "@/app/_components/storefront/BranchPickSheet";
@@ -36,16 +38,22 @@ export function ShopBrowser({
     return () => window.removeEventListener("serveos-cart-changed", onChange);
   }, []);
 
-  function add(p: MenuProduct, variantId: string | null, quantity: number) {
+  function add(p: MenuProduct, variantId: string | null, quantity: number, dimensions?: CartLine["dimensions"]) {
     const v = variantId ? p.variants.find((x) => x.id === variantId) : null;
+    // P4: a dimensional product's effectivePrice is per-unit-of-measure, not
+    // a fixed each-price — the sheet already validated dimensions are present.
+    const unitPrice = p.unitOfMeasure && isDimensionalUom(p.unitOfMeasure) && dimensions
+      ? computeDimensionalUnitPrice(p.effectivePrice, p.unitOfMeasure, dimensions)
+      : v ? v.price : p.effectivePrice;
     setCart(addLine(branchId, {
       productId: p.id,
       variantId: v?.id,
       variantNameEn: v?.nameEn,
       nameEn: p.nameEn, nameAr: p.nameAr, quantity,
-      unitPrice: v ? v.price : p.effectivePrice,
+      unitPrice,
       selectedOptionIds: [],
       modifierSummaryEn: v?.nameEn ?? "", // CartDrawer renders this as the line summary
+      dimensions,
     }));
   }
 

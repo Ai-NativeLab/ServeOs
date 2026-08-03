@@ -69,6 +69,9 @@ export const orderItems = pgTable("order_items", {
   lineTotal: numeric("line_total").notNull(),
   discountAmount: numeric("discount_amount").notNull().default("0"),
   selectedModifiers: jsonb("selected_modifiers").$type<SelectedModifier[]>().notNull().default([]),
+  /** P4: the cut-list dimensions this line was priced from. Null for every
+   *  non-dimensional line (every vertical except timber). */
+  dimensions: jsonb("dimensions").$type<{ lengthMm?: number; widthMm?: number; thicknessMm?: number }>(),
 });
 
 export const orderStatusEvents = pgTable("order_status_events", {

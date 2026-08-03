@@ -7,6 +7,16 @@ import { CUSTOMER_COOKIE } from "@/server/customers/require-customer";
 import { validateCustomerSession } from "@/server/customers/service";
 import { DomainError } from "@/shared/errors";
 
+/** P4: an explicit allowlist, not a spread — a numeric field only, never a
+ *  string that could smuggle something into a jsonb column. */
+function parseDimensions(raw: unknown): PlaceOrderLine["dimensions"] {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const d = raw as Record<string, unknown>;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const out = { lengthMm: num(d.lengthMm), widthMm: num(d.widthMm), thicknessMm: num(d.thicknessMm) };
+  return out.lengthMm === undefined && out.widthMm === undefined && out.thicknessMm === undefined ? undefined : out;
+}
+
 export async function POST(req: NextRequest) {
   let body: Record<string, unknown>;
   try {
@@ -52,6 +62,7 @@ export async function POST(req: NextRequest) {
             selectedOptionIds: Array.isArray(line.selectedOptionIds)
               ? (line.selectedOptionIds as unknown[]).map(String)
               : [],
+            dimensions: parseDimensions(line.dimensions),
           };
         })
       : [],

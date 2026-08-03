@@ -82,3 +82,23 @@ describe("variant-aware merge", () => {
     expect(c2.lines.length).toBe(2);
   });
 });
+
+describe("dimensional merge (P4)", () => {
+  const cutLine = (dims: CartLine["dimensions"]): CartLine => ({
+    productId: "ply-1", nameEn: "Ply Sheet", nameAr: "أبلكاش", quantity: 1,
+    unitPrice: 72, selectedOptionIds: [], modifierSummaryEn: "", dimensions: dims,
+  });
+
+  it("merges two identical cuts into one line with summed quantity", () => {
+    const c1 = mergeLine({ branchId: null, lines: [] }, "b1", cutLine({ lengthMm: 2400, widthMm: 600 }));
+    const c2 = mergeLine(c1, "b1", cutLine({ lengthMm: 2400, widthMm: 600 }));
+    expect(c2.lines.length).toBe(1);
+    expect(c2.lines[0].quantity).toBe(2);
+  });
+
+  it("keeps two DIFFERENT cuts of the same product as separate lines, not summed quantities", () => {
+    const c1 = mergeLine({ branchId: null, lines: [] }, "b1", cutLine({ lengthMm: 2400, widthMm: 600 }));
+    const c2 = mergeLine(c1, "b1", cutLine({ lengthMm: 1000, widthMm: 1000 }));
+    expect(c2.lines.length).toBe(2);
+  });
+});

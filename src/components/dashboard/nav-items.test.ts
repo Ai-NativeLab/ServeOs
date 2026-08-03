@@ -12,10 +12,10 @@ describe("dashboardNavItems", () => {
     expect(labels).not.toContain("Payments");
   });
 
-  it("shows owners the full nav including Home, Payments, Settings, and Audit", () => {
+  it("shows owners the full nav including Home, Payments, Settings, Audit and Customers", () => {
     const labels = dashboardNavItems(["owner"]).map((i) => i.label);
     expect(labels).toEqual([
-      "Home", "Analytics", "Orders", "Payments", "Menu", "Branches", "Banners", "Settings", "Audit",
+      "Home", "Analytics", "Orders", "Payments", "Menu", "Branches", "Banners", "Settings", "Audit", "Customers",
     ]);
   });
 

@@ -24,18 +24,33 @@ describe("vertical registry", () => {
     }
   });
 
-  it("restaurant: modifiers on, variants/stock off, menu template", () => {
+  it("restaurant: modifiers on, variants/stock off, menu template, no P4 flags", () => {
     const caps = getCapabilities("restaurant");
-    expect(caps).toEqual({ modifiers: true, variants: false, stockTracking: false, serviceCharge: true });
+    expect(caps).toEqual({
+      modifiers: true, variants: false, stockTracking: false, serviceCharge: true,
+      dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false,
+    });
     expect(getVerticalDescriptor("restaurant").storefront.template).toBe("menu");
   });
 
-  it("retail, pharmacy, timber: variants/stock on, modifiers off, shop template", () => {
-    for (const key of ["retail", "pharmacy", "timber"] as VerticalId[]) {
+  it("retail and pharmacy: variants/stock on, modifiers off, shop template, no P4 flags", () => {
+    for (const key of ["retail", "pharmacy"] as VerticalId[]) {
       const caps = getCapabilities(key);
-      expect(caps, key).toEqual({ modifiers: false, variants: true, stockTracking: true, serviceCharge: false });
+      expect(caps, key).toEqual({
+        modifiers: false, variants: true, stockTracking: true, serviceCharge: false,
+        dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false,
+      });
       expect(getVerticalDescriptor(key).storefront.template, key).toBe("shop");
     }
+  });
+
+  it("timber: variants/stock on, modifiers off, shop template, ALL P4 flags on", () => {
+    const caps = getCapabilities("timber");
+    expect(caps).toEqual({
+      modifiers: false, variants: true, stockTracking: true, serviceCharge: false,
+      dimensionalProducts: true, unitsOfMeasure: true, tradeAccounts: true,
+    });
+    expect(getVerticalDescriptor("timber").storefront.template).toBe("shop");
   });
 
   it("terminology differs where it matters", () => {
@@ -69,6 +84,18 @@ describe("vertical registry", () => {
   it("offers WhatsApp on every vertical now that the bot handles variants", () => {
     for (const id of VERTICAL_IDS) {
       expect(getVerticalDescriptor(id).storefront.showWhatsapp).toBe(true);
+    }
+  });
+});
+
+describe("P4 capability flags", () => {
+  it("dimensional products, UoM and trade accounts are timber-only", () => {
+    for (const id of VERTICAL_IDS) {
+      const caps = getCapabilities(id);
+      const expected = id === "timber";
+      expect(caps.dimensionalProducts).toBe(expected);
+      expect(caps.unitsOfMeasure).toBe(expected);
+      expect(caps.tradeAccounts).toBe(expected);
     }
   });
 });

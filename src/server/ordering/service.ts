@@ -4,6 +4,9 @@ import { withTenant } from "@/db/with-tenant";
 import { requireFeature, incrementUsage } from "@/server/entitlements/service";
 import { getCheckoutPricing } from "@/server/tenancy/settings";
 import { computeOrderTotals, computeLineTotal } from "@/lib/order-totals";
+import { computeDimensionalUnitPrice } from "@/server/catalog/dimensional-pricing";
+import { isDimensionalUom } from "@/server/catalog/uom";
+import { customers } from "@/server/customers/schema";
 import { isBranchOrderableAt, isWithinSchedulingHorizon, MIN_LEAD_MINUTES } from "@/server/branches/slots";
 import { getTenantById } from "@/server/tenancy";
 import { branches, deliveryAreas } from "@/server/branches/schema";
@@ -29,6 +32,9 @@ export type PlaceOrderLine = {
   discountAmount?: number;
   discountReason?: string;
   note?: string;
+  /** P4: required when the product is dimensional (unitOfMeasure set),
+   *  rejected when it isn't — never silently ignored either way. */
+  dimensions?: { lengthMm?: number; widthMm?: number; thicknessMm?: number };
 };
 export type PlaceOrderInput = {
   branchId: string;
@@ -122,7 +128,7 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
 
     // 2. Validate each line against the catalog; build snapshots.
     let subtotal = 0;
-    const itemsToInsert: Array<{ productId: string; variantId: string | null; variantNameEn: string | null; variantNameAr: string | null; nameEn: string; nameAr: string; unitBasePrice: string; quantity: number; lineTotal: string; discountAmount: string; selectedModifiers: SelectedModifier[] }> = [];
+    const itemsToInsert: Array<{ productId: string; variantId: string | null; variantNameEn: string | null; variantNameAr: string | null; nameEn: string; nameAr: string; unitBasePrice: string; quantity: number; lineTotal: string; discountAmount: string; selectedModifiers: SelectedModifier[]; dimensions: PlaceOrderLine["dimensions"] | null }> = [];
 
     for (const line of input.lines) {
       if (!Number.isInteger(line.quantity) || line.quantity < 1) throw new OrderValidationError("bad quantity");
@@ -142,7 +148,23 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       let variantNameEn: string | null = null;
       let variantNameAr: string | null = null;
 
-      if (line.variantId) {
+      if (product.unitOfMeasure && isDimensionalUom(product.unitOfMeasure)) {
+        // Dimensional product (P4): basePrice is price-per-unit-of-measure
+        // (decision T2), never a fixed each-price — variants/modifiers don't
+        // apply to a cut-list line in v1.
+        if (line.variantId || line.selectedOptionIds.length > 0) {
+          throw new OrderValidationError("variants/modifiers not supported on a dimensional line");
+        }
+        if (!line.dimensions) throw new OrderValidationError("dimensions required for this product");
+        try {
+          unit = computeDimensionalUnitPrice(Number(effectiveBase), product.unitOfMeasure, line.dimensions);
+        } catch (e) {
+          throw new OrderValidationError(e instanceof Error ? e.message : "invalid dimensions");
+        }
+      } else if (line.dimensions) {
+        // Never silently ignore dimensions on a product that isn't priced by them.
+        throw new OrderValidationError("dimensions not applicable to this product");
+      } else if (line.variantId) {
         if (line.selectedOptionIds.length > 0) throw new OrderValidationError("modifiers not allowed on variant lines");
         const [variant] = await tx.select().from(productVariants)
           .where(and(eq(productVariants.id, line.variantId), eq(productVariants.productId, product.id), eq(productVariants.isActive, true)))
@@ -217,8 +239,14 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
 
       itemsToInsert.push({
         productId: product.id, variantId, variantNameEn, variantNameAr, nameEn: product.nameEn, nameAr: product.nameAr,
-        unitBasePrice: variantId ? String(unit) : String(effectiveBase), quantity: line.quantity, lineTotal: money(lineTotal),
+        // A dimensional line has no separate modifier breakdown to show — like a
+        // variant, its computed per-piece price IS the unit price, not the raw
+        // per-UoM rate. Non-dimensional/non-variant lines keep storing the base
+        // (modifiers appear separately in selectedModifiers).
+        unitBasePrice: (variantId || product.unitOfMeasure) ? String(unit) : String(effectiveBase),
+        quantity: line.quantity, lineTotal: money(lineTotal),
         discountAmount: money(lineDiscount), selectedModifiers: variantId ? [] : snapshot,
+        dimensions: product.unitOfMeasure ? (line.dimensions ?? null) : null,
       });
     }
 
@@ -240,12 +268,27 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       deliveryAddress = input.addressText.trim();
     }
 
+    // 3b. Trade-account discount (P4, decision T5) — a flat % off the gross
+    // subtotal, folded into the SAME orderDiscountAmount slot rather than a
+    // new pipeline. Capability-gated: a trade-approved customer on a
+    // non-timber tenant gets nothing, and a guest (no customerId) never does.
+    let tradeDiscountAmount = 0;
+    if (input.customerId && caps.tradeAccounts) {
+      const [customer] = await tx.select({
+        tradeApproved: customers.tradeApproved,
+        tradeDiscountPercent: customers.tradeDiscountPercent,
+      }).from(customers).where(eq(customers.id, input.customerId)).limit(1);
+      if (customer?.tradeApproved && customer.tradeDiscountPercent) {
+        tradeDiscountAmount = Math.round(subtotal * (Number(customer.tradeDiscountPercent) / 100) * 100) / 100;
+      }
+    }
+
     // 4. Totals — single source of money math (src/lib/order-totals.ts).
     // Each line was already reduced by its own discount via computeLineTotal
     // above, so `subtotal` here is the line-discounted total. The order-level
     // discount further reduces that before computeOrderTotals — called
     // exactly once — applies the service charge and VAT to the final base.
-    const orderDiscount = Math.min(Math.max(0, input.orderDiscountAmount ?? 0), subtotal);
+    const orderDiscount = Math.min(Math.max(0, (input.orderDiscountAmount ?? 0) + tradeDiscountAmount), subtotal);
     const totals = computeOrderTotals(pricing, subtotal - orderDiscount, deliveryFee);
 
     // The register must never quietly charge a different amount than the one
