@@ -47,6 +47,8 @@ export type PlaceOrderInput = {
   paymentProofUrl?: string;
   channel?: "web" | "pos" | "whatsapp";
   cashierUserId?: string;
+  /** Server-resolved from the customer session — NEVER accepted from a client body. */
+  customerId?: string;
   orderDiscountAmount?: number;
   orderDiscountReason?: string;
   /** What the client displayed. Compared, never trusted. */
@@ -272,6 +274,7 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       paymentProofUrl,
       channel: input.channel ?? "web",
       cashierUserId: input.cashierUserId ?? null,
+      customerId: input.customerId ?? null,
       customerName: input.customerName.trim(), customerPhone: input.customerPhone.trim(), notes: input.notes?.trim() || null,
       deliveryAreaId, deliveryAreaNameSnapshot: deliveryAreaName, deliveryAddressText: deliveryAddress,
       subtotal: money(totals.subtotal),

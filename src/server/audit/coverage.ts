@@ -9,6 +9,7 @@ export const AUDITED_SERVICE_FILES = [
   "src/server/whatsapp/linking.ts",
   "src/server/whatsapp/runner.ts",
   "src/server/whatsapp/status-worker.ts",
+  "src/server/customers/service.ts",
   "src/server/notifications/service.ts",
   "src/server/notifications/worker.ts",
   "src/server/ordering/service.ts",
@@ -106,6 +107,11 @@ export const AUDIT_ALLOWLIST: Record<string, string> = {
   // emitted at the action boundary (loginAction / registerAction / signOutAction).
   "session.createSession": "auth.login emitted by login/register actions",
   "session.invalidateSession": "auth.logout emitted by signOutAction",
+  // Customer session primitives mirror the staff ones: customer.login /
+  // customer.login_failed are emitted by authenticateCustomer, logout at the
+  // action boundary.
+  "service.createCustomerSession": "customer.login emitted by authenticateCustomer",
+  "service.invalidateCustomerSession": "customer.logout emitted by the sign-out action",
   // Low-level tenant bootstrap: registration goes through registerTenant, which
   // emits tenant.registered. createTenant is a bare control-table insert used by
   // seeds/tooling with no tenant context to attribute an actor to.

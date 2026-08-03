@@ -16,3 +16,4 @@ export * from "../server/pos/shift-schema";
 export * from "../server/audit/schema";
 export * from "../server/whatsapp/schema";
 export * from "../server/notifications/schema";
+export * from "../server/customers/schema";

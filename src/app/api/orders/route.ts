@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { getTenantBySlug, isTenantServable } from "@/server/tenancy";
 import { placeOrder, type PlaceOrderInput, type PlaceOrderLine } from "@/server/ordering/service";
 import { webFingerprint } from "@/server/audit/fingerprint";
+import { cookies } from "next/headers";
+import { CUSTOMER_COOKIE } from "@/server/customers/require-customer";
+import { validateCustomerSession } from "@/server/customers/service";
 import { DomainError } from "@/shared/errors";
 
 export async function POST(req: NextRequest) {
@@ -18,11 +21,17 @@ export async function POST(req: NextRequest) {
   const tenant = await getTenantBySlug(slug);
   if (!tenant || !isTenantServable(tenant)) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
+  // A signed-in customer attaches to the order — resolved from the session
+  // cookie against THIS tenant, never from the request body.
+  const customerToken = (await cookies()).get(CUSTOMER_COOKIE)?.value;
+  const customerSession = customerToken ? await validateCustomerSession(tenant.id, customerToken) : null;
+
   // Build the order input from an explicit allowlist — never spread the raw
   // body. In particular `now` is server-controlled only (it drives the
   // opening-hours check) and must not be accepted from the client.
   const input: PlaceOrderInput = {
     branchId: String(body.branchId ?? ""),
+    customerId: customerSession?.customer.id,
     fulfillmentType: body.fulfillmentType === "delivery" ? "delivery" : "pickup",
     customerName: String(body.customerName ?? ""),
     customerPhone: String(body.customerPhone ?? ""),
