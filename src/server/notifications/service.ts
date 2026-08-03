@@ -146,3 +146,16 @@ export async function markNotificationsRead(
     await tx.update(notifications).set({ readAt: new Date() }).where(and(...conds));
   });
 }
+
+/** Badge count only — the layout calls this on every dashboard render. */
+export async function unreadNotificationCount(tenantId: string, userId: string, roleKeys: string[]): Promise<number> {
+  return withTenant(tenantId, async (tx) => {
+    const visible = or(
+      eq(notifications.userId, userId),
+      roleKeys.length > 0 ? inArray(notifications.targetRole, roleKeys) : sql`false`,
+    );
+    const [{ value }] = await tx.select({ value: count() }).from(notifications)
+      .where(and(visible, isNull(notifications.readAt)));
+    return Number(value);
+  });
+}

@@ -1,6 +1,7 @@
 import { requireDashboardUser } from "@/server/auth/dashboard-context";
 import { getTenantById } from "@/server/tenancy";
 import { pendingOrderCount } from "@/server/ordering/service";
+import { unreadNotificationCount } from "@/server/notifications/service";
 import { getVerticalTerms, selectStorefrontTemplate, type VerticalId } from "@/server/verticals";
 import { dashboardNavItems } from "@/components/dashboard/nav-items";
 import { Sidebar } from "@/components/dashboard/Sidebar";
@@ -9,7 +10,11 @@ import { Toaster } from "@/components/ui/sonner";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { user, tenantId, roleKeys } = await requireDashboardUser();
-  const [tenant, pending] = await Promise.all([getTenantById(tenantId), pendingOrderCount(tenantId)]);
+  const [tenant, pending, unread] = await Promise.all([
+    getTenantById(tenantId),
+    pendingOrderCount(tenantId),
+    unreadNotificationCount(tenantId, user.id, roleKeys),
+  ]);
   const terms = getVerticalTerms(selectStorefrontTemplate(tenant?.vertical as VerticalId));
   const items = dashboardNavItems(roleKeys, terms.catalogNoun.en);
 
@@ -21,6 +26,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
           userName={user.name}
           roleLabel={roleKeys[0] ?? "member"}
           pendingCount={pending}
+          unreadNotifications={unread}
           items={items}
           restaurantName={tenant?.name ?? "Restaurant"}
         />

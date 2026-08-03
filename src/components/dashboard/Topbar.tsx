@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { Bell } from "lucide-react";
+import { Bell, Inbox } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuTrigger,
@@ -12,11 +12,12 @@ import { MobileNav } from "./MobileNav";
 import type { NavItem } from "./nav-items";
 
 export function Topbar({
-  userName, roleLabel, pendingCount, items, restaurantName,
+  userName, roleLabel, pendingCount, unreadNotifications = 0, items, restaurantName,
 }: {
   userName: string;
   roleLabel: string;
   pendingCount: number;
+  unreadNotifications?: number;
   items: NavItem[];
   restaurantName: string;
 }) {
@@ -35,6 +36,16 @@ export function Topbar({
             {pendingCount > 0 && (
               <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full bg-primary text-[10px] leading-4 text-primary-foreground text-center">
                 {pendingCount}
+              </span>
+            )}
+          </Link>
+        </Button>
+        <Button asChild variant="ghost" size="icon" className="relative">
+          <Link href="/dashboard/notifications" aria-label="Notifications">
+            <Inbox className="size-5" />
+            {unreadNotifications > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full bg-primary text-[10px] leading-4 text-primary-foreground text-center">
+                {unreadNotifications}
               </span>
             )}
           </Link>
