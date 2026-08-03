@@ -10,6 +10,7 @@ export const AUDITED_SERVICE_FILES = [
   "src/server/whatsapp/runner.ts",
   "src/server/whatsapp/status-worker.ts",
   "src/server/customers/service.ts",
+  "src/server/prescriptions/service.ts",
   "src/server/notifications/service.ts",
   "src/server/notifications/worker.ts",
   "src/server/ordering/service.ts",
