@@ -6,6 +6,12 @@ export type VerticalCapabilities = {
   variants: boolean;
   stockTracking: boolean;
   serviceCharge: boolean;
+  /** P4 (timber): products priced per unit of measure instead of per each. */
+  dimensionalProducts: boolean;
+  /** P4: the UoM picker/label surfaces in dashboard product forms. */
+  unitsOfMeasure: boolean;
+  /** P4: a customer can be trade-approved for a per-order discount %. */
+  tradeAccounts: boolean;
 };
 
 export type LocalizedLabel = { en: string; ar: string };

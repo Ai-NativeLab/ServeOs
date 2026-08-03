@@ -1,6 +1,7 @@
 import { pgTable, uuid, text, timestamp, boolean, integer, numeric, uniqueIndex } from "drizzle-orm/pg-core";
 import { tenants } from "@/server/tenancy/schema";
 import { branches } from "@/server/branches/schema";
+import { unitOfMeasureEnum } from "./uom";
 
 export const categories = pgTable("categories", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -23,6 +24,10 @@ export const products = pgTable("products", {
   nameAr: text("name_ar").notNull(),
   descriptionEn: text("description_en"),
   descriptionAr: text("description_ar"),
+  // Null = fixed price per each (every existing vertical, unchanged). Set =
+  // basePrice is REINTERPRETED as price-per-unit-of-measure (P4, decision T2)
+  // — one number, one meaning per row, no second price column.
+  unitOfMeasure: unitOfMeasureEnum("unit_of_measure"),
   basePrice: numeric("base_price").notNull(),
   imageUrl: text("image_url"),
   brand: text("brand"),
