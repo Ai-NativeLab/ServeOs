@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { and, eq, gt } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { hashPassword, verifyPassword } from "@/server/auth/password";
-import { recordAuditEvent } from "@/server/audit/service";
+import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { customers, customerSessions, type Customer } from "./schema";
 
@@ -144,4 +144,56 @@ export async function listCustomerOrders(tenantId: string, customerId: string, l
       .where(and(eq(orders.tenantId, tenantId), eq(orders.customerId, customerId)))
       .orderBy(desc(orders.placedAt))
       .limit(limit));
+}
+
+export async function listCustomers(tenantId: string, limit = 100): Promise<Customer[]> {
+  const { desc } = await import("drizzle-orm");
+  return withTenant(tenantId, (tx) =>
+    tx.select().from(customers).where(eq(customers.tenantId, tenantId))
+      .orderBy(desc(customers.createdAt)).limit(limit));
+}
+
+/**
+ * Staff-only trade-account toggle (decision T5) — there is no client-writable
+ * path to either column; only this function, called from the dashboard action,
+ * sets them. Revoking clears the percent so a later re-approval never
+ * inherits a stale number.
+ */
+export async function setTradeApproval(
+  tenantId: string,
+  customerId: string,
+  input: { approved: boolean; discountPercent?: number },
+  audit?: AuditActorInput,
+): Promise<Customer> {
+  if (input.approved) {
+    const pct = input.discountPercent ?? 0;
+    if (!(pct >= 0 && pct <= 100)) throw new Error("Discount percent must be between 0 and 100");
+  }
+
+  return withTenant(tenantId, async (tx) => {
+    const [updated] = await tx.update(customers)
+      .set({
+        tradeApproved: input.approved,
+        tradeDiscountPercent: input.approved ? String(input.discountPercent ?? 0) : null,
+      })
+      .where(and(eq(customers.id, customerId), eq(customers.tenantId, tenantId)))
+      .returning();
+    if (!updated) throw new Error("Customer not found");
+
+    await recordAuditEvent(
+      { tenantId, actorUserId: audit?.actorUserId ?? null, fingerprint: audit?.fingerprint ?? emptyFingerprint() },
+      {
+        action: input.approved ? "customer.trade_approved" : "customer.trade_revoked",
+        entityType: "customer",
+        entityId: customerId,
+        summary: input.approved
+          ? `Trade account approved for ${updated.name} (${input.discountPercent ?? 0}% off)`
+          : `Trade account revoked for ${updated.name}`,
+        actorType: audit?.actorType ?? "user",
+      },
+      tx,
+    );
+
+    return updated;
+  });
 }

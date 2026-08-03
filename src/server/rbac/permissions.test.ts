@@ -48,3 +48,11 @@ describe("reports permissions", () => {
     expect(ROLE_PERMISSIONS.staff).not.toContain("reports:financial");
   });
 });
+
+describe("customers:manage", () => {
+  it("is held by owner and manager, not staff", () => {
+    expect(ROLE_PERMISSIONS.owner).toContain("customers:manage");
+    expect(ROLE_PERMISSIONS.manager).toContain("customers:manage");
+    expect(ROLE_PERMISSIONS.staff).not.toContain("customers:manage");
+  });
+});
