@@ -1,4 +1,4 @@
-import { requiredDimensions, type DimensionalUom, type DimensionField } from "./uom";
+import { requiredDimensions, type DimensionalUom, type DimensionField } from "./uom-values";
 
 export type Dimensions = { lengthMm?: number; widthMm?: number; thicknessMm?: number };
 

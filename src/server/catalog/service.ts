@@ -416,6 +416,7 @@ export async function getPublishedMenu(tenantId: string, branchId?: string): Pro
         descriptionEn: p.descriptionEn,
         descriptionAr: p.descriptionAr,
         effectivePrice: Number(p.basePrice),
+        unitOfMeasure: p.unitOfMeasure,
         imageUrl: p.imageUrl,
         brand: p.brand,
         variants: (variantsByProduct[p.id] ?? []).map((v) => ({

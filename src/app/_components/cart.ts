@@ -8,6 +8,9 @@ export type CartLine = {
   unitPrice: number; // base + selected modifier deltas, for display only
   selectedOptionIds: string[];
   modifierSummaryEn: string;
+  /** P4: the cut-list dimensions this line was priced from (client-computed
+   *  preview; the server re-derives unitPrice from these at placeOrder). */
+  dimensions?: { lengthMm?: number; widthMm?: number; thicknessMm?: number };
 };
 
 export type Cart = { branchId: string | null; lines: CartLine[] };
@@ -46,8 +49,17 @@ function sameOptions(a: string[], b: string[]): boolean {
   return b.every((id) => set.has(id));
 }
 
-/** Pure merge: same product + same option set (order-insensitive) adds
- * quantities; a branch change resets the cart to the new branch first. */
+/** Two dimensional lines are the same purchase only if every measurement
+ * matches — a 2.4m cut and a 1m cut of the same sheet are different lines,
+ * never quantities of one another. */
+function sameDimensions(a?: CartLine["dimensions"], b?: CartLine["dimensions"]): boolean {
+  return (a?.lengthMm ?? null) === (b?.lengthMm ?? null)
+    && (a?.widthMm ?? null) === (b?.widthMm ?? null)
+    && (a?.thicknessMm ?? null) === (b?.thicknessMm ?? null);
+}
+
+/** Pure merge: same product + same option set (order-insensitive) + same
+ * dimensions (if any) adds quantities; a branch change resets the cart first. */
 export function mergeLine(current: Cart, branchId: string | null, line: CartLine): Cart {
   const cart: Cart = current.branchId && current.branchId !== branchId
     ? { branchId, lines: [] }
@@ -56,7 +68,8 @@ export function mergeLine(current: Cart, branchId: string | null, line: CartLine
     (l) =>
       l.productId === line.productId &&
       (l.variantId ?? null) === (line.variantId ?? null) &&
-      sameOptions(l.selectedOptionIds, line.selectedOptionIds),
+      sameOptions(l.selectedOptionIds, line.selectedOptionIds) &&
+      sameDimensions(l.dimensions, line.dimensions),
   );
   if (i >= 0) cart.lines[i] = { ...cart.lines[i], quantity: cart.lines[i].quantity + line.quantity };
   else cart.lines.push(line);

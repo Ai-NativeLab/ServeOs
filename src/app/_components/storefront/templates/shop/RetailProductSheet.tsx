@@ -4,6 +4,13 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "
 import { Button } from "@/components/ui/button";
 import { formatMoney } from "@/lib/money";
 import type { MenuProduct } from "@/app/_components/storefront/ProductCard";
+import type { CartLine } from "@/app/_components/cart";
+import { computeDimensionalQuantity } from "@/server/catalog/dimensional-pricing";
+import { isDimensionalUom, requiredDimensions, type DimensionField } from "@/server/catalog/uom-values";
+
+const DIMENSION_LABEL: Record<DimensionField, string> = {
+  lengthMm: "Length", widthMm: "Width", thicknessMm: "Thickness",
+};
 
 export function RetailProductSheet({
   product, open, onOpenChange, onAdd, currency,
@@ -11,11 +18,14 @@ export function RetailProductSheet({
   product: MenuProduct | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onAdd: (product: MenuProduct, variantId: string | null, quantity: number) => void;
+  onAdd: (product: MenuProduct, variantId: string | null, quantity: number, dimensions?: CartLine["dimensions"]) => void;
   currency: string;
 }) {
   const [variantId, setVariantId] = useState<string | null>(null);
   const [quantity, setQuantity] = useState(1);
+  // P4: cut-list dimension inputs, keyed by field so unfilled ones stay
+  // undefined rather than a stray "0" that would price a zero-size cut.
+  const [dims, setDims] = useState<Record<DimensionField, string>>({ lengthMm: "", widthMm: "", thicknessMm: "" });
   // Reset the picker each time a (possibly re-opened) product becomes active.
   // Adjusted during render rather than in a useEffect, per
   // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes.
@@ -24,6 +34,7 @@ export function RetailProductSheet({
     setResetKey(product.id);
     setVariantId(product.variants.find((v) => v.inStock)?.id ?? null);
     setQuantity(1);
+    setDims({ lengthMm: "", widthMm: "", thicknessMm: "" });
   } else if (!product && resetKey !== null) {
     setResetKey(null);
   }
@@ -32,8 +43,29 @@ export function RetailProductSheet({
 
   const selected = product.variants.find((v) => v.id === variantId) ?? null;
   const needsVariant = product.variants.length > 0;
-  const unitPrice = selected ? selected.price : product.effectivePrice;
-  const canAdd = !needsVariant || selected !== null;
+
+  // P4: a dimensional product is priced from customer-entered measurements,
+  // never a fixed each-price or a variant. Narrowed once here so every use
+  // below has DimensionalUom, not the full UnitOfMeasure superset.
+  const dimensionalUom = product.unitOfMeasure && isDimensionalUom(product.unitOfMeasure) ? product.unitOfMeasure : null;
+  const isDimensional = dimensionalUom !== null;
+  const fields = dimensionalUom ? requiredDimensions(dimensionalUom) : [];
+  const parsedDims = Object.fromEntries(
+    fields.map((f) => [f, dims[f].trim() === "" ? undefined : Number(dims[f])]),
+  ) as Record<DimensionField, number | undefined>;
+  const dimsComplete = fields.every((f) => parsedDims[f] !== undefined && parsedDims[f]! > 0);
+
+  let dimensionalUnitPrice: number | null = null;
+  if (dimensionalUom && dimsComplete) {
+    try {
+      dimensionalUnitPrice = product.effectivePrice * computeDimensionalQuantity(dimensionalUom, parsedDims);
+    } catch {
+      dimensionalUnitPrice = null; // shouldn't happen once dimsComplete, but never show a bad number
+    }
+  }
+
+  const unitPrice = isDimensional ? (dimensionalUnitPrice ?? 0) : selected ? selected.price : product.effectivePrice;
+  const canAdd = isDimensional ? dimsComplete : !needsVariant || selected !== null;
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -50,6 +82,32 @@ export function RetailProductSheet({
             <SheetTitle className="text-xl sm:text-2xl">{product.nameEn}</SheetTitle>
             {product.descriptionEn && <SheetDescription>{product.descriptionEn}</SheetDescription>}
           </SheetHeader>
+
+          {isDimensional && (
+            <div className="mt-5">
+              <span className="eyebrow text-ink">Cut size</span>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Priced at {formatMoney(product.effectivePrice, currency)} per {product.unitOfMeasure}.
+              </p>
+              <div className="mt-2 grid grid-cols-3 gap-2">
+                {fields.map((f) => (
+                  <label key={f} className="flex flex-col gap-1">
+                    <span className="text-xs text-muted-foreground">{DIMENSION_LABEL[f]} (mm)</span>
+                    <input
+                      type="number" min={1} inputMode="numeric" value={dims[f]}
+                      onChange={(e) => setDims((d) => ({ ...d, [f]: e.target.value }))}
+                      className="rounded-lg border border-border bg-card px-2.5 py-2 text-sm text-ink outline-none focus:border-primary/60"
+                    />
+                  </label>
+                ))}
+              </div>
+              {dimsComplete && dimensionalUnitPrice !== null && (
+                <p className="mt-2 text-sm font-medium text-ink">
+                  {formatMoney(dimensionalUnitPrice, currency)} per piece
+                </p>
+              )}
+            </div>
+          )}
 
           {needsVariant && (
             <div className="mt-5">
@@ -96,7 +154,7 @@ export function RetailProductSheet({
           <Button
             disabled={!canAdd}
             onClick={() => {
-              onAdd(product, variantId, quantity);
+              onAdd(product, variantId, quantity, isDimensional ? (parsedDims as CartLine["dimensions"]) : undefined);
               onOpenChange(false);
             }}
             className="flex-1 rounded-full"

@@ -1,7 +1,7 @@
 import { pgTable, uuid, text, timestamp, boolean, integer, numeric, uniqueIndex } from "drizzle-orm/pg-core";
 import { tenants } from "@/server/tenancy/schema";
 import { branches } from "@/server/branches/schema";
-import { unitOfMeasureEnum } from "./uom";
+import { unitOfMeasureEnum, type UnitOfMeasure } from "./uom";
 
 export const categories = pgTable("categories", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -118,6 +118,9 @@ export interface PublishedMenu {
       descriptionEn: string | null;
       descriptionAr: string | null;
       effectivePrice: number;
+      /** P4: set only for dimensional products — effectivePrice is then the
+       *  price PER UNIT OF MEASURE, not a fixed each-price. */
+      unitOfMeasure: UnitOfMeasure | null;
       imageUrl: string | null;
       brand: string | null;
       inStock: boolean;

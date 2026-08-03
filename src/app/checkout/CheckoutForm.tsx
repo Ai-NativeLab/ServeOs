@@ -127,6 +127,7 @@ export function CheckoutForm({
           paymentReference: selectedMethod ? payRef.trim() : undefined,
           lines: cart.lines.map((l) => ({
             productId: l.productId, variantId: l.variantId, quantity: l.quantity, selectedOptionIds: l.selectedOptionIds,
+            dimensions: l.dimensions,
           })),
         }),
       });
