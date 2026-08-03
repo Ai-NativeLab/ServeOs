@@ -98,6 +98,9 @@ export const AUDIT_ALLOWLIST: Record<string, string> = {
   // The domain event — the order — is audited inside the same turn:
   // runPlaceOrder emits whatsapp.order_placed on the caller's tx.
   "runner.handleInbound": "whatsapp.order_placed emitted by runPlaceOrder on the placing turn",
+  // Read-state on the caller's own feed — the notification's existence is the
+  // record; when someone dismissed their badge is not a domain event.
+  "service.markNotificationsRead": "user's own read cursor, not a domain mutation",
   // Session primitives are not domain actions; auth.login / auth.logout are
   // emitted at the action boundary (loginAction / registerAction / signOutAction).
   "session.createSession": "auth.login emitted by login/register actions",
