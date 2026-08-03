@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, or, isNull, desc, count, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { users, roles, userRoles } from "@/server/auth/schema";
@@ -6,6 +6,7 @@ import { branches } from "@/server/branches/schema";
 import { tenants } from "@/server/tenancy/schema";
 import type { RoleKey } from "@/server/rbac/permissions";
 import { CHANNELS, type Recipient } from "./channels";
+import { notifications, type Notification } from "./schema";
 import type { NotificationType, NotificationSeverity } from "./schema";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -94,4 +95,54 @@ async function resolveReplyTo(tx: Tx, tenantId: string, branchId?: string): Prom
   const [t] = await tx.select({ contactEmail: tenants.contactEmail }).from(tenants)
     .where(eq(tenants.id, tenantId)).limit(1);
   return t?.contactEmail ?? null;
+}
+
+export type FeedFilters = { unread?: boolean; type?: NotificationType; severity?: NotificationSeverity; limit?: number };
+
+/** The caller's feed: their own rows plus role-broadcast rows for any role
+ *  they hold. Newest first. unreadCount uses the same visibility predicate. */
+export async function listNotifications(
+  tenantId: string,
+  userId: string,
+  roleKeys: string[],
+  filters: FeedFilters = {},
+): Promise<{ notifications: Notification[]; unreadCount: number }> {
+  return withTenant(tenantId, async (tx) => {
+    const visible = or(
+      eq(notifications.userId, userId),
+      roleKeys.length > 0 ? inArray(notifications.targetRole, roleKeys) : sql`false`,
+    );
+    const conds = [visible];
+    if (filters.unread) conds.push(isNull(notifications.readAt));
+    if (filters.type) conds.push(eq(notifications.type, filters.type));
+    if (filters.severity) conds.push(eq(notifications.severity, filters.severity));
+
+    const rows = await tx.select().from(notifications)
+      .where(and(...conds))
+      .orderBy(desc(notifications.createdAt))
+      .limit(Math.min(filters.limit ?? 50, 200));
+
+    const [{ value: unreadCount }] = await tx.select({ value: count() }).from(notifications)
+      .where(and(visible, isNull(notifications.readAt)));
+
+    return { notifications: rows, unreadCount: Number(unreadCount) };
+  });
+}
+
+/** Marks rows the caller is permitted to see. Omitted ids = mark all. Idempotent. */
+export async function markNotificationsRead(
+  tenantId: string,
+  userId: string,
+  roleKeys: string[],
+  ids?: string[],
+): Promise<void> {
+  await withTenant(tenantId, async (tx) => {
+    const visible = or(
+      eq(notifications.userId, userId),
+      roleKeys.length > 0 ? inArray(notifications.targetRole, roleKeys) : sql`false`,
+    );
+    const conds = [visible, isNull(notifications.readAt)];
+    if (ids && ids.length > 0) conds.push(inArray(notifications.id, ids));
+    await tx.update(notifications).set({ readAt: new Date() }).where(and(...conds));
+  });
 }
