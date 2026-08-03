@@ -16,14 +16,14 @@ export function Hero({
           : <div className="h-full w-full bg-secondary" />}
         <div className="absolute inset-0 bg-gradient-to-b from-ink/10 to-ink/75" />
         <div className="absolute inset-x-0 bottom-0 p-4 sm:p-6">
-          <div className="flex flex-wrap gap-2">
+          <div className="mx-auto flex w-full max-w-5xl flex-wrap gap-2">
             {openLabel && <span className="sf-chip">{openLabel}</span>}
             {etaLabel && <span className="sf-chip">{etaLabel}</span>}
             {minOrderLabel && <span className="sf-chip">{minOrderLabel}</span>}
           </div>
         </div>
       </div>
-      <div className="relative flex items-end gap-3 px-4 sm:px-6">
+      <div className="relative mx-auto flex w-full max-w-5xl items-end gap-3 px-4 sm:px-6">
         {logoUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={logoUrl} alt="" width={72} height={72} className="-mt-9 size-[72px] flex-none rounded-2xl border-4 border-background object-cover shadow-lg" />

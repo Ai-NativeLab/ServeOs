@@ -100,6 +100,14 @@
 }
 
 @layer base {
+  /* Tailwind v4 defaults border/divide color to currentColor; snap every bare
+     `border`/`divide-*` back to the design hairline. Explicit utilities
+     (border-input, border-primary/30, …) still win in the utilities layer. */
+  *,
+  ::before,
+  ::after {
+    border-color: var(--border);
+  }
   body {
     font-family: var(--font-sans);
     background-color: var(--background);
