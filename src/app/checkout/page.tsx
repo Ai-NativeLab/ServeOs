@@ -1,4 +1,5 @@
 import { headers } from "next/headers";
+import { currentCustomer } from "@/server/customers/require-customer";
 import { getTenantBySlug, isTenantServable, getCheckoutPricing } from "@/server/tenancy";
 import { listBranches } from "@/server/branches/service";
 import { getBranchOpenState, listSlots, localDateKey } from "@/server/branches/slots";
@@ -33,10 +34,13 @@ export default async function CheckoutPage({
     );
   }
 
-  const [branches, pricing, offlineMethods] = await Promise.all([
+  const [branches, pricing, offlineMethods, me] = await Promise.all([
     listBranches(tenant.id),
     getCheckoutPricing(tenant.id),
     listEnabledOfflineMethods(tenant.id),
+    // Signed-in customers get their contact details prefilled (P2, C3) —
+    // checkout itself stays guest-shaped either way.
+    currentCustomer(tenant.id),
   ]);
   // No silent fallback: resolve only an explicit ?branch= or the single branch.
   const branch =
@@ -78,6 +82,9 @@ export default async function CheckoutPage({
         </header>
         <CheckoutForm
           slug={slug}
+          initialName={me?.name ?? ""}
+          initialPhone={me?.phone ?? ""}
+          initialAddress={me?.defaultAddressText ?? ""}
           branchId={branch.id}
           branchName={branch.name}
           pricing={pricing}

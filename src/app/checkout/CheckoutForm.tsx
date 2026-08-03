@@ -27,6 +27,7 @@ export type OfflineMethodOption = { type: string; label: string; payToDetail: st
 
 export function CheckoutForm({
   slug, branchId, branchName, pricing, currency, openNow, slots, methods,
+  initialName = "", initialPhone = "", initialAddress = "",
 }: {
   slug: string;
   branchId: string;
@@ -36,6 +37,9 @@ export function CheckoutForm({
   openNow: boolean;
   slots: SlotOption[];
   methods: OfflineMethodOption[];
+  initialName?: string;
+  initialPhone?: string;
+  initialAddress?: string;
 }) {
   const [cart, setCart] = useState<Cart>({ branchId: null, lines: [] });
   const [fulfillment, setFulfillment] = useState<"pickup" | "delivery">("delivery");
@@ -44,9 +48,9 @@ export function CheckoutForm({
   const [slotDay, setSlotDay] = useState<"Today" | "Tomorrow">(slots[0]?.day ?? "Today");
   const [areas, setAreas] = useState<Area[]>([]);
   const [areaId, setAreaId] = useState("");
-  const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
-  const [address, setAddress] = useState("");
+  const [name, setName] = useState(initialName);
+  const [phone, setPhone] = useState(initialPhone);
+  const [address, setAddress] = useState(initialAddress);
   const [notes, setNotes] = useState("");
   const [payMethod, setPayMethod] = useState<string>("cash");
   const [payRef, setPayRef] = useState("");

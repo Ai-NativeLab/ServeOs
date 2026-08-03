@@ -126,3 +126,22 @@ export async function invalidateCustomerSession(tenantId: string, token: string)
   await withTenant(tenantId, (tx) => tx.delete(customerSessions)
     .where(and(eq(customerSessions.tenantId, tenantId), eq(customerSessions.tokenHash, sha256(token)))));
 }
+
+/** The customer's own storefront orders, newest first — powering /account. */
+export async function listCustomerOrders(tenantId: string, customerId: string, limit = 20) {
+  const { orders } = await import("@/server/ordering/schema");
+  const { desc } = await import("drizzle-orm");
+  return withTenant(tenantId, (tx) =>
+    tx.select({
+      id: orders.id,
+      orderNumber: orders.orderNumber,
+      status: orders.status,
+      total: orders.total,
+      fulfillmentType: orders.fulfillmentType,
+      placedAt: orders.placedAt,
+      statusToken: orders.statusToken,
+    }).from(orders)
+      .where(and(eq(orders.tenantId, tenantId), eq(orders.customerId, customerId)))
+      .orderBy(desc(orders.placedAt))
+      .limit(limit));
+}
