@@ -42,7 +42,14 @@ export function StorefrontShell(props: StorefrontTemplateProps) {
   } = props;
 
   return (
-    <main className="min-h-screen bg-background">
+    // The vertical's accent is scoped onto --primary for the whole storefront
+    // subtree, rather than threaded as a prop into each control. Product cards,
+    // the search focus ring and CartBar all style off --primary, so they were
+    // rendering restaurant coral under a green pharmacy / amber timber heading —
+    // and every NEW control would have inherited that bug unless someone
+    // remembered to pass accent down. Overriding the token fixes them all at
+    // once and keeps future components correct by default.
+    <main className="min-h-screen bg-background" style={{ "--primary": accent } as React.CSSProperties}>
       <Hero
         name={tenant.name}
         logoUrl={tenant.logoUrl}
@@ -77,7 +84,7 @@ export function StorefrontShell(props: StorefrontTemplateProps) {
       )}
 
       <section className="px-4 pb-32 sm:px-6">
-        <h2 className="mb-4 font-display text-xl font-bold text-ink" style={{ color: accent }}>
+        <h2 className="mb-4 font-display text-xl font-bold text-primary">
           {config.menuHeading}
         </h2>
         {menu.categories.length === 0 ? (
