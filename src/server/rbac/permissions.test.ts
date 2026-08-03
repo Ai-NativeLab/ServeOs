@@ -56,3 +56,21 @@ describe("customers:manage", () => {
     expect(ROLE_PERMISSIONS.staff).not.toContain("customers:manage");
   });
 });
+
+describe("rx:review (P3)", () => {
+  it("is held by the pharmacist role and by owners, never manager or staff", () => {
+    expect(ROLE_PERMISSIONS.pharmacist).toContain("rx:review");
+    // A solo-pharmacist owner must be able to clear their own queue.
+    expect(ROLE_PERMISSIONS.owner).toContain("rx:review");
+    // A shift manager is not a licensed reviewer — the audit trail must not
+    // be able to name one as having cleared a prescription.
+    expect(ROLE_PERMISSIONS.manager).not.toContain("rx:review");
+    expect(ROLE_PERMISSIONS.staff).not.toContain("rx:review");
+  });
+
+  it("gives the pharmacist role the shop-floor permissions it needs, and no more", () => {
+    expect(ROLE_PERMISSIONS.pharmacist).toContain("orders:manage");
+    expect(ROLE_PERMISSIONS.pharmacist).not.toContain("tenant:manage");
+    expect(ROLE_PERMISSIONS.pharmacist).not.toContain("billing:manage");
+  });
+});
