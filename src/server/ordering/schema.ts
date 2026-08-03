@@ -30,6 +30,8 @@ export const orders = pgTable("orders", {
   customerPhone: text("customer_phone").notNull(),
   notes: text("notes"),
   cashierUserId: uuid("cashier_user_id"),
+  /** P2: set when a signed-in customer checks out; guest orders stay null forever. */
+  customerId: uuid("customer_id"),
   discountAmount: numeric("discount_amount").notNull().default("0"),
   discountReason: text("discount_reason"),
   deliveryAreaId: uuid("delivery_area_id"),
