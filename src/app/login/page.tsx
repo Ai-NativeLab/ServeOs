@@ -1,17 +1,8 @@
-import type { CSSProperties } from "react";
 import Link from "next/link";
+import { LogoMark } from "@/components/brand/LogoMark";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { loginAction } from "./actions";
-
-const inputStyle: CSSProperties = {
-  background: "#0f172a",
-  border: "1px solid #334155",
-  borderRadius: 6,
-  padding: "10px 12px",
-  color: "#f1f5f9",
-  fontSize: 14,
-  width: "100%",
-  boxSizing: "border-box",
-};
 
 export default async function LoginPage({
   searchParams,
@@ -21,72 +12,45 @@ export default async function LoginPage({
   const { error } = await searchParams;
 
   return (
-    <main
-      style={{
-        background: "#0f172a",
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        fontFamily: "system-ui",
-        padding: 24,
-      }}
-    >
-      <div style={{ background: "#1e293b", borderRadius: 12, padding: 40, width: "100%", maxWidth: 400 }}>
-        <Link
-          href="/"
-          style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 28, textDecoration: "none" }}
-        >
-          <div style={{ width: 24, height: 24, background: "#f97316", borderRadius: 6 }} />
-          <span style={{ color: "#fff", fontWeight: 700, fontSize: 16 }}>ServeOS</span>
+    <main className="flex min-h-screen items-center justify-center bg-background p-6">
+      <div className="w-full max-w-[400px] rounded-2xl border bg-card p-8 shadow-card">
+        <Link href="/" className="mb-7 flex items-center gap-2.5">
+          <LogoMark className="size-6 text-primary" />
+          <span className="font-display text-base font-bold text-ink">ServeOS</span>
         </Link>
 
-        <h1 style={{ color: "#fff", fontSize: 22, fontWeight: 700, margin: 0 }}>Welcome back</h1>
-        <p style={{ color: "#64748b", fontSize: 14, marginTop: 4, marginBottom: 24 }}>
+        <h1 className="font-display text-2xl font-bold tracking-tight text-ink">Welcome back</h1>
+        <p className="mt-1 mb-6 text-sm text-muted-foreground">
           Sign in to your restaurant dashboard
         </p>
 
         {error && (
-          <p style={{ color: "#f87171", fontSize: 13, marginBottom: 16 }}>
+          <p className="mb-4 text-sm text-destructive">
             Invalid restaurant, email, or password.
           </p>
         )}
 
-        <form action={loginAction} style={{ display: "grid", gap: 16 }}>
-          <label style={{ display: "grid" }}>
-            <span style={{ color: "#94a3b8", fontSize: 12, fontWeight: 500, marginBottom: 4 }}>Restaurant</span>
-            <input name="slug" placeholder="e.g. roma" required style={inputStyle} />
+        <form action={loginAction} className="grid gap-4">
+          <label className="grid gap-1.5">
+            <span className="text-xs font-medium text-foreground">Restaurant</span>
+            <Input name="slug" placeholder="e.g. roma" required />
           </label>
-          <label style={{ display: "grid" }}>
-            <span style={{ color: "#94a3b8", fontSize: 12, fontWeight: 500, marginBottom: 4 }}>Email</span>
-            <input name="email" type="email" placeholder="you@example.com" required style={inputStyle} />
+          <label className="grid gap-1.5">
+            <span className="text-xs font-medium text-foreground">Email</span>
+            <Input name="email" type="email" placeholder="you@example.com" required />
           </label>
-          <label style={{ display: "grid" }}>
-            <span style={{ color: "#94a3b8", fontSize: 12, fontWeight: 500, marginBottom: 4 }}>Password</span>
-            <input name="password" type="password" placeholder="••••••••" required style={inputStyle} />
+          <label className="grid gap-1.5">
+            <span className="text-xs font-medium text-foreground">Password</span>
+            <Input name="password" type="password" placeholder="••••••••" required />
           </label>
-          <button
-            type="submit"
-            style={{
-              marginTop: 8,
-              background: "#f97316",
-              color: "#fff",
-              fontSize: 14,
-              fontWeight: 600,
-              padding: 11,
-              borderRadius: 6,
-              border: "none",
-              cursor: "pointer",
-              width: "100%",
-            }}
-          >
+          <Button type="submit" className="mt-2 w-full shadow-[0_16px_32px_-16px_rgba(240,82,43,0.8)]">
             Sign in
-          </button>
+          </Button>
         </form>
 
-        <p style={{ marginTop: 20, textAlign: "center", fontSize: 13, color: "#64748b" }}>
+        <p className="mt-5 text-center text-[13px] text-muted-foreground">
           Don{"'"}t have an account?{" "}
-          <a href="/register" style={{ color: "#f97316", textDecoration: "none" }}>
+          <a href="/register" className="text-primary">
             Get started →
           </a>
         </p>

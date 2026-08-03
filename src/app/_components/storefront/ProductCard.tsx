@@ -20,7 +20,7 @@ export function ProductCard({
       onClick={interactive ? onOpen : undefined}
       disabled={!interactive}
       aria-label={interactive ? `Configure ${product.nameEn}` : product.nameEn}
-      className="card-lift group flex flex-col overflow-hidden rounded-2xl bg-card text-left"
+      className="card-lift card-lift-hover group flex flex-col overflow-hidden rounded-2xl bg-card text-left"
     >
       <div className="relative aspect-[4/3] w-full">
         {product.imageUrl

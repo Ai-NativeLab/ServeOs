@@ -81,7 +81,7 @@ export default async function MenuPage() {
                     {/* Mobile: stacked cards */}
                     <ul className="md:hidden space-y-2">
                       {catProds.map((p) => (
-                        <li key={p.id} className="rounded-lg border p-3">
+                        <li key={p.id} className="rounded-xl border bg-card p-4">
                           <Link
                             href={`/dashboard/menu/products/${p.id}`}
                             className="flex items-center gap-3"
