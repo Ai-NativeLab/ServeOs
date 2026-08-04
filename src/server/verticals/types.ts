@@ -4,6 +4,8 @@ export type VerticalId = (typeof VERTICAL_IDS)[number];
 export type VerticalCapabilities = {
   modifiers: boolean;
   variants: boolean;
+  /** @deprecated Legacy alias of `inventory`, kept equal to it for the migration
+   * window and dropped once the flat integer counter is gone (spec Migration §5). */
   stockTracking: boolean;
   serviceCharge: boolean;
   /** Spec 8: the per-branch, unit-aware stock ledger. Gates the whole deduction path in placeOrder. */
