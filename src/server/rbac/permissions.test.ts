@@ -74,3 +74,17 @@ describe("rx:review (P3)", () => {
     expect(ROLE_PERMISSIONS.pharmacist).not.toContain("billing:manage");
   });
 });
+
+describe("inventory permissions", () => {
+  it("owner and manager hold all three", () => {
+    for (const p of ["inventory:view", "inventory:manage", "inventory:count"] as const) {
+      expect(ROLE_PERMISSIONS.owner).toContain(p);
+      expect(ROLE_PERMISSIONS.manager).toContain(p);
+    }
+  });
+  it("staff may view and count but not manage", () => {
+    expect(ROLE_PERMISSIONS.staff).toContain("inventory:view");
+    expect(ROLE_PERMISSIONS.staff).toContain("inventory:count");
+    expect(ROLE_PERMISSIONS.staff).not.toContain("inventory:manage");
+  });
+});

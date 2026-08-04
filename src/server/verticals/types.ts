@@ -6,6 +6,10 @@ export type VerticalCapabilities = {
   variants: boolean;
   stockTracking: boolean;
   serviceCharge: boolean;
+  /** Spec 8: the per-branch, unit-aware stock ledger. Gates the whole deduction path in placeOrder. */
+  inventory: boolean;
+  /** Spec 8: recipes/BOM linking a sold item to its inventory ingredients. Restaurant-only. */
+  recipes: boolean;
   /** P4 (timber): products priced per unit of measure instead of per each. */
   dimensionalProducts: boolean;
   /** P4: the UoM picker/label surfaces in dashboard product forms. */

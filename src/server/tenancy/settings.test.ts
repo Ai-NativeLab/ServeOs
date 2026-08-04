@@ -5,7 +5,7 @@ import { tenants, tenantSettings } from "./schema";
 import {
   getVatRate, setVatRate, getTenantSettings, getWhatsappNumber, setWhatsappNumber,
   requestPlanUpgrade, getUpgradeRequest, getCheckoutPricing, setServiceChargeRate,
-  getShiftPolicy,
+  getShiftPolicy, getAllowNegativeStock, setAllowNegativeStock,
 } from "./settings";
 import { InvalidWhatsappNumberError } from "./errors";
 import type { VerticalId } from "@/server/verticals";
@@ -137,6 +137,28 @@ describe("tenant shift policy", () => {
       payoutThreshold: 0,
       varianceThreshold: 0,
     });
+  });
+});
+
+describe("allowNegativeStock policy", () => {
+  it("defaults allowNegativeStock true for restaurant, false for retail", async () => {
+    const r = await makeTenant("stock-neg-restaurant", "EG", "restaurant");
+    const s = await makeTenant("stock-neg-retail", "EG", "retail");
+    expect(await getAllowNegativeStock(r.id)).toBe(true);
+    expect(await getAllowNegativeStock(s.id)).toBe(false);
+  });
+
+  it("an explicit override wins over the vertical default", async () => {
+    const s = await makeTenant("stock-neg-override", "EG", "retail");
+    await setAllowNegativeStock(s.id, true);
+    expect(await getAllowNegativeStock(s.id)).toBe(true);
+  });
+
+  it("passing null clears the override, reverting to the vertical default", async () => {
+    const s = await makeTenant("stock-neg-clear", "EG", "retail");
+    await setAllowNegativeStock(s.id, true);
+    await setAllowNegativeStock(s.id, null);
+    expect(await getAllowNegativeStock(s.id)).toBe(false);
   });
 });
 
