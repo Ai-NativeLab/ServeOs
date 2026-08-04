@@ -83,7 +83,7 @@ Three small, pure config additions that everything else gates on. The `inventory
   - Permissions `inventory:view`, `inventory:manage`, `inventory:count`.
   - `getAllowNegativeStock(tenantId: string): Promise<boolean>` and `setAllowNegativeStock(tenantId: string, value: boolean | null): Promise<void>` in `tenancy/settings.ts`; `TenantSettingsData` gains `allowNegativeStock?: boolean`.
 
-- [ ] **Step 1: Write the failing capability + permission tests.** Update `src/server/verticals/registry.test.ts` — the two `getCapabilities(...).toEqual({...})` assertions now include `inventory`/`recipes`, plus a new invariant test:
+- [x] **Step 1: Write the failing capability + permission tests.** Update `src/server/verticals/registry.test.ts` — the two `getCapabilities(...).toEqual({...})` assertions now include `inventory`/`recipes`, plus a new invariant test:
 
 ```ts
 it("restaurant: inventory + recipes on (kitchen deducts ingredients)", () => {
@@ -124,13 +124,13 @@ describe("inventory permissions", () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify they fail.** `npx vitest run src/server/verticals/registry.test.ts src/server/rbac/permissions.test.ts` → FAIL (missing keys/permissions).
+- [x] **Step 2: Run to verify they fail.** `npx vitest run src/server/verticals/registry.test.ts src/server/rbac/permissions.test.ts` → FAIL (missing keys/permissions).
 
-- [ ] **Step 3: Implement the capability keys.** In `src/server/verticals/types.ts` add `inventory: boolean;` and `recipes: boolean;` to `VerticalCapabilities`. In `registry.ts`, set on each descriptor's `capabilities`: restaurant `{ …, stockTracking: true, inventory: true, recipes: true }`; retail/pharmacy/timber `{ …, stockTracking: true, inventory: true, recipes: false }`. Add a one-line comment: `// stockTracking is a legacy alias of inventory for the migration window; drop after Spec 8 lands (see spec Migration §5).`
+- [x] **Step 3: Implement the capability keys.** In `src/server/verticals/types.ts` add `inventory: boolean;` and `recipes: boolean;` to `VerticalCapabilities`. In `registry.ts`, set on each descriptor's `capabilities`: restaurant `{ …, stockTracking: true, inventory: true, recipes: true }`; retail/pharmacy/timber `{ …, stockTracking: true, inventory: true, recipes: false }`. Add a one-line comment: `// stockTracking is a legacy alias of inventory for the migration window; drop after Spec 8 lands (see spec Migration §5).`
 
-- [ ] **Step 4: Implement the permissions.** In `src/server/rbac/permissions.ts` add `"inventory:view", "inventory:manage", "inventory:count",` to `PERMISSIONS`, then append all three to `owner` and `manager`, and `"inventory:view", "inventory:count"` to `staff`, in `ROLE_PERMISSIONS`.
+- [x] **Step 4: Implement the permissions.** In `src/server/rbac/permissions.ts` add `"inventory:view", "inventory:manage", "inventory:count",` to `PERMISSIONS`, then append all three to `owner` and `manager`, and `"inventory:view", "inventory:count"` to `staff`, in `ROLE_PERMISSIONS`.
 
-- [ ] **Step 5: Write the failing `allowNegativeStock` test.** In `src/server/tenancy/settings.test.ts` (create if absent — seed a tenant per vertical like the other suites do):
+- [x] **Step 5: Write the failing `allowNegativeStock` test.** In `src/server/tenancy/settings.test.ts` (create if absent — seed a tenant per vertical like the other suites do):
 
 ```ts
 it("defaults allowNegativeStock true for restaurant, false for retail", async () => {
@@ -146,7 +146,7 @@ it("an explicit override wins over the vertical default", async () => {
 });
 ```
 
-- [ ] **Step 6: Implement the policy.** In `src/server/tenancy/settings.ts` add `allowNegativeStock?: boolean;` to `TenantSettingsData`, then:
+- [x] **Step 6: Implement the policy.** In `src/server/tenancy/settings.ts` add `allowNegativeStock?: boolean;` to `TenantSettingsData`, then:
 
 ```ts
 export async function getAllowNegativeStock(tenantId: string): Promise<boolean> {
@@ -161,9 +161,9 @@ export async function setAllowNegativeStock(tenantId: string, value: boolean | n
 }
 ```
 
-- [ ] **Step 7: Run + typecheck + lint.** `npx vitest run src/server/verticals src/server/rbac src/server/tenancy && npx tsc --noEmit && npx eslint src/server/verticals src/server/rbac src/server/tenancy`. Expected PASS, clean. (The `registry.test.ts` "complete descriptor" loop still passes — it does not assert capability key count.)
+- [x] **Step 7: Run + typecheck + lint.** `npx vitest run src/server/verticals src/server/rbac src/server/tenancy && npx tsc --noEmit && npx eslint src/server/verticals src/server/rbac src/server/tenancy`. Expected PASS, clean. (The `registry.test.ts` "complete descriptor" loop still passes — it does not assert capability key count.)
 
-- [ ] **Step 8: Commit.**
+- [x] **Step 8: Commit.**
 
 ```bash
 git add src/server/verticals src/server/rbac src/server/tenancy/settings.ts src/server/tenancy/settings.test.ts
@@ -185,7 +185,7 @@ Nine tables and five new enums (the sixth, `unit_of_measure`, already exists and
 - Produces: tables `inventoryItems`, `storageLocations`, `inventoryLots`, `stockLedger`, `stockCounts`, `stockCountLines`, `productInventoryLinks`, `recipes`, `recipeComponents`; enums `inventoryItemKindEnum`, `storageLocationKindEnum`, `stockLedgerTypeEnum`, `productInventoryLinkTypeEnum`, `stockCountStatusEnum`; row types (`InventoryItem`, `InventoryLot`, `StockLedgerRow`, `Recipe`, `RecipeComponent`, `ProductInventoryLink`, …).
 - Consumes: `unitOfMeasureEnum` from `@/server/catalog/uom` — the **existing** platform-wide `unit_of_measure` type (decision T1). Every UoM column below reuses it; no `inventory_uom` enum is created.
 
-- [ ] **Step 1: Write the schema.** Create `src/server/inventory/schema.ts`:
+- [x] **Step 1: Write the schema.** Create `src/server/inventory/schema.ts`:
 
 ```ts
 import { pgTable, uuid, text, timestamp, boolean, numeric, pgEnum, index, uniqueIndex } from "drizzle-orm/pg-core";
@@ -357,15 +357,15 @@ export type StockCount = typeof stockCounts.$inferSelect;
 export type StockCountLine = typeof stockCountLines.$inferSelect;
 ```
 
-- [ ] **Step 2: Register it.** Append to `src/db/schema.ts` (after the `pos/tender-schema` line):
+- [x] **Step 2: Register it.** Append to `src/db/schema.ts` (after the `pos/tender-schema` line):
 
 ```ts
 export * from "../server/inventory/schema";
 ```
 
-- [ ] **Step 3: Generate the migration.** `npm run db:generate`. Expected: `drizzle/0033_*.sql` creating the **five** new enums, nine tables, FKs, and the declared indexes. It must **not** contain `CREATE TYPE ... unit_of_measure` — that type already exists (P4's migration); if drizzle emits one, the shared enum was re-declared rather than imported, so fix the schema instead of editing the SQL. It will **not** contain RLS, the trigger, the `CHECK`, or the partial/nulls-not-distinct indexes.
+- [x] **Step 3: Generate the migration.** `npm run db:generate`. Expected: `drizzle/0033_*.sql` creating the **five** new enums, nine tables, FKs, and the declared indexes. It must **not** contain `CREATE TYPE ... unit_of_measure` — that type already exists (P4's migration); if drizzle emits one, the shared enum was re-declared rather than imported, so fix the schema instead of editing the SQL. It will **not** contain RLS, the trigger, the `CHECK`, or the partial/nulls-not-distinct indexes.
 
-- [ ] **Step 4: Hand-append RLS, the append-only trigger, the XOR CHECK, and the partial indexes.** Open the generated file and append (mirror `drizzle/0016_bitter_beast.sql:67-81` for the policy shape). For **each** of the nine tables:
+- [x] **Step 4: Hand-append RLS, the append-only trigger, the XOR CHECK, and the partial indexes.** Open the generated file and append (mirror `drizzle/0016_bitter_beast.sql:67-81` for the policy shape). For **each** of the nine tables:
 
 ```sql
 --> statement-breakpoint
@@ -400,9 +400,9 @@ CREATE UNIQUE INDEX pil_product_base ON "product_inventory_links" ("product_id")
 CREATE UNIQUE INDEX pil_product_variant ON "product_inventory_links" ("product_id","variant_id") WHERE variant_id IS NOT NULL;
 ```
 
-- [ ] **Step 5: Apply and verify the existing suite still passes.** `npm run db:migrate:test && npm test`. Expected: migration applies; full suite PASS (nothing references the new tables yet).
+- [x] **Step 5: Apply and verify the existing suite still passes.** `npm run db:migrate:test && npm test`. Expected: migration applies; full suite PASS (nothing references the new tables yet).
 
-- [ ] **Step 6: Commit.**
+- [x] **Step 6: Commit.**
 
 ```bash
 git add src/server/inventory/schema.ts src/db/schema.ts drizzle/
@@ -431,7 +431,7 @@ Every quantity that enters the ledger is first normalized to the item's base UoM
   - `function withWaste(baseQty: number, wastePct: number): number` — `baseQty × (1 + wastePct/100)`.
   - `function scaleForYield(perBatch: number, soldQty: number, yieldQty: number): number` — `perBatch × (soldQty / yieldQty)`.
 
-- [ ] **Step 1: Write the failing tests.** Create `src/server/inventory/uom.test.ts`:
+- [x] **Step 1: Write the failing tests.** Create `src/server/inventory/uom.test.ts`:
 
 ```ts
 import { describe, it, expect } from "vitest";
@@ -494,9 +494,9 @@ describe("scaling", () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify they fail.** `npx vitest run src/server/inventory/uom.test.ts` → FAIL (module not found).
+- [x] **Step 2: Run to verify they fail.** `npx vitest run src/server/inventory/uom.test.ts` → FAIL (module not found).
 
-- [ ] **Step 3: Implement `errors.ts`.** Create `src/server/inventory/errors.ts` (follow the `DomainError` shape of `ordering/errors.ts`):
+- [x] **Step 3: Implement `errors.ts`.** Create `src/server/inventory/errors.ts` (follow the `DomainError` shape of `ordering/errors.ts`):
 
 ```ts
 import { DomainError, type Locale } from "@/shared/errors";
@@ -522,7 +522,7 @@ export class InventoryConfigError extends DomainError {
 }
 ```
 
-- [ ] **Step 4: Implement `uom.ts`.** Base unit per dimension is the smallest (`g`, `ml`, `each`); `kg`/`l` carry the ×1000 factor. `toBase` uses the explicit per-item factor when `factorKind` is given (stock/purchase/recipe columns), and always validates the dimension of `fromUom` against `item.baseUom`:
+- [x] **Step 4: Implement `uom.ts`.** Base unit per dimension is the smallest (`g`, `ml`, `each`); `kg`/`l` carry the ×1000 factor. `toBase` uses the explicit per-item factor when `factorKind` is given (stock/purchase/recipe columns), and always validates the dimension of `fromUom` against `item.baseUom`:
 
 ```ts
 import type { UnitOfMeasure } from "@/server/catalog/uom-values";
@@ -574,9 +574,9 @@ export function scaleForYield(perBatch: number, soldQty: number, yieldQty: numbe
 }
 ```
 
-- [ ] **Step 5: Run + typecheck.** `npx vitest run src/server/inventory/uom.test.ts && npx tsc --noEmit`. Expected PASS, clean.
+- [x] **Step 5: Run + typecheck.** `npx vitest run src/server/inventory/uom.test.ts && npx tsc --noEmit`. Expected PASS, clean.
 
-- [ ] **Step 6: Commit.**
+- [x] **Step 6: Commit.**
 
 ```bash
 git add src/server/inventory/uom.ts src/server/inventory/uom.test.ts src/server/inventory/errors.ts
@@ -605,7 +605,7 @@ The one module that writes `stock_ledger` and moves the `inventory_lots.qtyRemai
   - `function deductForOrderLine(tx: Tx, args: DeductArgs): Promise<void>` — the resolver + FIFO (Task 5 wires it).
   - `function reverseOrderDeductions(tx: Tx, args: ReverseArgs): Promise<void>` — `refund_restock` rows (Task 6 wires it).
 
-- [ ] **Step 1: Write the failing tests.** Create `src/server/inventory/service.test.ts` — seed a tenant + branch (reuse the tenant-seeding shape from other suites), a location, and items via the service, then assert:
+- [x] **Step 1: Write the failing tests.** Create `src/server/inventory/service.test.ts` — seed a tenant + branch (reuse the tenant-seeding shape from other suites), a location, and items via the service, then assert:
 
 ```ts
 describe("inventory ledger", () => {
@@ -626,9 +626,9 @@ describe("inventory ledger", () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify they fail.** `npx vitest run src/server/inventory/service.test.ts` → FAIL (module not found).
+- [x] **Step 2: Run to verify they fail.** `npx vitest run src/server/inventory/service.test.ts` → FAIL (module not found).
 
-- [ ] **Step 3: Implement the movements + on-hand.** Create `src/server/inventory/service.ts`. On-hand is the projection; each writer inserts a ledger row and (for lot-bearing movements) moves the cache in the same `tx`:
+- [x] **Step 3: Implement the movements + on-hand.** Create `src/server/inventory/service.ts`. On-hand is the projection; each writer inserts a ledger row and (for lot-bearing movements) moves the cache in the same `tx`:
 
 ```ts
 import { and, asc, eq, gt, sql } from "drizzle-orm";
@@ -691,7 +691,7 @@ export async function receiveStock(tx: Tx, a: ReceiveArgs): Promise<{ lotId: str
 
 `adjustStock` (signed, `adjustment` or `waste`; lot-less bulk adjust allowed), `transferStock` (two balanced rows sharing a `refId` group id via `randomUUID()`), and `commitCount` (snapshot `systemQty` at start; on commit write one `count` row per line for `countedQty − systemQty`, set status `committed`). Follow the `receiveStock` shape.
 
-- [ ] **Step 4: Implement `deductForOrderLine` + the shared FIFO core.** The resolver reads `product_inventory_links`, then deducts. The FIFO loop keeps the guarded-`UPDATE` serialization point at lot granularity:
+- [x] **Step 4: Implement `deductForOrderLine` + the shared FIFO core.** The resolver reads `product_inventory_links`, then deducts. The FIFO loop keeps the guarded-`UPDATE` serialization point at lot granularity:
 
 ```ts
 export type DeductArgs = {
@@ -787,13 +787,13 @@ async function deductFifo(
 
 **Alert debouncing is deliberately *not* added here.** The spec debounces the *scheduled* reorder check (Part D, Spec 9's plan) because that re-evaluates a lingering low state every run. This path is different: it fires only on an actual oversell event, so one notification per oversell is the correct signal, not noise. If a single kitchen oversells the same ingredient across many lines of one order, that is several rows and several alerts — flagged as a known sharp edge for Part D to smooth once the debounce table exists, rather than half-built here.
 
-- [ ] **Step 5: Implement `reverseOrderDeductions`** (Task 6 wires it; define it here so the module is complete). Read the order's `sale_deduction` rows and write a `refund_restock` row per row with the negated qty, restoring the **same lot**; if the lot is gone/depleted, land on a system adjustment lot flagged for review. See Task 6, Step 3 for the body.
+- [x] **Step 5: Implement `reverseOrderDeductions`** (Task 6 wires it; define it here so the module is complete). Read the order's `sale_deduction` rows and write a `refund_restock` row per row with the negated qty, restoring the **same lot**; if the lot is gone/depleted, land on a system adjustment lot flagged for review. See Task 6, Step 3 for the body.
 
-- [ ] **Step 6: Add `test-helpers.ts`.** `seedFinishedGood(tenantId, { branchId, productId, variantId?, onHand, unitCost? })` — creates an `inventory_item` (`finished_good`, base `each`), a default `retail` location, a `finished_good` `product_inventory_links` row, and calls `receiveStock` for `onHand`. `seedRecipeProduct(tenantId, { branchId, productId, components: [{ item, qty, uom, wastePct?, onHand }] })` — creates ingredient items + a `kitchen` location + lots + a `recipe` with components + a `recipe` link. These are what the order-path tests seed with (Task 5) instead of the flat integer.
+- [x] **Step 6: Add `test-helpers.ts`.** `seedFinishedGood(tenantId, { branchId, productId, variantId?, onHand, unitCost? })` — creates an `inventory_item` (`finished_good`, base `each`), a default `retail` location, a `finished_good` `product_inventory_links` row, and calls `receiveStock` for `onHand`. `seedRecipeProduct(tenantId, { branchId, productId, components: [{ item, qty, uom, wastePct?, onHand }] })` — creates ingredient items + a `kitchen` location + lots + a `recipe` with components + a `recipe` link. These are what the order-path tests seed with (Task 5) instead of the flat integer.
 
-- [ ] **Step 7: Run + typecheck + lint.** `npx vitest run src/server/inventory/service.test.ts && npx tsc --noEmit && npx eslint src/server/inventory`. Expected PASS, clean.
+- [x] **Step 7: Run + typecheck + lint.** `npx vitest run src/server/inventory/service.test.ts && npx tsc --noEmit && npx eslint src/server/inventory`. Expected PASS, clean.
 
-- [ ] **Step 8: Commit.**
+- [x] **Step 8: Commit.**
 
 ```bash
 git add src/server/inventory/service.ts src/server/inventory/service.test.ts src/server/inventory/test-helpers.ts
@@ -814,7 +814,7 @@ Replace the flat guarded-integer block (`service.ts:216-233`, gated on `caps.sto
 - Consumes: `deductForOrderLine` (Task 4), `getAllowNegativeStock` (Task 1).
 - Produces: no signature change to `placeOrder`; internal behaviour change only. `caps.stockTracking` reads in the order path become `caps.inventory`.
 
-- [ ] **Step 1: Write the failing tests.** In `src/server/ordering/place-order.test.ts`, rewrite the `describe("placeOrder retail variants + stock")` suite (the `setupRetail` helper seeds `stockQuantity: 2` on the variant, which no longer drives deduction). Seed lots via the inventory helper instead, and add restaurant recipe + negative-policy cases:
+- [x] **Step 1: Write the failing tests.** In `src/server/ordering/place-order.test.ts`, rewrite the `describe("placeOrder retail variants + stock")` suite (the `setupRetail` helper seeds `stockQuantity: 2` on the variant, which no longer drives deduction). Seed lots via the inventory helper instead, and add restaurant recipe + negative-policy cases:
 
 ```ts
 import { seedFinishedGood, seedRecipeProduct } from "@/server/inventory/test-helpers";
@@ -846,9 +846,9 @@ it("no product_inventory_links → sale proceeds and touches no ledger (untracke
 
 Update `setupRetail` to call `await seedFinishedGood(t.id, { branchId: branch.id, productId: hinge.id, variantId: v35.id, onHand: 2 })` after creating the variant, and drop the `stockQuantity: 2` reliance for deduction assertions.
 
-- [ ] **Step 2: Run to verify they fail.** `npx vitest run src/server/ordering/place-order.test.ts` → FAIL (no deduction happens yet; the recipe/negative cases error).
+- [x] **Step 2: Run to verify they fail.** `npx vitest run src/server/ordering/place-order.test.ts` → FAIL (no deduction happens yet; the recipe/negative cases error).
 
-- [ ] **Step 3: Resolve `allowNegative` before the transaction.** In `placeOrder`, alongside where `caps`/`tenant`/`pricing` are resolved (before `withTenant`), add:
+- [x] **Step 3: Resolve `allowNegative` before the transaction.** In `placeOrder`, alongside where `caps`/`tenant`/`pricing` are resolved (before `withTenant`), add:
 
 ```ts
 import { deductForOrderLine } from "@/server/inventory/service";
@@ -857,9 +857,9 @@ import { getAllowNegativeStock } from "@/server/tenancy/settings";
 const allowNegative = caps.inventory ? await getAllowNegativeStock(tenantId) : false;
 ```
 
-- [ ] **Step 4: Remove the in-loop integer block.** Delete the `if (caps.stockTracking) { … }` block at `service.ts:216-233` entirely (both the variant and product branches). The loop now only prices lines and builds `itemsToInsert`. Check the `drizzle-orm` import line afterwards — `gte`/`isNull`/`or` may become unused once the guarded integer `UPDATE`s are gone, and `eslint` will fail on them.
+- [x] **Step 4: Remove the in-loop integer block.** Delete the `if (caps.stockTracking) { … }` block at `service.ts:216-233` entirely (both the variant and product branches). The loop now only prices lines and builds `itemsToInsert`. Check the `drizzle-orm` import line afterwards — `gte`/`isNull`/`or` may become unused once the guarded integer `UPDATE`s are gone, and `eslint` will fail on them.
 
-- [ ] **Step 5: Add the deduction pass after items insert.** Immediately after the `orderStatusEvents` insert (step 6 of `placeOrder`), before the `return`:
+- [x] **Step 5: Add the deduction pass after items insert.** Immediately after the `orderStatusEvents` insert (step 6 of `placeOrder`), before the `return`:
 
 ```ts
     // Inventory deduction — atomic with the order. Runs on THIS tx: a retail
@@ -881,9 +881,9 @@ const allowNegative = caps.inventory ? await getAllowNegativeStock(tenantId) : f
 
 (`inserted` is the `orderItems` insert result, index-aligned with `itemsToInsert`.)
 
-- [ ] **Step 6: Run the order tests + the FIFO concurrency check.** `npx vitest run src/server/ordering/place-order.test.ts src/server/inventory/service.test.ts`. Expected PASS — the concurrency test proves the per-lot guarded UPDATE serializes (the analog of the old stock-race test); the restaurant negative-policy test proves the till never throws.
+- [x] **Step 6: Run the order tests + the FIFO concurrency check.** `npx vitest run src/server/ordering/place-order.test.ts src/server/inventory/service.test.ts`. Expected PASS — the concurrency test proves the per-lot guarded UPDATE serializes (the analog of the old stock-race test); the restaurant negative-policy test proves the till never throws.
 
-- [ ] **Step 7: Typecheck + lint + commit.**
+- [x] **Step 7: Typecheck + lint + commit.**
 
 ```bash
 npx tsc --noEmit && npx eslint src/server/ordering src/server/inventory
@@ -906,7 +906,7 @@ git commit -m "feat(inventory): rewire placeOrder to deduct recipe components / 
 - Consumes: `reverseOrderDeductions` (Task 4).
 - Produces: `reverseOrderDeductions(tx, { tenantId, orderId, byUserId?, orderItemIds? })` — reverses all `sale_deduction` rows of the order (or only the given item ids, for Spec 3 partial refunds).
 
-- [ ] **Step 1: Write the failing restock test.** Rewrite the existing `it("restocks on customer cancel")` in `place-order.test.ts` to assert against the ledger and lot cache:
+- [x] **Step 1: Write the failing restock test.** Rewrite the existing `it("restocks on customer cancel")` in `place-order.test.ts` to assert against the ledger and lot cache:
 
 ```ts
 it("cancel restocks the exact lot via a refund_restock row and restores on-hand", async () => {
@@ -918,9 +918,9 @@ it("cancel restocks the exact lot via a refund_restock row and restores on-hand"
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails.** `npx vitest run src/server/ordering/place-order.test.ts -t restocks` → FAIL (still integer-based / no ledger reversal).
+- [x] **Step 2: Run to verify it fails.** `npx vitest run src/server/ordering/place-order.test.ts -t restocks` → FAIL (still integer-based / no ledger reversal).
 
-- [ ] **Step 3: Implement `reverseOrderDeductions`** in `src/server/inventory/service.ts`:
+- [x] **Step 3: Implement `reverseOrderDeductions`** in `src/server/inventory/service.ts`:
 
 ```ts
 export type ReverseArgs = { tenantId: string; orderId: string; byUserId?: string | null; orderItemIds?: string[] };
@@ -964,7 +964,7 @@ export async function reverseOrderDeductions(tx: Tx, a: ReverseArgs): Promise<vo
 
 (Add `orderItems` and `inArray` to the imports.)
 
-- [ ] **Step 4: Rewire `restockOrderItems`** in `src/server/ordering/service.ts`. Replace its body with a gated call, and update both call sites (`cancelOrderByToken`, `transitionStatus` for `cancelled`/`rejected`) to pass `caps.inventory`:
+- [x] **Step 4: Rewire `restockOrderItems`** in `src/server/ordering/service.ts`. Replace its body with a gated call, and update both call sites (`cancelOrderByToken`, `transitionStatus` for `cancelled`/`rejected`) to pass `caps.inventory`:
 
 ```ts
 async function restockOrderItems(tx, orderId: string, caps: { inventory: boolean }): Promise<void> {
@@ -975,7 +975,7 @@ async function restockOrderItems(tx, orderId: string, caps: { inventory: boolean
 
 (Import `reverseOrderDeductions`; the `caps` param type changes from `{ stockTracking }` to `{ inventory }` — update the two callers accordingly. The `tenantId` is already in scope in both transactions.)
 
-- [ ] **Step 5: Run + typecheck + lint + commit.**
+- [x] **Step 5: Run + typecheck + lint + commit.**
 
 ```bash
 npx vitest run src/server/ordering/place-order.test.ts && npx tsc --noEmit && npx eslint src/server/ordering src/server/inventory
@@ -998,7 +998,7 @@ The flat integer must become a ledger **without a gap in retail continuity**. A 
   - `function backfillTenant(tenantId: string): Promise<{ items: number; lots: number }>` — idempotent seed (skips products that already have a link).
   - `setProductStock` / `setVariantStock` retained, now adjustment shims (see Step 4).
 
-- [ ] **Step 1: Write the failing migration test.** Create `src/server/inventory/backfill.test.ts` (the spec's named migration test):
+- [x] **Step 1: Write the failing migration test.** Create `src/server/inventory/backfill.test.ts` (the spec's named migration test):
 
 ```ts
 describe("inventory backfill", () => {
@@ -1016,9 +1016,9 @@ describe("inventory backfill", () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify they fail.** `npx vitest run src/server/inventory/backfill.test.ts` → FAIL (module not found).
+- [x] **Step 2: Run to verify they fail.** `npx vitest run src/server/inventory/backfill.test.ts` → FAIL (module not found).
 
-- [ ] **Step 3: Implement `backfillTenant`.** Create `scripts/backfill-inventory.ts` (import-safe: export `backfillTenant`, and add a `main()` that iterates all tenants when run via `tsx`, mirroring `scripts/migrate.ts`). Per tenant, in one `withTenant` transaction:
+- [x] **Step 3: Implement `backfillTenant`.** Create `scripts/backfill-inventory.ts` (import-safe: export `backfillTenant`, and add a `main()` that iterates all tenants when run via `tsx`, mirroring `scripts/migrate.ts`). Per tenant, in one `withTenant` transaction:
   1. For every branch, `getOrCreateDefaultLocation(tx, tenantId, branchId, kind)` — `kitchen` for restaurant, `retail` otherwise (plus `back_of_house` where sensible).
   2. For every `product` with `trackStock=true` and non-null `stockQuantity` **without** an existing link: create an `inventory_item` (`kind='finished_good'`, `baseUom='each'`, `stock/purchase/recipeUom='each'`, `defaultUnitCost` = product cost if available), a `product_inventory_links` row (`linkType='finished_good'`), and call `receiveStock(tx, { …, baseQty: stockQuantity, uom: 'each', ledgerType: 'adjustment', note: 'opening balance' })` against the branch's retail location.
   3. Same for every `product_variant` with non-null `stockQuantity` (link carries `variantId`).
@@ -1026,9 +1026,9 @@ describe("inventory backfill", () => {
 
   > **Per-branch note:** the flat counter was a single global number; the backfill lands it on each branch's **default** location. Multi-branch tenants reconcile real per-branch quantities via a stock count (Task 8) after go-live — the spec accepts this as the migration's one modelling compromise, and the opening-balance ledger row makes it auditable.
 
-- [ ] **Step 4: Convert the writer shims.** In `src/server/catalog/variants.ts`, `setProductStock` / `setVariantStock` keep writing the legacy integer (mirror — the storefront still reads it) **and** post a reconciling `adjustment` to the linked finished-goods item's on-hand so the ledger stays the truth. Change the capability gate from `"stockTracking"` to `"inventory"`. Add a header comment: `// Superseded by POST /inventory/adjustments. Mirrors the legacy integer during the migration window; both this shim and products.stockQuantity/product_variants.stockQuantity are dropped once the storefront inStock reads on-hand (Spec 10 / follow-up).`
+- [x] **Step 4: Convert the writer shims.** In `src/server/catalog/variants.ts`, `setProductStock` / `setVariantStock` keep writing the legacy integer (mirror — the storefront still reads it) **and** post a reconciling `adjustment` to the linked finished-goods item's on-hand so the ledger stays the truth. Change the capability gate from `"stockTracking"` to `"inventory"`. Add a header comment: `// Superseded by POST /inventory/adjustments. Mirrors the legacy integer during the migration window; both this shim and products.stockQuantity/product_variants.stockQuantity are dropped once the storefront inStock reads on-hand (Spec 10 / follow-up).`
 
-- [ ] **Step 5: Run + typecheck + lint + commit.**
+- [x] **Step 5: Run + typecheck + lint + commit.**
 
 ```bash
 npx vitest run src/server/inventory/backfill.test.ts src/server/catalog && npx tsc --noEmit && npx eslint scripts src/server/catalog src/server/inventory
@@ -1054,11 +1054,11 @@ The read + write surface under the existing dashboard service layer (tenant-sess
   - `type ItemFilters = { kind?; isActive?; limit? }`; `listItems`, `getOnHand(tenantId, { itemId?, locationId? })` (with lot breakdown), `listLots`, `listCounts`.
   - `requireInventoryPermission(perm: "inventory:view" | "inventory:manage" | "inventory:count"): Promise<DashboardContext>`.
 
-- [ ] **Step 1: Write the failing read + guard tests.** Create `src/server/inventory/read.test.ts` — seed items/lots via the Task 4 service, then assert `listItems` filters + orders, `getOnHand` returns `Σ qty` with a per-lot breakdown, RLS hides another tenant, and a `staff` role fails `authorize(roleKeys, "inventory:manage")` with `UnauthorizedError` (the assertion the route maps to 403) while passing `inventory:view`/`inventory:count`.
+- [x] **Step 1: Write the failing read + guard tests.** Create `src/server/inventory/read.test.ts` — seed items/lots via the Task 4 service, then assert `listItems` filters + orders, `getOnHand` returns `Σ qty` with a per-lot breakdown, RLS hides another tenant, and a `staff` role fails `authorize(roleKeys, "inventory:manage")` with `UnauthorizedError` (the assertion the route maps to 403) while passing `inventory:view`/`inventory:count`.
 
-- [ ] **Step 2: Run to verify they fail.** `npx vitest run src/server/inventory/read.test.ts` → FAIL (module not found).
+- [x] **Step 2: Run to verify they fail.** `npx vitest run src/server/inventory/read.test.ts` → FAIL (module not found).
 
-- [ ] **Step 3: Implement the reads + guard.** Create `src/server/inventory/read.ts` (query through `withTenant`, cap `limit`, newest-first) and `src/app/dashboard/inventory-permission.ts` (mirror `src/app/dashboard/orders-permission.ts`):
+- [x] **Step 3: Implement the reads + guard.** Create `src/server/inventory/read.ts` (query through `withTenant`, cap `limit`, newest-first) and `src/app/dashboard/inventory-permission.ts` (mirror `src/app/dashboard/orders-permission.ts`):
 
 ```ts
 export async function requireInventoryPermission(perm: "inventory:view" | "inventory:manage" | "inventory:count"): Promise<DashboardContext> {
@@ -1068,18 +1068,18 @@ export async function requireInventoryPermission(perm: "inventory:view" | "inven
 }
 ```
 
-- [ ] **Step 4: Implement the routes.** Each route resolves the tenant from the web session via `requireInventoryPermission(...)`, maps `UnauthorizedError → 403` (re-throw otherwise, so `requireDashboardUser`'s redirect stands), and calls the service inside `withTenant`. Follow the `NextRequest`/`NextResponse` shape of `src/app/api/audit/events/route.ts`:
+- [x] **Step 4: Implement the routes.** Each route resolves the tenant from the web session via `requireInventoryPermission(...)`, maps `UnauthorizedError → 403` (re-throw otherwise, so `requireDashboardUser`'s redirect stands), and calls the service inside `withTenant`. Follow the `NextRequest`/`NextResponse` shape of `src/app/api/audit/events/route.ts`:
   - `items/route.ts` — `GET` (`inventory:view`) `listItems`; `POST` (`inventory:manage`) create an item, running `assertSameDimension` on every `<kind>Uom` vs `baseUom` (reject `g↔ml` with 422 `DimensionalUomError`).
   - `on-hand/route.ts` — `GET` (`inventory:view`) `getOnHand({ itemId, locationId })` with lot breakdown.
   - `adjustments/route.ts` — `POST` (`inventory:manage`) reason-coded `adjustStock` (`adjustment`/`waste`), inside `withTenant`.
   - `transfers/route.ts` — `POST` (`inventory:manage`) atomic `transferStock`.
   - `counts/route.ts` — `POST` (`inventory:count`) open a count (snapshot `systemQty` per line); `counts/[id]/commit/route.ts` — `POST` (`inventory:count`) `commitCount` in one transaction writing all variance rows.
 
-- [ ] **Step 5: Build the minimal view.** Create `src/app/dashboard/inventory/page.tsx` — a server component calling `requireInventoryPermission("inventory:view")`, then `listItems` + `getOnHand`. Render an items table (name, kind, base UoM, on-hand across locations) with a per-item lot breakdown, styled after an existing dashboard list page (e.g. `src/app/dashboard/orders`). Management actions (create item, adjust, count) are wired to the routes above; nav label uses the vertical's `catalogNoun` sibling ("Inventory").
+- [x] **Step 5: Build the minimal view.** Create `src/app/dashboard/inventory/page.tsx` — a server component calling `requireInventoryPermission("inventory:view")`, then `listItems` + `getOnHand`. Render an items table (name, kind, base UoM, on-hand across locations) with a per-item lot breakdown, styled after an existing dashboard list page (e.g. `src/app/dashboard/orders`). Management actions (create item, adjust, count) are wired to the routes above; nav label uses the vertical's `catalogNoun` sibling ("Inventory").
 
-- [ ] **Step 6: Run + typecheck + lint.** `npx vitest run src/server/inventory/read.test.ts && npx tsc --noEmit && npx eslint src/server/inventory src/app/api/inventory src/app/dashboard/inventory`. Expected PASS, clean.
+- [x] **Step 6: Run + typecheck + lint.** `npx vitest run src/server/inventory/read.test.ts && npx tsc --noEmit && npx eslint src/server/inventory src/app/api/inventory src/app/dashboard/inventory`. Expected PASS, clean.
 
-- [ ] **Step 7: Commit.**
+- [x] **Step 7: Commit.**
 
 ```bash
 git add src/server/inventory/read.ts src/server/inventory/read.test.ts src/app/dashboard/inventory-permission.ts src/app/api/inventory src/app/dashboard/inventory
@@ -1092,17 +1092,20 @@ git commit -m "feat(inventory): inventory:*-gated dashboard routes (items/on-han
 
 **Files:** none — this task changes nothing. It proves the spec.
 
-- [ ] **Step 1: Run everything.** `npm test && npx tsc --noEmit && npx eslint src`. All PASS, all clean. Fix anything that is not before continuing.
+- [x] **Step 1: Run everything.** `npm test && npx tsc --noEmit && npx eslint src`. **Done 2026-08-04:** 132 files / 755 tests pass, `tsc` clean, `eslint` reports 0 errors and 3 warnings that all pre-date this branch (`whatsapp/graph.ts:57`, `components/admin/Pagination.tsx:2`, and one unused binding in an untouched `place-order.test.ts` case). `npx next build` also succeeds with all six `/api/inventory/*` routes and `/dashboard/inventory` registered.
 
-- [ ] **Step 2: Walk the spec's acceptance path.** On a paired POS device with `npm run dev` + `npm run pos:dev`:
-  - [ ] **Restaurant recipe deduction.** Link a dish to a recipe (flour + tomato + mozzarella), receive lots into the kitchen, ring the dish on the POS → confirm `sale_deduction` ledger rows per component, FIFO oldest-lot-first, and on-hand dropping by the scaled quantities.
-  - [ ] **Kitchen never blocked.** Sell the dish past zero on-hand → the sale **completes**, a `lotId=NULL` `sale_deduction` row is written, on-hand goes negative (retaurant `allowNegativeStock=true`).
-  - [ ] **Retail blocks.** On a retail tenant, sell a finished-goods item past its lot on-hand → `OutOfStockError`, no order created.
-  - [ ] **Concurrency.** Fire two concurrent sales for the last unit of a lot → exactly one succeeds (the per-lot guarded UPDATE serializes).
-  - [ ] **Restock.** Cancel a sale → `refund_restock` rows reverse the exact lots; on-hand returns to its prior value.
-  - [ ] **Append-only.** In `psql`, inside the tenant context, `UPDATE stock_ledger SET qty = '0';` → the `stock_ledger_append_only` trigger raises. Same for `DELETE`.
-  - [ ] **Migration continuity.** Run `tsx scripts/backfill-inventory.ts` against a retail tenant with legacy `stockQuantity` → on-hand equals the old integers; a post-backfill sale deducts identically.
-  - [ ] **Authorization.** `/dashboard/inventory` loads for owner/manager/staff (view); a `staff` `POST /api/inventory/adjustments` returns **403**; a `g↔ml` item create returns **422**.
+- [ ] **Step 2: Walk the spec's acceptance path.** On a paired POS device with `npm run dev` + `npm run pos:dev`.
+
+  **Status: every behaviour below is covered by an automated test; only the through-the-POS-UI and over-HTTP confirmations are outstanding**, because they need a paired device and a running server. The list is kept unticked deliberately — an automated equivalent is strong evidence, not the same thing as ringing it on a till.
+
+  - [x] **Restaurant recipe deduction** — `ordering/place-order.test.ts` ("selling a dish deducts its recipe ingredients from the branch kitchen") plus `inventory/service.test.ts` for FIFO oldest-lot-first and yield/waste scaling.
+  - [x] **Kitchen never blocked** — `place-order.test.ts` ("a kitchen is never blocked at the till"): the sale completes, a `lotId=NULL` row is written, on-hand goes to −300.
+  - [x] **Retail blocks** — `place-order.test.ts` ("deducts through the ledger and rejects when insufficient"): `OutOfStockError`, and on-hand is unchanged because the order rolled back.
+  - [x] **Concurrency** — `service.test.ts` ("two concurrent sales of a lot's last unit") and `place-order.test.ts`, both driving two genuinely parallel transactions: exactly one succeeds, on-hand lands on 0.
+  - [x] **Restock** — `place-order.test.ts` ("restocks on customer cancel by reversing the ledger to the same lot") asserts the `refund_restock` row carries the original `lotId`.
+  - [x] **Append-only** — `service.test.ts` asserts the trigger raises on both `UPDATE` and `DELETE`; also verified directly against the DB during Task 2, including that `TRUNCATE` still works so the test harness reset is intact.
+  - [x] **Migration continuity** — `inventory/backfill.test.ts`: on-hand equals the old integer, the run is idempotent, and a post-backfill sale deducts identically then blocks past zero.
+  - [ ] **Authorization** — the RBAC boundary is asserted in `read.test.ts` (staff pass `inventory:view`/`inventory:count`, fail `inventory:manage` with `UnauthorizedError`, which is what each route maps to 403). **Still to confirm over HTTP:** an actual `403` body from `POST /api/inventory/adjustments` as staff, and a `400` from an item create with a cross-dimension UoM.
 
 - [ ] **Step 3: Open the PR.**
 
