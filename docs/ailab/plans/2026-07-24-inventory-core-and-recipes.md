@@ -4,7 +4,15 @@
 
 **Goal:** Replace the flat integer stock counter with a **per-branch, unit-aware, append-only stock ledger** and teach `placeOrder` to deduct a sold line's inventory — a dish's **recipe** ingredients FIFO from the branch kitchen, or a retail item's **finished-goods** stock FIFO from the branch retail shelf. On-hand becomes `Σ ledger.qty`; `inventory_lots.qtyRemaining` is a FIFO/expiry cache. Turn the new `inventory` capability **on for restaurants** without ever letting the till refuse a kitchen sale (per-tenant `allowNegativeStock`), while retail keeps blocking (`OutOfStockError`) exactly as today. Implements **Part A (Inventory Core)** and **Part B (Recipes & BOM)** of `docs/ailab/specs/2026-07-24-inventory-recipes-and-purchasing-design.md` (Spec 8, decisions **D4** + **D9**). **Part C/D (suppliers, purchasing, reorder) are a separate plan** — this plan only references their tables (`suppliers`, `po_receipt_lines`) as forward deps.
 
-**Architecture:** One writer of truth — the ledger. `src/server/inventory/service.ts` is the only module that appends `stock_ledger` rows and mutates the `inventory_lots.qtyRemaining` cache alongside them. `placeOrder` (`src/server/ordering/service.ts`) calls `deductForOrderLine(tx, …)` **inside its existing `withTenant` transaction**, so ingredient/finished-goods deduction is atomic with order creation — the same discipline the audit chain uses. The FIFO deduction keeps the current concurrency guarantee: the guarded `UPDATE inventory_lots SET qty_remaining = qty_remaining - take WHERE id = ? AND qty_remaining >= take` is the serialization point, exactly as `products.stockQuantity >= quantity` is today (`service.ts:151-172`). `inventory` is a **leaf of `ordering`**: `ordering/service` imports `deductForOrderLine`; `inventory/service` imports only `ordering/errors` (`OutOfStockError`) — never `ordering/service` — so there is no import cycle. UoM math lives in one pure module (`src/server/inventory/uom.ts`) imported everywhere a quantity is normalized, mirroring the audit plan's single-canonical-serializer rule.
+**Architecture:** One writer of truth — the ledger. `src/server/inventory/service.ts` is the only module that appends `stock_ledger` rows and mutates the `inventory_lots.qtyRemaining` cache alongside them. `placeOrder` (`src/server/ordering/service.ts`) calls `deductForOrderLine(tx, …)` **inside its existing `withTenant` transaction**, so ingredient/finished-goods deduction is atomic with order creation — the same discipline the audit chain uses. The FIFO deduction keeps the current concurrency guarantee: the guarded `UPDATE inventory_lots SET qty_remaining = qty_remaining - take WHERE id = ? AND qty_remaining >= take` is the serialization point, exactly as `products.stockQuantity >= quantity` is today (`service.ts:216-233`). `inventory` is a **leaf of `ordering`**: `ordering/service` imports `deductForOrderLine`; `inventory/service` imports only `ordering/errors` (`OutOfStockError`) — never `ordering/service` — so there is no import cycle. UoM math lives in one pure module (`src/server/inventory/uom.ts`) imported everywhere a quantity is normalized, mirroring the audit plan's single-canonical-serializer rule.
+
+> **Reconciled 2026-08-04** — this plan was written 2026-07-24; four things have landed since, and the tasks below reflect them:
+> 1. **The UoM enum already exists.** P4 (timber) shipped one platform-wide `unit_of_measure` pg enum in `src/server/catalog/uom.ts` (decision T1), whose own comment reserves it for this spec: *"Spec 8 imports THIS enum when it lands."* Task 2 therefore **imports** it instead of declaring a second `inventory_uom` — five new enums, not six. Consequence: the enum is a **superset** carrying P4's sellable dimensional units (`m`, `m2`, `bf`), which are *not* valid inventory units, so the subset must be enforced in `uom.ts` (Task 3) since the DB enum cannot express it.
+> 2. **Migrations are at `0032`**, not `0016` — the generated file is `drizzle/0033_*.sql`. The `unit_of_measure` type already exists in the DB, so the migration must not re-create it.
+> 3. **Spec 5 (Notifications) has merged.** The low-stock alert is no longer a stub: `notify(ctx, event, tx?)` (`src/server/notifications/service.ts:42`) is live and its schema already ships the `low_stock` notification type, pre-provisioned for this spec. Task 4 calls it for real, on the order's tx.
+> 4. **`placeOrder` has moved** — the flat-integer stock block is now `service.ts:216-233` (was `151-172`) and `restockOrderItems` is at `service.ts:410`.
+>
+> Also note `src/server/audit/coverage.ts:127` carries a `forward:inventory.*` guardrail entry ("Spec 8 ledger/lot/count must emit `inventory.*`"): the audit coverage test expects this spec's mutations to emit audit events, so that forward declaration is converted to real emissions as the service lands.
 
 **Tech Stack:** Next.js (App Router — **read `node_modules/next/dist/docs/` before writing any route**, per `AGENTS.md`), Drizzle ORM + Postgres (RLS via `withTenant`), Vitest against a remote Supabase Postgres. No new runtime dependencies.
 
@@ -14,6 +22,7 @@
 - **`stock_ledger` is append-only.** No code path ever `UPDATE`s or `DELETE`s a ledger row; a DB trigger enforces it (mirrors `audit_events`, Spec 4). `inventory_lots.qtyRemaining` is the one **mutable** number, and it is only ever moved by the same service call that writes the balancing ledger row. Reversals are **new** `refund_restock` rows, never edits.
 - **Quantities are `numeric` (fractional); sellable order-line quantities stay `integer`.** All ledger/lot/recipe quantities carry a unit of measure and are normalized to the item's **base UoM** before storage. There is exactly one quantity formatter — `qty(n)` in `uom.ts`, scale 3 (milligram/ml precision) — the direct analog of `money(n)`. All monetary values (`unitCost`, `defaultUnitCost`) keep the `money(n)` 2-dp numeric-string convention.
 - **UoM conversion is dimensionally validated.** mass↔mass, volume↔volume, count↔count only. `g↔ml` is rejected (`DimensionalUomError`) — density is not modelled.
+- **Inventory uses a subset of the shared enum.** `unit_of_measure` is platform-wide and includes P4's sellable dimensional units (`m`, `m2`, `bf`). Those are **not** stockable inventory units: `uom.ts` exposes `INVENTORY_UOMS = ["each","g","kg","ml","l"]` and rejects anything else (`DimensionalUomError`) on every write that names a UoM — item base/stock/purchase/recipe units, recipe component units, ledger rows. The DB enum cannot express the subset, so this check is the only thing standing between a `m2` and the ledger; it is tested explicitly.
 - **Deduction is atomic with the order.** `deductForOrderLine` runs on the caller's `tx`. If it throws (retail shortfall), the whole order rolls back and no order exists — identical to today's `OutOfStockError` behaviour.
 - **The per-lot guarded UPDATE is the serialization point.** `WHERE qty_remaining >= take` re-evaluates against the latest committed row under READ COMMITTED, so two concurrent sales cannot both claim the last unit of a lot. A loser re-reads the next candidate lot and continues (or falls to the shortfall branch).
 - **Kitchens are never blocked; retail always blocks.** A per-tenant `allowNegativeStock` policy (default **true** for restaurant, **false** for retail/pharmacy/timber) decides the shortfall branch: record the shortfall (`lotId=NULL`, on-hand goes negative, alert enqueued) vs. throw `OutOfStockError` and create no order.
@@ -28,7 +37,7 @@
 **Database**
 - Create: `src/server/inventory/schema.ts` — 9 tables + 6 enums.
 - Modify: `src/db/schema.ts` — register the new schema barrel export.
-- Create: `drizzle/0017_*.sql` — generated migration; RLS policies, the append-only ledger trigger, the `product_inventory_links` xor `CHECK`, and its two partial unique indexes hand-appended.
+- Create: `drizzle/0033_*.sql` — generated migration; RLS policies, the append-only ledger trigger, the `product_inventory_links` xor `CHECK`, and its two partial unique indexes hand-appended.
 
 **Capabilities · permissions · policy**
 - Modify: `src/server/verticals/types.ts` — `VerticalCapabilities` gains `inventory`, `recipes`.
@@ -38,7 +47,7 @@
 - Modify: `src/server/tenancy/settings.ts` + `settings.test.ts` — `allowNegativeStock` getter/setter, vertical-derived default.
 
 **Core (pure + writer)**
-- Create: `src/server/inventory/uom.ts` + `uom.test.ts` — dimensional conversion, `toBase`, `qty`, `scaleForYield`, `withWaste`.
+- Create: `src/server/inventory/uom.ts` + `uom.test.ts` — dimensional conversion, `toBase`, `qty`, `scaleForYield`, `withWaste`, and the `INVENTORY_UOMS` subset guard. Imports `UnitOfMeasure` from `@/server/catalog/uom-values` (the drizzle-free module) — never re-declares units.
 - Create: `src/server/inventory/errors.ts` — `DimensionalUomError`, `InventoryConfigError` (re-exports `OutOfStockError`).
 - Create: `src/server/inventory/service.ts` + `service.test.ts` — `onHand`, `receiveStock`, `adjustStock`, `transferStock`, count lifecycle, `deductForOrderLine`, `reverseOrderDeductions`.
 - Create: `src/server/inventory/test-helpers.ts` — `seedFinishedGood`, `seedRecipeProduct`.
@@ -165,15 +174,16 @@ git commit -m "feat(inventory): add inventory/recipes capabilities (stockTrackin
 
 ## Task 2: Schema — inventory tables + FORCE RLS + append-only ledger trigger
 
-Nine tables and six enums, all tenant-scoped with FORCE RLS. `stock_ledger` gets the append-only trigger (mirroring `audit_events`); `inventory_lots.qtyRemaining` intentionally stays mutable. `inventory_lots.supplierId` and `poReceiptLineId` are **plain nullable `uuid` columns with no FK** — `suppliers` / `po_receipt_lines` land in Spec 9 (Suppliers & Purchasing), which adds the constraints then. Drizzle emits neither RLS, triggers, `CHECK`s, nor `NULLS NOT DISTINCT` indexes, so those are hand-appended.
+Nine tables and five new enums (the sixth, `unit_of_measure`, already exists and is imported), all tenant-scoped with FORCE RLS. `stock_ledger` gets the append-only trigger (mirroring `audit_events`); `inventory_lots.qtyRemaining` intentionally stays mutable. `inventory_lots.supplierId` and `poReceiptLineId` are **plain nullable `uuid` columns with no FK** — `suppliers` / `po_receipt_lines` land in Spec 9 (Suppliers & Purchasing), which adds the constraints then. Drizzle emits neither RLS, triggers, `CHECK`s, nor `NULLS NOT DISTINCT` indexes, so those are hand-appended.
 
 **Files:**
 - Create: `src/server/inventory/schema.ts`
 - Modify: `src/db/schema.ts`
-- Create: `drizzle/0017_*.sql` (generated, then edited)
+- Create: `drizzle/0033_*.sql` (generated, then edited)
 
 **Interfaces:**
-- Produces: tables `inventoryItems`, `storageLocations`, `inventoryLots`, `stockLedger`, `stockCounts`, `stockCountLines`, `productInventoryLinks`, `recipes`, `recipeComponents`; enums `inventoryItemKindEnum`, `inventoryUomEnum`, `storageLocationKindEnum`, `stockLedgerTypeEnum`, `productInventoryLinkTypeEnum`, `stockCountStatusEnum`; row types (`InventoryItem`, `InventoryLot`, `StockLedgerRow`, `Recipe`, `RecipeComponent`, `ProductInventoryLink`, …).
+- Produces: tables `inventoryItems`, `storageLocations`, `inventoryLots`, `stockLedger`, `stockCounts`, `stockCountLines`, `productInventoryLinks`, `recipes`, `recipeComponents`; enums `inventoryItemKindEnum`, `storageLocationKindEnum`, `stockLedgerTypeEnum`, `productInventoryLinkTypeEnum`, `stockCountStatusEnum`; row types (`InventoryItem`, `InventoryLot`, `StockLedgerRow`, `Recipe`, `RecipeComponent`, `ProductInventoryLink`, …).
+- Consumes: `unitOfMeasureEnum` from `@/server/catalog/uom` — the **existing** platform-wide `unit_of_measure` type (decision T1). Every UoM column below reuses it; no `inventory_uom` enum is created.
 
 - [ ] **Step 1: Write the schema.** Create `src/server/inventory/schema.ts`:
 
@@ -183,9 +193,13 @@ import { tenants } from "@/server/tenancy/schema";
 import { branches } from "@/server/branches/schema";
 import { users } from "@/server/auth/schema";
 import { products, productVariants } from "@/server/catalog/schema";
+// ONE platform-wide UoM enum (decision T1) — P4 shipped it and reserved it for
+// this spec. Do NOT declare an inventory_uom enum. It is a superset carrying
+// P4's sellable dimensional units (m/m2/bf); uom.ts rejects those as inventory
+// units, since a pg enum cannot express the subset.
+import { unitOfMeasureEnum } from "@/server/catalog/uom";
 
 export const inventoryItemKindEnum = pgEnum("inventory_item_kind", ["ingredient", "finished_good", "raw_material"]);
-export const inventoryUomEnum = pgEnum("inventory_uom", ["each", "g", "kg", "ml", "l"]);
 export const storageLocationKindEnum = pgEnum("storage_location_kind", ["kitchen", "retail", "back_of_house", "transit"]);
 export const stockLedgerTypeEnum = pgEnum("stock_ledger_type", [
   "receive", "sale_deduction", "adjustment", "count", "transfer", "waste", "refund_restock", "production",
@@ -204,12 +218,12 @@ export const inventoryItems = pgTable("inventory_items", {
   nameAr: text("name_ar").notNull(),
   sku: text("sku"),
   kind: inventoryItemKindEnum("kind").notNull(),
-  baseUom: inventoryUomEnum("base_uom").notNull(),
-  stockUom: inventoryUomEnum("stock_uom").notNull(),
+  baseUom: unitOfMeasureEnum("base_uom").notNull(),
+  stockUom: unitOfMeasureEnum("stock_uom").notNull(),
   stockToBase: numeric("stock_to_base").notNull().default("1"),
-  purchaseUom: inventoryUomEnum("purchase_uom").notNull(),
+  purchaseUom: unitOfMeasureEnum("purchase_uom").notNull(),
   purchaseToBase: numeric("purchase_to_base").notNull().default("1"),
-  recipeUom: inventoryUomEnum("recipe_uom").notNull(),
+  recipeUom: unitOfMeasureEnum("recipe_uom").notNull(),
   recipeToBase: numeric("recipe_to_base").notNull().default("1"),
   isPerishable: boolean("is_perishable").notNull().default(false),
   defaultUnitCost: numeric("default_unit_cost"),
@@ -261,7 +275,7 @@ export const stockLedger = pgTable("stock_ledger", {
   lotId: uuid("lot_id").references(() => inventoryLots.id, { onDelete: "restrict" }),
   type: stockLedgerTypeEnum("type").notNull(),
   qty: numeric("qty").notNull(),
-  uom: inventoryUomEnum("uom").notNull(),
+  uom: unitOfMeasureEnum("uom").notNull(),
   unitCost: numeric("unit_cost"),
   refType: text("ref_type"),
   refId: text("ref_id"),
@@ -304,7 +318,7 @@ export const recipes = pgTable("recipes", {
   nameEn: text("name_en").notNull(),
   nameAr: text("name_ar").notNull(),
   yieldQty: numeric("yield_qty").notNull().default("1"),
-  yieldUom: inventoryUomEnum("yield_uom").notNull().default("each"),
+  yieldUom: unitOfMeasureEnum("yield_uom").notNull().default("each"),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("recipes_tenant").on(t.tenantId)]);
@@ -315,7 +329,7 @@ export const recipeComponents = pgTable("recipe_components", {
   recipeId: uuid("recipe_id").notNull().references(() => recipes.id, { onDelete: "cascade" }),
   itemId: uuid("item_id").notNull().references(() => inventoryItems.id, { onDelete: "restrict" }),
   qty: numeric("qty").notNull(),
-  uom: inventoryUomEnum("uom").notNull(),
+  uom: unitOfMeasureEnum("uom").notNull(),
   wastePct: numeric("waste_pct").notNull().default("0"),
 }, (t) => [index("recipe_components_recipe").on(t.recipeId)]);
 
@@ -349,7 +363,7 @@ export type StockCountLine = typeof stockCountLines.$inferSelect;
 export * from "../server/inventory/schema";
 ```
 
-- [ ] **Step 3: Generate the migration.** `npm run db:generate`. Expected: `drizzle/0017_*.sql` creating the six enums, nine tables, FKs, and the declared indexes. It will **not** contain RLS, the trigger, the `CHECK`, or the partial/nulls-not-distinct indexes.
+- [ ] **Step 3: Generate the migration.** `npm run db:generate`. Expected: `drizzle/0033_*.sql` creating the **five** new enums, nine tables, FKs, and the declared indexes. It must **not** contain `CREATE TYPE ... unit_of_measure` — that type already exists (P4's migration); if drizzle emits one, the shared enum was re-declared rather than imported, so fix the schema instead of editing the SQL. It will **not** contain RLS, the trigger, the `CHECK`, or the partial/nulls-not-distinct indexes.
 
 - [ ] **Step 4: Hand-append RLS, the append-only trigger, the XOR CHECK, and the partial indexes.** Open the generated file and append (mirror `drizzle/0016_bitter_beast.sql:67-81` for the policy shape). For **each** of the nine tables:
 
@@ -406,8 +420,10 @@ Every quantity that enters the ledger is first normalized to the item's base UoM
 - Create: `src/server/inventory/errors.ts`
 
 **Interfaces:**
+- Consumes: `type UnitOfMeasure` from `@/server/catalog/uom-values` — the drizzle-free values module, so this stays pure and importable anywhere. Units are **never** re-declared here.
 - Produces:
-  - `type Uom = "each" | "g" | "kg" | "ml" | "l"`
+  - `const INVENTORY_UOMS = ["each","g","kg","ml","l"] as const` and `type Uom = (typeof INVENTORY_UOMS)[number]` — the stockable **subset** of the platform enum, derived by narrowing `UnitOfMeasure` (a `satisfies readonly UnitOfMeasure[]` assertion makes a future enum rename a compile error rather than a silent drift).
+  - `function assertInventoryUom(u: UnitOfMeasure): Uom` — the gate every UoM-bearing write passes through; throws `DimensionalUomError` for `m`/`m2`/`bf`, which are sellable dimensional units (P4) and not stockable.
   - `type Dimension = "mass" | "volume" | "count"`; `function dimensionOf(uom: Uom): Dimension`
   - `const QTY_SCALE = 3`; `function qty(n: number): string` — the fractional-quantity formatter (the `money(n)` analog).
   - `function assertSameDimension(a: Uom, b: Uom): void` — throws `DimensionalUomError` on mismatch.
@@ -419,7 +435,7 @@ Every quantity that enters the ledger is first normalized to the item's base UoM
 
 ```ts
 import { describe, it, expect } from "vitest";
-import { qty, dimensionOf, assertSameDimension, toBase, withWaste, scaleForYield } from "./uom";
+import { qty, dimensionOf, assertSameDimension, assertInventoryUom, toBase, withWaste, scaleForYield } from "./uom";
 import { DimensionalUomError } from "./errors";
 
 const gramItem = { baseUom: "g" as const, stockToBase: "1000", purchaseToBase: "1000", recipeToBase: "1" };
@@ -441,6 +457,22 @@ describe("dimension checks", () => {
   it("rejects cross-dimension conversion (g↔ml — density not modelled)", () => {
     expect(() => assertSameDimension("g", "ml")).toThrow(DimensionalUomError);
     expect(() => assertSameDimension("kg", "g")).not.toThrow();
+  });
+});
+
+describe("assertInventoryUom", () => {
+  // The shared unit_of_measure enum is a superset: it also carries P4's sellable
+  // dimensional units. The DB cannot express the subset, so this guard is the
+  // only thing keeping an m2 out of the ledger.
+  it("accepts the five stockable units", () => {
+    for (const u of ["each", "g", "kg", "ml", "l"] as const) {
+      expect(assertInventoryUom(u)).toBe(u);
+    }
+  });
+  it("rejects P4 sellable dimensional units", () => {
+    for (const u of ["m", "m2", "bf"] as const) {
+      expect(() => assertInventoryUom(u)).toThrow(DimensionalUomError);
+    }
   });
 });
 
@@ -493,11 +525,22 @@ export class InventoryConfigError extends DomainError {
 - [ ] **Step 4: Implement `uom.ts`.** Base unit per dimension is the smallest (`g`, `ml`, `each`); `kg`/`l` carry the ×1000 factor. `toBase` uses the explicit per-item factor when `factorKind` is given (stock/purchase/recipe columns), and always validates the dimension of `fromUom` against `item.baseUom`:
 
 ```ts
+import type { UnitOfMeasure } from "@/server/catalog/uom-values";
 import { DimensionalUomError } from "./errors";
 
-export type Uom = "each" | "g" | "kg" | "ml" | "l";
+/** The stockable SUBSET of the platform-wide unit_of_measure enum. The enum also
+ * carries P4's sellable dimensional units (m/m2/bf), which are not stockable —
+ * a pg enum cannot express a subset, so assertInventoryUom is the boundary.
+ * The `satisfies` turns a future enum rename into a compile error, not drift. */
+export const INVENTORY_UOMS = ["each", "g", "kg", "ml", "l"] as const satisfies readonly UnitOfMeasure[];
+export type Uom = (typeof INVENTORY_UOMS)[number];
 export type Dimension = "mass" | "volume" | "count";
 export const QTY_SCALE = 3;
+
+export function assertInventoryUom(u: UnitOfMeasure): Uom {
+  if (!(INVENTORY_UOMS as readonly string[]).includes(u)) throw new DimensionalUomError(u, "a stockable unit");
+  return u as Uom;
+}
 
 const DIM: Record<Uom, Dimension> = { each: "count", g: "mass", kg: "mass", ml: "volume", l: "volume" };
 /** Factor to convert a value in `uom` into that dimension's canonical smallest unit. */
@@ -550,7 +593,7 @@ The one module that writes `stock_ledger` and moves the `inventory_lots.qtyRemai
 - Create: `src/server/inventory/service.ts`, `service.test.ts`, `test-helpers.ts`
 
 **Interfaces:**
-- Consumes: `toBase`, `qty`, `withWaste`, `scaleForYield`, `Uom` (Task 3); the Task 2 tables; `OutOfStockError`, `InventoryConfigError` (Task 3); `withTenant` (`@/db/with-tenant`).
+- Consumes: `toBase`, `qty`, `withWaste`, `scaleForYield`, `Uom` (Task 3); the Task 2 tables; `OutOfStockError`, `InventoryConfigError` (Task 3); `withTenant` (`@/db/with-tenant`); `notify` (`@/server/notifications/service` — Spec 5, merged) for the oversell alert; `recordAuditEvent` (`@/server/audit/service` — Spec 4) on the operator-driven movements (`adjustStock`, `transferStock`, `commitCount`), which is what satisfies the `forward:inventory.*` coverage guardrail. `deductForOrderLine` does **not** emit its own audit event — it is part of `placeOrder`, whose event already covers the sale; the ledger rows are the audit trail for the deduction.
 - Produces:
   - `type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0]`
   - `function onHand(tenantId: string, itemId: string, locationId: string): Promise<number>` — `Σ ledger.qty`.
@@ -717,19 +760,32 @@ async function deductFifo(
   }
   if (need > EPS) {
     if (!a.allowNegative) throw new OutOfStockError(a.productNameEn, a.productNameAr);
-    // Kitchen policy: record the shortfall, on-hand goes negative, alert fires (Spec 5).
+    // Kitchen policy: record the shortfall, on-hand goes negative, alert fires.
     await tx.insert(stockLedger).values({
       tenantId: a.tenantId, itemId: item.id, locationId, lotId: null, type: "sale_deduction",
       qty: qty(-need), uom: item.baseUom, refType: "order_item", refId: a.orderItemId, byUserId: a.byUserId,
       note: "shortfall — allowNegativeStock",
     });
-    await enqueueLowStockAlert(a.tenantId, item.id, locationId); // Spec 5 — no-op stub until Notifications lands
+    // Spec 5 has merged, so this is a real notification, not a stub. notify()
+    // runs on OUR tx: the alert commits with the sale or not at all, and it never
+    // touches the network (the outbox worker sends). low_stock is already in the
+    // notification type enum — Spec 5 pre-provisioned it for this spec.
+    await notify({ tenantId: a.tenantId }, {
+      type: "low_stock",
+      severity: "warning",
+      title: `${item.nameEn} oversold`,
+      body: `${item.nameEn} went ${qty(need)} ${item.baseUom} below zero at this location — on-hand is negative until a count or receipt reconciles it.`,
+      entityType: "inventory_item",
+      entityId: item.id,
+      targets: [{ role: "owner" }, { role: "manager" }],
+      channels: ["in_app", "email"],
+      branchId: a.branchId,
+    }, tx);
   }
 }
-
-/** Feature-flagged off until Spec 5 (Notifications). Deliberately swallow-free no-op stub. */
-async function enqueueLowStockAlert(_tenantId: string, _itemId: string, _locationId: string): Promise<void> { /* Spec 5 */ }
 ```
+
+**Alert debouncing is deliberately *not* added here.** The spec debounces the *scheduled* reorder check (Part D, Spec 9's plan) because that re-evaluates a lingering low state every run. This path is different: it fires only on an actual oversell event, so one notification per oversell is the correct signal, not noise. If a single kitchen oversells the same ingredient across many lines of one order, that is several rows and several alerts — flagged as a known sharp edge for Part D to smooth once the debounce table exists, rather than half-built here.
 
 - [ ] **Step 5: Implement `reverseOrderDeductions`** (Task 6 wires it; define it here so the module is complete). Read the order's `sale_deduction` rows and write a `refund_restock` row per row with the negated qty, restoring the **same lot**; if the lot is gone/depleted, land on a system adjustment lot flagged for review. See Task 6, Step 3 for the body.
 
@@ -748,7 +804,7 @@ git commit -m "feat(inventory): ledger service — on-hand projection, receive/a
 
 ## Task 5: Rewire `placeOrder`'s stock step
 
-Replace the flat guarded-integer block (`service.ts:151-172`, gated on `caps.stockTracking`) with a resolver gated on `caps.inventory`, run **inside the same `withTenant` transaction** so deduction is atomic with order creation. Deduction moves to a pass **after** the order + items are inserted, so each `sale_deduction` row carries `refId = orderItemId` (a retail shortfall still throws and rolls the whole order back — no order is created, identical to today).
+Replace the flat guarded-integer block (`service.ts:216-233`, gated on `caps.stockTracking`) with a resolver gated on `caps.inventory`, run **inside the same `withTenant` transaction** so deduction is atomic with order creation. Deduction moves to a pass **after** the order + items are inserted, so each `sale_deduction` row carries `refId = orderItemId` (a retail shortfall still throws and rolls the whole order back — no order is created, identical to today).
 
 **Files:**
 - Modify: `src/server/ordering/service.ts`
@@ -801,7 +857,7 @@ import { getAllowNegativeStock } from "@/server/tenancy/settings";
 const allowNegative = caps.inventory ? await getAllowNegativeStock(tenantId) : false;
 ```
 
-- [ ] **Step 4: Remove the in-loop integer block.** Delete the `if (caps.stockTracking) { … }` block at `service.ts:151-172` entirely (both the variant and product branches). The loop now only prices lines and builds `itemsToInsert`.
+- [ ] **Step 4: Remove the in-loop integer block.** Delete the `if (caps.stockTracking) { … }` block at `service.ts:216-233` entirely (both the variant and product branches). The loop now only prices lines and builds `itemsToInsert`. Check the `drizzle-orm` import line afterwards — `gte`/`isNull`/`or` may become unused once the guarded integer `UPDATE`s are gone, and `eslint` will fail on them.
 
 - [ ] **Step 5: Add the deduction pass after items insert.** Immediately after the `orderStatusEvents` insert (step 6 of `placeOrder`), before the `return`:
 
@@ -1068,8 +1124,9 @@ Implements docs/ailab/specs/2026-07-24-inventory-recipes-and-purchasing-design.m
   legacy stockQuantity into items + opening-balance ledger with retail continuity.
 - Dashboard routes (items/on-hand/adjustments/transfers/counts) behind inventory:*.
 
-Send-to-supplier and low-stock alerts (Spec 5) are stubbed off; the ledger this PR
-emits is what Spec 9 (receiving) and Spec 10 (reporting) read.
+An oversell raises a real low_stock notification via Spec 5. Send-to-supplier and
+the scheduled reorder sweep stay with Spec 9; the ledger this PR emits is what
+Spec 9 (receiving) and Spec 10 (reporting) read.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
@@ -1083,7 +1140,7 @@ EOF
 **Spec coverage (Part A + Part B):**
 - *Capabilities / permissions / policy* — `inventory` + `recipes` (with `stockTracking` legacy alias), `inventory:view/manage/count`, `allowNegativeStock` per-tenant with vertical default → **Task 1**.
 - *Data model* — `inventory_items` (base + stock/purchase/recipe factors), `storage_locations` (per branchId), `inventory_lots` (qtyRemaining cache, lotCode, expiry, unitCost, FIFO index), `stock_ledger` (append-only, 8 types, signed base-UoM qty), `stock_counts` + `stock_count_lines`, `product_inventory_links` (XOR recipe|finished_good), `recipes` + `recipe_components` (yield/wastePct) — FORCE RLS + append-only trigger + XOR CHECK + partial indexes → **Task 2**.
-- *UoM* — dimensional conversion (mass/volume/count only; `g↔ml` rejected), `qty(n)` scale-3 formatter, waste/yield scaling, one implementation → **Task 3**.
+- *UoM* — dimensional conversion (mass/volume/count only; `g↔ml` rejected), the `INVENTORY_UOMS` subset guard rejecting P4's `m`/`m2`/`bf` from the shared enum, `qty(n)` scale-3 formatter, waste/yield scaling, one implementation → **Task 3**.
 - *Inventory service* — on-hand as `Σ ledger.qty`, receive/adjust/transfer/count movements, FIFO lot selection with the per-lot guarded UPDATE → **Task 4**.
 - *Rewire `placeOrder`* — link resolver → recipe (kitchen, scaled) or finished-goods (retail, 1:1) FIFO deduction, atomic in the order tx, `allowNegativeStock` (restaurant never blocked / retail `OutOfStockError`), concurrency + negative-policy + untracked-passthrough tests → **Task 5**.
 - *Restock on cancel/refund* — `reverseOrderDeductions` writing `refund_restock` rows to the original lot, depleted-lot review fallback → **Task 6**.
@@ -1095,7 +1152,7 @@ EOF
 
 **Deliberate scope boundaries (Part C/D deferred to Spec 9, one modelling compromise flagged):**
 - `inventory_lots.supplierId` and `poReceiptLineId` are plain nullable `uuid` columns with **no FK** — `suppliers` / `po_receipt_lines` are Spec 9 tables; Spec 9 adds the constraints. Receiving (which would write `receive` ledger rows against a PO) is **not** built here; `receiveStock` exists and is exercised only by tests, the backfill, and adjustments in this plan.
-- `enqueueLowStockAlert` and any send path are **feature-flagged no-op stubs** until Spec 5 (Notifications) lands — Part A/B ship independently per the spec's prerequisite note. The shortfall ledger row is still written; only the outbound alert is deferred.
+- The oversell alert is a **real `notify()` call** on the order's tx, not a stub — Spec 5 merged after this plan was written and pre-provisioned the `low_stock` type. What stays deferred to Spec 9 is Part C/D: send-to-supplier, `reorder_rules`, the scheduled low-stock sweep, and its debounce table (see the debounce note in Task 4).
 - The `production` ledger type is reserved (batch prep, later); `transfer` is fully implemented (two balanced rows) because the count/adjustment surface needs it.
 - **Flagged compromise:** the flat global integer had no per-branch dimension, so the backfill lands legacy on-hand on each branch's *default* location; true per-branch reconciliation happens via a post-go-live stock count. The opening-balance `adjustment` ledger row keeps this auditable. This is called out in Task 7 rather than hidden.
 - Storefront `inStock` (`catalog/service.ts:357`) still reads the mirrored legacy integer; rewiring it to on-hand and dropping `products.stockQuantity`/`product_variants.stockQuantity` is deferred to a follow-up (spec Migration §5), so this PR keeps retail's storefront continuity with zero visible change.
