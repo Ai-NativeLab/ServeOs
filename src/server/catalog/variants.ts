@@ -1,9 +1,17 @@
-import { and, eq } from "drizzle-orm";
+// setProductStock / setVariantStock are SUPERSEDED by POST /inventory/adjustments.
+// They survive only to mirror the legacy products.stockQuantity /
+// product_variants.stockQuantity integers during the migration window, because
+// the storefront's inStock computation still reads them. Both these shims and
+// those columns are dropped once inStock reads on-hand from the ledger
+// (spec Migration §5 / follow-up). New code must go through the inventory service.
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { getTenantById } from "@/server/tenancy";
 import { requireCapability, type VerticalId } from "@/server/verticals";
 import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
+import { productInventoryLinks, storageLocations, stockLedger } from "@/server/inventory/schema";
+import { adjustStock } from "@/server/inventory/service";
 import { productVariants, products, type ProductVariant } from "./schema";
 import { ProductNotFoundError } from "./errors";
 
@@ -25,7 +33,7 @@ export type VariantInput = {
   sortOrder?: number;
 };
 
-async function requireTenantCapability(tenantId: string, cap: "variants" | "stockTracking"): Promise<void> {
+async function requireTenantCapability(tenantId: string, cap: "variants" | "stockTracking" | "inventory"): Promise<void> {
   const tenant = await getTenantById(tenantId);
   if (!tenant) throw new ProductNotFoundError();
   requireCapability(tenant.vertical as VerticalId, cap);
@@ -72,10 +80,14 @@ export async function deleteVariant(tenantId: string, variantId: string, audit?:
 }
 
 export async function setVariantStock(tenantId: string, variantId: string, qty: number | null, audit?: AuditActorInput): Promise<void> {
-  await requireTenantCapability(tenantId, "stockTracking");
+  await requireTenantCapability(tenantId, "inventory");
   await withTenant(tenantId, async (tx) => {
-    const [before] = await tx.select({ stockQuantity: productVariants.stockQuantity }).from(productVariants).where(eq(productVariants.id, variantId)).limit(1);
+    const [before] = await tx.select({ stockQuantity: productVariants.stockQuantity, productId: productVariants.productId })
+      .from(productVariants).where(eq(productVariants.id, variantId)).limit(1);
     await tx.update(productVariants).set({ stockQuantity: qty }).where(eq(productVariants.id, variantId));
+    if (before?.productId) {
+      await reconcileLinkedOnHand(tx, tenantId, before.productId, variantId, qty, audit);
+    }
     await recordAuditEvent(auditCtx(tenantId, audit), {
       action: "catalog.stock.set", entityType: "product_variant", entityId: variantId,
       summary: `Variant stock ${before?.stockQuantity ?? "∅"} → ${qty ?? "∅"}`,
@@ -85,14 +97,58 @@ export async function setVariantStock(tenantId: string, variantId: string, qty: 
 }
 
 export async function setProductStock(tenantId: string, productId: string, qty: number | null, audit?: AuditActorInput): Promise<void> {
-  await requireTenantCapability(tenantId, "stockTracking");
+  await requireTenantCapability(tenantId, "inventory");
   await withTenant(tenantId, async (tx) => {
     const [before] = await tx.select({ stockQuantity: products.stockQuantity }).from(products).where(eq(products.id, productId)).limit(1);
     await tx.update(products).set({ stockQuantity: qty, trackStock: qty !== null }).where(eq(products.id, productId));
+    await reconcileLinkedOnHand(tx, tenantId, productId, null, qty, audit);
     await recordAuditEvent(auditCtx(tenantId, audit), {
       action: "catalog.stock.set", entityType: "product", entityId: productId,
       summary: `Product stock ${before?.stockQuantity ?? "∅"} → ${qty ?? "∅"}`,
       metadata: auditMeta(audit, { before: before?.stockQuantity ?? null, after: qty }), actorType: audit?.actorType,
     }, tx);
   });
+}
+
+/**
+ * Keeps the ledger — the real source of on-hand truth — in step when someone
+ * sets stock through the legacy integer field. Posts the difference as an
+ * `adjustment` against the linked finished-goods item, so "set stock to N"
+ * means on-hand really becomes N rather than the two numbers drifting apart.
+ *
+ * No link means the product predates the backfill or is untracked; there is
+ * nothing to reconcile and the integer stands alone.
+ */
+async function reconcileLinkedOnHand(
+  tx: Parameters<Parameters<typeof withTenant>[1]>[0],
+  tenantId: string, productId: string, variantId: string | null,
+  qty: number | null, audit?: AuditActorInput,
+): Promise<void> {
+  if (qty === null) return;
+  const [link] = await tx.select().from(productInventoryLinks).where(and(
+    eq(productInventoryLinks.productId, productId),
+    variantId ? eq(productInventoryLinks.variantId, variantId) : isNull(productInventoryLinks.variantId),
+  )).limit(1);
+  if (!link?.itemId) return;
+
+  const [loc] = await tx.select().from(storageLocations)
+    .where(and(eq(storageLocations.kind, "retail"), eq(storageLocations.isActive, true)))
+    .orderBy(sql`is_default DESC`).limit(1);
+  if (!loc) return;
+
+  const current = await onHandOnTx(tx, link.itemId, loc.id);
+  const delta = qty - current;
+  if (Math.abs(delta) < 0.0005) return;
+  await adjustStock(tx, {
+    tenantId, itemId: link.itemId, locationId: loc.id, baseQty: delta, uom: "each",
+    byUserId: audit?.actorUserId ?? null, note: "legacy stock field set",
+  });
+}
+
+async function onHandOnTx(
+  tx: Parameters<Parameters<typeof withTenant>[1]>[0], itemId: string, locationId: string,
+): Promise<number> {
+  const [row] = await tx.select({ sum: sql<string>`COALESCE(SUM(${stockLedger.qty}), 0)` }).from(stockLedger)
+    .where(and(eq(stockLedger.itemId, itemId), eq(stockLedger.locationId, locationId)));
+  return Number(row?.sum ?? 0);
 }
