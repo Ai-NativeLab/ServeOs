@@ -1105,7 +1105,17 @@ git commit -m "feat(inventory): inventory:*-gated dashboard routes (items/on-han
   - [x] **Restock** — `place-order.test.ts` ("restocks on customer cancel by reversing the ledger to the same lot") asserts the `refund_restock` row carries the original `lotId`.
   - [x] **Append-only** — `service.test.ts` asserts the trigger raises on both `UPDATE` and `DELETE`; also verified directly against the DB during Task 2, including that `TRUNCATE` still works so the test harness reset is intact.
   - [x] **Migration continuity** — `inventory/backfill.test.ts`: on-hand equals the old integer, the run is idempotent, and a post-backfill sale deducts identically then blocks past zero.
-  - [ ] **Authorization** — the RBAC boundary is asserted in `read.test.ts` (staff pass `inventory:view`/`inventory:count`, fail `inventory:manage` with `UnauthorizedError`, which is what each route maps to 403). **Still to confirm over HTTP:** an actual `403` body from `POST /api/inventory/adjustments` as staff, and a `400` from an item create with a cross-dimension UoM.
+  - [ ] **Authorization** — the RBAC boundary is asserted in `read.test.ts` (staff pass `inventory:view`/`inventory:count`, fail `inventory:manage` with `UnauthorizedError`, which is what each route maps to 403). **Still to confirm over HTTP:** an actual `403` body from `POST /api/inventory/adjustments` as staff, and a `400` from an item create with a cross-dimension UoM. (This repo has no route-level tests by convention — 3 component tests in `src/app`, none for routes — so the boundary is covered at the service layer, as everywhere else.)
+
+### Follow-up pass — 2026-08-05
+
+A review of this branch against the spec found five gaps; all are now closed.
+
+- [x] **Expired lots were being SOLD FIRST.** `deductFifo` ordered perishables by `expiry_at ASC` but never excluded expired lots, so the most-expired lot went out first — exactly inverted. Expired lots are now excluded (spec error-handling: "an expired lot is excluded from FIFO and surfaced for waste"). Their quantity stays on hand, so on-hand can exceed what is sellable, which is the honest state.
+- [x] **The depleted/expired-lot restock fallback** resolves without a second lot, and the branch first written for it was deleted rather than left as dead code: a lot can never be *missing* (`stock_ledger.lot_id` is `ON DELETE RESTRICT`), and an *expired* one is now excluded from FIFO, so restoring to it returns the stock to its own cost layer while keeping it off sale. That is the review outcome the spec wanted.
+- [x] **`emission-inventory.test.ts`** added, matching the six existing per-domain emission suites — asserts `inventory.adjust` / `.waste` / `.transfer` / `.count.commit` / `.recipe.*` / `.product_link.*` land with the right entity and metadata, that the hash chain still verifies, and that a sale's deduction emits **no** inventory event (`order.placed` covers it).
+- [x] **`PATCH /api/inventory/items/[id]`** and **`POST /api/inventory/counts/[id]/lines`** — the two endpoints the spec listed that were missing. `baseUom` is deliberately not editable (every ledger row is stored normalized to it). Count lines snapshot `systemQty` per line and re-counting an item replaces its line, so a correction is not applied twice.
+- [x] **Recipe authoring surface** — `recipes.ts` plus `/api/inventory/recipes`, `/recipes/[id]` and `/product-links`. This was the substantive gap: the deduction engine worked but a BOM could only be created by direct DB writes. The spec never specified these endpoints, so this extends it. Component units are validated against the item's base dimension at authoring time rather than at the till.
 
 - [ ] **Step 3: Open the PR.**
 
