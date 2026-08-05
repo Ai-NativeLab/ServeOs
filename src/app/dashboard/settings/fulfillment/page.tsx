@@ -76,14 +76,18 @@ export default async function FulfillmentPage() {
                       {DAYS.map((name, d) => {
                         const e = byDay(d);
                         return (
-                          <div key={d} className="flex items-center gap-3 text-sm">
+                          <div key={d} className="flex flex-wrap items-center gap-2 text-sm sm:gap-3">
                             <span className="eyebrow w-10">{name}</span>
-                            <label className="flex items-center gap-1.5 w-20">
+                            <label className="flex w-20 items-center gap-1.5">
                               <input type="checkbox" name={`closed-${d}`} defaultChecked={e?.closed ?? false} className="size-4 accent-(--color-primary)" /> Closed
                             </label>
-                            <Input type="time" name={`open-${d}`} defaultValue={e?.open ?? "10:00"} className="w-28 font-mono" />
-                            <span className="text-muted-foreground">–</span>
-                            <Input type="time" name={`close-${d}`} defaultValue={e?.close ?? "23:00"} className="w-28 font-mono" />
+                            {/* type=time has a UA-enforced intrinsic width, so the pair wraps
+                                to its own line on narrow screens instead of shrinking. */}
+                            <div className="flex items-center gap-2 sm:gap-3">
+                              <Input type="time" name={`open-${d}`} defaultValue={e?.open ?? "10:00"} className="w-28 font-mono" />
+                              <span className="text-muted-foreground">–</span>
+                              <Input type="time" name={`close-${d}`} defaultValue={e?.close ?? "23:00"} className="w-28 font-mono" />
+                            </div>
                           </div>
                         );
                       })}
