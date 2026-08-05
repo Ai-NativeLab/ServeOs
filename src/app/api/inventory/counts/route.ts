@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireInventoryPermission } from "@/app/dashboard/inventory-permission";
 import { UnauthorizedError } from "@/server/rbac/authorize";
 import { withTenant } from "@/db/with-tenant";
-import { listCounts, getOnHand } from "@/server/inventory/read";
-import { stockCounts, stockCountLines } from "@/server/inventory/schema";
+import { listCounts } from "@/server/inventory/read";
+import { addCountLines } from "@/server/inventory/service";
+import { stockCounts } from "@/server/inventory/schema";
 import type { StockCount } from "@/server/inventory/schema";
-import { qty } from "@/server/inventory/uom";
 
 export async function GET(req: NextRequest) {
   let ctx;
@@ -47,19 +47,9 @@ export async function POST(req: NextRequest) {
       tenantId: ctx.tenantId, branchId: body.branchId, locationId: body.locationId,
       startedByUserId: ctx.user.id,
     }).returning();
-
-    if (lines.length > 0) {
-      const onHandRows = await getOnHand(ctx.tenantId, { locationId: body.locationId });
-      const systemByItem = new Map(onHandRows.map((r) => [r.itemId, r.onHand]));
-      await tx.insert(stockCountLines).values(lines.map((l) => {
-        const system = systemByItem.get(l.itemId) ?? 0;
-        return {
-          tenantId: ctx.tenantId, countId: created.id, itemId: l.itemId,
-          systemQty: qty(system), countedQty: qty(l.countedQty),
-          varianceQty: qty(l.countedQty - system),
-        };
-      }));
-    }
+    // Opening with lines is a convenience for a one-pass count; the same helper
+    // backs POST /counts/:id/lines, so both paths snapshot systemQty identically.
+    await addCountLines(tx, ctx.tenantId, created.id, lines);
     return created;
   });
 

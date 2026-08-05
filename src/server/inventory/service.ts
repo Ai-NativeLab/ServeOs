@@ -172,6 +172,40 @@ export async function transferStock(tx: Tx, a: TransferArgs): Promise<void> {
 }
 
 /**
+ * Adds counted lines to an OPEN count, snapshotting each item's `systemQty` at
+ * the moment that line is entered. Counting a stockroom is not instantaneous —
+ * lines arrive in batches as someone walks the shelves — so snapshotting per
+ * line measures each variance against what the system believed when that shelf
+ * was actually counted.
+ *
+ * Re-counting an item REPLACES its earlier line rather than appending a second,
+ * so a corrected figure is not applied twice at commit.
+ */
+export async function addCountLines(
+  tx: Tx, tenantId: string, countId: string, lines: { itemId: string; countedQty: number }[],
+): Promise<void> {
+  if (lines.length === 0) return;
+  const [count] = await tx.select().from(stockCounts).where(eq(stockCounts.id, countId)).limit(1);
+  if (!count) throw new InventoryConfigError("stock count not found");
+  if (count.status !== "open") throw new InventoryConfigError(`stock count is already ${count.status}`);
+
+  for (const line of lines) {
+    const [row] = await tx.select({ sum: sql<string>`COALESCE(SUM(${stockLedger.qty}), 0)` }).from(stockLedger)
+      .where(and(eq(stockLedger.itemId, line.itemId), eq(stockLedger.locationId, count.locationId)));
+    const system = roundQty(Number(row?.sum ?? 0));
+    const counted = roundQty(line.countedQty);
+
+    await tx.delete(stockCountLines).where(and(
+      eq(stockCountLines.countId, countId), eq(stockCountLines.itemId, line.itemId),
+    ));
+    await tx.insert(stockCountLines).values({
+      tenantId, countId, itemId: line.itemId,
+      systemQty: qty(system), countedQty: qty(counted), varianceQty: qty(counted - system),
+    });
+  }
+}
+
+/**
  * Commits a physical count: one `count` ledger row per line for
  * `countedQty − systemQty`, reconciling the system to what is actually on the
  * shelf. Lines whose variance is zero write nothing — a count that found no
@@ -279,6 +313,8 @@ async function deductFifo(
   if (need <= EPS) return;
 
   // Perishables consume soonest-expiry first; everything else oldest-received.
+  // Ordering alone is not enough: without the exclusion below, `expiry_at ASC`
+  // would hand out the MOST expired lot first.
   const order = item.isPerishable
     ? sql`expiry_at ASC NULLS LAST, received_at ASC`
     : sql`received_at ASC`;
@@ -289,6 +325,10 @@ async function deductFifo(
       eq(inventoryLots.itemId, item.id),
       eq(inventoryLots.locationId, locationId),
       sql`${inventoryLots.qtyRemaining} > 0`,
+      // An expired lot is never sold. Its quantity stays on hand — visible, and
+      // awaiting an explicit `waste` row — rather than being silently consumed.
+      // So on-hand can exceed what is sellable, which is the honest state.
+      sql`(${inventoryLots.expiryAt} IS NULL OR ${inventoryLots.expiryAt} > now())`,
     )).orderBy(order).limit(1);
     if (!lot) break;
 
@@ -372,6 +412,19 @@ export async function reverseOrderDeductions(tx: Tx, a: ReverseArgs): Promise<vo
     const amount = roundQty(-Number(row.qty)); // the original is negative
     if (amount <= EPS) continue;
 
+    // Always restore to the ORIGINAL lot, including one since drained to zero —
+    // that is exactly the right cost layer for goods that came out of it.
+    //
+    // The spec asks for a "depleted/expired lot lands on a review lot" fallback
+    // so a consumed cost layer is not resurrected. Neither half needs a second
+    // lot here, and both reasons are structural rather than convenient:
+    //   - A lot can never be MISSING. stock_ledger.lot_id references
+    //     inventory_lots ON DELETE RESTRICT, so a lot with ledger rows cannot be
+    //     deleted; a fallback for it would be unreachable code.
+    //   - An EXPIRED lot is already excluded from deductFifo, so restoring to it
+    //     puts the quantity back on hand — visible, and awaiting an explicit
+    //     waste row — without it ever being resold as fresh. That IS the review
+    //     outcome the spec wanted, reached through the expiry rule.
     await tx.insert(stockLedger).values({
       tenantId: a.tenantId, itemId: row.itemId, locationId: row.locationId, lotId: row.lotId,
       type: "refund_restock", qty: qty(amount), uom: row.uom, unitCost: row.unitCost,

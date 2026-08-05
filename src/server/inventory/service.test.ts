@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
-import { stockLedger, inventoryLots } from "./schema";
+import { stockLedger, inventoryLots, stockCountLines } from "./schema";
 import {
-  onHand, adjustStock, transferStock, commitCount, deductForOrderLine, reverseOrderDeductions,
+  onHand, adjustStock, transferStock, commitCount, addCountLines, deductForOrderLine, reverseOrderDeductions,
   getOrCreateDefaultLocation,
 } from "./service";
 import { seedInventoryTenant, seedItem, seedLocation, stockLot, seedRecipeProduct } from "./test-helpers";
-import { OutOfStockError, DimensionalUomError } from "./errors";
+import { OutOfStockError, DimensionalUomError, InventoryConfigError } from "./errors";
 
 const deductArgs = (tenantId: string, branchId: string, over: Partial<Parameters<typeof deductForOrderLine>[1]> = {}) => ({
   tenantId, branchId, productId: "00000000-0000-0000-0000-000000000000", variantId: null,
@@ -104,14 +104,17 @@ describe("inventory ledger", () => {
     const { tenantId, branchId } = await seedInventoryTenant();
     const shelf = await seedLocation(tenantId, branchId, "retail");
     const itemId = await seedItem(tenantId, { baseUom: "ml", isPerishable: true });
+    // Both expiries are far future on purpose: this test is about ORDERING
+    // among sellable lots. A fixture date that quietly slips into the past would
+    // make the lot expired and silently turn this into a different test.
     // Received FIRST but expires LATER — FIFO would take this one; expiry-first must not.
     const oldReceivedLateExpiry = await stockLot(tenantId, {
       itemId, locationId: shelf, baseQty: 5, uom: "ml",
-      receivedAt: new Date("2026-01-01"), expiryAt: new Date("2026-12-31"),
+      receivedAt: new Date("2026-01-01"), expiryAt: new Date("2099-12-31"),
     });
     const newReceivedSoonExpiry = await stockLot(tenantId, {
       itemId, locationId: shelf, baseQty: 5, uom: "ml",
-      receivedAt: new Date("2026-06-01"), expiryAt: new Date("2026-07-01"),
+      receivedAt: new Date("2026-06-01"), expiryAt: new Date("2099-01-01"),
     });
 
     await withTenant(tenantId, async (tx) => {
@@ -124,6 +127,90 @@ describe("inventory ledger", () => {
     const byId = Object.fromEntries(lots.map((l) => [l.id, Number(l.qtyRemaining)]));
     expect(byId[newReceivedSoonExpiry]).toBe(0);
     expect(byId[oldReceivedLateExpiry]).toBe(5);
+  });
+
+  it("an expired lot is never sold — FIFO skips it and takes a fresh lot instead", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const shelf = await seedLocation(tenantId, branchId, "retail");
+    const itemId = await seedItem(tenantId, { baseUom: "ml", isPerishable: true });
+    // Expired yesterday. Ordering alone (expiry ASC) would hand this out FIRST,
+    // so only an explicit exclusion keeps it out of the sale.
+    const expired = await stockLot(tenantId, {
+      itemId, locationId: shelf, baseQty: 10, uom: "ml",
+      receivedAt: new Date("2026-01-01"), expiryAt: new Date("2026-08-04"),
+    });
+    const fresh = await stockLot(tenantId, {
+      itemId, locationId: shelf, baseQty: 10, uom: "ml",
+      receivedAt: new Date("2026-07-01"), expiryAt: new Date("2027-01-01"),
+    });
+
+    await withTenant(tenantId, async (tx) => {
+      const { productId } = await seedLinkedProduct(tx, tenantId, itemId);
+      await deductForOrderLine(tx, deductArgs(tenantId, branchId, { productId, quantity: 6 }));
+    });
+
+    const lots = await withTenant(tenantId, (tx) =>
+      tx.select().from(inventoryLots).where(eq(inventoryLots.itemId, itemId)));
+    const byId = Object.fromEntries(lots.map((l) => [l.id, Number(l.qtyRemaining)]));
+    expect(byId[expired]).toBe(10); // untouched
+    expect(byId[fresh]).toBe(4);
+    // The expired stock still counts as on hand — it exists, it just is not
+    // sellable — so it stays visible until someone writes it off as waste.
+    expect(await onHand(tenantId, itemId, shelf)).toBe(14);
+  });
+
+  it("a retail sale is refused when the only stock left is expired", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant("retail");
+    const shelf = await seedLocation(tenantId, branchId, "retail");
+    const itemId = await seedItem(tenantId, { baseUom: "ml", kind: "finished_good", isPerishable: true });
+    await stockLot(tenantId, {
+      itemId, locationId: shelf, baseQty: 10, uom: "ml", expiryAt: new Date("2026-08-04"),
+    });
+
+    await expect(withTenant(tenantId, async (tx) => {
+      const { productId } = await seedLinkedProduct(tx, tenantId, itemId);
+      await deductForOrderLine(tx, deductArgs(tenantId, branchId, { productId, quantity: 1 }));
+    })).rejects.toThrow(OutOfStockError);
+  });
+
+  it("a cancel whose lot expired meanwhile returns the stock but does not put it back on sale", async () => {
+    // This is the spec's "depleted/expired lot → flagged for review" outcome.
+    // It needs no separate review lot: the quantity goes back to its original
+    // cost layer, and the expiry exclusion keeps it from being sold, so it sits
+    // visible on hand until someone writes it off.
+    const { tenantId, branchId } = await seedInventoryTenant("retail");
+    const shelf = await seedLocation(tenantId, branchId, "retail");
+    const itemId = await seedItem(tenantId, { baseUom: "each", kind: "finished_good", isPerishable: true });
+    const lotId = await stockLot(tenantId, {
+      itemId, locationId: shelf, baseQty: 10, uom: "each", expiryAt: new Date("2099-01-01"),
+    });
+
+    const orderItemId = "00000000-0000-0000-0000-0000000000f9";
+    const productId = await withTenant(tenantId, async (tx) => {
+      const { productId } = await seedLinkedProduct(tx, tenantId, itemId);
+      await deductForOrderLine(tx, deductArgs(tenantId, branchId, { productId, quantity: 4, orderItemId }));
+      return productId;
+    });
+    expect(await onHand(tenantId, itemId, shelf)).toBe(6);
+
+    // The lot expires while the order is outstanding.
+    await withTenant(tenantId, (tx) => tx.update(inventoryLots)
+      .set({ expiryAt: new Date("2026-08-04") }).where(eq(inventoryLots.id, lotId)));
+
+    await withTenant(tenantId, (tx) => reverseOrderDeductions(tx, {
+      tenantId, orderId: "unused", orderItemIds: [orderItemId],
+    }));
+
+    // Returned to its own lot, and countable...
+    expect(await onHand(tenantId, itemId, shelf)).toBe(10);
+    const [lot] = await withTenant(tenantId, (tx) =>
+      tx.select().from(inventoryLots).where(eq(inventoryLots.id, lotId)));
+    expect(Number(lot.qtyRemaining)).toBe(10);
+
+    // ...but not sellable, so expired goods cannot go back out of the door.
+    await expect(withTenant(tenantId, (tx) => deductForOrderLine(tx, deductArgs(tenantId, branchId, {
+      productId, quantity: 1, orderItemId: "00000000-0000-0000-0000-0000000000fa",
+    })))).rejects.toThrow(OutOfStockError);
   });
 
   it("retail blocks on a shortfall: OutOfStockError and no deduction rows", async () => {
@@ -292,6 +379,49 @@ describe("inventory ledger", () => {
     expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(OutOfStockError);
     // Never oversold: the winner took the unit, the loser wrote nothing.
     expect(await onHand(tenantId, itemId, shelf)).toBe(0);
+  });
+
+  it("count lines snapshot system qty, and re-counting an item corrects rather than double-counts", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const kitchen = await seedLocation(tenantId, branchId, "kitchen");
+    const itemId = await seedItem(tenantId, { baseUom: "g" });
+    await stockLot(tenantId, { itemId, locationId: kitchen, baseQty: 10, uom: "g" });
+
+    const countId = await withTenant(tenantId, async (tx) => {
+      const rows = await tx.execute<{ id: string }>(sql`
+        INSERT INTO stock_counts (tenant_id, branch_id, location_id)
+        VALUES (${tenantId}, ${branchId}, ${kitchen}) RETURNING id`);
+      const id = rows.rows[0].id;
+      await addCountLines(tx, tenantId, id, [{ itemId, countedQty: 7 }]);
+      // The counter miscounted and re-submits the same item.
+      await addCountLines(tx, tenantId, id, [{ itemId, countedQty: 8 }]);
+      return id;
+    });
+
+    const lines = await withTenant(tenantId, (tx) =>
+      tx.select().from(stockCountLines).where(eq(stockCountLines.countId, countId)));
+    expect(lines).toHaveLength(1); // corrected, not appended
+    expect(Number(lines[0].countedQty)).toBe(8);
+    expect(Number(lines[0].systemQty)).toBe(10);
+    expect(Number(lines[0].varianceQty)).toBe(-2);
+
+    await withTenant(tenantId, (tx) => commitCount(tx, tenantId, countId, null));
+    expect(await onHand(tenantId, itemId, kitchen)).toBe(8);
+  });
+
+  it("refuses to add lines to a count that is already committed", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const kitchen = await seedLocation(tenantId, branchId, "kitchen");
+    const itemId = await seedItem(tenantId, { baseUom: "g" });
+
+    await expect(withTenant(tenantId, async (tx) => {
+      const rows = await tx.execute<{ id: string }>(sql`
+        INSERT INTO stock_counts (tenant_id, branch_id, location_id)
+        VALUES (${tenantId}, ${branchId}, ${kitchen}) RETURNING id`);
+      const id = rows.rows[0].id;
+      await commitCount(tx, tenantId, id, null);
+      await addCountLines(tx, tenantId, id, [{ itemId, countedQty: 1 }]);
+    })).rejects.toThrow(InventoryConfigError);
   });
 
   it("the stock_ledger append-only trigger rejects UPDATE and DELETE", async () => {
