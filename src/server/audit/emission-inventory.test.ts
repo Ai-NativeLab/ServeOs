@@ -9,6 +9,7 @@ import type { AuditActorInput } from "./service";
 import { adjustStock, transferStock, commitCount, deductForOrderLine } from "@/server/inventory/service";
 import { stockCounts, stockCountLines } from "@/server/inventory/schema";
 import { seedInventoryTenant, seedItem, seedLocation, stockLot } from "@/server/inventory/test-helpers";
+import { createRecipe, setRecipeComponents, linkProduct, unlinkProduct } from "@/server/inventory/recipes";
 
 async function eventsFor(tenantId: string, action: string) {
   return withTenant(tenantId, (tx) =>
@@ -103,6 +104,34 @@ describe("audit emission — inventory", () => {
     expect(event).toBeTruthy();
     expect(event.entityType).toBe("stock_count");
     expect((event.metadata as { varianceLines: number }).varianceLines).toBe(1);
+    expect((await verifyChain(tenantId)).ok).toBe(true);
+  });
+
+  it("authoring a recipe and linking a product are both audited", async () => {
+    const { tenantId, audit } = await setup();
+    const itemId = await seedItem(tenantId, { nameEn: "Dough", baseUom: "g" });
+
+    const recipe = await createRecipe(tenantId, {
+      nameEn: "Margherita", nameAr: "مارجريتا",
+      components: [{ itemId, qty: "200", uom: "g" }],
+    }, audit);
+    await setRecipeComponents(tenantId, recipe.id, [{ itemId, qty: "250", uom: "g" }], audit);
+
+    const productId = await withTenant(tenantId, async (tx) => {
+      const cat = await tx.execute<{ id: string }>(sql`
+        INSERT INTO categories (tenant_id, name_en, name_ar) VALUES (${tenantId}, 'C', 'ج') RETURNING id`);
+      const prod = await tx.execute<{ id: string }>(sql`
+        INSERT INTO products (tenant_id, category_id, name_en, name_ar, base_price)
+        VALUES (${tenantId}, ${cat.rows[0].id}, 'P', 'ب', '10.00') RETURNING id`);
+      return prod.rows[0].id;
+    });
+    await linkProduct(tenantId, { productId, linkType: "recipe", recipeId: recipe.id }, audit);
+    await unlinkProduct(tenantId, productId, null, audit);
+
+    expect(await eventsFor(tenantId, "inventory.recipe.created")).toHaveLength(1);
+    expect(await eventsFor(tenantId, "inventory.recipe.components_set")).toHaveLength(1);
+    expect(await eventsFor(tenantId, "inventory.product_link.set")).toHaveLength(1);
+    expect(await eventsFor(tenantId, "inventory.product_link.removed")).toHaveLength(1);
     expect((await verifyChain(tenantId)).ok).toBe(true);
   });
 

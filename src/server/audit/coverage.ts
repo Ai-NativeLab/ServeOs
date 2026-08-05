@@ -23,6 +23,7 @@ export const AUDITED_SERVICE_FILES = [
   "src/server/catalog/service.ts",
   "src/server/catalog/variants.ts",
   "src/server/inventory/service.ts",
+  "src/server/inventory/recipes.ts",
   "src/server/branches/service.ts",
   "src/server/tenancy/settings.ts",
   "src/server/tenancy/service.ts",
@@ -134,6 +135,10 @@ export const AUDIT_ALLOWLIST: Record<string, string> = {
   // never blocked on missing setup. Configuration of a location, not a stock
   // movement — nothing about on-hand changes.
   "service.getOrCreateDefaultLocation": "lazily provisions a branch default location; no stock movement",
+  // Entering counted lines is data capture on an open count, not a domain
+  // mutation — nothing about stock changes until commitCount, which emits
+  // inventory.count.commit and carries the variance-line count with it.
+  "service.addCountLines": "inventory.count.commit emitted by commitCount; lines alone move no stock",
   // Forward references — land with later specs; the guardrail enforces they emit then.
   "forward:refund.*": "Spec 3 refunds must emit refund.* via recordAuditEvent",
   "forward:purchase-order.*": "Spec 9 PO lifecycle must emit po.*",
