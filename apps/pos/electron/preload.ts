@@ -12,6 +12,12 @@ import type {
   DrawerResult,
   DayReport,
   DayZReport,
+  SalesSearch,
+  SalesRow,
+  SaleDetail,
+  RefundSaleInput,
+  RefundSaleResult,
+  ReprintReceipt,
 } from "./pos-main";
 
 export type OrderSummary = {
@@ -32,6 +38,15 @@ export type PosLoginResult =
 
 export type CashierInfo = { name: string; permissions: string[] };
 
+export type {
+  SalesSearch,
+  SalesRow,
+  SaleDetail,
+  RefundSaleInput,
+  RefundSaleResult,
+  ReprintReceipt,
+} from "./pos-main";
+
 export interface PosBridge {
   isPaired(): Promise<boolean>;
   branchName(): Promise<string>;
@@ -40,6 +55,10 @@ export interface PosBridge {
   getMenu(): Promise<{ json: string; pricing: CheckoutPricing; syncedAt: string } | null>;
   getOrders(): Promise<OrderSummary[]>;
   advanceOrder(orderId: string, toStatus: string): Promise<void>;
+  listSales(search?: SalesSearch): Promise<SalesRow[]>;
+  getSale(orderId: string): Promise<SaleDetail>;
+  reprintReceipt(orderId: string): Promise<ReprintReceipt>;
+  refundSale(input: RefundSaleInput): Promise<RefundSaleResult>;
   signInCashier(email: string, password: string): Promise<CashierInfo>;
   cashier(): Promise<CashierInfo | null>;
   signOutCashier(): Promise<void>;
@@ -66,6 +85,10 @@ contextBridge.exposeInMainWorld("pos", {
   getMenu: () => ipcRenderer.invoke("pos:getMenu"),
   getOrders: () => ipcRenderer.invoke("pos:getOrders"),
   advanceOrder: (orderId: string, toStatus: string) => ipcRenderer.invoke("pos:advanceOrder", orderId, toStatus),
+  listSales: (search?: SalesSearch) => ipcRenderer.invoke("pos:listSales", search),
+  getSale: (orderId: string) => ipcRenderer.invoke("pos:getSale", orderId),
+  reprintReceipt: (orderId: string) => ipcRenderer.invoke("pos:reprintReceipt", orderId),
+  refundSale: (input: RefundSaleInput) => ipcRenderer.invoke("pos:refundSale", input),
   signInCashier: (email: string, password: string) => ipcRenderer.invoke("pos:signInCashier", email, password),
   cashier: () => ipcRenderer.invoke("pos:cashier"),
   signOutCashier: () => ipcRenderer.invoke("pos:signOutCashier"),
