@@ -1,8 +1,62 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePosCashier, assertPermission } from "@/server/pos/require-cashier";
 import { recordSale, type RecordSaleInput } from "@/server/pos/record-sale";
+import { listSales, type SalesFilters } from "@/server/pos/sales-history";
 import { NoOpenShiftError, PosAuthError, PosCashierError, PosForbiddenError, PosSaleError } from "@/server/pos/errors";
 import { TotalMismatchError, OrderValidationError, OutOfStockError } from "@/server/ordering/errors";
+
+/** Sales-history search: only pos:sell is needed to LOOK a sale up — returning
+ *  money is the privileged step, resolved inside issueRefund. */
+export async function GET(req: NextRequest) {
+  let ctx;
+  try {
+    ctx = await requirePosCashier(req);
+    assertPermission(ctx, "pos:sell");
+  } catch (e) {
+    if (e instanceof PosAuthError || e instanceof PosCashierError) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    if (e instanceof PosForbiddenError) return NextResponse.json({ error: e.message }, { status: 403 });
+    throw e;
+  }
+
+  const sp = req.nextUrl.searchParams;
+  const from = sp.get("from");
+  const to = sp.get("to");
+  const orderNumber = sp.get("orderNumber");
+  const amount = sp.get("amount");
+  const page = sp.get("page");
+  const dateFrom = from ? new Date(from) : undefined;
+  const dateTo = to ? new Date(to) : undefined;
+  const numOrderNumber = orderNumber !== null ? Number(orderNumber) : undefined;
+  const numAmount = amount !== null ? Number(amount) : undefined;
+  const numPage = page !== null ? Number(page) : undefined;
+  if (numOrderNumber !== undefined && Number.isNaN(numOrderNumber)) {
+    return NextResponse.json({ error: "Invalid orderNumber" }, { status: 400 });
+  }
+  if (numAmount !== undefined && Number.isNaN(numAmount)) {
+    return NextResponse.json({ error: "Invalid amount" }, { status: 400 });
+  }
+  if (numPage !== undefined && (Number.isNaN(numPage) || numPage < 1)) {
+    return NextResponse.json({ error: "Invalid page" }, { status: 400 });
+  }
+  if ((dateFrom !== undefined && Number.isNaN(dateFrom.getTime())) || (dateTo !== undefined && Number.isNaN(dateTo.getTime()))) {
+    return NextResponse.json({ error: "Invalid date" }, { status: 400 });
+  }
+
+  const filters: SalesFilters = {
+    dateFrom,
+    dateTo,
+    cashierUserId: sp.get("cashier") ?? undefined,
+    customerPhone: sp.get("phone") ?? undefined,
+    orderNumber: numOrderNumber,
+    amount: numAmount,
+    branchId: sp.get("branchId") ?? undefined,
+    page: numPage,
+  };
+  const sales = await listSales(ctx.tenantId, filters);
+  return NextResponse.json(sales);
+}
 
 export async function POST(req: NextRequest) {
   let ctx;
