@@ -7,6 +7,7 @@ import { getCheckoutPricing } from "@/server/tenancy/settings";
 import { computeCartTotals } from "@/lib/order-totals";
 import { tenants } from "@/server/tenancy/schema";
 import { getOrder, placeOrder, cancelOrderByToken } from "@/server/ordering/service";
+import { products } from "@/server/catalog/schema";
 import { orderPayments } from "./tender-schema";
 import { refunds, refundLines, refundPayments } from "./refund-schema";
 import { PosForbiddenError, PosRefundError } from "./errors";
@@ -40,6 +41,28 @@ async function seedPaidSale(role: "owner" | "manager" | "staff" = "owner", quant
     payments: [{ clientPaymentId: "pay-1", method: "cash", amount: total, tenderedAmount: total }],
   });
   return { ...s, receipt, total };
+}
+
+/**
+ * A paid sale on a STOCK-TRACKED tenant (retail vertical, product trackStock
+ * on). The sale itself decrements stock (placeOrder's guarded UPDATE), so the
+ * product's stock after the sale is `stock − quantity` — exactly what a refund
+ * with restock=true must add back.
+ */
+async function seedStockedPaidSale(quantity = 1, stock = 10) {
+  const s = await seedPosContext("owner", { vertical: "retail", trackStock: true, stockQuantity: stock });
+  await openShiftForCtx(s.ctx);
+  const pricing = await getCheckoutPricing(s.tenantId);
+  const total = computeCartTotals(pricing, [{ unitPrice: 100, quantity }], 0).total;
+  const receipt = await recordSale(s.ctx, {
+    clientOrderId: "sale-1",
+    lines: [{ productId: s.productId, quantity, selectedOptionIds: [] }],
+    expectedTotal: total,
+    payments: [{ clientPaymentId: "pay-1", method: "cash", amount: total, tenderedAmount: total }],
+  });
+  const [stockRow] = await withTenant(s.tenantId, (tx) =>
+    tx.select({ stockQuantity: products.stockQuantity }).from(products).where(eq(products.id, s.productId)));
+  return { ...s, receipt, total, stockAfterSale: stockRow.stockQuantity };
 }
 
 /** The money one unit is worth in a `quantity`-unit fixture sale (for 1-of-n line refunds). */
@@ -248,5 +271,93 @@ describe("issueRefund", () => {
     }).returning();
     const seen = await withTenant(bTenant.id, (tx) => tx.select().from(refunds));
     expect(seen).toHaveLength(0);
+  });
+});
+
+describe("issueRefund restock", () => {
+  const readStock = async (tenantId: string, productId: string) => {
+    const [row] = await withTenant(tenantId, (tx) =>
+      tx.select({ stockQuantity: products.stockQuantity }).from(products).where(eq(products.id, productId)));
+    return row.stockQuantity;
+  };
+
+  it("restock=true on a stock-tracked line adds the refunded quantity back to products.stockQuantity", async () => {
+    const s = await seedStockedPaidSale(1, 10);
+    expect(s.stockAfterSale).toBe(9); // the sale itself decremented 10 → 9
+    const item = (await getOrder(s.tenantId, s.receipt.orderId)).items[0];
+
+    await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "full",
+      lines: [{ orderItemId: item.id, quantity: 1, amount: s.receipt.paidAmount, restock: true }],
+      payments: [{ method: "cash", amount: s.receipt.paidAmount }],
+      reasonCode: "wrong_item",
+      clientRefundId: "r1",
+    });
+
+    expect(await readStock(s.tenantId, s.productId)).toBe(10);
+  });
+
+  it("restock=false returns the money but leaves stockQuantity unchanged", async () => {
+    const s = await seedStockedPaidSale(1, 10);
+    expect(s.stockAfterSale).toBe(9);
+    const item = (await getOrder(s.tenantId, s.receipt.orderId)).items[0];
+
+    await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "full",
+      lines: [{ orderItemId: item.id, quantity: 1, amount: s.receipt.paidAmount, restock: false }],
+      payments: [{ method: "cash", amount: s.receipt.paidAmount }],
+      reasonCode: "wrong_item",
+      clientRefundId: "r1",
+    });
+
+    expect(await readStock(s.tenantId, s.productId)).toBe(9);
+  });
+
+  it("a partial refund of 1 of a 2-qty line restocks exactly 1, not 2 (line+qty scoping)", async () => {
+    const s = await seedStockedPaidSale(2, 10);
+    expect(s.stockAfterSale).toBe(8); // 10 − 2 sold
+    const item = (await getOrder(s.tenantId, s.receipt.orderId)).items[0];
+    const unit = perUnit(s.receipt.paidAmount, 2);
+
+    await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "partial",
+      lines: [{ orderItemId: item.id, quantity: 1, amount: unit, restock: true }],
+      payments: [{ method: "cash", amount: unit }],
+      reasonCode: "wrong_item",
+      clientRefundId: "r1",
+    });
+
+    // Exactly the returned unit comes back — a whole-order restock would have
+    // added 2 (the bug restockRefundedLines' line+qty scope exists to prevent).
+    expect(await readStock(s.tenantId, s.productId)).toBe(9);
+  });
+
+  it("restock on a restaurant tenant (stockTracking off) is a no-op — stock stays untouched", async () => {
+    const s = await seedPaidSale("owner", 1);
+    const item = (await getOrder(s.tenantId, s.receipt.orderId)).items[0];
+
+    await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "full",
+      lines: [{ orderItemId: item.id, quantity: 1, amount: s.receipt.paidAmount, restock: true }],
+      payments: [{ method: "cash", amount: s.receipt.paidAmount }],
+      reasonCode: "wrong_item",
+      clientRefundId: "r1",
+    });
+
+    // Restaurant products are never trackStock'd; the restock gate short-circuits.
+    expect(await readStock(s.tenantId, s.productId)).toBeNull();
+  });
+
+  // FORWARD DEP (Spec 8): when the stock_ledger exists, restockRefundedLines
+  // stops doing the integer add-back asserted above and instead writes a
+  // `refund_restock` stock_ledger row reversing the original sale_deduction on
+  // the same lot (per the inventory spec's restock-on-refund path). The tests
+  // above pin the integer fallback that must be rewired — no issueRefund change.
+  it("documents the Spec 8 forward path: integer add-back will become a refund_restock ledger row", () => {
+    expect(true).toBe(true);
   });
 });

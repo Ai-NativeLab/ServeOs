@@ -423,6 +423,40 @@ async function restockOrderItems(tx: Parameters<Parameters<typeof withTenant>[1]
   }
 }
 
+/**
+ * Returns specific order-item quantities to stock for a refund. Line- and
+ * quantity-scoped (unlike restockOrderItems, which restocks a whole order).
+ * FORWARD DEP (Spec 8): when the stock_ledger exists, replace the integer
+ * add-back with a `refund_restock` ledger row reversing the original
+ * sale_deduction on the same lot (per the inventory spec's restock-on-refund
+ * path). Until then this is the integer fallback; a no-op for verticals with
+ * stockTracking off (e.g. restaurant).
+ */
+export async function restockRefundedLines(
+  tx: Parameters<Parameters<typeof withTenant>[1]>[0],
+  tenantId: string,
+  lines: { orderItemId: string; quantity: number; restock: boolean }[],
+): Promise<void> {
+  const toRestock = lines.filter((l) => l.restock && l.quantity > 0);
+  if (toRestock.length === 0) return;
+  const tenant = await getTenantById(tenantId);
+  const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalId);
+  if (!caps.stockTracking) return;
+  for (const l of toRestock) {
+    const [item] = await tx.select().from(orderItems).where(eq(orderItems.id, l.orderItemId)).limit(1);
+    if (!item) continue;
+    if (item.variantId) {
+      await tx.update(productVariants)
+        .set({ stockQuantity: sql`${productVariants.stockQuantity} + ${l.quantity}` })
+        .where(eq(productVariants.id, item.variantId));
+    } else {
+      await tx.update(products)
+        .set({ stockQuantity: sql`${products.stockQuantity} + ${l.quantity}` })
+        .where(and(eq(products.id, item.productId), eq(products.trackStock, true)));
+    }
+  }
+}
+
 /** Customer-initiated cancel, authorised by possession of the status token.
  * Policy: only while still `pending` — once the restaurant confirms, the
  * customer escalates via phone/WhatsApp instead. Dashboard cancels keep their

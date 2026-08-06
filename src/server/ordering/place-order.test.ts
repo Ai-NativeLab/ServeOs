@@ -470,7 +470,7 @@ describe("confirmOrderPayment / rejectOrderPayment", () => {
       paymentMethod: "instapay", paymentReference: "IP-2",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
-    const { rejectOrderPayment, getOrder } = await import("./service");
+    const { rejectOrderPayment } = await import("./service");
     const o = await rejectOrderPayment(t.id, res.orderId, user.id, "no funds received");
     expect(o.status).toBe("cancelled");
   });

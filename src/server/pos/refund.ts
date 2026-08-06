@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
-import { money } from "@/server/ordering/service";
+import { money, restockRefundedLines } from "@/server/ordering/service";
 import { orders, orderItems, type Order } from "@/server/ordering/schema";
 import { orderPayments } from "./tender-schema";
 import { refunds, refundLines, refundPayments } from "./refund-schema";
@@ -52,17 +52,6 @@ export type RefundResult = {
   paymentStatus: Order["paymentStatus"];
   idempotent: boolean;
 };
-
-/**
- * FORWARD DEP (#110): per-line, per-quantity restock for restock=true lines.
- * Issue #110 replaces this stub with the real helper exported from
- * ordering/service.ts. A no-op today — a refund completes and restocks nothing.
- */
-async function restockRefundedLines(
-  _tx: Tx,
-  _tenantId: string,
-  _lines: { orderItemId: string; quantity: number; restock: boolean }[],
-): Promise<void> {}
 
 /**
  * FORWARD DEP (#111): the refund.issued audit emission, atomic with this refund
@@ -211,7 +200,8 @@ export async function issueRefund(actor: RefundActor, input: RefundInput): Promi
       })),
     );
 
-    // 6. Restock each restock=true line (seam — #110 fills this in).
+    // 6. Restock each restock=true line (integer fallback now; Spec 8's
+    //    refund_restock ledger is the forward path — no issueRefund change).
     await restockRefundedLines(tx, actor.tenantId, input.lines);
 
     // 7. payment_status is DERIVED from the math, never set by hand. If this
