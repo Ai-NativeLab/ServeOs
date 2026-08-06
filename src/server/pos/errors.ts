@@ -46,6 +46,14 @@ export class PosSaleError extends Error {
   }
 }
 
+/** Thrown when a refund is invalid: over-refund, line over-refund, unpaid/voided order, or amount mismatch. */
+export class PosRefundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PosRefundError";
+  }
+}
+
 /** Thrown when opening a shift on a device that already has one open. */
 export class ShiftAlreadyOpenError extends Error {
   constructor(message = "This drawer already has an open shift") {

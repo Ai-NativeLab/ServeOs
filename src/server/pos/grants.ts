@@ -1,7 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Permission } from "@/server/rbac/permissions";
 import { PosForbiddenError } from "./errors";
-import type { PosCashierContext } from "./require-cashier";
 
 /** Long enough for a manager to walk over; short enough to be useless if left on screen. */
 export const GRANT_TTL_MS = 2 * 60 * 1000;
@@ -30,12 +29,23 @@ export function consumeGrant(tenantId: string, token: string, permission: Permis
 }
 
 /**
+ * The slice of a cashier context `resolveAuthorizer` reads. Kept minimal so
+ * non-POS actors (e.g. the refund's `RefundActor`) can authorize without a
+ * full `PosCashierContext` — and without casting.
+ */
+export type PosAuthorizerContext = {
+  tenantId: string;
+  cashierUserId: string;
+  permissions: Permission[];
+};
+
+/**
  * Who authorized this action? The cashier, if they hold the permission
  * themselves; otherwise the manager behind the grant. Throws if neither.
  * Every gated write goes through here — it is the single enforcement point.
  */
 export function resolveAuthorizer(
-  ctx: PosCashierContext,
+  ctx: PosAuthorizerContext,
   permission: Permission,
   grantToken?: string,
 ): string {
