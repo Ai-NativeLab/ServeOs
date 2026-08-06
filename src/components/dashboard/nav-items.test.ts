@@ -4,7 +4,7 @@ import { dashboardNavItems } from "./nav-items";
 describe("dashboardNavItems", () => {
   it("shows staff only Orders (no Home/Payments/Menu/Settings)", () => {
     const hrefs = dashboardNavItems(["staff"]).map((i) => i.href);
-    expect(hrefs).toEqual(["/dashboard/orders"]);
+    expect(hrefs).toEqual(["/dashboard/orders", "/dashboard/orders/history"]);
   });
 
   it("does not show staff the Payments confirmation queue (owner/manager only)", () => {
@@ -15,7 +15,7 @@ describe("dashboardNavItems", () => {
   it("shows owners the full nav including Home, Payments, Settings, Audit and Customers", () => {
     const labels = dashboardNavItems(["owner"]).map((i) => i.label);
     expect(labels).toEqual([
-      "Home", "Analytics", "Orders", "Payments", "Menu", "Branches", "Banners", "Settings", "Audit", "Customers", "Prescriptions",
+      "Home", "Analytics", "Orders", "Sales history", "Payments", "Menu", "Branches", "Banners", "Settings", "Audit", "Customers", "Prescriptions",
     ]);
   });
 

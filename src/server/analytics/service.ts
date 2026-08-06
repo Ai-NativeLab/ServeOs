@@ -304,19 +304,19 @@ export async function getRefundsAndVoids(tenantId: string, days: number): Promis
 
     if (!(await tableExists(tx, "refunds"))) return { voids, refunds: null };
 
-    // Spec 3's canonical shape: refunds(id, order_id, total, created_at) with
-    // refund_lines carrying reason codes. Lights up when Spec 3 migrates.
+    // Spec 3 shape: refunds(id, order_id, total_amount, created_at, reason_code)
+    // with one reason per refund (header); refund_lines carry the per-item amounts.
     const [{ rows: totals }, { rows: reasons }] = await Promise.all([
       tx.execute<{ amount: string; count: string }>(sql`
-        SELECT COALESCE(SUM(r.total), 0) AS amount, COUNT(*) AS count
+        SELECT COALESCE(SUM(r.total_amount), 0) AS amount, COUNT(*) AS count
         FROM refunds r WHERE r.created_at >= ${since}
       `),
       tx.execute<{ reason_code: string; amount: string; count: string }>(sql`
-        SELECT rl.reason_code, COALESCE(SUM(rl.amount), 0) AS amount, COUNT(*) AS count
+        SELECT r.reason_code, COALESCE(SUM(rl.amount), 0) AS amount, COUNT(*) AS count
         FROM refund_lines rl
         JOIN refunds r ON r.id = rl.refund_id
         WHERE r.created_at >= ${since}
-        GROUP BY rl.reason_code
+        GROUP BY r.reason_code
         ORDER BY amount DESC
       `),
     ]);
