@@ -7,7 +7,7 @@ export const orderStatusEnum = pgEnum("order_status", [
 ]);
 export const fulfillmentTypeEnum = pgEnum("fulfillment_type", ["pickup", "delivery"]);
 export const orderChannelEnum = pgEnum("order_channel", ["web", "pos", "whatsapp"]);
-export const paymentStatusEnum = pgEnum("payment_status", ["unpaid", "pending_verification", "partially_paid", "paid"]);
+export const paymentStatusEnum = pgEnum("payment_status", ["unpaid", "pending_verification", "partially_paid", "paid", "refunded", "partially_refunded"]);
 /** P3: pharmacist review is a SEPARATE axis from order_status (decision R2) —
  *  it gates pending -> confirmed without adding a status every vertical sees. */
 export const rxReviewStatusEnum = pgEnum("rx_review_status", ["not_required", "pending", "approved", "rejected"]);

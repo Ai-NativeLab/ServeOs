@@ -13,6 +13,7 @@ export * from "../server/pos/schema";
 export * from "../server/payments/offline/methods.schema";
 export * from "../server/pos/tender-schema";
 export * from "../server/pos/shift-schema";
+export * from "../server/pos/refund-schema";
 export * from "../server/audit/schema";
 export * from "../server/whatsapp/schema";
 export * from "../server/notifications/schema";
