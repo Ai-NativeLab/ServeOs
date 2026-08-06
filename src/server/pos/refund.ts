@@ -1,5 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
+import { recordAuditEvent } from "@/server/audit/service";
+import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { money, restockRefundedLines } from "@/server/ordering/service";
 import { orders, orderItems, type Order } from "@/server/ordering/schema";
 import { orderPayments } from "./tender-schema";
@@ -10,9 +12,6 @@ import { PosRefundError } from "./errors";
 import type { Permission } from "@/server/rbac/permissions";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
-
-/** The Drizzle transaction type every withTenant callback receives. */
-type Tx = Parameters<Parameters<typeof withTenant>[1]>[0];
 
 export type RefundActor = {
   tenantId: string;
@@ -52,21 +51,6 @@ export type RefundResult = {
   paymentStatus: Order["paymentStatus"];
   idempotent: boolean;
 };
-
-/**
- * FORWARD DEP (#111): the refund.issued audit emission, atomic with this refund
- * (it receives the same tx). Issue #111 replaces this stub with the settable
- * emitter in refund-audit.ts. Inert today — a refund completes without one and
- * is never blocked by the absence of an emitter.
- */
-async function emitRefundIssued(
-  _ctx: { tenantId: string; branchId: string; actorUserId: string },
-  _event: {
-    refundId: string; orderId: string; kind: string; totalAmount: string; reasonCode: string;
-    paymentStatus: string; byUserId: string; authorizedByUserId: string | null;
-  },
-  _tx: Tx,
-): Promise<void> {}
 
 /**
  * Returns money against a completed, paid sale — full or partial — in ONE
@@ -210,18 +194,34 @@ export async function issueRefund(actor: RefundActor, input: RefundInput): Promi
       round2(netPaid - thisTotal) <= 0.001 ? "refunded" : "partially_refunded";
     await tx.update(orders).set({ paymentStatus, updatedAt: new Date() }).where(eq(orders.id, input.orderId));
 
-    // 8. Audit — same tx, so it commits/rolls back with the refund (seam — #111).
-    await emitRefundIssued(
-      { tenantId: actor.tenantId, branchId: actor.branchId, actorUserId: actor.actorUserId },
+    // 8. Audit — DIRECT recordAuditEvent, same tx, so the refund.issued row
+    //    commits/rolls back with the refund. The audit chain is live on-branch
+    //    (unlike the plan's seam premise), so this matches record-sale's
+    //    sale.recorded pattern rather than a settable emitter. RefundActor has
+    //    no device fingerprint (a refund may come from a dashboard user, #112/
+    //    #115), so the canonical empty fingerprint is used; attribution is the
+    //    actor id, with the manager who authorized captured in metadata.
+    await recordAuditEvent(
       {
-        refundId: refund.id,
-        orderId: input.orderId,
-        kind: input.kind,
-        totalAmount: money(thisTotal),
-        reasonCode: input.reasonCode,
-        paymentStatus,
-        byUserId: actor.actorUserId,
-        authorizedByUserId,
+        tenantId: actor.tenantId,
+        branchId: actor.branchId,
+        actorUserId: actor.actorUserId,
+        fingerprint: emptyFingerprint(),
+      },
+      {
+        action: "refund.issued",
+        entityType: "refund",
+        entityId: refund.id,
+        summary: `Refund ${money(thisTotal)} (${input.kind}) — ${input.reasonCode}`,
+        metadata: {
+          orderId: input.orderId,
+          kind: input.kind,
+          totalAmount: money(thisTotal),
+          reasonCode: input.reasonCode,
+          paymentStatus,
+          byUserId: actor.actorUserId,
+          authorizedByUserId,
+        },
       },
       tx,
     );

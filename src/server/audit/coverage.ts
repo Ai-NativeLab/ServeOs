@@ -15,6 +15,7 @@ export const AUDITED_SERVICE_FILES = [
   "src/server/notifications/worker.ts",
   "src/server/ordering/service.ts",
   "src/server/pos/record-sale.ts",
+  "src/server/pos/refund.ts",
   "src/server/pos/cashier.ts",
   "src/server/pos/held-tickets.ts",
   "src/server/pos/service.ts",
@@ -122,8 +123,10 @@ export const AUDIT_ALLOWLIST: Record<string, string> = {
   // the same actor and reason. Confirming, which has no such delegate, emits
   // payment.confirmed directly.
   "service.rejectOrderPayment": "order.status_changed emitted by the transitionStatus it delegates to",
+  // Refund restock is a sub-effect of issueRefund, which emits refund.issued on
+  // the same tx — the stock add-back is the refund's ledger, not a domain event.
+  "service.restockRefundedLines": "refund.issued emitted by issueRefund on the same tx",
   // Forward references — land with later specs; the guardrail enforces they emit then.
-  "forward:refund.*": "Spec 3 refunds must emit refund.* via recordAuditEvent",
   "forward:inventory.*": "Spec 8 ledger/lot/count must emit inventory.*",
   "forward:purchase-order.*": "Spec 9 PO lifecycle must emit po.*",
   "forward:eta.*": "Spec 11 fiscal submissions must emit eta.*",

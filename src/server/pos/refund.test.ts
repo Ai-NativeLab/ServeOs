@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { orders } from "@/server/ordering/schema";
@@ -10,6 +10,8 @@ import { getOrder, placeOrder, cancelOrderByToken } from "@/server/ordering/serv
 import { products } from "@/server/catalog/schema";
 import { orderPayments } from "./tender-schema";
 import { refunds, refundLines, refundPayments } from "./refund-schema";
+import { auditEvents } from "@/server/audit/schema";
+import { verifyChain } from "@/server/audit/verifier";
 import { PosForbiddenError, PosRefundError } from "./errors";
 import { issueGrant } from "./grants";
 import { recordSale } from "./record-sale";
@@ -23,6 +25,11 @@ const actorFrom = (ctx: PosCashierContext): RefundActor => ({
   actorUserId: ctx.cashierUserId,
   permissions: [...ctx.permissions],
 });
+
+async function eventsFor(tenantId: string, action: string) {
+  return withTenant(tenantId, (tx) =>
+    tx.select().from(auditEvents).where(and(eq(auditEvents.tenantId, tenantId), eq(auditEvents.action, action))));
+}
 
 /**
  * A completed, fully-paid sale of `quantity` units. `paidAmount` equals the
@@ -67,6 +74,7 @@ async function seedStockedPaidSale(quantity = 1, stock = 10) {
 
 /** The money one unit is worth in a `quantity`-unit fixture sale (for 1-of-n line refunds). */
 const perUnit = (paidAmount: number, quantity: number) => Math.round((paidAmount / quantity) * 100) / 100;
+const round2 = (n: number) => Math.round(n * 100) / 100;
 
 describe("issueRefund", () => {
   it("full refund of a paid sale flips payment_status paid → refunded, leaving the order's tenders intact", async () => {
@@ -359,5 +367,83 @@ describe("issueRefund restock", () => {
   // above pin the integer fallback that must be rewired — no issueRefund change.
   it("documents the Spec 8 forward path: integer add-back will become a refund_restock ledger row", () => {
     expect(true).toBe(true);
+  });
+
+  describe("refund.issued audit (direct recordAuditEvent)", () => {
+    it("emits refund.issued in the same transaction with the issuer and authorizer metadata", async () => {
+      const s = await seedPaidSale("owner");
+      await issueRefund(actorFrom(s.ctx), {
+        orderId: s.receipt.orderId,
+        kind: "full",
+        lines: [{ orderItemId: (await getOrder(s.tenantId, s.receipt.orderId)).items[0].id, quantity: 1, amount: s.receipt.paidAmount, restock: false }],
+        payments: [{ method: "cash", amount: s.receipt.paidAmount }],
+        reasonCode: "wrong_item",
+        clientRefundId: "r1",
+      });
+
+      const [ev] = await eventsFor(s.tenantId, "refund.issued");
+      expect(ev).toBeDefined();
+      expect(ev.entityType).toBe("refund");
+      expect(ev.actorUserId).toBe(s.ctx.cashierUserId);
+      expect(ev.actorType).toBe("user");
+      expect(ev.metadata).toMatchObject({
+        orderId: s.receipt.orderId,
+        kind: "full",
+        totalAmount: String(s.receipt.paidAmount.toFixed(2)),
+        reasonCode: "wrong_item",
+        paymentStatus: "refunded",
+        byUserId: s.ctx.cashierUserId,
+        authorizedByUserId: null,
+      });
+      // No device fingerprint is attributed to a refund (canonical empty).
+      expect(ev.fingerprint).toEqual({ deviceId: null, deviceTokenHash: null, appVersion: null, ip: null, userAgent: null });
+      expect((await verifyChain(s.tenantId)).ok).toBe(true);
+    });
+
+    it("a failed refund writes neither a refund row nor a refund.issued row (atomicity)", async () => {
+      const s = await seedPaidSale("owner");
+      await expect(
+        issueRefund(actorFrom(s.ctx), {
+          orderId: s.receipt.orderId,
+          kind: "full",
+          lines: [],
+          payments: [{ method: "cash", amount: s.receipt.paidAmount * 2 }],
+          reasonCode: "wrong_item",
+          clientRefundId: "r1",
+        }),
+      ).rejects.toBeInstanceOf(PosRefundError);
+      expect(await eventsFor(s.tenantId, "refund.issued")).toHaveLength(0);
+      expect(await withTenant(s.tenantId, (tx) => tx.select().from(refunds))).toHaveLength(0);
+    });
+  });
+
+  describe("reconciliation money-OUT contract", () => {
+    it("a cash refund nets against the day's cash takings: Σ order_payments − Σ refund_payments = net, cash OUT reported", async () => {
+      const s = await seedPaidSale("owner", 2);
+      const gross = s.total;
+      const unit = perUnit(s.receipt.paidAmount, 2);
+
+      await issueRefund(actorFrom(s.ctx), {
+        orderId: s.receipt.orderId,
+        kind: "partial",
+        lines: [{ orderItemId: (await getOrder(s.tenantId, s.receipt.orderId)).items[0].id, quantity: 1, amount: unit, restock: false }],
+        payments: [{ method: "cash", amount: unit }],
+        reasonCode: "wrong_item",
+        clientRefundId: "r1",
+      });
+
+      const { paidIn, paidOut, net } = await withTenant(s.tenantId, async (tx) => {
+        const tenders = await tx.select().from(orderPayments);
+        const back = await tx.select().from(refundPayments);
+        const paidIn = round2(tenders.reduce((x, t) => x + Number(t.amount), 0));
+        const paidOut = round2(back.reduce((x, p) => x + Number(p.amount), 0));
+        return { paidIn, paidOut, net: round2(paidIn - paidOut) };
+      });
+
+      // Gross IN (the 2-unit sale) minus the cash OUT (the 1-unit refund).
+      expect(paidIn).toBe(gross);
+      expect(paidOut).toBe(unit);
+      expect(net).toBe(round2(gross - unit));
+    });
   });
 });
