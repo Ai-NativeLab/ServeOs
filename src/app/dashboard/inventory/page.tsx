@@ -25,10 +25,16 @@ export default async function InventoryPage() {
     throw e; // requireDashboardUser redirects unauthenticated users
   }
 
-  const [items, onHand] = await Promise.all([
-    listItems(ctx.tenantId, { isActive: true }),
+  // Ask for one more than we render so the page can say it is truncated instead
+  // of silently showing 50 rows of 300 — this screen exists to surface negative
+  // on-hand, and an item hidden past the cut is exactly what must not go unseen.
+  const PAGE_SIZE = 200;
+  const [fetched, onHand] = await Promise.all([
+    listItems(ctx.tenantId, { isActive: true, limit: PAGE_SIZE + 1 }),
     getOnHand(ctx.tenantId),
   ]);
+  const truncated = fetched.length > PAGE_SIZE;
+  const items = truncated ? fetched.slice(0, PAGE_SIZE) : fetched;
 
   // On-hand is per (item, location), so group it under each item rather than
   // collapsing branches into one misleading total.
@@ -96,6 +102,12 @@ export default async function InventoryPage() {
           </TableBody>
         </Table>
       </Card>
+      {truncated && (
+        <p className="mt-3 text-sm text-muted-foreground">
+          Showing the first {PAGE_SIZE} items. Narrow the list with the inventory API
+          (<code>/api/inventory/items</code>) until paging lands here.
+        </p>
+      )}
     </>
   );
 }

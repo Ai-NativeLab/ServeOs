@@ -24,7 +24,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!Array.isArray(lines) || lines.length === 0) {
     return NextResponse.json({ error: "lines[] is required" }, { status: 400 });
   }
-  if (!lines.every((l) => l && typeof l.itemId === "string" && typeof l.countedQty === "number")) {
+  if (!lines.every((l) => l && typeof l.itemId === "string" && Number.isFinite(l.countedQty))) {
     return NextResponse.json({ error: "each line needs an itemId and a numeric countedQty" }, { status: 400 });
   }
 

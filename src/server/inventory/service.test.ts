@@ -424,6 +424,127 @@ describe("inventory ledger", () => {
     })).rejects.toThrow(InventoryConfigError);
   });
 
+  it("converts a caller's unit to the item's base unit instead of storing it verbatim", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const locationId = await seedLocation(tenantId, branchId);
+    const itemId = await seedItem(tenantId, { baseUom: "g" });
+
+    // 2 kg into a gram-based item is 2000 g, not 2.
+    await stockLot(tenantId, { itemId, locationId, baseQty: 2, uom: "kg" });
+    expect(await onHand(tenantId, itemId, locationId)).toBe(2000);
+
+    await withTenant(tenantId, (tx) => adjustStock(tx, {
+      tenantId, itemId, locationId, baseQty: -1, uom: "kg", note: "wrote off a kilo",
+    }));
+    expect(await onHand(tenantId, itemId, locationId)).toBe(1000);
+
+    // And the row is labelled in base units, so summing qty blind stays correct.
+    const rows = await ledgerRows(tenantId, itemId);
+    expect(rows.every((r) => r.uom === "g")).toBe(true);
+  });
+
+  it("a transfer moves the lots too, so the destination can actually sell", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant("retail");
+    const back = await seedLocation(tenantId, branchId, "back_of_house");
+    const shelf = await seedLocation(tenantId, branchId, "retail");
+    const itemId = await seedItem(tenantId, { baseUom: "each", kind: "finished_good" });
+    await stockLot(tenantId, { itemId, locationId: back, baseQty: 10, uom: "each" });
+
+    await withTenant(tenantId, (tx) => transferStock(tx, {
+      tenantId, itemId, fromLocationId: back, toLocationId: shelf, baseQty: 4, uom: "each",
+    }));
+
+    expect(await onHand(tenantId, itemId, back)).toBe(6);
+    expect(await onHand(tenantId, itemId, shelf)).toBe(4);
+
+    // The destination has lots, so a sale succeeds rather than hitting a shelf
+    // that reads 4 but has nothing FIFO can consume.
+    await withTenant(tenantId, async (tx) => {
+      const { productId } = await seedLinkedProduct(tx, tenantId, itemId);
+      await deductForOrderLine(tx, deductArgs(tenantId, branchId, { productId, quantity: 4 }));
+    });
+    expect(await onHand(tenantId, itemId, shelf)).toBe(0);
+
+    // And the source cannot still sell what it gave away.
+    const sourceLots = await withTenant(tenantId, (tx) =>
+      tx.select().from(inventoryLots).where(eq(inventoryLots.locationId, back)));
+    expect(sourceLots.reduce((s, l) => s + Number(l.qtyRemaining), 0)).toBe(6);
+  });
+
+  it("refuses a transfer larger than the source holds", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const back = await seedLocation(tenantId, branchId, "back_of_house");
+    const kitchen = await seedLocation(tenantId, branchId, "kitchen");
+    const itemId = await seedItem(tenantId, { baseUom: "g" });
+    await stockLot(tenantId, { itemId, locationId: back, baseQty: 5, uom: "g" });
+
+    await expect(withTenant(tenantId, (tx) => transferStock(tx, {
+      tenantId, itemId, fromLocationId: back, toLocationId: kitchen, baseQty: 50, uom: "g",
+    }))).rejects.toThrow(InventoryConfigError);
+  });
+
+  it("a positive adjustment creates a lot, so the stock it adds is actually sellable", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant("retail");
+    const shelf = await seedLocation(tenantId, branchId, "retail");
+    const itemId = await seedItem(tenantId, { baseUom: "each", kind: "finished_good" });
+
+    // No lots at all to begin with — the shelf is empty.
+    await withTenant(tenantId, (tx) => adjustStock(tx, {
+      tenantId, itemId, locationId: shelf, baseQty: 10, uom: "each", note: "found a box",
+    }));
+    expect(await onHand(tenantId, itemId, shelf)).toBe(10);
+
+    // Previously this reported 10 on hand and then refused every sale.
+    await withTenant(tenantId, async (tx) => {
+      const { productId } = await seedLinkedProduct(tx, tenantId, itemId);
+      await deductForOrderLine(tx, deductArgs(tenantId, branchId, { productId, quantity: 10 }));
+    });
+    expect(await onHand(tenantId, itemId, shelf)).toBe(0);
+  });
+
+  it("a count surplus is sellable and a count shortage draws down the lots", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant("retail");
+    const shelf = await seedLocation(tenantId, branchId, "retail");
+    const itemId = await seedItem(tenantId, { baseUom: "each", kind: "finished_good" });
+    await stockLot(tenantId, { itemId, locationId: shelf, baseQty: 5, uom: "each" });
+
+    // Counted 8 where the system said 5 — a surplus of 3.
+    await withTenant(tenantId, async (tx) => {
+      const rows = await tx.execute<{ id: string }>(sql`
+        INSERT INTO stock_counts (tenant_id, branch_id, location_id)
+        VALUES (${tenantId}, ${branchId}, ${shelf}) RETURNING id`);
+      await addCountLines(tx, tenantId, rows.rows[0].id, [{ itemId, countedQty: 8 }]);
+      await commitCount(tx, tenantId, rows.rows[0].id, null);
+    });
+    expect(await onHand(tenantId, itemId, shelf)).toBe(8);
+
+    // All 8 must be sellable, surplus included.
+    await withTenant(tenantId, async (tx) => {
+      const { productId } = await seedLinkedProduct(tx, tenantId, itemId);
+      await deductForOrderLine(tx, deductArgs(tenantId, branchId, { productId, quantity: 8 }));
+    });
+    expect(await onHand(tenantId, itemId, shelf)).toBe(0);
+  });
+
+  it("a variant with no link of its own falls back to the product's base link", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant("retail");
+    const shelf = await seedLocation(tenantId, branchId, "retail");
+    const itemId = await seedItem(tenantId, { baseUom: "each", kind: "finished_good" });
+    await stockLot(tenantId, { itemId, locationId: shelf, baseQty: 10, uom: "each" });
+
+    await withTenant(tenantId, async (tx) => {
+      const { productId } = await seedLinkedProduct(tx, tenantId, itemId); // base link, variantId NULL
+      const v = await tx.execute<{ id: string }>(sql`
+        INSERT INTO product_variants (tenant_id, product_id, name_en, name_ar, price)
+        VALUES (${tenantId}, ${productId}, '35mm', '٣٥', '55') RETURNING id`);
+      // Selling the VARIANT used to deduct nothing at all.
+      await deductForOrderLine(tx, deductArgs(tenantId, branchId, {
+        productId, variantId: v.rows[0].id, quantity: 3,
+      }));
+    });
+    expect(await onHand(tenantId, itemId, shelf)).toBe(7);
+  });
+
   it("the stock_ledger append-only trigger rejects UPDATE and DELETE", async () => {
     const { tenantId, branchId } = await seedInventoryTenant();
     const kitchen = await seedLocation(tenantId, branchId, "kitchen");

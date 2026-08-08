@@ -239,6 +239,13 @@
       "when": 1785845713109,
       "tag": "0033_windy_hellcat",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1786205122206,
+      "tag": "0034_striped_dragon_lord",
+      "breakpoints": true
     }
   ]
 }

@@ -4,14 +4,15 @@
 // the storefront's inStock computation still reads them. Both these shims and
 // those columns are dropped once inStock reads on-hand from the ledger
 // (spec Migration §5 / follow-up). New code must go through the inventory service.
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { getTenantById } from "@/server/tenancy";
 import { requireCapability, type VerticalId } from "@/server/verticals";
 import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
-import { productInventoryLinks, storageLocations, stockLedger } from "@/server/inventory/schema";
-import { adjustStock } from "@/server/inventory/service";
+import { productInventoryLinks, inventoryItems, stockLedger } from "@/server/inventory/schema";
+import { adjustStock, getOrCreateDefaultLocation } from "@/server/inventory/service";
+import { branches } from "@/server/branches/schema";
 import { productVariants, products, type ProductVariant } from "./schema";
 import { ProductNotFoundError } from "./errors";
 
@@ -131,16 +132,37 @@ async function reconcileLinkedOnHand(
   )).limit(1);
   if (!link?.itemId) return;
 
-  const [loc] = await tx.select().from(storageLocations)
-    .where(and(eq(storageLocations.kind, "retail"), eq(storageLocations.isActive, true)))
-    .orderBy(sql`is_default DESC`).limit(1);
-  if (!loc) return;
+  const [item] = await tx.select().from(inventoryItems)
+    .where(eq(inventoryItems.id, link.itemId)).limit(1);
+  if (!item) return;
 
-  const current = await onHandOnTx(tx, link.itemId, loc.id);
+  // Target the location this item's stock already lives at. The legacy field is
+  // a single global number with no branch, so picking "the first retail location"
+  // would land a multi-branch tenant's correction on whichever branch happened to
+  // sort first — inflating one shelf while the operator was looking at another.
+  // Following the existing ledger keeps the correction where the stock is.
+  const [existing] = await tx.select({ locationId: stockLedger.locationId }).from(stockLedger)
+    .where(eq(stockLedger.itemId, link.itemId))
+    .orderBy(desc(stockLedger.createdAt)).limit(1);
+
+  let locationId = existing?.locationId;
+  if (!locationId) {
+    // Never moved before: fall back to the oldest branch's retail shelf, the same
+    // rule the backfill uses, so both land opening stock in the same place.
+    const [branch] = await tx.select({ id: branches.id }).from(branches)
+      .where(eq(branches.tenantId, tenantId)).orderBy(asc(branches.createdAt)).limit(1);
+    if (!branch) return;
+    const loc = await getOrCreateDefaultLocation(tx, tenantId, branch.id, "retail");
+    locationId = loc.id;
+  }
+
+  const current = await onHandOnTx(tx, link.itemId, locationId);
   const delta = qty - current;
   if (Math.abs(delta) < 0.0005) return;
+  // The item's own base unit — hardcoding "each" would reject a gram-based item
+  // outright now that adjustStock validates the dimension.
   await adjustStock(tx, {
-    tenantId, itemId: link.itemId, locationId: loc.id, baseQty: delta, uom: "each",
+    tenantId, itemId: link.itemId, locationId, baseQty: delta, uom: item.baseUom as "each",
     byUserId: audit?.actorUserId ?? null, note: "legacy stock field set",
   });
 }

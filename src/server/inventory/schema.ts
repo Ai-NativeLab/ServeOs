@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, timestamp, boolean, numeric, pgEnum, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, boolean, numeric, pgEnum, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { tenants } from "@/server/tenancy/schema";
 import { branches } from "@/server/branches/schema";
 import { users } from "@/server/auth/schema";
@@ -51,7 +52,15 @@ export const storageLocations = pgTable("storage_locations", {
   isDefault: boolean("is_default").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index("storage_locations_branch_kind").on(t.branchId, t.kind)]);
+}, (t) => [
+  index("storage_locations_branch_kind").on(t.branchId, t.kind),
+  // One default per (branch, kind). getOrCreateDefaultLocation provisions
+  // lazily on first sale, so without this two concurrent first sales at a branch
+  // both see "no location" and both insert one — splitting that branch's stock
+  // across two shelves at random. The partial unique index is what makes the
+  // insert-then-reselect safe. Hand-appended (drizzle emits no partial indexes).
+  uniqueIndex("storage_locations_one_default").on(t.branchId, t.kind).where(sql`is_default`),
+]);
 
 /** A receipt-dated, cost-bearing quantity of one item at one location.
  * qtyRemaining is a FIFO/expiry CACHE; the ledger is authoritative.

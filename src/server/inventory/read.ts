@@ -4,7 +4,15 @@ import { inventoryItems, inventoryLots, storageLocations, stockLedger, stockCoun
 import type { InventoryItem, InventoryLot, StockCount, StorageLocation } from "./schema";
 
 const MAX_LIMIT = 200;
-const clamp = (limit?: number): number => Math.min(Math.max(limit ?? 50, 1), MAX_LIMIT);
+const DEFAULT_LIMIT = 50;
+/**
+ * Routes build `limit` from `Number(searchParams.get("limit"))`, so a junk query
+ * string yields NaN — and NaN survives Math.min/Math.max, reaching the driver as
+ * `LIMIT NaN` and turning a bad request into a 500. Anything non-finite falls
+ * back to the default instead.
+ */
+const clamp = (limit?: number): number =>
+  Number.isFinite(limit) ? Math.min(Math.max(limit as number, 1), MAX_LIMIT) : DEFAULT_LIMIT;
 
 export type ItemFilters = { kind?: InventoryItem["kind"]; isActive?: boolean; limit?: number };
 

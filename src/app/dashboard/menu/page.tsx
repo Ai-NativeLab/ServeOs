@@ -100,7 +100,13 @@ export default async function MenuPage() {
                               {p.isPublished ? "Published" : "Draft"}
                             </span>
                           </Link>
-                          {caps.stockTracking && p.trackStock && (
+                          {/* The legacy per-product stock box, gated on `variants`
+                              rather than `inventory`. `stockTracking` is now an alias
+                              of `inventory`, which is on for restaurants too — so
+                              gating on it would show every dish a Stock field whose
+                              number nothing reads, since a dish deducts through its
+                              recipe. Restaurants manage stock on /dashboard/inventory. */}
+                          {caps.variants && p.trackStock && (
                             <ToastForm action={setProductStockAction.bind(null, p.id)} successMessage="Stock updated" className="flex items-center gap-1.5 mt-2 pl-[60px]">
                               <Input name="stockQuantity" type="number" min="0" defaultValue={p.stockQuantity ?? ""} className="w-20 h-8" aria-label={`Stock for ${p.nameEn}`} />
                               <SubmitButton variant="outline" size="sm">Set</SubmitButton>
@@ -118,7 +124,7 @@ export default async function MenuPage() {
                             <TableHead className="eyebrow w-14"></TableHead>
                             <TableHead className="eyebrow">Product</TableHead>
                             <TableHead className="eyebrow text-right">Price</TableHead>
-                            {caps.stockTracking && <TableHead className="eyebrow">Stock</TableHead>}
+                            {caps.variants && <TableHead className="eyebrow">Stock</TableHead>}
                             <TableHead className="eyebrow">Status</TableHead>
                           </TableRow>
                         </TableHeader>
@@ -135,7 +141,7 @@ export default async function MenuPage() {
                                 <Link href={`/dashboard/menu/products/${p.id}`} className="font-medium text-ink hover:underline">{p.nameEn}</Link>
                               </TableCell>
                               <TableCell className="font-mono text-sm text-right">{Number(p.basePrice).toFixed(2)}</TableCell>
-                              {caps.stockTracking && (
+                              {caps.variants && (
                                 <TableCell>
                                   {p.trackStock && (
                                     <ToastForm action={setProductStockAction.bind(null, p.id)} successMessage="Stock updated" className="flex items-center gap-1.5">

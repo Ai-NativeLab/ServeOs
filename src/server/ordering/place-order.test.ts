@@ -400,6 +400,59 @@ describe("placeOrder retail variants + stock", () => {
   });
 });
 
+describe("placeOrder — legacy stock adoption + storefront mirror", () => {
+  it("a product created AFTER the backfill still cannot be oversold", async () => {
+    // The backfill only linked rows that existed when it ran. Deduction is gated
+    // on a link, so without adoption this product would sell without any limit —
+    // the guarded integer UPDATE that used to stop it is gone.
+    const { t, branch, hinge, v35 } = await setupRetail("adopt1");
+    const { OutOfStockError } = await import("./errors");
+    void v35;
+
+    // No inventory seeding at all: `hinge` only has the legacy integer.
+    const { setProductStock } = await import("@/server/catalog/variants");
+    await setProductStock(t.id, hinge.id, 3);
+
+    await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: hinge.id, quantity: 3, selectedOptionIds: [] }],
+    });
+
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "B", customerPhone: "2",
+      lines: [{ productId: hinge.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(OutOfStockError);
+  });
+
+  it("selling down to zero flips the storefront's inStock flag", async () => {
+    // placeOrder no longer decrements products.stockQuantity, but the storefront
+    // still derives inStock from it — so it must be mirrored back or a sold-out
+    // item advertises itself forever.
+    const { t, branch } = await setupRetail("mirror1");
+    const { setProductStock } = await import("@/server/catalog/variants");
+    const { getPublishedMenu, createCategory, createProduct, updateProduct } = await import("@/server/catalog/service");
+
+    // A product with NO variants, so inStock is derived from the product's own
+    // stockQuantity rather than from its variants'.
+    const cat = await createCategory(t.id, { nameEn: "Screws", nameAr: "براغي" });
+    const screw = await createProduct(t.id, { nameEn: "Screw", nameAr: "برغي", basePrice: "10", categoryId: cat.id });
+    await updateProduct(t.id, screw.id, { isPublished: true });
+    await setProductStock(t.id, screw.id, 2);
+
+    const findProduct = async () =>
+      (await getPublishedMenu(t.id)).categories.flatMap((c) => c.products).find((p) => p.id === screw.id);
+
+    expect((await findProduct())?.inStock).toBe(true);
+
+    await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: screw.id, quantity: 2, selectedOptionIds: [] }],
+    });
+
+    expect((await findProduct())?.inStock).toBe(false);
+  });
+});
+
 describe("placeOrder — restaurant recipes (BOM)", () => {
   it("selling a dish deducts its recipe ingredients from the branch kitchen", async () => {
     const { t, branch, pizza } = await setup("bom1");

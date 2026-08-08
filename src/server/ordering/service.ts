@@ -354,9 +354,18 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       await tx.update(prescriptions).set({ orderId: order.id }).where(eq(prescriptions.id, pendingRxId));
     }
 
-    const inserted = await tx.insert(orderItems)
-      .values(itemsToInsert.map((i) => ({ ...i, tenantId, orderId: order.id })))
-      .returning({ id: orderItems.id });
+    // Inserted one line at a time so each id is unambiguously paired with the
+    // line it came from. Postgres does not promise a multi-row INSERT ...
+    // RETURNING yields rows in VALUES order, and pairing by index on that
+    // assumption would make every sale_deduction cite the wrong order item — a
+    // cancel, or a per-line refund, would then restock the wrong product.
+    const inserted: { id: string }[] = [];
+    for (const i of itemsToInsert) {
+      const [row] = await tx.insert(orderItems)
+        .values({ ...i, tenantId, orderId: order.id })
+        .returning({ id: orderItems.id });
+      inserted.push(row);
+    }
     await tx.insert(orderStatusEvents).values({ tenantId, orderId: order.id, fromStatus: null, toStatus: "pending" });
 
     // Inventory deduction — atomic with the order because it runs on THIS tx. A

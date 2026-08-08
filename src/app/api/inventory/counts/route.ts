@@ -40,7 +40,13 @@ export async function POST(req: NextRequest) {
   if (!body?.branchId || !body?.locationId) {
     return NextResponse.json({ error: "branchId and locationId are required" }, { status: 400 });
   }
+  // Validated here as well as in /counts/[id]/lines: an unchecked countedQty
+  // becomes NaN, then the literal string "NaN" in a numeric column, and the
+  // driver error surfaces as a 500 instead of a 400.
   const lines: { itemId: string; countedQty: number }[] = Array.isArray(body.lines) ? body.lines : [];
+  if (!lines.every((l) => l && typeof l.itemId === "string" && Number.isFinite(l.countedQty))) {
+    return NextResponse.json({ error: "each line needs an itemId and a numeric countedQty" }, { status: 400 });
+  }
 
   const count = await withTenant(ctx.tenantId, async (tx) => {
     const [created] = await tx.insert(stockCounts).values({
