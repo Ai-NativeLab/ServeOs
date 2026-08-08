@@ -56,10 +56,19 @@ function stockable(item: InventoryItem): { baseUom: Uom; stockToBase: string; pu
  * disagree the ledger is right and the cache is rebuilt.
  */
 export async function onHand(tenantId: string, itemId: string, locationId: string): Promise<number> {
-  const rows = await withTenant(tenantId, (tx) =>
-    tx.select({ sum: sql<string>`COALESCE(SUM(${stockLedger.qty}), 0)` }).from(stockLedger)
-      .where(and(eq(stockLedger.itemId, itemId), eq(stockLedger.locationId, locationId))));
-  return roundQty(Number(rows[0]?.sum ?? 0));
+  return withTenant(tenantId, (tx) => onHandOnTx(tx, itemId, locationId));
+}
+
+/**
+ * The single definition of on-hand for an (item, location). Everything that
+ * needs the figure inside a transaction calls this — the count snapshot, the
+ * legacy-integer mirror, the catalog reconciler — so the invariant exists once
+ * rather than in four copies that can quietly drift apart.
+ */
+export async function onHandOnTx(tx: Tx, itemId: string, locationId: string): Promise<number> {
+  const [row] = await tx.select({ sum: sql<string>`COALESCE(SUM(${stockLedger.qty}), 0)` }).from(stockLedger)
+    .where(and(eq(stockLedger.itemId, itemId), eq(stockLedger.locationId, locationId)));
+  return roundQty(Number(row?.sum ?? 0));
 }
 
 export async function getOrCreateDefaultLocation(
@@ -377,9 +386,7 @@ export async function addCountLines(
   if (count.status !== "open") throw new InventoryConfigError(`stock count is already ${count.status}`);
 
   for (const line of lines) {
-    const [row] = await tx.select({ sum: sql<string>`COALESCE(SUM(${stockLedger.qty}), 0)` }).from(stockLedger)
-      .where(and(eq(stockLedger.itemId, line.itemId), eq(stockLedger.locationId, count.locationId)));
-    const system = roundQty(Number(row?.sum ?? 0));
+    const system = await onHandOnTx(tx, line.itemId, count.locationId);
     const counted = roundQty(line.countedQty);
 
     await tx.delete(stockCountLines).where(and(
@@ -526,9 +533,7 @@ async function adoptLegacyTrackedStock(
 async function mirrorLegacyStock(
   tx: Tx, itemId: string, locationId: string, productId: string, variantId: string | null,
 ): Promise<void> {
-  const [row] = await tx.select({ sum: sql<string>`COALESCE(SUM(${stockLedger.qty}), 0)` }).from(stockLedger)
-    .where(and(eq(stockLedger.itemId, itemId), eq(stockLedger.locationId, locationId)));
-  const remaining = Math.max(0, Math.floor(roundQty(Number(row?.sum ?? 0))));
+  const remaining = Math.max(0, Math.floor(await onHandOnTx(tx, itemId, locationId)));
 
   if (variantId) {
     await tx.update(productVariants)

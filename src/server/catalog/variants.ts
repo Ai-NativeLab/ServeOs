@@ -4,14 +4,14 @@
 // the storefront's inStock computation still reads them. Both these shims and
 // those columns are dropped once inStock reads on-hand from the ledger
 // (spec Migration §5 / follow-up). New code must go through the inventory service.
-import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { getTenantById } from "@/server/tenancy";
 import { requireCapability, type VerticalId } from "@/server/verticals";
 import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { productInventoryLinks, inventoryItems, stockLedger } from "@/server/inventory/schema";
-import { adjustStock, getOrCreateDefaultLocation } from "@/server/inventory/service";
+import { adjustStock, getOrCreateDefaultLocation, onHandOnTx } from "@/server/inventory/service";
 import { branches } from "@/server/branches/schema";
 import { productVariants, products, type ProductVariant } from "./schema";
 import { ProductNotFoundError } from "./errors";
@@ -167,10 +167,3 @@ async function reconcileLinkedOnHand(
   });
 }
 
-async function onHandOnTx(
-  tx: Parameters<Parameters<typeof withTenant>[1]>[0], itemId: string, locationId: string,
-): Promise<number> {
-  const [row] = await tx.select({ sum: sql<string>`COALESCE(SUM(${stockLedger.qty}), 0)` }).from(stockLedger)
-    .where(and(eq(stockLedger.itemId, itemId), eq(stockLedger.locationId, locationId)));
-  return Number(row?.sum ?? 0);
-}

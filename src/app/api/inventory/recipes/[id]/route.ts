@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireInventoryPermission } from "@/app/dashboard/inventory-permission";
-import { UnauthorizedError } from "@/server/rbac/authorize";
+import { resolveInventoryContext } from "@/app/dashboard/inventory-permission";
 import { CapabilityNotEnabledError } from "@/server/verticals/errors";
 import { getRecipe, updateRecipe, setRecipeComponents } from "@/server/inventory/recipes";
 import { DimensionalUomError, InventoryConfigError } from "@/server/inventory/errors";
@@ -15,13 +14,8 @@ function toStatus(e: unknown): NextResponse | null {
 }
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  let ctx;
-  try {
-    ctx = await requireInventoryPermission("inventory:view");
-  } catch (e) {
-    if (e instanceof UnauthorizedError) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    throw e;
-  }
+  const { ctx, denied } = await resolveInventoryContext("inventory:view");
+  if (denied) return denied;
   const { id } = await params;
   const recipe = await getRecipe(ctx.tenantId, id);
   if (!recipe) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -34,13 +28,8 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
  * callers from having to diff.
  */
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  let ctx;
-  try {
-    ctx = await requireInventoryPermission("inventory:manage");
-  } catch (e) {
-    if (e instanceof UnauthorizedError) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    throw e;
-  }
+  const { ctx, denied } = await resolveInventoryContext("inventory:manage");
+  if (denied) return denied;
   const { id } = await params;
   const body = await req.json();
   const audit = { actorUserId: ctx.user.id, fingerprint: webFingerprint(req) };

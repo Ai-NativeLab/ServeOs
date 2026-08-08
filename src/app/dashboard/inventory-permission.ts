@@ -1,5 +1,6 @@
+import { NextResponse } from "next/server";
 import { requireDashboardUser, type DashboardContext } from "@/server/auth/dashboard-context";
-import { authorize } from "@/server/rbac/authorize";
+import { authorize, UnauthorizedError } from "@/server/rbac/authorize";
 import type { Permission } from "@/server/rbac/permissions";
 
 /**
@@ -11,4 +12,26 @@ export async function requireInventoryPermission(perm: Permission): Promise<Dash
   const ctx = await requireDashboardUser();
   authorize(ctx.roleKeys, perm);
   return ctx;
+}
+
+/**
+ * Resolves the context for a route, or the 403 to return instead.
+ *
+ * Every inventory route needs the same shape — authorize, translate
+ * UnauthorizedError to 403, and let anything else propagate so
+ * requireDashboardUser's redirect for an unauthenticated visitor still stands.
+ * Ten hand-written copies of that is ten chances to catch too broadly and turn a
+ * redirect into a 403.
+ */
+export async function resolveInventoryContext(
+  perm: Permission,
+): Promise<{ ctx: DashboardContext; denied: null } | { ctx: null; denied: NextResponse }> {
+  try {
+    return { ctx: await requireInventoryPermission(perm), denied: null };
+  } catch (e) {
+    if (e instanceof UnauthorizedError) {
+      return { ctx: null, denied: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
+    }
+    throw e;
+  }
 }

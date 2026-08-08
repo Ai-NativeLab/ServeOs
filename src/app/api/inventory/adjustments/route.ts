@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireInventoryPermission } from "@/app/dashboard/inventory-permission";
-import { UnauthorizedError } from "@/server/rbac/authorize";
+import { resolveInventoryContext } from "@/app/dashboard/inventory-permission";
 import { withTenant } from "@/db/with-tenant";
 import { adjustStock } from "@/server/inventory/service";
 import { DimensionalUomError, InventoryConfigError } from "@/server/inventory/errors";
@@ -12,13 +11,8 @@ import { webFingerprint } from "@/server/audit/fingerprint";
  * indistinguishable from a recount.
  */
 export async function POST(req: NextRequest) {
-  let ctx;
-  try {
-    ctx = await requireInventoryPermission("inventory:manage");
-  } catch (e) {
-    if (e instanceof UnauthorizedError) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    throw e;
-  }
+  const { ctx, denied } = await resolveInventoryContext("inventory:manage");
+  if (denied) return denied;
   const body = await req.json();
   if (!body?.itemId || !body?.locationId || !body?.uom || typeof body?.baseQty !== "number") {
     return NextResponse.json({ error: "itemId, locationId, uom and numeric baseQty are required" }, { status: 400 });

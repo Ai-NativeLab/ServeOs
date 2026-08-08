@@ -1,16 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireInventoryPermission } from "@/app/dashboard/inventory-permission";
-import { UnauthorizedError } from "@/server/rbac/authorize";
+import { resolveInventoryContext } from "@/app/dashboard/inventory-permission";
 import { getOnHand, listLots } from "@/server/inventory/read";
 
 export async function GET(req: NextRequest) {
-  let ctx;
-  try {
-    ctx = await requireInventoryPermission("inventory:view");
-  } catch (e) {
-    if (e instanceof UnauthorizedError) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    throw e;
-  }
+  const { ctx, denied } = await resolveInventoryContext("inventory:view");
+  if (denied) return denied;
   const p = req.nextUrl.searchParams;
   const itemId = p.get("itemId") ?? undefined;
   const locationId = p.get("locationId") ?? undefined;

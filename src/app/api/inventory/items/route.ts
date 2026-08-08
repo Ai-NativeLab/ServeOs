@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireInventoryPermission } from "@/app/dashboard/inventory-permission";
-import { UnauthorizedError } from "@/server/rbac/authorize";
+import { resolveInventoryContext } from "@/app/dashboard/inventory-permission";
 import { withTenant } from "@/db/with-tenant";
 import { listItems } from "@/server/inventory/read";
 import { inventoryItems } from "@/server/inventory/schema";
@@ -9,13 +8,8 @@ import { DimensionalUomError } from "@/server/inventory/errors";
 import type { InventoryItem } from "@/server/inventory/schema";
 
 export async function GET(req: NextRequest) {
-  let ctx;
-  try {
-    ctx = await requireInventoryPermission("inventory:view");
-  } catch (e) {
-    if (e instanceof UnauthorizedError) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    throw e; // requireDashboardUser redirects unauthenticated users
-  }
+  const { ctx, denied } = await resolveInventoryContext("inventory:view");
+  if (denied) return denied;
   const p = req.nextUrl.searchParams;
   const items = await listItems(ctx.tenantId, {
     kind: (p.get("kind") as InventoryItem["kind"]) ?? undefined,
@@ -26,13 +20,8 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  let ctx;
-  try {
-    ctx = await requireInventoryPermission("inventory:manage");
-  } catch (e) {
-    if (e instanceof UnauthorizedError) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    throw e;
-  }
+  const { ctx, denied } = await resolveInventoryContext("inventory:manage");
+  if (denied) return denied;
   const body = await req.json();
   if (!body?.nameEn || !body?.nameAr || !body?.kind || !body?.baseUom) {
     return NextResponse.json({ error: "nameEn, nameAr, kind and baseUom are required" }, { status: 400 });

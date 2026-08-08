@@ -1,31 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireInventoryPermission } from "@/app/dashboard/inventory-permission";
-import { UnauthorizedError } from "@/server/rbac/authorize";
+import { resolveInventoryContext } from "@/app/dashboard/inventory-permission";
 import { CapabilityNotEnabledError } from "@/server/verticals/errors";
 import { listRecipes, createRecipe } from "@/server/inventory/recipes";
 import { DimensionalUomError, InventoryConfigError } from "@/server/inventory/errors";
 import { webFingerprint } from "@/server/audit/fingerprint";
 
 export async function GET() {
-  let ctx;
-  try {
-    ctx = await requireInventoryPermission("inventory:view");
-  } catch (e) {
-    if (e instanceof UnauthorizedError) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    throw e;
-  }
+  const { ctx, denied } = await resolveInventoryContext("inventory:view");
+  if (denied) return denied;
   return NextResponse.json(await listRecipes(ctx.tenantId));
 }
 
 /** Creates a bill of materials, optionally with its components in one call. */
 export async function POST(req: NextRequest) {
-  let ctx;
-  try {
-    ctx = await requireInventoryPermission("inventory:manage");
-  } catch (e) {
-    if (e instanceof UnauthorizedError) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    throw e;
-  }
+  const { ctx, denied } = await resolveInventoryContext("inventory:manage");
+  if (denied) return denied;
   const body = await req.json();
   if (!body?.nameEn || !body?.nameAr) {
     return NextResponse.json({ error: "nameEn and nameAr are required" }, { status: 400 });

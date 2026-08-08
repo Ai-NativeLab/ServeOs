@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
-import { requireInventoryPermission } from "@/app/dashboard/inventory-permission";
-import { UnauthorizedError } from "@/server/rbac/authorize";
+import { resolveInventoryContext } from "@/app/dashboard/inventory-permission";
 import { withTenant } from "@/db/with-tenant";
 import { inventoryItems } from "@/server/inventory/schema";
 import { assertInventoryUom } from "@/server/inventory/uom";
@@ -16,13 +15,8 @@ import { DimensionalUomError, InventoryConfigError } from "@/server/inventory/er
  * item and a transfer, which leaves an auditable trail.
  */
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  let ctx;
-  try {
-    ctx = await requireInventoryPermission("inventory:manage");
-  } catch (e) {
-    if (e instanceof UnauthorizedError) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    throw e;
-  }
+  const { ctx, denied } = await resolveInventoryContext("inventory:manage");
+  if (denied) return denied;
   const { id } = await params;
   const body = await req.json();
 
