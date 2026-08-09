@@ -6,7 +6,9 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    # qa is a deploy branch: it gets the full gate (typecheck + test + e2e),
+    # deliberately — not just the e2e job.
+    branches: [main, qa]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -110,3 +112,88 @@ jobs:
       # other's fixtures.
       - name: Test
         run: npm run test
+
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    # Job-level on purpose: `next build`/`next start` don't read .env.test,
+    # and the Playwright process itself queries the database in beforeAll
+    # (offline-payment.spec.ts), so every step needs these — not just two.
+    env:
+      DATABASE_URL: postgresql://serveos_ci:serveos_ci@localhost:5432/serveos_test
+      ROOT_DOMAIN: serveos.localhost
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Create the non-superuser role and test database
+        env:
+          PGPASSWORD: postgres
+        run: psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -f scripts/ci-db-bootstrap.sql
+
+      # The db scripts and seeds read .env.test via ENV_FILE; CI writes its own.
+      - name: Write .env.test
+        run: |
+          {
+            echo "DATABASE_URL=$DATABASE_URL"
+            echo "ROOT_DOMAIN=$ROOT_DOMAIN"
+          } > .env.test
+
+      - name: Apply migrations
+        run: npm run db:migrate:test
+
+      # Two seeds, both required: roma (9 of 11 specs) + nobio retail
+      # (shop.spec.ts, storefront-responsive.spec.ts).
+      - name: Seed roma tenant
+        run: ENV_FILE=.env.test npm run db:seed
+
+      - name: Seed nobio retail tenant
+        run: ENV_FILE=.env.test npx tsx scripts/seed-retail-showcase.ts
+
+      # The seed's 10:00-23:00 window + real-clock order validation would
+      # flake any run outside business hours.
+      - name: Widen roma hours to 24/7
+        run: ENV_FILE=.env.test npx tsx scripts/ci-e2e-hours.ts
+
+      - name: Install chromium
+        run: npx playwright install --with-deps chromium
+
+      # Its own step so a build failure is a red "Build", not an opaque
+      # webServer timeout inside Playwright.
+      - name: Build
+        run: npm run build
+
+      - name: E2E
+        run: npm run test:e2e
+
+      - name: Upload Playwright artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
