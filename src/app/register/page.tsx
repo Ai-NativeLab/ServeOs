@@ -1,33 +1,26 @@
 import Link from "next/link";
+import { LogoMark } from "@/components/brand/LogoMark";
 import { RegisterForm } from "./RegisterForm";
 
 export default function RegisterPage() {
   return (
-    <main
-      style={{
-        background: "#0f172a", minHeight: "100vh", display: "flex",
-        alignItems: "center", justifyContent: "center", fontFamily: "system-ui", padding: 24,
-      }}
-    >
-      <div style={{ background: "#1e293b", borderRadius: 12, padding: 40, width: "100%", maxWidth: 400 }}>
-        <Link
-          href="/"
-          style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 28, textDecoration: "none" }}
-        >
-          <div style={{ width: 24, height: 24, background: "#f97316", borderRadius: 6 }} />
-          <span style={{ color: "#fff", fontWeight: 700, fontSize: 16 }}>ServeOS</span>
+    <main className="flex min-h-screen items-center justify-center bg-background p-6">
+      <div className="w-full max-w-[400px] rounded-2xl border bg-card p-8 shadow-card">
+        <Link href="/" className="mb-7 flex items-center gap-2.5">
+          <LogoMark className="size-6 text-primary" />
+          <span className="font-display text-base font-bold text-ink">ServeOS</span>
         </Link>
 
-        <h1 style={{ color: "#fff", fontSize: 22, fontWeight: 700, margin: 0 }}>Create your store</h1>
-        <p style={{ color: "#64748b", fontSize: 14, marginTop: 4, marginBottom: 24 }}>
+        <h1 className="font-display text-2xl font-bold tracking-tight text-ink">Create your store</h1>
+        <p className="mt-1 mb-6 text-sm text-muted-foreground">
           Start your free trial. No credit card required.
         </p>
 
         <RegisterForm />
 
-        <p style={{ marginTop: 20, textAlign: "center", fontSize: 13, color: "#64748b" }}>
+        <p className="mt-5 text-center text-[13px] text-muted-foreground">
           Already have an account?{" "}
-          <a href="/login" style={{ color: "#f97316", textDecoration: "none" }}>
+          <a href="/login" className="text-primary">
             Sign in →
           </a>
         </p>

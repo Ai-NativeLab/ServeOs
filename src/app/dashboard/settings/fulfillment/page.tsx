@@ -76,14 +76,18 @@ export default async function FulfillmentPage() {
                       {DAYS.map((name, d) => {
                         const e = byDay(d);
                         return (
-                          <div key={d} className="flex items-center gap-3 text-sm">
+                          <div key={d} className="flex flex-wrap items-center gap-2 text-sm sm:gap-3">
                             <span className="eyebrow w-10">{name}</span>
-                            <label className="flex items-center gap-1.5 w-20">
+                            <label className="flex w-20 items-center gap-1.5">
                               <input type="checkbox" name={`closed-${d}`} defaultChecked={e?.closed ?? false} className="size-4 accent-(--color-primary)" /> Closed
                             </label>
-                            <Input type="time" name={`open-${d}`} defaultValue={e?.open ?? "10:00"} className="w-28 font-mono" />
-                            <span className="text-muted-foreground">–</span>
-                            <Input type="time" name={`close-${d}`} defaultValue={e?.close ?? "23:00"} className="w-28 font-mono" />
+                            {/* type=time has a UA-enforced intrinsic width, so the pair wraps
+                                to its own line on narrow screens instead of shrinking. */}
+                            <div className="flex items-center gap-2 sm:gap-3">
+                              <Input type="time" name={`open-${d}`} defaultValue={e?.open ?? "10:00"} className="w-28 font-mono" />
+                              <span className="text-muted-foreground">–</span>
+                              <Input type="time" name={`close-${d}`} defaultValue={e?.close ?? "23:00"} className="w-28 font-mono" />
+                            </div>
                           </div>
                         );
                       })}
@@ -93,9 +97,9 @@ export default async function FulfillmentPage() {
                 </TabsContent>
 
                 <TabsContent value="areas" className="pt-3">
-                  <ul className="divide-y text-sm mb-3">
+                  <ul className="rounded-lg border divide-y text-sm mb-3">
                     {(areasByBranch[b.id] ?? []).map((a) => (
-                      <li key={a.id} className="py-2 flex items-center justify-between gap-2">
+                      <li key={a.id} className="px-3 py-2 flex items-center justify-between gap-2">
                         <span>
                           {a.nameEn}
                           <span className="text-muted-foreground"> — fee <span className="font-mono">{Number(a.deliveryFee).toFixed(2)}</span> · min <span className="font-mono">{Number(a.minOrderAmount).toFixed(2)}</span>{a.etaMinutes ? ` · ${a.etaMinutes}m` : ""}</span>
@@ -112,7 +116,7 @@ export default async function FulfillmentPage() {
                       </li>
                     ))}
                     {(areasByBranch[b.id] ?? []).length === 0 && (
-                      <li className="py-2 text-muted-foreground">No delivery areas yet — add one below.</li>
+                      <li className="px-3 py-2 text-muted-foreground">No delivery areas yet — add one below.</li>
                     )}
                   </ul>
                   <ToastForm action={addAreaAction.bind(null, b.id)} successMessage="Area added" className="flex flex-wrap items-end gap-2">

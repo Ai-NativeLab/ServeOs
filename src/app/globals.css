@@ -60,6 +60,7 @@
   --radius-xl: calc(var(--radius) + 4px);
   --shadow-card: 0 4px 16px -10px rgba(26, 15, 10, 0.28);
   --shadow-card-hover: 0 12px 30px -14px rgba(26, 15, 10, 0.38);
+  --shadow-panel: 0 1px 2px rgba(26, 15, 10, 0.05);
 }
 
 :root {
@@ -79,7 +80,7 @@
   --accent-foreground: #1a0f0a;
   --destructive: #ce2c2c;
   --border: rgba(26, 15, 10, 0.09);
-  --input: rgba(26, 15, 10, 0.12);
+  --input: rgba(26, 15, 10, 0.14);
   --ring: #f0522b;
   --ink: #1a0f0a;
   --chart-1: #f0522b;
@@ -99,6 +100,14 @@
 }
 
 @layer base {
+  /* Tailwind v4 defaults border/divide color to currentColor; snap every bare
+     `border`/`divide-*` back to the design hairline. Explicit utilities
+     (border-input, border-primary/30, …) still win in the utilities layer. */
+  *,
+  ::before,
+  ::after {
+    border-color: var(--border);
+  }
   body {
     font-family: var(--font-sans);
     background-color: var(--background);
@@ -119,6 +128,14 @@
 
 @utility card-lift {
   box-shadow: var(--shadow-card);
+}
+
+/* Hover lift for interactive cards only — static panels keep card-lift alone. */
+@utility card-lift-hover {
+  &:hover {
+    box-shadow: var(--shadow-card-hover);
+    transform: translateY(-2px);
+  }
 }
 
 @media (prefers-reduced-motion: no-preference) {

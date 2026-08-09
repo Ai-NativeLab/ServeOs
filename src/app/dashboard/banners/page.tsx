@@ -34,7 +34,7 @@ export default async function BannersPage() {
       ) : (
         <div className="grid gap-3 md:grid-cols-2 mb-6">
           {banners.map((b) => (
-            <Card key={b.id} className="p-4">
+            <Card key={b.id} className="min-w-0 p-4">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={b.imageUrl} alt={b.titleEn ?? ""} className="w-full h-32 rounded-lg object-cover mb-3" />
               <div className="flex items-center justify-between gap-2">

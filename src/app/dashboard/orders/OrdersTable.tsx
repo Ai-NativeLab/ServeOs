@@ -92,7 +92,7 @@ export function OrdersTable({ initial, timezone }: { initial: OrderRow[]; timezo
               <li key={r.id}>
                 <Link
                   href={`/dashboard/orders/${r.id}`}
-                  className={cn("block rounded-xl border bg-card p-3", r.status === "pending" && "bg-primary/5")}
+                  className={cn("block rounded-xl border bg-card p-4", r.status === "pending" && "bg-primary/5")}
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-mono text-sm">{r.orderNumber}</span>
