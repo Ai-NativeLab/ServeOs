@@ -79,6 +79,7 @@ export default async function BillingPage() {
       </Card>
 
       {outstandingInvoice && (
+        // Not from a mockup: full accent wash = payment needs action; the current-plan card below uses the quieter /60.
         <Card className="p-5 mb-6 border-primary/30 bg-gradient-to-br from-card from-40% to-accent">
           <div className="flex items-baseline justify-between gap-4 flex-wrap">
             <h2 className="font-display text-lg font-bold text-ink">
