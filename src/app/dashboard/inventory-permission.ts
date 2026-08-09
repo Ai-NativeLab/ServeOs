@@ -14,14 +14,20 @@ export async function requireInventoryPermission(perm: Permission): Promise<Dash
   return ctx;
 }
 
+/** requireDashboardUser signals "no session" by throwing redirect("/login"). */
+const isLoginRedirect = (e: unknown): boolean =>
+  typeof (e as { digest?: unknown } | null)?.digest === "string" &&
+  (e as { digest: string }).digest.startsWith("NEXT_REDIRECT");
+
 /**
- * Resolves the context for a route, or the 403 to return instead.
+ * Resolves the context for a route, or the response to return instead.
  *
  * Every inventory route needs the same shape — authorize, translate
- * UnauthorizedError to 403, and let anything else propagate so
- * requireDashboardUser's redirect for an unauthenticated visitor still stands.
- * Ten hand-written copies of that is ten chances to catch too broadly and turn a
- * redirect into a 403.
+ * UnauthorizedError to 403 and a missing session to 401. The login redirect
+ * requireDashboardUser throws is right for pages but wrong for an API caller,
+ * which would see an opaque 307 to an HTML login form instead of a status it
+ * can act on. Ten hand-written copies of this ladder is ten chances to catch
+ * too broadly.
  */
 export async function resolveInventoryContext(
   perm: Permission,
@@ -31,6 +37,9 @@ export async function resolveInventoryContext(
   } catch (e) {
     if (e instanceof UnauthorizedError) {
       return { ctx: null, denied: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
+    }
+    if (isLoginRedirect(e)) {
+      return { ctx: null, denied: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
     }
     throw e;
   }
