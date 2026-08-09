@@ -14,10 +14,11 @@ Next.js (App Router) + Drizzle + Postgres.
 
 Host-based routing via `src/proxy.ts`, plus one desktop app:
 
-- `{slug}.serveos.com` — tenant storefront (installable PWA)
-- `app.serveos.com` — restaurant dashboard (`/register`, `/login`)
-- `admin.serveos.com` — platform admin console (`/admin`)
-- bare root — marketing site
+- `{slug}.serveos.tech` — tenant storefront (installable PWA)
+- `app.serveos.tech` — restaurant dashboard (`/register`, `/login`)
+- `admin.serveos.tech` — platform admin console (`/admin`)
+- `www.serveos.tech` — marketing site
+- `qa.serveos.tech` (+ the same subdomain layout) — the QA environment
 - **`apps/pos`** — Electron POS for the till: pairing, cashier sign-in, sales,
   drawer/shifts, X/Z reports. Talks to `/api/pos/v1/*` on the web app.
 
@@ -62,12 +63,34 @@ to pair against.
   `serveos_test` DB). Files run serially — they share one database and
   truncate between tests; do not parallelise.
 - `npm run pos:test` / `npm run pos:typecheck` — the Electron app's own suite.
-- `npm run test:e2e` — Playwright smoke test (storefront PWA manifest + branding).
+- `npm run test:e2e` — Playwright E2E suite (`tests/e2e/`, 11 specs: admin
+  console, dashboard, onboarding, ordering, offline payments, scheduling,
+  responsive/storefront). Needs a seeded dev DB (`npm run db:seed`); boots
+  the dev server itself.
 - POS server tests seed through `seedPosContext` + `openShiftForCtx`
   (`src/server/pos/test-helpers.ts`) and ring sales with `recordSale` — start
   from those fixtures rather than hand-building devices and cashiers.
 - CI (`.github/workflows/ci.yml`) runs typecheck, migration-drift check and the
   full suite on every PR, as a non-superuser role so RLS is actually exercised.
+
+## Environments, deploys & backups
+
+Full infrastructure map (domains, Vercel/Supabase projects, secrets, and the
+pitfalls that have actually bitten us):
+**[docs/references/environments.md](docs/references/environments.md)**.
+
+| Env | URL | Deploys on | Database |
+|---|---|---|---|
+| Production | `www.serveos.tech` | push to `main` | Supabase prod (aws-1 pooler) |
+| QA | `qa.serveos.tech` | push to `qa` | Supabase `ServeOs-qa` (aws-0 pooler) |
+
+Both Vercel projects run migrations during the build (`vercel-build` →
+`scripts/release-migrate.ts`), so a deploy IS a migration. Promote main to QA
+with `git push origin main:qa`.
+
+Nightly `pg_dump` backups of both databases go to Cloudflare R2 at 03:00 UTC
+(`db-backup.yml`); restore procedure and the quarterly drill live in
+[docs/references/backup-restore.md](docs/references/backup-restore.md).
 
 ## Architecture
 
@@ -100,3 +123,15 @@ Seeded by `npm run db:seed`:
 
 Local seed credentials only — production rotation is covered in
 [docs/NEW-LAPTOP-SETUP.md](docs/NEW-LAPTOP-SETUP.md) (Part 3b).
+
+## Where the docs live
+
+- [docs/ROADMAP.md](docs/ROADMAP.md) — spec sequencing + decisions (D1…)
+- [docs/NEW-LAPTOP-SETUP.md](docs/NEW-LAPTOP-SETUP.md) — full machine setup
+- [docs/references/](docs/references/) — operational truth: `environments.md`
+  (infrastructure map), `qa-environment-setup.md` (QA bring-up checklist),
+  `backup-restore.md` (backup layout + restore runbook), provider notes
+- [docs/prds/](docs/prds/) — product requirements
+- `docs/{ailab,superpowers,moai,adham-ai}/` — per-agent design specs and
+  implementation plans, dated; each feature's `*-design.md` is the spec of
+  record for how that subsystem works
