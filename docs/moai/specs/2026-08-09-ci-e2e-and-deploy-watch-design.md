@@ -106,7 +106,7 @@ New workflow, `on: push` to `main` and `qa` (plus `workflow_dispatch` with a
 
 ```yaml
 concurrency:
-  group: deploy-watch-${{ github.ref }}
+  group: deploy-watch-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 ```
 
@@ -136,6 +136,16 @@ repo secret:
    record → fail: *"Vercel created no deployment for this push — likely
    rejected at validation (check vercel.json against plan limits)."* This is
    the exact failure mode that went unnoticed for a week.
+
+   Phase 1 prefers a deployment **created after this run started**
+   (fast-forward promotions mean the same SHA can already have an older
+   preview deployment; locking onto it would squeeze the real build into
+   phase 3's short window), falling back to the newest prior deployment only
+   at deadline with a warning — a re-push of an already-deployed commit may
+   create no new deployment at all. Dispatch runs get their own concurrency
+   group so a manual test never cancels a real watch, and API curls use `-S`
+   + `--max-time` so an auth/API failure is visibly distinct from "no
+   deployment".
 2. **Readiness** — poll the deployment's `readyState` for up to **15 minutes**.
    `ERROR`/`CANCELED` → fail with the deployment URL. Timeout → fail.
 3. **Live smoke** — `GET <domain>/api/health` (retried ~2 min for alias

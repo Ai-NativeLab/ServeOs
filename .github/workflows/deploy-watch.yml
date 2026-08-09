@@ -16,8 +16,9 @@ on:
 # Two pushes racing inside the ~20-minute watch window would otherwise
 # false-red: the older run's phase 3 sees the domain (correctly) serving the
 # newer SHA. Newer push wins; the stale watch is cancelled.
+# Dispatch runs get their own group so a manual test never cancels a real watch.
 concurrency:
-  group: deploy-watch-${{ github.ref }}
+  group: deploy-watch-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:
@@ -25,9 +26,9 @@ permissions:
 
 jobs:
   watch:
-    # Dispatch only from main or qa — any other ref maps to the qa project.
+    if: github.ref_name == 'main' || github.ref_name == 'qa'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       SHA: ${{ inputs.sha || github.sha }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
@@ -40,17 +41,30 @@ jobs:
         id: find
         run: |
           echo "Watching $SHA on project $PROJECT_ID"
+          # Prefer a deployment created for THIS push. A fast-forward promotion
+          # (e.g. qa -> main) means the same SHA already has an older preview
+          # deployment in this project; locking onto it would let phase 2 pass
+          # instantly and squeeze the real build into phase 3's short window.
+          cutoff=$(( $(date +%s) - 120 ))
           deadline=$(( $(date +%s) + 300 ))
+          fallback=""
           while :; do
-            resp=$(curl -sf -H "Authorization: Bearer $VERCEL_TOKEN" \
-              "https://api.vercel.com/v6/deployments?projectId=$PROJECT_ID&meta-githubCommitSha=$SHA&limit=1") || resp="{}"
-            uid=$(echo "$resp" | jq -r '.deployments[0].uid // empty')
+            resp=$(curl -sfS --max-time 15 -H "Authorization: Bearer $VERCEL_TOKEN" \
+              "https://api.vercel.com/v6/deployments?projectId=$PROJECT_ID&meta-githubCommitSha=$SHA&limit=10") || resp="{}"
+            uid=$(echo "$resp" | jq -r --argjson cutoff "$cutoff" \
+              '[.deployments[] | select((.createdAt / 1000) >= $cutoff)][0].uid // empty') || uid=""
+            fallback=$(echo "$resp" | jq -r '.deployments[0].uid // empty') || fallback=""
             if [ -n "$uid" ]; then
               echo "Found deployment $uid"
               echo "uid=$uid" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             if [ "$(date +%s)" -ge "$deadline" ]; then
+              if [ -n "$fallback" ]; then
+                echo "::warning::No deployment created after this push; using the newest prior deployment for this SHA (re-push of an already-deployed commit?)"
+                echo "uid=$fallback" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
               echo "::error::Vercel created no deployment for this push — likely rejected at validation (check vercel.json against plan limits). If curl errors appear above, suspect the token/API instead."
               exit 1
             fi
@@ -59,19 +73,20 @@ jobs:
           done
 
       - name: "Phase 2: the deployment reaches READY"
+        env:
+          DEPLOY_UID: ${{ steps.find.outputs.uid }}
         run: |
-          uid='${{ steps.find.outputs.uid }}'
           deadline=$(( $(date +%s) + 900 ))
           while :; do
-            resp=$(curl -sf -H "Authorization: Bearer $VERCEL_TOKEN" \
-              "https://api.vercel.com/v13/deployments/$uid") || resp="{}"
-            state=$(echo "$resp" | jq -r '.readyState // empty')
-            url=$(echo "$resp" | jq -r '.url // empty')
+            resp=$(curl -sfS --max-time 15 -H "Authorization: Bearer $VERCEL_TOKEN" \
+              "https://api.vercel.com/v13/deployments/$DEPLOY_UID") || resp="{}"
+            state=$(echo "$resp" | jq -r '.readyState // empty') || state=""
+            url=$(echo "$resp" | jq -r '.url // empty') || url=""
             case "$state" in
               READY)
                 echo "READY: https://$url"
                 exit 0 ;;
-              ERROR|CANCELED)
+              ERROR|CANCELED|DELETED)
                 echo "::error::Deployment ended $state: https://$url"
                 exit 1 ;;
             esac
@@ -86,12 +101,14 @@ jobs:
       - name: "Phase 3: the live domain serves this commit"
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           deadline=$(( $(date +%s) + 120 ))
           while :; do
             # -L: if Vercel ever redirects apex↔www, a non-following GET
             # would see a 307/308 instead of JSON.
-            body=$(curl -sfL "$DOMAIN/api/health" || true)
+            body=$(curl -sSfL --max-time 20 "$DOMAIN/api/health" || true)
             live=$(echo "$body" | jq -r '.sha // empty' 2>/dev/null || true)
             if [ "$live" = "$SHA" ]; then
               echo "$DOMAIN serves $SHA"
@@ -100,9 +117,9 @@ jobs:
             if [ "$(date +%s)" -ge "$deadline" ]; then
               # Superseded-push guard: a newer push may have gone live while
               # we watched (dispatch runs, or the cancellation race).
-              head=$(gh api "repos/${{ github.repository }}/branches/${{ github.ref_name }}" --jq .commit.sha)
-              if [ "$head" != "$SHA" ]; then
-                echo "::notice::Superseded — ${{ github.ref_name }} has moved to $head and the domain serves '$live'. Skipping."
+              head=$(gh api "repos/$REPO/branches/$REF_NAME" --jq .commit.sha) || head=""
+              if [ -n "$head" ] && [ "$head" != "$SHA" ]; then
+                echo "::notice::Superseded — $REF_NAME has moved to $head and the domain serves '$live'. Skipping."
                 exit 0
               fi
               echo "::error::$DOMAIN serves '$live', expected $SHA — the READY build is not live on the domain."
