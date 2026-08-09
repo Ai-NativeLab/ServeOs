@@ -26,6 +26,15 @@ export type SalesFilters = {
 /** The finalized sales of a tenant, newest first, 50/page. Payment-status alone
  *  would include a paid-then-cancelled order (cancelling never resets the money
  *  state), so the terminal order-statuses are excluded explicitly. */
+/** `new Date("2026-08-06")` parses as UTC midnight, so a date-picker "to" would
+ *  exclude every sale later that calendar day. Treat a date-only string as the
+ *  end of its day instead (23:59:59.999Z) — correct for any tenant timezone
+ *  within a day of UTC. A non date-only value falls through to plain parsing. */
+export function endOfDay(value: string): Date {
+  const d = new Date(`${value}T23:59:59.999Z`);
+  return Number.isNaN(d.getTime()) ? new Date(value) : d;
+}
+
 export async function listSales(tenantId: string, filters: SalesFilters): Promise<Order[]> {
   return withTenant(tenantId, (tx) => {
     const conds = [

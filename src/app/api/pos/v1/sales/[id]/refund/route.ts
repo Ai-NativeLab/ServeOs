@@ -23,9 +23,30 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     throw e;
   }
 
-  const body = (await req.json()) as Partial<Omit<RefundInput, "orderId">>;
-  if (!body.clientRefundId) return NextResponse.json({ error: "Missing clientRefundId" }, { status: 400 });
-  if (!body.payments?.length) return NextResponse.json({ error: "Missing refund payments" }, { status: 400 });
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return NextResponse.json({ error: "Invalid refund request" }, { status: 400 });
+  }
+
+  const input = body as Record<string, unknown>;
+  const clientRefundId = input.clientRefundId;
+  const payments = input.payments;
+  const lines = input.lines;
+
+  if (typeof clientRefundId !== "string" || !clientRefundId.trim()) {
+    return NextResponse.json({ error: "Missing clientRefundId" }, { status: 400 });
+  }
+  if (!Array.isArray(payments) || payments.length === 0) {
+    return NextResponse.json({ error: "Missing refund payments" }, { status: 400 });
+  }
+  if (lines !== undefined && !Array.isArray(lines)) {
+    return NextResponse.json({ error: "Invalid refund lines" }, { status: 400 });
+  }
 
   try {
     const result = await issueRefund(
@@ -35,7 +56,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         actorUserId: ctx.cashierUserId,
         permissions: ctx.permissions,
       },
-      { ...(body as Omit<RefundInput, "orderId">), orderId: id },
+      { ...(input as Omit<RefundInput, "orderId">), orderId: id },
     );
     return NextResponse.json(result);
   } catch (e) {

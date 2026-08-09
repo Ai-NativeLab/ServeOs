@@ -22,10 +22,9 @@ const inputCls =
   "rounded-lg border border-border bg-background px-2 py-1.5 text-sm text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50";
 
 export function RefundForm({
-  orderId, branchId, items, priorLineQtys, netPaidRemaining,
+  orderId, items, priorLineQtys, netPaidRemaining,
 }: {
   orderId: string;
-  branchId: string;
   items: FormItem[];
   priorLineQtys: { orderItemId: string; quantity: number }[];
   netPaidRemaining: number;
@@ -47,6 +46,10 @@ export function RefundForm({
   const [reasonCode, setReasonCode] = useState<(typeof REASON_CODES)[number]>("customer_changed_mind");
   const [reasonText, setReasonText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // One idempotency key per composer session: a submit retry (network blip) is a
+  // replay, so the server returns the already-committed refund instead of
+  // producing a second one. A fresh open of the form mints a new key.
+  const [clientRefundId] = useState(newRefundId);
 
   const lineTotal = round2(lines.filter((l) => l.quantity > 0 && l.amount > 0).reduce((s, l) => s + l.amount, 0));
   const payTotal = round2(payments.filter((p) => p.amount > 0).reduce((s, p) => s + p.amount, 0));
@@ -70,13 +73,12 @@ export function RefundForm({
       try {
         await issueRefundAction({
           orderId,
-          branchId,
           kind,
           lines: lineEntries,
           payments: payEntries,
           reasonCode,
           reasonText: reasonText.trim() || undefined,
-          clientRefundId: newRefundId(),
+          clientRefundId,
         });
         toast.success("Refund issued");
         router.refresh();

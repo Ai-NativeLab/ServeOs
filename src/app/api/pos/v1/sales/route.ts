@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePosCashier, assertPermission } from "@/server/pos/require-cashier";
 import { recordSale, type RecordSaleInput } from "@/server/pos/record-sale";
-import { listSales, type SalesFilters } from "@/server/pos/sales-history";
+import { listSales, endOfDay, type SalesFilters } from "@/server/pos/sales-history";
 import { NoOpenShiftError, PosAuthError, PosCashierError, PosForbiddenError, PosSaleError } from "@/server/pos/errors";
 import { TotalMismatchError, OrderValidationError, OutOfStockError } from "@/server/ordering/errors";
 
@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
   const amount = sp.get("amount");
   const page = sp.get("page");
   const dateFrom = from ? new Date(from) : undefined;
-  const dateTo = to ? new Date(to) : undefined;
+  const dateTo = to ? endOfDay(to) : undefined;
   const numOrderNumber = orderNumber !== null ? Number(orderNumber) : undefined;
   const numAmount = amount !== null ? Number(amount) : undefined;
   const numPage = page !== null ? Number(page) : undefined;

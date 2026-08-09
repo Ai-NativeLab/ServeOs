@@ -88,7 +88,6 @@ export type SalesRow = {
   status: string;
   paymentStatus: string;
   placedAt: string;
-  source: string;
 };
 
 export type SaleDetailItem = {

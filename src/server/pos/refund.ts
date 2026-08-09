@@ -4,6 +4,7 @@ import { recordAuditEvent } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { money, restockRefundedLines } from "@/server/ordering/service";
 import { orders, orderItems, type Order } from "@/server/ordering/schema";
+import { branches } from "@/server/branches/schema";
 import { orderPayments } from "./tender-schema";
 import { refunds, refundLines, refundPayments } from "./refund-schema";
 import { resolveAuthorizer } from "./grants";
@@ -12,6 +13,9 @@ import { PosRefundError } from "./errors";
 import type { Permission } from "@/server/rbac/permissions";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/** The tender methods a refund may move money OUT on (mirrors refund_method enum). */
+const REFUND_METHODS = ["cash", "card", "store_credit", "other"] as const;
 
 export type RefundActor = {
   tenantId: string;
@@ -60,48 +64,124 @@ export type RefundResult = {
  * mutated: only the three refund tables are written plus the DERIVED
  * payment_status on the order. Any failure rolls back the whole refund.
  */
-export async function issueRefund(actor: RefundActor, input: RefundInput): Promise<RefundResult> {
-  if (!REASON_CODES.includes(input.reasonCode)) throw new PosRefundError("Unknown reason code");
-  if (!input.payments.length) throw new PosRefundError("A refund needs at least one refund payment");
-  for (const p of input.payments) if (!(p.amount > 0)) throw new PosRefundError("A refund payment must be positive");
+export async function issueRefund(
+  actor: RefundActor,
+  input: RefundInput,
+): Promise<RefundResult> {
+  if (!REASON_CODES.includes(input.reasonCode))
+    throw new PosRefundError("Unknown reason code");
+  if (input.kind !== "full" && input.kind !== "partial")
+    throw new PosRefundError("Invalid refund kind");
+
+  // Malformed body: a caller that omitted lines/payments gets a clean
+  // PosRefundError here — the refund route maps it to 400, never a 500.
+  const payments = input.payments ?? [];
+  const lines = input.lines ?? [];
+  if (!payments.length)
+    throw new PosRefundError("A refund needs at least one refund payment");
+  for (const p of payments) {
+    if (!REFUND_METHODS.some((m) => m === p.method))
+      throw new PosRefundError("Unknown refund payment method");
+    if (
+      !(
+        typeof p.amount === "number" &&
+        Number.isFinite(p.amount) &&
+        p.amount > 0
+      )
+    ) {
+      throw new PosRefundError("A refund payment must be a positive number");
+    }
+  }
 
   // Authorize BEFORE the transaction. resolveAuthorizer throws PosForbiddenError
   // when the actor lacks pos:refund and has no (valid) grant. RefundActor is
   // structurally a PosAuthorizerContext — no cast needed.
   const authorizer = resolveAuthorizer(
-    { tenantId: actor.tenantId, cashierUserId: actor.actorUserId, permissions: actor.permissions },
+    {
+      tenantId: actor.tenantId,
+      cashierUserId: actor.actorUserId,
+      permissions: actor.permissions,
+    },
     "pos:refund",
     input.grantToken,
   );
-  const authorizedByUserId = authorizer === actor.actorUserId ? null : authorizer;
+  const authorizedByUserId =
+    authorizer === actor.actorUserId ? null : authorizer;
 
   return withTenant(actor.tenantId, async (tx) => {
-    // 1. Idempotency — INSIDE withTenant because refunds is RLS-scoped (unlike
-    //    pos_order_receipts, which has no RLS and is checked outside).
+    // 1. SERIALIZE refunds per order. The net-paid ceiling is a read-then-write
+    //    under READ COMMITTED; without a row lock two concurrent refunds on the
+    //    same order (e.g. a dashboard manager and a POS cashier at the same
+    //    moment, with different clientRefundIds) could both read the same
+    //    "still refundable" number, both pass the ceiling, and BOTH commit —
+    //    over-refunding a sale. Locking the order row first makes the loser
+    //    wait, then re-read fresh paid data and reject. It also serializes a
+    //    concurrent duplicate clientRefundId onto the refunds_order_client
+    //    unique index — the loser becomes an idempotent replay, not a 500.
+    const [order] = await tx
+      .select()
+      .from(orders)
+      .where(eq(orders.id, input.orderId))
+      .for("update")
+      .limit(1);
+    if (!order) throw new PosRefundError("Unknown order");
+    if (order.status === "cancelled" || order.status === "rejected")
+      throw new PosRefundError("A voided order has no settled money to refund");
+    if (
+      order.paymentStatus === "unpaid" ||
+      order.paymentStatus === "pending_verification"
+    ) {
+      throw new PosRefundError(
+        "An unpaid order has nothing to refund — void it instead",
+      );
+    }
+
+    // 2. Branch attribution is owned server-side: the refund's branch must be a
+    //    branch of THIS tenant (the FK only proves it exists, which is why a
+    //    client-supplied branchId on the dashboard was a hole).
+    const [branch] = await tx
+      .select({ id: branches.id })
+      .from(branches)
+      .where(
+        and(
+          eq(branches.id, actor.branchId),
+          eq(branches.tenantId, actor.tenantId),
+        ),
+      )
+      .limit(1);
+    if (!branch)
+      throw new PosRefundError("Refund branch does not belong to this tenant");
+
+    // 3. Idempotency — INSIDE withTenant because refunds is RLS-scoped (unlike
+    //    pos_order_receipts, which has no RLS and is checked outside). The order
+    //    is already locked, so a replay observes the settled state.
     const [dup] = await tx
       .select()
       .from(refunds)
-      .where(and(eq(refunds.orderId, input.orderId), eq(refunds.clientRefundId, input.clientRefundId)))
+      .where(
+        and(
+          eq(refunds.orderId, input.orderId),
+          eq(refunds.clientRefundId, input.clientRefundId),
+        ),
+      )
       .limit(1);
     if (dup) {
-      const [o] = await tx.select().from(orders).where(eq(orders.id, input.orderId)).limit(1);
-      return { refundId: dup.id, totalAmount: Number(dup.totalAmount), paymentStatus: o.paymentStatus, idempotent: true };
+      return {
+        refundId: dup.id,
+        totalAmount: Number(dup.totalAmount),
+        paymentStatus: order.paymentStatus,
+        idempotent: true,
+      };
     }
 
-    // 2. Load the order. A voided order and an unsettled order have no money to
-    //    give back — those route to void (Spec 1), never to a refund.
-    const [order] = await tx.select().from(orders).where(eq(orders.id, input.orderId)).limit(1);
-    if (!order) throw new PosRefundError("Unknown order");
-    if (order.status === "cancelled" || order.status === "rejected") throw new PosRefundError("A voided order has no settled money to refund");
-    if (order.paymentStatus === "unpaid" || order.paymentStatus === "pending_verification") {
-      throw new PosRefundError("An unpaid order has nothing to refund — void it instead");
-    }
-
-    // 3. Net-paid ceiling. order_payments.amount is the APPLIED amount (change
+    // 4. Net-paid ceiling. order_payments.amount is the APPLIED amount (change
     //    is a separate column, never subtracted here), so gross = Σ amount.
     //    Net-paid = Σ order_payments − Σ prior refund_payments. This refund's
     //    payments may never push cumulative refunds past it.
-    const tenders = await tx.select().from(orderPayments).where(eq(orderPayments.orderId, input.orderId));
+    const tenders = await tx
+      .select()
+      .from(orderPayments)
+      .where(eq(orderPayments.orderId, input.orderId));
     const prior = await tx
       .select({ refundPayment: refundPayments })
       .from(refundPayments)
@@ -111,26 +191,32 @@ export async function issueRefund(actor: RefundActor, input: RefundInput): Promi
       tenders.reduce((s, t) => s + Number(t.amount), 0) -
         prior.reduce((s, r) => s + Number(r.refundPayment.amount), 0),
     );
-    const thisTotal = round2(input.payments.reduce((s, p) => s + p.amount, 0));
-    if (thisTotal > netPaid + 0.001) throw new PosRefundError("Refund exceeds the amount still refundable");
+    const thisTotal = round2(payments.reduce((s, p) => s + p.amount, 0));
+    if (thisTotal > netPaid + 0.001)
+      throw new PosRefundError("Refund exceeds the amount still refundable");
 
-    // 4. Per-line quantity bounds. Applied to ANY refund that names lines (an
+    // 5. Per-line quantity bounds. Applied to ANY refund that names lines (an
     //    itemised full refund included) — "return three of two" is wrong in
     //    every kind. Already-refunded quantities count against the remaining.
-    if (input.lines.length > 0) {
-      const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, input.orderId));
+    if (lines.length > 0) {
+      const items = await tx
+        .select()
+        .from(orderItems)
+        .where(eq(orderItems.orderId, input.orderId));
       const priorLines = await tx
         .select({ refundLine: refundLines })
         .from(refundLines)
         .innerJoin(refunds, eq(refundLines.refundId, refunds.id))
         .where(eq(refunds.orderId, input.orderId));
-      for (const l of input.lines) {
+      for (const l of lines) {
         const item = items.find((i) => i.id === l.orderItemId);
-        if (!item) throw new PosRefundError("Refund line does not belong to this order");
+        if (!item)
+          throw new PosRefundError("Refund line does not belong to this order");
         const already = priorLines
           .filter((p) => p.refundLine.orderItemId === l.orderItemId)
           .reduce((s, p) => s + p.refundLine.quantity, 0);
-        if (l.quantity < 1 || l.quantity > item.quantity - already) throw new PosRefundError("Cannot return more than was sold");
+        if (l.quantity < 1 || l.quantity > item.quantity - already)
+          throw new PosRefundError("Cannot return more than was sold");
       }
     }
 
@@ -138,12 +224,16 @@ export async function issueRefund(actor: RefundActor, input: RefundInput): Promi
     // tenders (R8). A full refund may be headerless (goodwill) or itemised; the
     // net-paid ceiling above already bounds the money either way.
     if (input.kind === "partial") {
-      if (!input.lines.length) throw new PosRefundError("A partial refund needs at least one line");
-      const lineTotal = round2(input.lines.reduce((s, l) => s + l.amount, 0));
-      if (Math.abs(lineTotal - thisTotal) > 0.001) throw new PosRefundError("Refund line amounts must equal the refund payments");
+      if (!lines.length)
+        throw new PosRefundError("A partial refund needs at least one line");
+      const lineTotal = round2(lines.reduce((s, l) => s + l.amount, 0));
+      if (Math.abs(lineTotal - thisTotal) > 0.001)
+        throw new PosRefundError(
+          "Refund line amounts must equal the refund payments",
+        );
     }
 
-    // 5. Insert header → lines → payments. All-or-nothing inside withTenant.
+    // 6. Insert header → lines → payments. All-or-nothing inside withTenant.
     const [refund] = await tx
       .insert(refunds)
       .values({
@@ -161,9 +251,9 @@ export async function issueRefund(actor: RefundActor, input: RefundInput): Promi
       })
       .returning();
 
-    if (input.lines.length) {
+    if (lines.length) {
       await tx.insert(refundLines).values(
-        input.lines.map((l) => ({
+        lines.map((l) => ({
           tenantId: actor.tenantId,
           refundId: refund.id,
           orderItemId: l.orderItemId,
@@ -174,7 +264,7 @@ export async function issueRefund(actor: RefundActor, input: RefundInput): Promi
       );
     }
     await tx.insert(refundPayments).values(
-      input.payments.map((p) => ({
+      payments.map((p) => ({
         tenantId: actor.tenantId,
         refundId: refund.id,
         method: p.method,
@@ -184,17 +274,23 @@ export async function issueRefund(actor: RefundActor, input: RefundInput): Promi
       })),
     );
 
-    // 6. Restock each restock=true line (integer fallback now; Spec 8's
+    // 7. Restock each restock=true line (integer fallback now; Spec 8's
     //    refund_restock ledger is the forward path — no issueRefund change).
-    await restockRefundedLines(tx, actor.tenantId, input.lines);
+    //    NOTE for merge coordination: feat/inventory-core-and-recipes reworks
+    //    stock math — this restock path must be realigned to the new inventory
+    //    core when that branch lands, or line restocks will double-count.
+    await restockRefundedLines(tx, actor.tenantId, lines);
 
-    // 7. payment_status is DERIVED from the math, never set by hand. If this
+    // 8. payment_status is DERIVED from the math, never set by hand. If this
     //    refund clears net-paid, the order is fully refunded; else partially.
     const paymentStatus: Order["paymentStatus"] =
       round2(netPaid - thisTotal) <= 0.001 ? "refunded" : "partially_refunded";
-    await tx.update(orders).set({ paymentStatus, updatedAt: new Date() }).where(eq(orders.id, input.orderId));
+    await tx
+      .update(orders)
+      .set({ paymentStatus, updatedAt: new Date() })
+      .where(eq(orders.id, input.orderId));
 
-    // 8. Audit — DIRECT recordAuditEvent, same tx, so the refund.issued row
+    // 9. Audit — DIRECT recordAuditEvent, same tx, so the refund.issued row
     //    commits/rolls back with the refund. The audit chain is live on-branch
     //    (unlike the plan's seam premise), so this matches record-sale's
     //    sale.recorded pattern rather than a settable emitter. RefundActor has
@@ -226,6 +322,11 @@ export async function issueRefund(actor: RefundActor, input: RefundInput): Promi
       tx,
     );
 
-    return { refundId: refund.id, totalAmount: thisTotal, paymentStatus, idempotent: false };
+    return {
+      refundId: refund.id,
+      totalAmount: thisTotal,
+      paymentStatus,
+      idempotent: false,
+    };
   });
 }

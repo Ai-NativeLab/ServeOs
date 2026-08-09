@@ -1,5 +1,5 @@
 import { requireOrdersPermission } from "../../orders-permission";
-import { listSales, type SalesFilters } from "@/server/pos/sales-history";
+import { listSales, endOfDay, type SalesFilters } from "@/server/pos/sales-history";
 import { toOrderRow } from "@/server/ordering/service";
 import { getTenantById } from "@/server/tenancy";
 import { PageHeader } from "@/components/dashboard/PageHeader";
@@ -28,7 +28,7 @@ export default async function SalesHistoryPage({
 
   const filters: SalesFilters = {
     dateFrom: from ? new Date(from) : undefined,
-    dateTo: to ? new Date(to) : undefined,
+    dateTo: to ? endOfDay(to) : undefined,
     cashierUserId: cashier,
     customerPhone: phone,
     orderNumber: orderNumber ? Number(orderNumber) : undefined,

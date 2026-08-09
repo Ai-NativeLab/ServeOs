@@ -230,6 +230,55 @@ describe("issueRefund", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("serializes concurrent refunds on the same order — exactly one wins, no double refund (FOR UPDATE)", async () => {
+    // Two full-refund attempts for the FULL paid amount, fired at the same
+    // moment with DIFFERENT clientRefundIds, so both pass idempotency. Without
+    // the order-row lock both would read the same net-paid, both pass the
+    // ceiling, and both commit — refunding twice the money. With `FOR UPDATE`
+    // (step 1 of issueRefund) the loser blocks, re-reads net-paid after the
+    // winner commits (now 0), and rejects: never a silent over-refund.
+    const s = await seedPaidSale("owner");
+    const attempt = (clientRefundId: string) =>
+      issueRefund(actorFrom(s.ctx), {
+        orderId: s.receipt.orderId,
+        kind: "full",
+        lines: [],
+        payments: [{ method: "cash", amount: s.receipt.paidAmount }],
+        reasonCode: "other",
+        clientRefundId,
+      });
+
+    const results = await Promise.allSettled([attempt("race-a"), attempt("race-b")]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(PosRefundError);
+
+    const rows = await withTenant(s.tenantId, (tx) => tx.select().from(refunds));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("rejects a refund when the actor's branch belongs to another tenant (server-side attribution)", async () => {
+    const a = await seedPaidSale("owner");
+    const foreign = await seedPosContext("owner");
+    await expect(
+      issueRefund(
+        { ...actorFrom(a.ctx), branchId: foreign.branchId },
+        {
+          orderId: a.receipt.orderId,
+          kind: "full",
+          lines: [],
+          payments: [{ method: "cash", amount: a.receipt.paidAmount }],
+          reasonCode: "other",
+          clientRefundId: "r1",
+        },
+      ),
+    ).rejects.toThrow(PosRefundError);
+
+    const rows = await withTenant(a.tenantId, (tx) => tx.select().from(refunds));
+    expect(rows).toHaveLength(0);
+  });
+
   it("forbids a pos:sell-only cashier refunding without a manager grant", async () => {
     const s = await seedPaidSale("staff");
     await expect(issueRefund(actorFrom(s.ctx), {

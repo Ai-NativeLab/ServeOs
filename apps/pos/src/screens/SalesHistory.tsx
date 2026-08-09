@@ -59,6 +59,10 @@ export function SalesHistory() {
   const [refundBusy, setRefundBusy] = useState(false);
   const [refundError, setRefundError] = useState<string | null>(null);
   const [pendingGrant, setPendingGrant] = useState<PendingGrant | null>(null);
+  // One idempotency key per composed refund: minted at open, reused across
+  // submit retries (incl. a NEEDS_MANAGER grant round-trip), so a retry is a
+  // replay — the server returns the committed refund instead of doubling it.
+  const [clientRefundId, setClientRefundId] = useState("");
 
   const [reprint, setReprint] = useState<ReprintReceipt | null>(null);
   const [busySale, setBusySale] = useState<string | null>(null);
@@ -135,6 +139,7 @@ export function SalesHistory() {
     setReasonCode("customer_changed_mind");
     setReasonText("");
     setRefundError(null);
+    setClientRefundId(newRefundId());
     setRefundOpen(true);
   }
 
@@ -163,7 +168,7 @@ export function SalesHistory() {
       payments: payEntries,
       reasonCode,
       reasonText: reasonText.trim() || undefined,
-      clientRefundId: newRefundId(),
+      clientRefundId,
       grantToken: extra?.grantToken,
     };
 

@@ -209,7 +209,6 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
       {canRefund && netPaidRemaining > 0.001 && order.status !== "cancelled" && order.status !== "rejected" && (
         <RefundForm
           orderId={id}
-          branchId={order.branchId}
           items={sale.items.map((i) => ({ id: i.id, nameEn: i.nameEn, quantity: i.quantity, lineTotal: i.lineTotal }))}
           priorLineQtys={priorLineQtys}
           netPaidRemaining={netPaidRemaining}
