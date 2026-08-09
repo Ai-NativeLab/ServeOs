@@ -545,6 +545,54 @@ describe("inventory ledger", () => {
     expect(await onHand(tenantId, itemId, shelf)).toBe(7);
   });
 
+  it("receiving through the inventory API makes a retail product available again", async () => {
+    // The blocking verticals refuse a sale past zero, so the storefront flag has
+    // to follow every write path — not just sales — or received stock stays
+    // invisible to customers.
+    const { tenantId, branchId } = await seedInventoryTenant("retail");
+    const shelf = await seedLocation(tenantId, branchId, "retail");
+    const itemId = await seedItem(tenantId, { baseUom: "each", kind: "finished_good" });
+
+    const productId = await withTenant(tenantId, async (tx) => {
+      const { productId } = await seedLinkedProduct(tx, tenantId, itemId);
+      await tx.execute(sql`UPDATE products SET track_stock = true, stock_quantity = 0 WHERE id = ${productId}`);
+      return productId;
+    });
+
+    await stockLot(tenantId, { itemId, locationId: shelf, baseQty: 12, uom: "each" });
+
+    const [p] = await withTenant(tenantId, (tx) =>
+      tx.execute<{ stock_quantity: number }>(sql`SELECT stock_quantity FROM products WHERE id = ${productId}`)
+        .then((r) => r.rows));
+    expect(Number(p.stock_quantity)).toBe(12);
+  });
+
+  it("expired stock is counted on hand but never advertised as sellable", async () => {
+    // On-hand and sellable are different numbers on purpose. Mirroring raw
+    // on-hand would offer a shelf of expired goods and then fail at checkout.
+    const { tenantId, branchId } = await seedInventoryTenant("retail");
+    const shelf = await seedLocation(tenantId, branchId, "retail");
+    const itemId = await seedItem(tenantId, { baseUom: "each", kind: "finished_good", isPerishable: true });
+
+    const productId = await withTenant(tenantId, async (tx) => {
+      const { productId } = await seedLinkedProduct(tx, tenantId, itemId);
+      await tx.execute(sql`UPDATE products SET track_stock = true, stock_quantity = 0 WHERE id = ${productId}`);
+      return productId;
+    });
+
+    await stockLot(tenantId, {
+      itemId, locationId: shelf, baseQty: 6, uom: "each", expiryAt: new Date("2026-08-04"),
+    });
+    await stockLot(tenantId, { itemId, locationId: shelf, baseQty: 4, uom: "each" });
+
+    // 10 held, only 4 sellable.
+    expect(await onHand(tenantId, itemId, shelf)).toBe(10);
+    const [p] = await withTenant(tenantId, (tx) =>
+      tx.execute<{ stock_quantity: number }>(sql`SELECT stock_quantity FROM products WHERE id = ${productId}`)
+        .then((r) => r.rows));
+    expect(Number(p.stock_quantity)).toBe(4);
+  });
+
   it("the stock_ledger append-only trigger rejects UPDATE and DELETE", async () => {
     const { tenantId, branchId } = await seedInventoryTenant();
     const kitchen = await seedLocation(tenantId, branchId, "kitchen");

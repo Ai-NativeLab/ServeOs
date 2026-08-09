@@ -232,6 +232,7 @@ export async function receiveStock(tx: Tx, a: ReceiveArgs): Promise<{ lotId: str
     type: a.ledgerType ?? "receive", qty: qty(baseQty), uom: baseUomOf(item), unitCost: a.unitCost ?? null,
     refType: "inventory_lot", refId: lotId, byUserId: a.byUserId ?? null, note: a.note ?? null,
   });
+  await syncLinkedSellable(tx, a.itemId, a.locationId);
   return { lotId };
 }
 
@@ -300,6 +301,8 @@ export async function adjustStock(tx: Tx, a: AdjustArgs): Promise<void> {
     }
   }
 
+  await syncLinkedSellable(tx, a.itemId, a.locationId);
+
   if (a.audit) {
     await recordAuditEvent({ tenantId: a.tenantId, actorUserId: a.audit.actorUserId, fingerprint: a.audit.fingerprint }, {
       action: a.type === "waste" ? "inventory.waste" : "inventory.adjust",
@@ -356,6 +359,9 @@ export async function transferStock(tx: Tx, a: TransferArgs): Promise<void> {
       refType: "transfer", refId: groupId, byUserId: a.byUserId ?? null, note: a.note ?? null,
     });
   }
+
+  await syncLinkedSellable(tx, a.itemId, a.fromLocationId);
+  await syncLinkedSellable(tx, a.itemId, a.toLocationId);
 
   if (a.audit) {
     await recordAuditEvent({ tenantId: a.tenantId, actorUserId: a.audit.actorUserId, fingerprint: a.audit.fingerprint }, {
@@ -454,6 +460,10 @@ export async function commitCount(
     }
   }
 
+  for (const itemId of new Set(lines.map((l) => l.itemId))) {
+    await syncLinkedSellable(tx, itemId, count.locationId);
+  }
+
   await tx.update(stockCounts)
     .set({ status: "committed", committedByUserId: byUserId, committedAt: new Date() })
     .where(eq(stockCounts.id, countId));
@@ -530,10 +540,48 @@ async function adoptLegacyTrackedStock(
  * a disabled button. Dropped along with the column once `inStock` reads the
  * ledger (spec Migration §5).
  */
+/**
+ * What can actually be SOLD at a location: on-hand minus anything sitting in an
+ * expired lot.
+ *
+ * On-hand and sellable are deliberately different numbers — expired stock is
+ * still held and still counted, it just cannot go out of the door. The storefront
+ * needs the sellable figure: mirroring raw on-hand would advertise a shelf of
+ * expired goods as available and then fail the customer at checkout, which is the
+ * same "advertises then errors" trap as a sold-out product.
+ */
+export async function sellableOnHand(tx: Tx, itemId: string, locationId: string): Promise<number> {
+  const [row] = await tx.select({
+    sum: sql<string>`COALESCE(SUM(${inventoryLots.qtyRemaining}), 0)`,
+  }).from(inventoryLots).where(and(
+    eq(inventoryLots.itemId, itemId),
+    eq(inventoryLots.locationId, locationId),
+    sql`${inventoryLots.qtyRemaining} > 0`,
+    sql`(${inventoryLots.expiryAt} IS NULL OR ${inventoryLots.expiryAt} > now())`,
+  ));
+  return roundQty(Number(row?.sum ?? 0));
+}
+
+/**
+ * Re-mirrors every sellable linked to this item at this location.
+ *
+ * Called from every write path, not just sales: a manager who receives, adjusts,
+ * transfers or counts stock through the inventory API moves the ledger, and
+ * without this the storefront would keep showing the figure from before —
+ * hiding stock that exists, or offering stock that does not.
+ */
+export async function syncLinkedSellable(tx: Tx, itemId: string, locationId: string): Promise<void> {
+  const links = await tx.select().from(productInventoryLinks)
+    .where(and(eq(productInventoryLinks.itemId, itemId), eq(productInventoryLinks.linkType, "finished_good")));
+  for (const link of links) {
+    await mirrorLegacyStock(tx, itemId, locationId, link.productId, link.variantId);
+  }
+}
+
 async function mirrorLegacyStock(
   tx: Tx, itemId: string, locationId: string, productId: string, variantId: string | null,
 ): Promise<void> {
-  const remaining = Math.max(0, Math.floor(await onHandOnTx(tx, itemId, locationId)));
+  const remaining = Math.max(0, Math.floor(await sellableOnHand(tx, itemId, locationId)));
 
   if (variantId) {
     await tx.update(productVariants)
