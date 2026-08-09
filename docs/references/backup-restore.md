@@ -31,7 +31,7 @@ PostgreSQL 17 client tools:
 ```bash
 # 1. Fetch the dump (Cloudflare dashboard, or aws cli with R2 creds):
 aws s3 cp s3://serveos-backups/prod/daily/serveos-prod-YYYY-MM-DD.dump . \
-  --endpoint-url https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+  --endpoint-url https://<ACCOUNT_ID>.eu.r2.cloudflarestorage.com
 
 # 2. STOP writes: Vercel → serveos project → pause deployments/traffic if possible.
 
