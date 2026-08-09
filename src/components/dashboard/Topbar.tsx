@@ -65,7 +65,11 @@ export function Topbar({
               <div className="text-xs text-muted-foreground">{roleLabel}</div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem className="p-0">
+            {/* Selecting a menu item closes the menu by default, which unmounts
+                this form in the same click — so the submit never dispatched and
+                sign-out silently did nothing. Keeping the menu open lets the
+                form submit; the redirect to /login then takes the menu with it. */}
+            <DropdownMenuItem className="p-0" onSelect={(e) => e.preventDefault()}>
               <form action={signOutAction} className="w-full">
                 <SubmitButton variant="ghost" className="w-full justify-start px-2 h-8 font-normal">Sign out</SubmitButton>
               </form>

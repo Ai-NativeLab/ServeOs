@@ -52,3 +52,25 @@ test("staff cannot reach settings and is redirected to Orders", async ({ page })
   await page.goto("/dashboard/settings");
   await expect(page).toHaveURL(/\/dashboard\/orders/);
 });
+
+test("sign out from the user menu ends the session", async ({ page }) => {
+  // Regression: the Sign out control lives inside a Radix DropdownMenuItem, and
+  // selecting an item closes the menu by default — which unmounted the form in
+  // the same click, so the server action never ran. The button appeared to do
+  // nothing and the user stayed logged in. Asserting the redirect AND that a
+  // protected page no longer loads, because the visible redirect alone would
+  // still pass if the cookie survived.
+  await page.goto("/login");
+  await page.getByPlaceholder("e.g. roma").fill("roma");
+  await page.locator('input[name="email"]').fill("owner@roma.com");
+  await page.locator('input[name="password"]').fill("owner1234");
+  await page.locator('form button[type="submit"]').click();
+  await expect(page).toHaveURL(/\/dashboard/);
+
+  await page.locator("header").getByRole("button", { name: /Owner|owner@roma/i }).first().click();
+  await page.getByRole("button", { name: "Sign out" }).click();
+
+  await expect(page).toHaveURL(/\/login/);
+  await page.goto("/dashboard");
+  await expect(page).toHaveURL(/\/login/);
+});
