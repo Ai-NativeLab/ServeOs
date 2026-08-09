@@ -10,10 +10,20 @@ import { createRecipe, setRecipeComponents, linkProduct, unlinkProduct } from "@
 import { assertInventoryUom } from "@/server/inventory/uom";
 import type { UnitOfMeasure } from "@/server/catalog/uom-values";
 import { recordAuditEvent } from "@/server/audit/service";
+import { domainErrorValue } from "../action-errors";
 
 const str = (f: FormData, k: string) => String(f.get(k) ?? "").trim();
 const num = (f: FormData, k: string) => Number(f.get(k));
 const optional = (f: FormData, k: string) => (str(f, k) === "" ? null : str(f, k));
+
+/**
+ * Where an item's stock is consumed: recipe components deduct at the kitchen,
+ * finished goods at the shelf (mirrors deductForOrderLine). Movements default
+ * there so received stock lands where selling will actually look for it —
+ * otherwise a delivery sits on the Front Shelf while the Kitchen oversells.
+ */
+const consumptionKind = (itemKind: string): "retail" | "kitchen" =>
+  itemKind === "ingredient" || itemKind === "raw_material" ? "kitchen" : "retail";
 
 /**
  * Resolves the location a form posted, falling back to the branch's default
@@ -33,7 +43,12 @@ async function resolveLocation(
 
 export async function createItemAction(formData: FormData) {
   const ctx = await requireInventoryPermission("inventory:manage");
-  const baseUom = assertInventoryUom(str(formData, "baseUom") as UnitOfMeasure);
+  let baseUom;
+  try {
+    baseUom = assertInventoryUom(str(formData, "baseUom") as UnitOfMeasure);
+  } catch (e) {
+    return domainErrorValue(e);
+  }
   const audit = await actionAudit(ctx);
 
   await withTenant(ctx.tenantId, async (tx) => {
@@ -70,28 +85,34 @@ export async function receiveStockAction(formData: FormData) {
   const audit = await actionAudit(ctx);
   const itemId = str(formData, "itemId");
 
-  await withTenant(ctx.tenantId, async (tx) => {
-    const locationId = await resolveLocation(tx, ctx.tenantId, formData, "retail");
-    const { lotId } = await receiveStock(tx, {
-      tenantId: ctx.tenantId, itemId, locationId,
-      baseQty: num(formData, "qty"),
-      uom: str(formData, "uom") as UnitOfMeasure as never,
-      unitCost: optional(formData, "unitCost"),
-      lotCode: optional(formData, "lotCode"),
-      lengthMm: optional(formData, "lengthMm") ? num(formData, "lengthMm") : null,
-      expiryAt: optional(formData, "expiryAt") ? new Date(str(formData, "expiryAt")) : null,
-      byUserId: audit.actorUserId ?? null,
+  try {
+    await withTenant(ctx.tenantId, async (tx) => {
+      const locationId = await resolveLocation(
+        tx, ctx.tenantId, formData, consumptionKind(str(formData, "itemKind")),
+      );
+      const { lotId } = await receiveStock(tx, {
+        tenantId: ctx.tenantId, itemId, locationId,
+        baseQty: num(formData, "qty"),
+        uom: str(formData, "uom") as UnitOfMeasure as never,
+        unitCost: optional(formData, "unitCost"),
+        lotCode: optional(formData, "lotCode"),
+        lengthMm: optional(formData, "lengthMm") ? num(formData, "lengthMm") : null,
+        expiryAt: optional(formData, "expiryAt") ? new Date(str(formData, "expiryAt")) : null,
+        byUserId: audit.actorUserId ?? null,
+      });
+      await recordAuditEvent(
+        { tenantId: ctx.tenantId, actorUserId: audit.actorUserId, fingerprint: audit.fingerprint },
+        {
+          action: "inventory.received", entityType: "inventory_item", entityId: itemId,
+          summary: `Received ${num(formData, "qty")} ${str(formData, "uom")}`,
+          metadata: { locationId, lotId, unitCost: optional(formData, "unitCost") },
+        },
+        tx,
+      );
     });
-    await recordAuditEvent(
-      { tenantId: ctx.tenantId, actorUserId: audit.actorUserId, fingerprint: audit.fingerprint },
-      {
-        action: "inventory.received", entityType: "inventory_item", entityId: itemId,
-        summary: `Received ${num(formData, "qty")} ${str(formData, "uom")}`,
-        metadata: { locationId, lotId, unitCost: optional(formData, "unitCost") },
-      },
-      tx,
-    );
-  });
+  } catch (e) {
+    return domainErrorValue(e);
+  }
   revalidatePath("/dashboard/inventory");
 }
 
@@ -103,19 +124,25 @@ export async function adjustStockAction(formData: FormData) {
   // Waste is always a reduction, however the operator typed the number.
   const magnitude = Math.abs(num(formData, "qty"));
 
-  await withTenant(ctx.tenantId, async (tx) => {
-    const locationId = await resolveLocation(tx, ctx.tenantId, formData, "retail");
-    await adjustStock(tx, {
-      tenantId: ctx.tenantId,
-      itemId: str(formData, "itemId"), locationId,
-      baseQty: isWaste ? -magnitude : num(formData, "qty"),
-      uom: str(formData, "uom") as UnitOfMeasure as never,
-      type: isWaste ? "waste" : "adjustment",
-      byUserId: audit.actorUserId ?? null,
-      note: optional(formData, "note"),
-      audit,
+  try {
+    await withTenant(ctx.tenantId, async (tx) => {
+      const locationId = await resolveLocation(
+        tx, ctx.tenantId, formData, consumptionKind(str(formData, "itemKind")),
+      );
+      await adjustStock(tx, {
+        tenantId: ctx.tenantId,
+        itemId: str(formData, "itemId"), locationId,
+        baseQty: isWaste ? -magnitude : num(formData, "qty"),
+        uom: str(formData, "uom") as UnitOfMeasure as never,
+        type: isWaste ? "waste" : "adjustment",
+        byUserId: audit.actorUserId ?? null,
+        note: optional(formData, "note"),
+        audit,
+      });
     });
-  });
+  } catch (e) {
+    return domainErrorValue(e);
+  }
   revalidatePath("/dashboard/inventory");
 }
 
@@ -123,27 +150,36 @@ export async function transferStockAction(formData: FormData) {
   const ctx = await requireInventoryPermission("inventory:manage");
   const audit = await actionAudit(ctx);
 
-  await withTenant(ctx.tenantId, (tx) => transferStock(tx, {
-    tenantId: ctx.tenantId,
-    itemId: str(formData, "itemId"),
-    fromLocationId: str(formData, "fromLocationId"),
-    toLocationId: str(formData, "toLocationId"),
-    baseQty: num(formData, "qty"),
-    uom: str(formData, "uom") as UnitOfMeasure as never,
-    byUserId: audit.actorUserId ?? null,
-    note: optional(formData, "note"),
-    audit,
-  }));
+  try {
+    await withTenant(ctx.tenantId, (tx) => transferStock(tx, {
+      tenantId: ctx.tenantId,
+      itemId: str(formData, "itemId"),
+      fromLocationId: str(formData, "fromLocationId"),
+      toLocationId: str(formData, "toLocationId"),
+      baseQty: num(formData, "qty"),
+      uom: str(formData, "uom") as UnitOfMeasure as never,
+      byUserId: audit.actorUserId ?? null,
+      note: optional(formData, "note"),
+      audit,
+    }));
+  } catch (e) {
+    return domainErrorValue(e);
+  }
   revalidatePath("/dashboard/inventory");
 }
 
 export async function createRecipeAction(formData: FormData) {
   const ctx = await requireInventoryPermission("inventory:manage");
-  const recipe = await createRecipe(ctx.tenantId, {
-    nameEn: str(formData, "nameEn"),
-    nameAr: str(formData, "nameAr") || str(formData, "nameEn"),
-    yieldQty: str(formData, "yieldQty") || "1",
-  }, await actionAudit(ctx));
+  let recipe;
+  try {
+    recipe = await createRecipe(ctx.tenantId, {
+      nameEn: str(formData, "nameEn"),
+      nameAr: str(formData, "nameAr") || str(formData, "nameEn"),
+      yieldQty: str(formData, "yieldQty") || "1",
+    }, await actionAudit(ctx));
+  } catch (e) {
+    return domainErrorValue(e);
+  }
   revalidatePath("/dashboard/inventory/recipes");
   redirect(`/dashboard/inventory/recipes/${recipe.id}`);
 }
@@ -170,7 +206,11 @@ export async function setRecipeComponentsAction(recipeId: string, formData: Form
     // failing the whole save on an empty quantity.
     .filter((c) => c.itemId && Number(c.qty) > 0);
 
-  await setRecipeComponents(ctx.tenantId, recipeId, components, await actionAudit(ctx));
+  try {
+    await setRecipeComponents(ctx.tenantId, recipeId, components, await actionAudit(ctx));
+  } catch (e) {
+    return domainErrorValue(e);
+  }
   revalidatePath(`/dashboard/inventory/recipes/${recipeId}`);
 }
 
@@ -183,18 +223,26 @@ export async function linkProductAction(formData: FormData) {
   const recipeId = optional(formData, "recipeId");
   const itemId = optional(formData, "itemId");
 
-  await linkProduct(ctx.tenantId, recipeId
-    ? { productId, variantId, linkType: "recipe", recipeId }
-    : { productId, variantId, linkType: "finished_good", itemId: itemId! },
-    audit);
+  try {
+    await linkProduct(ctx.tenantId, recipeId
+      ? { productId, variantId, linkType: "recipe", recipeId }
+      : { productId, variantId, linkType: "finished_good", itemId: itemId! },
+      audit);
+  } catch (e) {
+    return domainErrorValue(e);
+  }
   revalidatePath("/dashboard/inventory");
   revalidatePath("/dashboard/inventory/recipes");
 }
 
 export async function unlinkProductAction(formData: FormData) {
   const ctx = await requireInventoryPermission("inventory:manage");
-  await unlinkProduct(
-    ctx.tenantId, str(formData, "productId"), optional(formData, "variantId"), await actionAudit(ctx),
-  );
+  try {
+    await unlinkProduct(
+      ctx.tenantId, str(formData, "productId"), optional(formData, "variantId"), await actionAudit(ctx),
+    );
+  } catch (e) {
+    return domainErrorValue(e);
+  }
   revalidatePath("/dashboard/inventory");
 }

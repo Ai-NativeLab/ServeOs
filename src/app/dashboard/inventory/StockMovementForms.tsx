@@ -10,7 +10,7 @@ import { ToastForm } from "@/components/dashboard/ToastForm";
 import { SubmitButton } from "@/components/dashboard/SubmitButton";
 import { receiveStockAction, adjustStockAction, transferStockAction } from "./actions";
 
-type Item = { id: string; nameEn: string; baseUom: string };
+type Item = { id: string; nameEn: string; baseUom: string; kind: string };
 type Location = { id: string; name: string; kind: string };
 
 const selectCls =
@@ -30,17 +30,31 @@ export function StockMovementForms({ item, locations, branchId }: {
   const [open, setOpen] = useState<"receive" | "adjust" | "transfer" | null>(null);
   const close = () => setOpen(null);
 
-  const locationSelect = (name: string, label: string) => (
+  // Sales deduct recipe components at the kitchen and finished goods at the
+  // shelf, so movements default to that same location — otherwise a delivery
+  // sits on the Front Shelf while the Kitchen oversells into negative on-hand.
+  const consumption = item.kind === "finished_good" ? "retail" : "kitchen";
+  const consumptionLoc = locations.find((l) => l.kind === consumption);
+  const consumptionLabel = consumption === "kitchen" ? "Kitchen" : "Front Shelf";
+
+  const locationSelect = (name: string, label: string, defaultId?: string, allowBranchDefault = false) => (
     <div className="space-y-1.5">
       <Label htmlFor={`${name}-${item.id}`}>{label}</Label>
-      <select id={`${name}-${item.id}`} name={name} className={selectCls} defaultValue={locations[0]?.id ?? ""}>
-        {locations.length === 0 && <option value="">Branch default</option>}
+      <select id={`${name}-${item.id}`} name={name} className={selectCls} defaultValue={defaultId ?? locations[0]?.id ?? ""}>
+        {/* An empty value lets the server create/use the branch default for the
+            location sales deduct from, so a fresh tenant lands stock right. */}
+        {(locations.length === 0 || (allowBranchDefault && !consumptionLoc)) && (
+          <option value="">Branch default · {consumptionLabel}</option>
+        )}
         {locations.map((l) => (
           <option key={l.id} value={l.id}>{l.name} · {l.kind.replace(/_/g, " ")}</option>
         ))}
       </select>
     </div>
   );
+
+  const movementLocationSelect = (label = "Location") =>
+    locationSelect("locationId", label, consumptionLoc?.id ?? "", true);
 
   const qtyRow = (
     <div className="grid grid-cols-2 gap-3">
@@ -74,9 +88,10 @@ export function StockMovementForms({ item, locations, branchId }: {
           </DialogHeader>
           <ToastForm action={receiveStockAction} successMessage="Stock received" onSuccess={close} className="space-y-3">
             <input type="hidden" name="itemId" value={item.id} />
+            <input type="hidden" name="itemKind" value={item.kind} />
             <input type="hidden" name="branchId" value={branchId} />
             {qtyRow}
-            {locationSelect("locationId", "Location")}
+            {movementLocationSelect()}
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label htmlFor={`cost-${item.id}`}>Unit cost</Label>
@@ -120,6 +135,7 @@ export function StockMovementForms({ item, locations, branchId }: {
           </DialogHeader>
           <ToastForm action={adjustStockAction} successMessage="Stock adjusted" onSuccess={close} className="space-y-3">
             <input type="hidden" name="itemId" value={item.id} />
+            <input type="hidden" name="itemKind" value={item.kind} />
             <input type="hidden" name="branchId" value={branchId} />
             <div className="space-y-1.5">
               <Label htmlFor={`mode-${item.id}`}>Movement</Label>
@@ -129,7 +145,7 @@ export function StockMovementForms({ item, locations, branchId }: {
               </select>
             </div>
             {qtyRow}
-            {locationSelect("locationId", "Location")}
+            {movementLocationSelect()}
             <div className="space-y-1.5">
               <Label htmlFor={`note-${item.id}`}>Reason</Label>
               <Input id={`note-${item.id}`} name="note" placeholder="Spillage, recount, damage…" />
@@ -154,8 +170,10 @@ export function StockMovementForms({ item, locations, branchId }: {
             <ToastForm action={transferStockAction} successMessage="Stock moved" onSuccess={close} className="space-y-3">
               <input type="hidden" name="itemId" value={item.id} />
               {qtyRow}
-              {locationSelect("fromLocationId", "From")}
-              {locationSelect("toLocationId", "To")}
+              {/* Moving stock TO where it gets consumed is the common flow, so
+                  that side defaults to the consumption location. */}
+              {locationSelect("fromLocationId", "From", locations.find((l) => l.id !== consumptionLoc?.id)?.id)}
+              {locationSelect("toLocationId", "To", consumptionLoc?.id ?? locations[1]?.id)}
               <SubmitButton className="w-full">Move</SubmitButton>
             </ToastForm>
           </DialogContent>

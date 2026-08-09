@@ -117,7 +117,7 @@ export default async function InventoryPage() {
                   <TableCell className="text-right">
                     {i === 0 && (
                       <StockMovementForms
-                        item={{ id: item.id, nameEn: item.nameEn, baseUom: item.baseUom }}
+                        item={{ id: item.id, nameEn: item.nameEn, baseUom: item.baseUom, kind: item.kind }}
                         locations={locations.map((l) => ({ id: l.id, name: l.name, kind: l.kind }))}
                         branchId={branches[0]?.id ?? ""}
                       />
