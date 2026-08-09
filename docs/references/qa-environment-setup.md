@@ -44,10 +44,16 @@ Console work only a human can do. Do it top to bottom; repo-side automation
 - [ ] Settings → Environment Variables (environment: **Production**). Do NOT mark
       `DATABASE_URL` as Sensitive — the build-time migration step must read it:
 
+    > ⚠️ **QA is on the `aws-0` pooler; prod is on `aws-1`.** Supabase assigns the
+    > pooler per project, and the two differ by one character. Pointing QA at
+    > `aws-1` fails with **"Tenant or user not found"**, which reads like a paused
+    > project or bad password — it is neither. Copy the host from the project's own
+    > Connect dialog rather than from another environment.
+
     | Name | Value |
     |---|---|
-    | `DATABASE_URL` | `postgresql://app.<QA_REF>:<APP_ROLE_PASSWORD>@aws-1-eu-central-1.pooler.supabase.com:6543/postgres` |
-    | `ROOT_DOMAIN` | `qa.serveos.com` |
+    | `DATABASE_URL` | `postgresql://app.<QA_REF>:<APP_ROLE_PASSWORD>@aws-0-eu-central-1.pooler.supabase.com:6543/postgres` |
+    | `ROOT_DOMAIN` | `qa.serveos.tech` |
     | `SUPABASE_URL` | `https://<QA_REF>.supabase.co` |
     | `SUPABASE_SERVICE_ROLE_KEY` | QA project's service_role key |
     | `SERVEOS_PAYTO` | test/sandbox value — never the prod payment target |
@@ -55,9 +61,10 @@ Console work only a human can do. Do it top to bottom; repo-side automation
     Check the prod project's env list for anything added since this doc was
     written; every extra var gets a QA-safe value here.
 - [ ] Settings → Git → Production Branch: `qa`.
-- [ ] Settings → Domains → add `qa.serveos.com` and `*.qa.serveos.com`
-      (serveos.com is already on Vercel nameservers for the prod wildcard, so
+- [ ] Settings → Domains → add `qa.serveos.tech` and `*.qa.serveos.tech`
+      (serveos.tech is already on Vercel nameservers for the prod wildcard, so
       both should verify automatically; fix DNS in Vercel's dashboard if not).
+      `serveos.com` only 302-redirects to `serveos.tech` — it is not the app domain.
 
 ## 4. Cloudflare — R2
 
@@ -82,7 +89,7 @@ Actions runners have no IPv6):
 
 ```bash
 gh secret set PROD_DATABASE_URL --body 'postgresql://postgres.<PROD_REF>:<PROD_DB_PASSWORD>@aws-1-eu-central-1.pooler.supabase.com:5432/postgres'
-gh secret set QA_DATABASE_URL   --body 'postgresql://postgres.<QA_REF>:<QA_DB_PASSWORD>@aws-1-eu-central-1.pooler.supabase.com:5432/postgres'
+gh secret set QA_DATABASE_URL   --body 'postgresql://postgres.<QA_REF>:<QA_DB_PASSWORD>@aws-0-eu-central-1.pooler.supabase.com:5432/postgres'
 gh secret set R2_ACCOUNT_ID     --body '<CLOUDFLARE_ACCOUNT_ID>'
 gh secret set R2_ACCESS_KEY_ID  --body '<R2_ACCESS_KEY_ID>'
 gh secret set R2_SECRET_ACCESS_KEY --body '<R2_SECRET_ACCESS_KEY>'
@@ -92,8 +99,8 @@ gh secret set R2_SECRET_ACCESS_KEY --body '<R2_SECRET_ACCESS_KEY>'
 
 ```bash
 cat > .env.qa <<'EOF'
-DATABASE_URL=postgresql://app.<QA_REF>:<APP_ROLE_PASSWORD>@aws-1-eu-central-1.pooler.supabase.com:6543/postgres
-ROOT_DOMAIN=qa.serveos.com
+DATABASE_URL=postgresql://app.<QA_REF>:<APP_ROLE_PASSWORD>@aws-0-eu-central-1.pooler.supabase.com:6543/postgres
+ROOT_DOMAIN=qa.serveos.tech
 EOF
 ```
 

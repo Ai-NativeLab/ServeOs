@@ -15,7 +15,7 @@ if the storage bucket still does. Media backup is a known gap, accepted for now.
 1. GitHub → Actions → `db-restore-drill` → Run workflow → type `restore-into-qa`.
 2. The job downloads the newest `prod/daily/` dump, restores it into QA,
    re-points ownership/grants at the `app` role, and verifies row counts.
-3. Smoke-test `app.qa.serveos.com` with a real prod account flow.
+3. Smoke-test `app.qa.serveos.tech` with a real prod account flow.
 4. **Finish by re-seeding QA** so prod user data does not linger there:
 
     ```bash
