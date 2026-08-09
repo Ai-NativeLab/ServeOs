@@ -47,7 +47,7 @@ Console work only a human can do. Do it top to bottom; repo-side automation
     | Name | Value |
     |---|---|
     | `DATABASE_URL` | `postgresql://app.<QA_REF>:<APP_ROLE_PASSWORD>@aws-1-eu-central-1.pooler.supabase.com:6543/postgres` |
-    | `ROOT_DOMAIN` | `qa.serveos.com` |
+    | `ROOT_DOMAIN` | `qa.serveos.tech` |
     | `SUPABASE_URL` | `https://<QA_REF>.supabase.co` |
     | `SUPABASE_SERVICE_ROLE_KEY` | QA project's service_role key |
     | `SERVEOS_PAYTO` | test/sandbox value — never the prod payment target |
@@ -55,9 +55,10 @@ Console work only a human can do. Do it top to bottom; repo-side automation
     Check the prod project's env list for anything added since this doc was
     written; every extra var gets a QA-safe value here.
 - [ ] Settings → Git → Production Branch: `qa`.
-- [ ] Settings → Domains → add `qa.serveos.com` and `*.qa.serveos.com`
-      (serveos.com is already on Vercel nameservers for the prod wildcard, so
-      both should verify automatically; fix DNS in Vercel's dashboard if not).
+- [ ] Settings → Domains → add `qa.serveos.tech` and `*.qa.serveos.tech`
+      (serveos.tech is registered at Namecheap and already on Vercel
+      nameservers — ns1/ns2.vercel-dns.com — for the prod wildcard, so both
+      should verify automatically; fix DNS in Vercel's dashboard if not).
 
 ## 4. Cloudflare — R2
 
@@ -93,7 +94,7 @@ gh secret set R2_SECRET_ACCESS_KEY --body '<R2_SECRET_ACCESS_KEY>'
 ```bash
 cat > .env.qa <<'EOF'
 DATABASE_URL=postgresql://app.<QA_REF>:<APP_ROLE_PASSWORD>@aws-1-eu-central-1.pooler.supabase.com:6543/postgres
-ROOT_DOMAIN=qa.serveos.com
+ROOT_DOMAIN=qa.serveos.tech
 EOF
 ```
 
