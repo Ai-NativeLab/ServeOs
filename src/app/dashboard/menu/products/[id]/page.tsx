@@ -123,9 +123,9 @@ export default async function EditProductPage({ params }: { params: Promise<{ id
                     successMessage="Group deleted"
                   />
                 </div>
-                <ul className="text-sm divide-y">
+                {group.options.length > 0 && <ul className="rounded-lg border text-sm divide-y">
                   {group.options.map((opt) => (
-                    <li key={opt.id} className="py-2 flex items-center justify-between gap-2">
+                    <li key={opt.id} className="px-3 py-2 flex items-center justify-between gap-2">
                       <span>{opt.nameEn} <span className="text-muted-foreground" dir="rtl">/ {opt.nameAr}</span></span>
                       <span className="flex items-center gap-3">
                         <span className="font-mono text-xs">+{Number(opt.priceDelta).toFixed(2)}</span>
@@ -135,7 +135,7 @@ export default async function EditProductPage({ params }: { params: Promise<{ id
                       </span>
                     </li>
                   ))}
-                </ul>
+                </ul>}
                 <ToastForm action={upsertModifierOptionAction.bind(null, id, group.id)} successMessage="Option added" className="flex flex-wrap items-end gap-2 mt-3">
                   <Input name="nameEn" placeholder="Option (EN)" required className="w-36" />
                   <Input name="nameAr" placeholder="Option (AR)" dir="rtl" required className="w-36" />

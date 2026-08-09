@@ -15,9 +15,9 @@ export function VariantsEditor({ productId, variants }: { productId: string; var
           {variants.length === 0 && (
             <p className="text-sm text-muted-foreground mb-3">No variants yet — the product sells at its base price. Add variants (size, color, pack) each with its own price and stock.</p>
           )}
-          <ul className="text-sm divide-y">
+          {variants.length > 0 && <ul className="rounded-lg border text-sm divide-y">
             {variants.map((v) => (
-              <li key={v.id} className="py-2 flex items-center justify-between gap-2">
+              <li key={v.id} className="px-3 py-2 flex items-center justify-between gap-2">
                 <span>
                   {v.nameEn} <span className="text-muted-foreground" dir="rtl">/ {v.nameAr}</span>
                   {v.sku && <span className="ml-2 font-mono text-xs text-muted-foreground">{v.sku}</span>}
@@ -31,7 +31,7 @@ export function VariantsEditor({ productId, variants }: { productId: string; var
                 </span>
               </li>
             ))}
-          </ul>
+          </ul>}
           <ToastForm action={upsertVariantAction.bind(null, productId)} successMessage="Variant saved" className="flex flex-wrap items-end gap-2 mt-3">
             <Input name="nameEn" placeholder="Variant (EN)" required className="w-36" />
             <Input name="nameAr" placeholder="Variant (AR)" dir="rtl" required className="w-36" />

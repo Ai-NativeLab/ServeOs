@@ -64,6 +64,9 @@ export function StorefrontShell(props: StorefrontTemplateProps) {
 
       {openState && <OpenStateBanner state={openState} paused={paused} />}
 
+      {/* The design is phone-first; on desktop everything below the full-bleed
+          hero lives in the same 1024px column the dashboard uses. */}
+      <div className="mx-auto w-full max-w-5xl">
       <RecentOrderStrip slug={slug} />
 
       {banners.length > 0 && (
@@ -104,6 +107,7 @@ export function StorefrontShell(props: StorefrontTemplateProps) {
           )
         )}
       </section>
+      </div>
 
       <StorefrontFooter
         branch={activeBranch ?? branches[0] ?? null}

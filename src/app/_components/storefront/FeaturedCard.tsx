@@ -10,7 +10,7 @@ export function FeaturedCard({ product, currency, interactive, onOpen }: {
       onClick={interactive ? onOpen : undefined}
       disabled={!interactive}
       aria-label={interactive ? `Configure ${product.nameEn}` : product.nameEn}
-      className="card-lift relative block h-44 w-full overflow-hidden rounded-2xl text-left disabled:opacity-100 sm:h-52"
+      className="card-lift card-lift-hover relative block h-44 w-full overflow-hidden rounded-2xl text-left disabled:opacity-100 sm:h-52"
     >
       {product.imageUrl
         ? /* eslint-disable-next-line @next/next/no-img-element */

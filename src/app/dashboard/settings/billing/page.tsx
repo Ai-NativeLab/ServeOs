@@ -79,7 +79,8 @@ export default async function BillingPage() {
       </Card>
 
       {outstandingInvoice && (
-        <Card className="p-5 mb-6 ring-2 ring-primary">
+        // Not from a mockup: full accent wash = payment needs action; the current-plan card below uses the quieter /60.
+        <Card className="p-5 mb-6 border-primary/30 bg-gradient-to-br from-card from-40% to-accent">
           <div className="flex items-baseline justify-between gap-4 flex-wrap">
             <h2 className="font-display text-lg font-bold text-ink">
               Complete your payment{outstandingPlan ? ` — ${outstandingPlan.name}` : ""}
@@ -164,7 +165,7 @@ export default async function BillingPage() {
           const isPaid = Number(p.priceMonthly) > 0;
           const requested = upgradeRequest?.planKey === p.key;
           return (
-            <Card key={p.id} className={isCurrent ? "p-5 ring-2 ring-primary" : "p-5"}>
+            <Card key={p.id} className={isCurrent ? "p-5 border-primary/30 bg-gradient-to-br from-card from-40% to-accent/60" : "p-5"}>
               <h3 className="font-display text-lg font-bold text-ink">{p.name}</h3>
               <p className="font-display text-2xl font-bold mt-1">
                 {Number(p.priceMonthly).toFixed(0)} <span className="text-sm text-muted-foreground font-normal">{p.currency}/mo</span>
