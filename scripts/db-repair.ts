@@ -13,7 +13,7 @@
 import { config } from "dotenv";
 import { readFileSync } from "node:fs";
 
-config({ path: process.env.ENV_FILE ?? ".env.local", override: true });
+config({ path: process.env.ENV_FILE ?? ".env.local", override: true, quiet: true });
 
 const [tag, ...flags] = process.argv.slice(2);
 const APPLY = flags.includes("--apply");

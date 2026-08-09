@@ -15,7 +15,7 @@
 import { config } from "dotenv";
 
 // A no-op on Vercel (no env file); locally it lets the script be exercised.
-config({ path: process.env.ENV_FILE ?? ".env.local", override: false });
+config({ path: process.env.ENV_FILE ?? ".env.local", override: false, quiet: true });
 
 async function main() {
   const target = process.env.VERCEL_ENV;

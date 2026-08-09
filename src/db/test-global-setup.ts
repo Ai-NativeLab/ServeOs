@@ -1,7 +1,7 @@
 import { config } from "dotenv";
 import { existsSync } from "node:fs";
 
-config({ path: ".env.test", override: true });
+config({ path: ".env.test", override: true, quiet: true });
 
 export default async function globalSetup() {
   if (!existsSync("./drizzle/meta/_journal.json")) return;
