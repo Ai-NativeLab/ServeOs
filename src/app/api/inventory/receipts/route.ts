@@ -43,6 +43,9 @@ export async function POST(req: NextRequest) {
         factorKind: body.byPurchaseUnit ? "purchase" : undefined,
         unitCost: body.unitCost ?? null,
         lotCode: body.lotCode ?? null,
+        // Cut-to-size stock: the length of each piece received, so a cut can
+        // consume a board and return its offcut.
+        lengthMm: Number.isFinite(body.lengthMm) ? body.lengthMm : null,
         expiryAt: body.expiryAt ? new Date(body.expiryAt) : null,
         byUserId: ctx.user.id,
         note: body.note ?? null,

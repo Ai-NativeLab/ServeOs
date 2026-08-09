@@ -189,6 +189,52 @@ describe("recipe authoring", () => {
     expect(await onHand(tenantId, cheese, kitchen)).toBe(835);
   });
 
+  it("refuses to track stock for area and board-foot products, but allows linear cut-to-size", async () => {
+    const { tenantId } = await seedInventoryTenant("timber");
+    const itemId = await seedItem(tenantId, { nameEn: "Board", kind: "finished_good", baseUom: "each" });
+
+    const makeProduct = async (uom: string) => withTenant(tenantId, async (tx) => {
+      const cat = await tx.execute<{ id: string }>(sql`
+        INSERT INTO categories (tenant_id, name_en, name_ar) VALUES (${tenantId}, 'C', 'ج') RETURNING id`);
+      const prod = await tx.execute<{ id: string }>(sql`
+        INSERT INTO products (tenant_id, category_id, name_en, name_ar, base_price, unit_of_measure)
+        VALUES (${tenantId}, ${cat.rows[0].id}, 'Timber', 'خشب', '100.00', ${uom}::unit_of_measure) RETURNING id`);
+      return prod.rows[0].id;
+    });
+
+    // Sheet goods and board-feet cut in 2-3 dimensions; the remainder is an
+    // irregular shape, so linking is refused rather than deducting a whole sheet
+    // per cut and reporting stock the yard does not have.
+    for (const uom of ["m2", "bf"]) {
+      await expect(linkProduct(tenantId, {
+        productId: await makeProduct(uom), linkType: "finished_good", itemId,
+      })).rejects.toThrow(InventoryConfigError);
+    }
+
+    // Linear IS modelled — one length per board, cut leaves one remainder.
+    const linear = await makeProduct("m");
+    const link = await linkProduct(tenantId, { productId: linear, linkType: "finished_good", itemId });
+    expect(link.itemId).toBe(itemId);
+  });
+
+  it("a cut-to-size product must link to an item counted in `each`", async () => {
+    const { tenantId } = await seedInventoryTenant("timber");
+    // Pieces are counted and each lot carries its own length, so a metre-based
+    // item would make the piece count meaningless.
+    const byMass = await seedItem(tenantId, { nameEn: "Sawdust", kind: "raw_material", baseUom: "kg" });
+    const productId = await withTenant(tenantId, async (tx) => {
+      const cat = await tx.execute<{ id: string }>(sql`
+        INSERT INTO categories (tenant_id, name_en, name_ar) VALUES (${tenantId}, 'C', 'ج') RETURNING id`);
+      const prod = await tx.execute<{ id: string }>(sql`
+        INSERT INTO products (tenant_id, category_id, name_en, name_ar, base_price, unit_of_measure)
+        VALUES (${tenantId}, ${cat.rows[0].id}, 'Plank', 'لوح', '100.00', 'm'::unit_of_measure) RETURNING id`);
+      return prod.rows[0].id;
+    });
+
+    await expect(linkProduct(tenantId, { productId, linkType: "finished_good", itemId: byMass }))
+      .rejects.toThrow(InventoryConfigError);
+  });
+
   it("hides another tenant's recipes and links (RLS)", async () => {
     const a = await seedInventoryTenant();
     const b = await seedInventoryTenant();

@@ -89,9 +89,17 @@ export function StockMovementForms({ item, locations, branchId }: {
                 <Input id={`exp-${item.id}`} name="expiryAt" type="date" />
               </div>
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={`lot-${item.id}`}>Lot code</Label>
-              <Input id={`lot-${item.id}`} name="lotCode" placeholder="Supplier batch reference" />
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor={`lot-${item.id}`}>Lot code</Label>
+                <Input id={`lot-${item.id}`} name="lotCode" placeholder="Batch reference" />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor={`len-${item.id}`}>Length (mm)</Label>
+                {/* Cut-to-size stock only. A cut consumes one piece of this
+                    length and books the remainder back as a sellable offcut. */}
+                <Input id={`len-${item.id}`} name="lengthMm" type="number" min="1" placeholder="e.g. 6000" />
+              </div>
             </div>
             <SubmitButton className="w-full">Receive</SubmitButton>
           </ToastForm>

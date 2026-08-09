@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { stockLedger, inventoryLots, stockCountLines } from "./schema";
 import {
   onHand, adjustStock, transferStock, commitCount, addCountLines, deductForOrderLine, reverseOrderDeductions,
-  getOrCreateDefaultLocation,
+  getOrCreateDefaultLocation, receiveStock,
 } from "./service";
 import { seedInventoryTenant, seedItem, seedLocation, stockLot, seedRecipeProduct } from "./test-helpers";
 import { OutOfStockError, DimensionalUomError, InventoryConfigError } from "./errors";
@@ -591,6 +591,89 @@ describe("inventory ledger", () => {
       tx.execute<{ stock_quantity: number }>(sql`SELECT stock_quantity FROM products WHERE id = ${productId}`)
         .then((r) => r.rows));
     expect(Number(p.stock_quantity)).toBe(4);
+  });
+
+  describe("cut-to-size (timber)", () => {
+    async function seedYard(boards: { lengthMm: number; qty: number }[]) {
+      const { tenantId, branchId } = await seedInventoryTenant("timber");
+      const shelf = await seedLocation(tenantId, branchId, "retail");
+      const itemId = await seedItem(tenantId, { nameEn: "Pine 4x2", kind: "finished_good", baseUom: "each" });
+      for (const b of boards) {
+        await withTenant(tenantId, (tx) => receiveStock(tx, {
+          tenantId, itemId, locationId: shelf, baseQty: b.qty, uom: "each",
+          unitCost: "100", lengthMm: b.lengthMm,
+        }));
+      }
+      return { tenantId, branchId, shelf, itemId };
+    }
+
+    const lotsAt = (tenantId: string, shelf: string) =>
+      withTenant(tenantId, (tx) => tx.select().from(inventoryLots)
+        .where(and(eq(inventoryLots.locationId, shelf), sql`${inventoryLots.qtyRemaining} > 0`)));
+
+    it("a cut consumes one board and returns the offcut as sellable stock", async () => {
+      const { tenantId, branchId, shelf, itemId } = await seedYard([{ lengthMm: 6000, qty: 1 }]);
+
+      await withTenant(tenantId, async (tx) => {
+        const { productId } = await seedLinkedProduct(tx, tenantId, itemId);
+        await deductForOrderLine(tx, deductArgs(tenantId, branchId, {
+          productId, quantity: 1, cutLengthMm: 2400,
+        }));
+      });
+
+      // The 6 m board is gone; a 3597 mm offcut (6000 − 2400 − 3 mm kerf) is on the rack.
+      const lots = await lotsAt(tenantId, shelf);
+      expect(lots).toHaveLength(1);
+      expect(Number(lots[0].lengthMm)).toBe(3597);
+      expect(Number(lots[0].qtyRemaining)).toBe(1);
+      // Net on-hand is unchanged in PIECES: one board out, one offcut back.
+      expect(await onHand(tenantId, itemId, shelf)).toBe(0 + 1 - 1 + 1 - 1 + 1);
+    });
+
+    it("cuts from the shortest board that fits, preserving long stock", async () => {
+      const { tenantId, branchId, shelf, itemId } = await seedYard([
+        { lengthMm: 6000, qty: 1 }, { lengthMm: 2000, qty: 1 },
+      ]);
+
+      await withTenant(tenantId, async (tx) => {
+        const { productId } = await seedLinkedProduct(tx, tenantId, itemId);
+        await deductForOrderLine(tx, deductArgs(tenantId, branchId, {
+          productId, quantity: 1, cutLengthMm: 1000,
+        }));
+      });
+
+      const lengths = (await lotsAt(tenantId, shelf)).map((l) => Number(l.lengthMm)).sort((a, b) => a - b);
+      // The 6 m board is untouched; the 2 m one gave up the metre.
+      expect(lengths).toEqual([997, 6000]);
+    });
+
+    it("a remainder below the minimum is scrap, not stock", async () => {
+      const { tenantId, branchId, shelf, itemId } = await seedYard([{ lengthMm: 2500, qty: 1 }]);
+
+      await withTenant(tenantId, async (tx) => {
+        const { productId } = await seedLinkedProduct(tx, tenantId, itemId);
+        await deductForOrderLine(tx, deductArgs(tenantId, branchId, {
+          productId, quantity: 1, cutLengthMm: 2400,
+        }));
+      });
+
+      // 97 mm left — below the 300 mm floor, so it is not booked back.
+      expect(await lotsAt(tenantId, shelf)).toHaveLength(0);
+      expect(await onHand(tenantId, itemId, shelf)).toBe(0);
+    });
+
+    it("refuses a cut longer than any single board, even when total length is ample", async () => {
+      // Six 1 m offcuts are 6 m of timber and cannot yield a 5 m board. This is
+      // the case linear-metre stock would get wrong.
+      const { tenantId, branchId, itemId } = await seedYard([{ lengthMm: 1000, qty: 6 }]);
+
+      await expect(withTenant(tenantId, async (tx) => {
+        const { productId } = await seedLinkedProduct(tx, tenantId, itemId);
+        await deductForOrderLine(tx, deductArgs(tenantId, branchId, {
+          productId, quantity: 1, cutLengthMm: 5000,
+        }));
+      })).rejects.toThrow(OutOfStockError);
+    });
   });
 
   it("the stock_ledger append-only trigger rejects UPDATE and DELETE", async () => {

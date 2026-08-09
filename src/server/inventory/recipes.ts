@@ -10,6 +10,7 @@ import {
   type Recipe, type RecipeComponent, type ProductInventoryLink,
 } from "./schema";
 import { assertInventoryUom, toBase } from "./uom";
+import { isDimensionalUom } from "@/server/catalog/uom-values";
 import { InventoryConfigError } from "./errors";
 import type { UnitOfMeasure } from "@/server/catalog/uom-values";
 
@@ -194,6 +195,29 @@ export async function linkProduct(
   return withTenant(tenantId, async (tx) => {
     const [product] = await tx.select().from(products).where(eq(products.id, input.productId)).limit(1);
     if (!product) throw new InventoryConfigError("product not found");
+
+    // Cut-to-size is modelled for LINEAR stock only: a board has one length, a
+    // cut consumes one board, and the remainder goes back on the rack. Area and
+    // board-foot products cut in two or three dimensions, where the remainder is
+    // an irregular shape and deciding what is still sellable is a nesting
+    // problem this does not attempt. Refusing the link is deliberate — the
+    // alternative is deducting one whole sheet per cut and quietly reporting
+    // stock the yard does not have.
+    if (product.unitOfMeasure && isDimensionalUom(product.unitOfMeasure) && product.unitOfMeasure !== "m") {
+      throw new InventoryConfigError(
+        `stock tracking for products sold by ${product.unitOfMeasure} is not supported yet — only linear (m) cut-to-size is modelled`,
+      );
+    }
+    if (product.unitOfMeasure === "m" && input.linkType === "finished_good") {
+      const [item] = await tx.select().from(inventoryItems).where(eq(inventoryItems.id, input.itemId)).limit(1);
+      // Boards are counted, not measured: the piece count lives in qtyRemaining
+      // and the length lives on the lot, so the item itself must be `each`.
+      if (item && item.baseUom !== "each") {
+        throw new InventoryConfigError(
+          "a cut-to-size product must link to an item held in `each` — pieces are counted and each lot carries its own length",
+        );
+      }
+    }
 
     const variantId = input.variantId ?? null;
     if (variantId) {

@@ -384,6 +384,10 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
           quantity: line.quantity, orderItemId: inserted[i].id,
           allowNegative, byUserId: input.cashierUserId ?? null,
           productNameEn: line.nameEn, productNameAr: line.nameAr,
+          // Cut-to-size: the length actually cut drives what stock is consumed,
+          // so a 2.4m cut takes a board and returns the offcut rather than
+          // silently retiring a whole one.
+          cutLengthMm: line.dimensions?.lengthMm ?? null,
         });
       }
     }

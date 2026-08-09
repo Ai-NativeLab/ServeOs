@@ -131,6 +131,7 @@ async function creditLot(
     tenantId: string; itemId: string; locationId: string; baseQty: number;
     unitCost?: string | null; lotCode?: string | null; supplierId?: string | null;
     poReceiptLineId?: string | null; receivedAt?: Date; expiryAt?: Date | null;
+    lengthMm?: number | null;
   },
 ): Promise<string> {
   const [lot] = await tx.insert(inventoryLots).values({
@@ -138,6 +139,7 @@ async function creditLot(
     qtyReceived: qty(a.baseQty), qtyRemaining: qty(a.baseQty), unitCost: a.unitCost ?? "0",
     supplierId: a.supplierId ?? null, poReceiptLineId: a.poReceiptLineId ?? null,
     receivedAt: a.receivedAt ?? new Date(), expiryAt: a.expiryAt ?? null,
+    lengthMm: a.lengthMm != null ? qty(a.lengthMm) : null,
   }).returning({ id: inventoryLots.id });
   return lot.id;
 }
@@ -203,6 +205,8 @@ export type ReceiveArgs = {
   ledgerType?: "receive" | "adjustment";
   /** Use the item's own conversion (e.g. a 24-can purchase case) instead of the dimensional one. */
   factorKind?: "stock" | "purchase" | "recipe";
+  /** P4 cut-to-size: the length of each piece received, so offcuts can be tracked. */
+  lengthMm?: number | null;
 };
 
 /**
@@ -225,6 +229,7 @@ export async function receiveStock(tx: Tx, a: ReceiveArgs): Promise<{ lotId: str
     tenantId: a.tenantId, itemId: a.itemId, locationId: a.locationId, baseQty,
     unitCost: a.unitCost, lotCode: a.lotCode, supplierId: a.supplierId,
     poReceiptLineId: a.poReceiptLineId, receivedAt: a.receivedAt, expiryAt: a.expiryAt,
+    lengthMm: a.lengthMm,
   });
 
   await tx.insert(stockLedger).values({
@@ -594,10 +599,99 @@ async function mirrorLegacyStock(
   }
 }
 
+/**
+ * Saw kerf — material turned to dust by the blade on every cut. Conservative
+ * fixed default rather than per-tenant config: ignoring it entirely would make
+ * every offcut a few millimetres longer on paper than on the rack, and that
+ * error compounds across a day's cutting until an offcut that "fits" doesn't.
+ */
+const KERF_MM = 3;
+
+/**
+ * Remainder below which an offcut is scrap, not stock. Booking 40 mm ends back
+ * onto the rack would fill the system with pieces nobody can sell.
+ */
+const MIN_OFFCUT_MM = 300;
+
+/**
+ * Cut-to-size deduction for stock sold by the metre (P4).
+ *
+ * A yard does not hold "18 metres of timber" — it holds specific boards, and a
+ * 5 m order cannot be filled from six 3 m offcuts. So this consumes whole
+ * PIECES: it finds a board long enough, takes one, and books the remainder back
+ * as a new lot that is itself sellable.
+ *
+ * Best fit rather than FIFO on purpose: cutting a short piece from the shortest
+ * board that can serve it preserves the long stock, which is the scarce thing.
+ * Cutting a 1 m piece from a 6 m board when a 1.2 m offcut is on the rack is how
+ * a yard destroys its own inventory.
+ */
+async function deductCutToSize(
+  tx: Tx, a: DeductArgs, item: InventoryItem, locationId: string, cutLengthMm: number,
+): Promise<void> {
+  const baseUom = baseUomOf(item);
+
+  for (let piece = 0; piece < a.quantity; piece++) {
+    const [lot] = await tx.select().from(inventoryLots).where(and(
+      eq(inventoryLots.itemId, item.id),
+      eq(inventoryLots.locationId, locationId),
+      sql`${inventoryLots.qtyRemaining} >= 1`,
+      sql`${inventoryLots.lengthMm} IS NOT NULL`,
+      sql`${inventoryLots.lengthMm} >= ${cutLengthMm}`,
+      sql`(${inventoryLots.expiryAt} IS NULL OR ${inventoryLots.expiryAt} > now())`,
+    )).orderBy(sql`length_mm ASC, received_at ASC`).limit(1);
+
+    if (!lot) {
+      // No single board is long enough. Total length on hand is irrelevant here,
+      // which is exactly why this is not modelled as linear metres.
+      if (!a.allowNegative) throw new OutOfStockError(a.productNameEn, a.productNameAr);
+      await tx.insert(stockLedger).values({
+        tenantId: a.tenantId, itemId: item.id, locationId, lotId: null, type: "sale_deduction",
+        qty: qty(-1), uom: baseUom, refType: "order_item", refId: a.orderItemId,
+        byUserId: a.byUserId, note: `shortfall — no board ≥ ${cutLengthMm}mm`,
+      });
+      continue;
+    }
+
+    const hit = await tx.update(inventoryLots)
+      .set({ qtyRemaining: sql`${inventoryLots.qtyRemaining} - 1` })
+      .where(and(eq(inventoryLots.id, lot.id), sql`${inventoryLots.qtyRemaining} >= 1`))
+      .returning({ id: inventoryLots.id });
+    if (hit.length === 0) { piece -= 1; continue; } // lost the race — retry this piece
+
+    await tx.insert(stockLedger).values({
+      tenantId: a.tenantId, itemId: item.id, locationId, lotId: lot.id, type: "sale_deduction",
+      qty: qty(-1), uom: baseUom, unitCost: lot.unitCost,
+      refType: "order_item", refId: a.orderItemId, byUserId: a.byUserId,
+      note: `cut ${cutLengthMm}mm from a ${Number(lot.lengthMm)}mm board`,
+    });
+
+    const offcut = Number(lot.lengthMm) - cutLengthMm - KERF_MM;
+    if (offcut >= MIN_OFFCUT_MM) {
+      // `production` is the reserved ledger type for something made rather than
+      // bought — an offcut is produced by the cut, so it lands as its own lot at
+      // the parent board's cost and can be sold like any other piece.
+      const offcutLotId = await creditLot(tx, {
+        tenantId: a.tenantId, itemId: item.id, locationId,
+        baseQty: 1, unitCost: lot.unitCost, lotCode: lot.lotCode,
+        expiryAt: lot.expiryAt, lengthMm: offcut,
+      });
+      await tx.insert(stockLedger).values({
+        tenantId: a.tenantId, itemId: item.id, locationId, lotId: offcutLotId, type: "production",
+        qty: qty(1), uom: baseUom, unitCost: lot.unitCost,
+        refType: "order_item", refId: a.orderItemId, byUserId: a.byUserId,
+        note: `offcut ${offcut}mm returned to stock`,
+      });
+    }
+  }
+}
+
 export type DeductArgs = {
   tenantId: string; branchId: string; productId: string; variantId: string | null;
   quantity: number; orderItemId: string; allowNegative: boolean; byUserId: string | null;
   productNameEn: string; productNameAr: string;
+  /** P4: set when the sold line is a cut-to-size length, so stock is consumed as boards + offcut. */
+  cutLengthMm?: number | null;
 };
 
 /**
@@ -647,8 +741,13 @@ export async function deductForOrderLine(tx: Tx, a: DeductArgs): Promise<void> {
     if (!link.itemId) throw new InventoryConfigError("finished-goods link has no item");
     const loc = await getOrCreateDefaultLocation(tx, a.tenantId, a.branchId, "retail");
     const item = await loadItem(tx, link.itemId);
-    // A finished good sells in its own base unit, so the integer sold qty IS the base qty.
-    await deductFifo(tx, a, item, loc.id, a.quantity);
+    if (a.cutLengthMm && a.cutLengthMm > 0) {
+      // Sold by the metre: consume whole boards and book the remainder back.
+      await deductCutToSize(tx, a, item, loc.id, a.cutLengthMm);
+    } else {
+      // A finished good sells in its own base unit, so the integer sold qty IS the base qty.
+      await deductFifo(tx, a, item, loc.id, a.quantity);
+    }
     // Keep the legacy integer in step so the storefront stops advertising a
     // sold-out item. Scoped to the linked (product, variant) this sale resolved.
     await mirrorLegacyStock(tx, item.id, loc.id, link.productId, link.variantId);

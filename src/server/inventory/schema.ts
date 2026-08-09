@@ -78,6 +78,16 @@ export const inventoryLots = pgTable("inventory_lots", {
   poReceiptLineId: uuid("po_receipt_line_id"), // → po_receipt_lines.id (Spec 9)
   receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
   expiryAt: timestamp("expiry_at", { withTimezone: true }),
+  /**
+   * P4 cut-to-size: the physical length of EACH piece in this lot, for stock
+   * sold by the metre. `qtyRemaining` still counts pieces, so a lot of 10 boards
+   * at 6000 mm is `qtyRemaining = 10, lengthMm = 6000`.
+   *
+   * Null for everything else. It exists because a timber yard's availability is
+   * not a total length — holding 6 m of offcuts does not mean you can cut a 5 m
+   * board — so the length has to live per lot, not per item.
+   */
+  lengthMm: numeric("length_mm"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index("inventory_lots_fifo").on(t.itemId, t.locationId, t.receivedAt),

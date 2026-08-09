@@ -78,6 +78,7 @@ export async function receiveStockAction(formData: FormData) {
       uom: str(formData, "uom") as UnitOfMeasure as never,
       unitCost: optional(formData, "unitCost"),
       lotCode: optional(formData, "lotCode"),
+      lengthMm: optional(formData, "lengthMm") ? num(formData, "lengthMm") : null,
       expiryAt: optional(formData, "expiryAt") ? new Date(str(formData, "expiryAt")) : null,
       byUserId: audit.actorUserId ?? null,
     });
