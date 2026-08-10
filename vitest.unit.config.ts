@@ -11,6 +11,8 @@ export default defineConfig({
     include: [
       "src/marketing-locale.test.ts",
       "src/proxy.test.ts",
+      // Parens must be escaped: tinyglobby reads (marketing) as an extglob
+      // group, and silently matches ZERO files rather than erroring.
       "src/app/\\(marketing\\)/**/*.test.ts",
       "src/server/demo/**/*.test.ts",
     ],
