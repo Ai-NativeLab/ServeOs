@@ -232,13 +232,6 @@
       "when": 1785758776572,
       "tag": "0032_slippery_mandroid",
       "breakpoints": true
-    },
-    {
-      "idx": 33,
-      "version": "7",
-      "when": 1786003398642,
-      "tag": "0033_curvy_tigra",
-      "breakpoints": true
     }
   ]
 }
