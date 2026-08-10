@@ -1,0 +1,116 @@
+# Copies legacy flat-integer stock into the inventory ledger, so a sellable
+# reaches the stock screens without waiting to be adopted on its first sale.
+# The script is idempotent — an already-linked sellable is skipped — so an idle
+# run is a few SELECTs. See docs/moai/specs/2026-08-10-inventory-backfill-automation-design.md
+name: inventory-backfill
+
+on:
+  # After a deploy is verified live, backfill the environment that deployed.
+  # By this point release-migrate has already applied the schema during the
+  # Vercel build, so the ledger tables are guaranteed to exist.
+  workflow_run:
+    workflows: ["Deploy Watch"]
+    types: [completed]
+  # Catches sellables created via the legacy path between deploys. Offset from
+  # db-backup's 03:00 so the two never contend.
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+
+jobs:
+  targets:
+    # A failed or skipped Deploy Watch means the deployment is not live; there
+    # is nothing to backfill and the schema may not even be current.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - name: Pick the environments to backfill
+        id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          PROD='{"env_name":"prod","url_secret":"PROD_DATABASE_URL"}'
+          QA='{"env_name":"qa","url_secret":"QA_DATABASE_URL"}'
+          if [ "$EVENT" = "workflow_run" ]; then
+            case "$HEAD_BRANCH" in
+              main) M="[$PROD]" ;;
+              qa)   M="[$QA]" ;;
+              # Deploy Watch only runs on main/qa, so this is unreachable — but
+              # an empty matrix is safer than defaulting to the wrong database.
+              *)    M="[]" ;;
+            esac
+          else
+            M="[$PROD,$QA]"
+          fi
+          echo "targets: $M"
+          echo "matrix=$M" >> "$GITHUB_OUTPUT"
+
+  backfill:
+    needs: targets
+    if: needs.targets.outputs.matrix != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.targets.outputs.matrix) }}
+    # No cancel-in-progress: a queued run should follow the one in flight, not
+    # replace it, so two runs never write the same database at once.
+    concurrency:
+      group: inventory-backfill-${{ matrix.target.env_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Backfill ${{ matrix.target.env_name }}
+        env:
+          # The script reads DATABASE_URL from process env — it loads no .env file.
+          DATABASE_URL: ${{ secrets[matrix.target.url_secret] }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::error::secret ${{ matrix.target.url_secret }} is not set"
+            exit 1
+          fi
+          npx tsx scripts/backfill-inventory.ts 2>&1 | tee backfill.log
+
+      - name: Publish the run summary
+        if: always()
+        run: |
+          {
+            echo "### Inventory backfill — ${{ matrix.target.env_name }}"
+            echo ""
+            echo '```'
+            cat backfill.log 2>/dev/null || echo "(the backfill step produced no output)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if grep -qF "NEEDS A STOCK COUNT" backfill.log 2>/dev/null; then
+            echo "::warning::${{ matrix.target.env_name }}: a multi-branch tenant was seeded — the opening balance landed on its oldest branch only, so the others need a physical stock count. Tenant list is in the run summary."
+          fi
+
+      - name: Zero-tenant canary
+        # The same failure db-backup guards against: a role that connects fine
+        # but sees no rows would make an empty no-op look like a clean success
+        # forever. Both environments always have tenants.
+        run: |
+          set -euo pipefail
+          if grep -qF "across 0 tenant(s)" backfill.log; then
+            echo "::error::backfill saw 0 tenants in ${{ matrix.target.env_name }} — the role cannot read public.tenants (RLS/grants) or the database is empty. Refusing to report success."
+            exit 1
+          fi
