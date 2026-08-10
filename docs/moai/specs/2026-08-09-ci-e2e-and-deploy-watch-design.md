@@ -147,7 +147,7 @@ repo secret:
    + `--max-time` so an auth/API failure is visibly distinct from "no
    deployment".
 2. **Readiness** — poll the deployment's `readyState` for up to **15 minutes**.
-   `ERROR`/`CANCELED` → fail with the deployment URL. Timeout → fail.
+   `ERROR`/`CANCELED`/`DELETED` → fail with the deployment URL. Timeout → fail.
 3. **Live smoke** — `GET <domain>/api/health` (retried ~2 min for alias
    propagation), **following redirects** (if Vercel ever redirects apex↔www,
    a non-following GET sees a 307/308, not JSON), and assert the returned
