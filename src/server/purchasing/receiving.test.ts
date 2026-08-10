@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { db } from "@/db/client";
+import { db, pool } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { users } from "@/server/auth/schema";
 import { seedInventoryTenant, seedItem } from "@/server/inventory/test-helpers";
@@ -192,5 +192,73 @@ describe("receiving", () => {
       .where(and(eq(auditEvents.action, "po.received"), eq(auditEvents.entityId, poId))));
     expect(events).toHaveLength(2);
     expect((await verifyChain(tenantId)).ok).toBe(true);
+  });
+
+  it("serializes a receipt that commits mid-flight — no lost qtyReceived, final status received (FOR UPDATE)", async () => {
+    // PO ordered 10. A competing receipt commits 5 received while our receipt is
+    // in flight. Under READ COMMITTED a plain read sees qty_received=0, our bump
+    // then overwrites the rival's 5 with 0+5=5 (lost update), and the status
+    // recompute sums 5 → "partially_received" instead of "received".
+    //
+    // The rival holds the PO row with FOR SHARE: compatible with the po_receipts
+    // FK's FOR KEY SHARE (so we are NOT incidentally serialized at the INSERT),
+    // but in conflict with the FOR UPDATE postReceipt takes as its first
+    // statement. That lock is the serialization point: our receipt blocks until
+    // the rival commits, then re-reads the fresh line (5) and bumps to 10 →
+    // "received". Without it we only block at the line UPDATE (already past the
+    // stale read) and persist 5. Same forcing pattern as shifts.test.ts:290.
+    const { tenantId, actor, poId, poLineId } = await seedSentPo();
+
+    const rival = await pool.connect();
+    try {
+      await rival.query("BEGIN");
+      await rival.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+      // A competing receipt writes 5 received to the line but has not committed.
+      await rival.query(
+        `UPDATE purchase_order_lines SET qty_received = '5.000' WHERE id = $1`,
+        [poLineId],
+      );
+      // Hold the PO row with FOR SHARE only. Updating the PO status would take
+      // FOR NO KEY UPDATE, which blocks our FK insert and hides the race we're
+      // testing — this is the minimal lock that still serializes on FOR UPDATE.
+      await rival.query(
+        "SELECT id FROM purchase_orders WHERE id = $1 FOR SHARE",
+        [poId],
+      );
+
+      const ours = postReceipt(actor, poId, { lines: [receiptLine(poLineId, { receivedQty: 5 })] });
+
+      // Wait until our receipt is genuinely blocked on the rival's row lock. A
+      // blocked FOR UPDATE surfaces as a `transactionid` wait; match it against
+      // the rival's own transaction id (via the xid8 `transactionid` column, not
+      // the oid `objid` which truncates once xids grow past 2^32). Other test
+      // files' in-flight locks can't match, so the rival COMMITs only once we
+      // are provably stuck on ITS transaction.
+      const { rows: rivalXidRows } = await rival.query<{ xid: string }>("SELECT pg_current_xact_id()::text AS xid");
+      const rivalXid = rivalXidRows[0].xid;
+      let blocked = false;
+      for (let i = 0; i < 200 && !blocked; i++) {
+        const { rows } = await rival.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_locks
+           WHERE NOT granted AND locktype = 'transactionid' AND transactionid::text = $1`,
+          [rivalXid],
+        );
+        blocked = rows[0].n > 0;
+        if (!blocked) await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(blocked).toBe(true);
+
+      await rival.query("COMMIT");
+      await ours;
+    } finally {
+      rival.release();
+    }
+
+    const [line] = await withTenant(tenantId, (tx) =>
+      tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.id, poLineId)));
+    expect(line?.qtyReceived).toBe("10.000");
+
+    const [po] = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId)));
+    expect(po?.status).toBe("received");
   });
 });

@@ -52,7 +52,20 @@ export async function postReceipt(
 ): Promise<{ receiptId: string; status: PoStatus }> {
   requireCapability(actor.vertical, "inventory");
   return withTenant(actor.tenantId, async (tx) => {
-    const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId));
+    // 1. SERIALIZE receipts per PO. The qty_received bump is a read-then-write
+    //    under READ COMMITTED, and the status recompute reads the same stale
+    //    snapshot: two receipts on the same PO in the same instant could both
+    //    read qty_received=0 (lost update → final "4" not "8") and both compute
+    //    the next status from data missing the other's commit (→ "partially_received"
+    //    when the sum should have reached "received"). Locking the PO row first
+    //    makes the loser wait, then re-read the winner's committed lines and
+    //    status — the same pattern issueRefund uses on the order row.
+    const [po] = await tx
+      .select()
+      .from(purchaseOrders)
+      .where(eq(purchaseOrders.id, poId))
+      .for("update")
+      .limit(1);
     if (!po) throw new PoNotFoundError();
     if (po.status !== "sent" && po.status !== "partially_received") {
       throw new InvalidPoTransitionError(po.status as PoStatus, "partially_received");
