@@ -3,6 +3,7 @@ import { defineConfig } from "@playwright/test";
 export default defineConfig({
   testDir: "./tests/e2e",
   retries: process.env.CI ? 2 : 0,
+  reporter: process.env.CI ? [["dot"], ["html", { open: "never" }]] : "list",
   // Spec files share one mutable seeded database (offline-payment enables a
   // payment method and creates orders that ordering/scheduling/dashboard
   // specs render), so CI must run them serially. Locally the default

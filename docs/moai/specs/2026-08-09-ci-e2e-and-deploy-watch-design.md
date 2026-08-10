@@ -73,13 +73,15 @@ one.
 - **Build & run:** `npm run build` as its own step (a build failure gets its
   own red step), then the suite runs against `next start` — production build,
   not the dev server.
-- **Artifacts:** on failure, upload `playwright-report/` and `test-results/`.
+- **Artifacts:** on failure or timeout-cancellation, upload `playwright-report/` and `test-results/`.
 
 ### `playwright.config.ts` changes (all switched on `process.env.CI`)
 
 - `webServer.command`: `npm run dev` locally → `npm run start` in CI (the
   build already ran as a job step).
 - `retries: 2` and `trace: "on-first-retry"` in CI.
+- reporter: dot + html (open: never) in CI so the uploaded playwright-report/
+  artifact actually exists; list locally.
 - `workers: 1` in CI. Playwright's default (~half the runner's cores) runs
   spec *files* in parallel against one shared, mutable seeded database —
   `offline-payment.spec.ts` enables a payment method and creates orders
