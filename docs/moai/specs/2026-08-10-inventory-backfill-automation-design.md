@@ -60,6 +60,12 @@ secret.
   logs. (Seeding a multi-branch tenant lands the opening balance on the
   oldest branch only; the others need a physical count. Single-branch tenants
   need nothing.)
+- A **zero-tenant canary** fails the job when the script reports `across 0
+  tenant(s)`. Both environments always have tenants, so zero means the role
+  cannot read `public.tenants` (RLS/grants) or the database is empty — the
+  same silent-success failure `db-backup.yml`'s row-count canary exists to
+  catch. Without it, a misconfigured role would report a clean green no-op
+  indefinitely.
 - A failed run is a red workflow → GitHub emails the actor. Same alerting
   model as deploy-watch; no new infrastructure.
 
