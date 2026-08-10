@@ -24,42 +24,59 @@ describe("vertical registry", () => {
     }
   });
 
-  it("restaurant: modifiers on, variants/stock off, menu template, no P4 flags", () => {
+  it("restaurant: modifiers on, variants off, stock/inventory/recipes on, menu template, no P4 flags", () => {
     const caps = getCapabilities("restaurant");
     expect(caps).toEqual({
-      modifiers: true, variants: false, stockTracking: false, serviceCharge: true,
+      modifiers: true, variants: false, stockTracking: true, serviceCharge: true,
       dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false,
       prescriptionUpload: false, pharmacistReview: false, taxClasses: false,
+      inventory: true, recipes: true,
     });
     expect(getVerticalDescriptor("restaurant").storefront.template).toBe("menu");
   });
 
-  it("retail: variants/stock on, modifiers off, shop template, no P3/P4 flags", () => {
+  it("retail: variants/stock/inventory on, modifiers/recipes off, shop template, no P3/P4 flags", () => {
     expect(getCapabilities("retail")).toEqual({
       modifiers: false, variants: true, stockTracking: true, serviceCharge: false,
       dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false,
       prescriptionUpload: false, pharmacistReview: false, taxClasses: false,
+      inventory: true, recipes: false,
     });
     expect(getVerticalDescriptor("retail").storefront.template).toBe("shop");
   });
 
-  it("pharmacy: shop template plus the P3 Rx flags, no P4 flags", () => {
+  it("pharmacy: shop template plus the P3 Rx flags, no P4 flags, no recipes", () => {
     expect(getCapabilities("pharmacy")).toEqual({
       modifiers: false, variants: true, stockTracking: true, serviceCharge: false,
       dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false,
       prescriptionUpload: true, pharmacistReview: true, taxClasses: false,
+      inventory: true, recipes: false,
     });
     expect(getVerticalDescriptor("pharmacy").storefront.template).toBe("shop");
   });
 
-  it("timber: variants/stock on, modifiers off, shop template, ALL P4 flags on", () => {
+  it("timber: variants/stock/inventory on, modifiers/recipes off, shop template, ALL P4 flags on", () => {
     const caps = getCapabilities("timber");
     expect(caps).toEqual({
       modifiers: false, variants: true, stockTracking: true, serviceCharge: false,
       dimensionalProducts: true, unitsOfMeasure: true, tradeAccounts: true,
       prescriptionUpload: false, pharmacistReview: false, taxClasses: false,
+      inventory: true, recipes: false,
     });
     expect(getVerticalDescriptor("timber").storefront.template).toBe("shop");
+  });
+
+  it("stockTracking is a strict legacy alias of inventory for every vertical", () => {
+    for (const key of VERTICAL_IDS) {
+      const c = getCapabilities(key);
+      expect(c.stockTracking, key).toBe(c.inventory);
+    }
+  });
+
+  it("recipes is restaurant-only", () => {
+    for (const key of VERTICAL_IDS) {
+      expect(getCapabilities(key).recipes, key).toBe(key === "restaurant");
+    }
   });
 
   it("terminology differs where it matters", () => {

@@ -19,3 +19,4 @@ export * from "../server/notifications/schema";
 export * from "../server/customers/schema";
 export * from "../server/catalog/uom";
 export * from "../server/prescriptions/schema";
+export * from "../server/inventory/schema";

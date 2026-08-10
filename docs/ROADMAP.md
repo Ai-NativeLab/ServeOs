@@ -64,7 +64,7 @@ These come from the product owner and hold across every spec below.
 | 5 | **Notifications & Outbound Email** | ☐ spec drafting | 1 | prerequisite for alerts + send-PO |
 | 6 | **Payments & Gateway** (Paymob) | ☐ spec written · ⏸ impl PARKED | 1 | prerequisite for reconciliation |
 | 7 | **Transaction Reconciliation** | ☐ spec written · ⏸ settlement layer PARKED | 2, 3, 6 | **reconciliation** |
-| 8 | **Inventory Core + Recipes/BOM** | ☐ spec written | 1 | **inventory** |
+| 8 | **Inventory Core + Recipes/BOM** | ✅ Part A/B built (2026-08-04) · Part C/D → Spec 9 | 1 | **inventory** |
 | 9 | **Suppliers & Purchasing** | ☐ spec written | 8, 5 | **inventory / suppliers** |
 | 10 | **Cross-Channel Reporting** | ☐ spec written | 3, 4, 6, 7, 8, 9 | **reporting** |
 | 11 | **Fiscal Compliance — ETA e-Invoicing & e-Receipts** | ☐ spec drafting | 1, 3 | **e-invoicing (promoted from backlog)** |
@@ -140,6 +140,14 @@ Default mapping — **owner:** all; **manager:** all except `reports:financial` 
 - **Restaurants can't be blocked at the till** — a per-tenant `allowNegativeStock` policy lets kitchens oversell ingredients (deduction still recorded, on-hand goes negative and alerts) rather than failing a sale.
 - **Per-branch stock** arrives via `storage_locations` (branchId) — fixes today's single-global-count limitation.
 - **Migration**: existing `products.stockQuantity` / `product_variants.stockQuantity` are seeded into `inventory_items` + opening-balance ledger entries; retail continuity preserved.
+
+**Built 2026-08-04 (Part A/B) — three things later specs must know:**
+- **There is ONE platform UoM enum**, `unit_of_measure` in `src/server/catalog/uom.ts` (decision T1, shipped by P4). Spec 8 imports it rather than declaring `inventory_uom`. It is a **superset**: it also carries P4's sellable `m`/`m2`/`bf`, which are not stockable. A pg enum cannot express the subset, so `assertInventoryUom` in `src/server/inventory/uom.ts` is the boundary — **any new code writing a UoM-bearing inventory row must pass through it.**
+- **Spec 10's inventory reports were written against guessed column names and all of them were wrong** (`remaining_qty`/`qty_remaining`, `name`/`name_en`, `quantity`/`qty`, `movement_type`/`type`, `expected_qty`/`system_qty`, `stock_count_id`/`count_id`, `created_at`/`started_at`). Corrected when the tables landed. The lesson for Specs 9/11: a `tableExists` guard hides a schema mismatch until the table appears, so forward-written SQL needs re-checking against the real DDL on the day it goes live.
+- **`getLowStock` is guarded on `reorder_rules`, not on the inventory tables**, because the reorder point is per item per location in that table (Part D) — deliberately not a column on `inventory_items`. **Spec 9 must verify that query against the real table when it builds `reorder_rules`**; it has never executed.
+- **Recipe authoring is an API this spec added, not one it specified.** The design doc's API section lists only items / on-hand / adjustments / transfers / counts, so a BOM could originally only be created by direct DB writes. `/api/inventory/recipes`, `/recipes/[id]` and `/product-links` fill that gap; Spec 9's purchasing surface should assume they exist.
+- **Expired lots are excluded from FIFO**, so an item's on-hand can legitimately exceed what is sellable. Any report that treats on-hand as available stock (Spec 10 valuation is fine; a future "what can we sell" view is not) must subtract expired lots itself.
+- **Cut-to-size policy is fixed, not configurable**: `KERF_MM = 3` and `MIN_OFFCUT_MM = 300` are constants in the inventory service. Fine for launch; a real yard with a different blade or scrap threshold needs them promoted to tenant settings before the numbers start lying.
 - **Purchasing**: `purchase_orders` lifecycle draft → sent → partially_received → received → closed; receiving writes lots + ledger rows; PO-vs-received-vs-invoice variance is a reconciliation report. **Send-to-supplier** renders the PO and emails it via the Spec 5 layer.
 - **Low-stock alerts**: reorder point/qty per item per location; a scheduled check raises `notifications` and can pre-fill a draft PO.
 
@@ -148,6 +156,7 @@ Default mapping — **owner:** all; **manager:** all except `reports:financial` 
 - **POS (Electron):** **X report** (mid-shift, non-resetting) and **Z report** (shift close, ties to Spec 2), per-cashier sales, drawer count — served through the POS bridge, scoped to device/branch.
 - **Entitlement**: enforce `advanced_analytics` for advanced reports; base sales stay in the base plan. New `reports:view` (owner+manager) and `reports:financial` (owner+manager) permissions.
 - **Performance**: current on-the-fly aggregation is fine for MVP; optional nightly rollup tables are the escape hatch for long-range cross-channel/inventory reports.
+- **Known wart**: several analytics readers run `Promise.all` over queries sharing ONE transaction client (`analytics/service.ts`, `analytics/pos-reports.ts`). node-postgres serializes them anyway and now emits a DeprecationWarning ("client.query when the client is already executing") in test output. The parallelism is illusory — sequential awaits inside the tx are the fix whenever someone next touches those readers.
 
 ---
 

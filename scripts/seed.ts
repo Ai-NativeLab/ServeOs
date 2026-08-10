@@ -1,5 +1,5 @@
 import { config } from "dotenv";
-config({ path: process.env.ENV_FILE ?? ".env.local", override: true });
+config({ path: process.env.ENV_FILE ?? ".env.local", override: true, quiet: true });
 import { eq, and, isNull } from "drizzle-orm";
 
 // ── Roma demo content: pinned Unsplash imagery + menu data ──────────────────

@@ -15,7 +15,7 @@
  */
 import { config } from "dotenv";
 
-config({ path: process.env.ENV_FILE ?? ".env.local", override: true });
+config({ path: process.env.ENV_FILE ?? ".env.local", override: true, quiet: true });
 
 async function main() {
   const { pool } = await import("../src/db/client");

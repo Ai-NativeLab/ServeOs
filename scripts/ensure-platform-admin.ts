@@ -18,7 +18,7 @@
 import { randomBytes } from "node:crypto";
 import { config } from "dotenv";
 
-config({ path: process.env.ENV_FILE ?? ".env.local", override: true });
+config({ path: process.env.ENV_FILE ?? ".env.local", override: true, quiet: true });
 
 const args = process.argv.slice(2);
 const FIX = args.includes("--fix");
