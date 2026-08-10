@@ -147,6 +147,7 @@ Default mapping — **owner:** all; **manager:** all except `reports:financial` 
 - **`getLowStock` is guarded on `reorder_rules`, not on the inventory tables**, because the reorder point is per item per location in that table (Part D) — deliberately not a column on `inventory_items`. **Spec 9 must verify that query against the real table when it builds `reorder_rules`**; it has never executed.
 - **Recipe authoring is an API this spec added, not one it specified.** The design doc's API section lists only items / on-hand / adjustments / transfers / counts, so a BOM could originally only be created by direct DB writes. `/api/inventory/recipes`, `/recipes/[id]` and `/product-links` fill that gap; Spec 9's purchasing surface should assume they exist.
 - **Expired lots are excluded from FIFO**, so an item's on-hand can legitimately exceed what is sellable. Any report that treats on-hand as available stock (Spec 10 valuation is fine; a future "what can we sell" view is not) must subtract expired lots itself.
+- **Cut-to-size policy is fixed, not configurable**: `KERF_MM = 3` and `MIN_OFFCUT_MM = 300` are constants in the inventory service. Fine for launch; a real yard with a different blade or scrap threshold needs them promoted to tenant settings before the numbers start lying.
 - **Purchasing**: `purchase_orders` lifecycle draft → sent → partially_received → received → closed; receiving writes lots + ledger rows; PO-vs-received-vs-invoice variance is a reconciliation report. **Send-to-supplier** renders the PO and emails it via the Spec 5 layer.
 - **Low-stock alerts**: reorder point/qty per item per location; a scheduled check raises `notifications` and can pre-fill a draft PO.
 
@@ -155,6 +156,7 @@ Default mapping — **owner:** all; **manager:** all except `reports:financial` 
 - **POS (Electron):** **X report** (mid-shift, non-resetting) and **Z report** (shift close, ties to Spec 2), per-cashier sales, drawer count — served through the POS bridge, scoped to device/branch.
 - **Entitlement**: enforce `advanced_analytics` for advanced reports; base sales stay in the base plan. New `reports:view` (owner+manager) and `reports:financial` (owner+manager) permissions.
 - **Performance**: current on-the-fly aggregation is fine for MVP; optional nightly rollup tables are the escape hatch for long-range cross-channel/inventory reports.
+- **Known wart**: several analytics readers run `Promise.all` over queries sharing ONE transaction client (`analytics/service.ts`, `analytics/pos-reports.ts`). node-postgres serializes them anyway and now emits a DeprecationWarning ("client.query when the client is already executing") in test output. The parallelism is illusory — sequential awaits inside the tx are the fix whenever someone next touches those readers.
 
 ---
 
