@@ -1,10 +1,11 @@
 import { VERTICAL_IDS, type VerticalCapabilities, type VerticalDescriptor, type VerticalId, type VerticalStorefrontCopy, type VerticalTerms } from "./types";
 import { CapabilityNotEnabledError } from "./errors";
 
+// stockTracking is a legacy alias of inventory for the migration window; drop after Spec 8 lands (see spec Migration §5).
 const restaurant: VerticalDescriptor = {
   key: "restaurant",
   accent: "#F0522B",
-  capabilities: { modifiers: true, variants: false, stockTracking: false, serviceCharge: true, dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false, prescriptionUpload: false, pharmacistReview: false, taxClasses: false },
+  capabilities: { modifiers: true, variants: false, stockTracking: true, serviceCharge: true, dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false, prescriptionUpload: false, pharmacistReview: false, taxClasses: false, inventory: true, recipes: true },
   terminology: {
     businessNoun: { en: "restaurant", ar: "مطعم" },
     catalogNoun: { en: "Menu", ar: "القائمة" },
@@ -28,7 +29,7 @@ const restaurant: VerticalDescriptor = {
 const retail: VerticalDescriptor = {
   key: "retail",
   accent: "#2DD4C4",
-  capabilities: { modifiers: false, variants: true, stockTracking: true, serviceCharge: false, dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false, prescriptionUpload: false, pharmacistReview: false, taxClasses: false },
+  capabilities: { modifiers: false, variants: true, stockTracking: true, serviceCharge: false, dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false, prescriptionUpload: false, pharmacistReview: false, taxClasses: false, inventory: true, recipes: false },
   terminology: {
     businessNoun: { en: "store", ar: "متجر" },
     catalogNoun: { en: "Products", ar: "المنتجات" },
@@ -48,7 +49,7 @@ const retail: VerticalDescriptor = {
 const pharmacy: VerticalDescriptor = {
   key: "pharmacy",
   accent: "#38D08C",
-  capabilities: { modifiers: false, variants: true, stockTracking: true, serviceCharge: false, dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false, prescriptionUpload: true, pharmacistReview: true, taxClasses: false },
+  capabilities: { modifiers: false, variants: true, stockTracking: true, serviceCharge: false, dimensionalProducts: false, unitsOfMeasure: false, tradeAccounts: false, prescriptionUpload: true, pharmacistReview: true, taxClasses: false, inventory: true, recipes: false },
   terminology: {
     businessNoun: { en: "pharmacy", ar: "صيدلية" },
     catalogNoun: { en: "Products", ar: "المنتجات" },
@@ -68,7 +69,7 @@ const pharmacy: VerticalDescriptor = {
 const timber: VerticalDescriptor = {
   key: "timber",
   accent: "#E8A33D",
-  capabilities: { modifiers: false, variants: true, stockTracking: true, serviceCharge: false, dimensionalProducts: true, unitsOfMeasure: true, tradeAccounts: true, prescriptionUpload: false, pharmacistReview: false, taxClasses: false },
+  capabilities: { modifiers: false, variants: true, stockTracking: true, serviceCharge: false, dimensionalProducts: true, unitsOfMeasure: true, tradeAccounts: true, prescriptionUpload: false, pharmacistReview: false, taxClasses: false, inventory: true, recipes: false },
   terminology: {
     businessNoun: { en: "yard", ar: "منشرة" },
     catalogNoun: { en: "Yard", ar: "المخزون" },

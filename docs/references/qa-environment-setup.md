@@ -1,5 +1,10 @@
 # QA Environment — One-Time Setup Checklist
 
+> **Status: completed 2026-08-10.** QA is live (`qa.serveos.tech`, Vercel
+> `serve-os-qa`, Supabase `ServeOs-qa`, nightly backups green). This
+> checklist is kept for re-runs; the live layout is documented in
+> [environments.md](environments.md).
+
 Console work only a human can do. Do it top to bottom; repo-side automation
 (`db-backup` / `db-restore-drill` workflows) assumes every box is ticked.
 
@@ -41,8 +46,11 @@ Console work only a human can do. Do it top to bottom; repo-side automation
 
 - [ ] Add New Project → import `Ai-NativeLab/ServeOs` again → name `serveos-qa`.
       The very first deploy may fail (env vars missing) — expected, ignore it.
-- [ ] Settings → Environment Variables (environment: **Production**). Do NOT mark
-      `DATABASE_URL` as Sensitive — the build-time migration step must read it:
+- [ ] Settings → Environment Variables (environment: **Production**). Prefer
+      NOT marking `DATABASE_URL` as Sensitive: builds can read sensitive
+      values (verified 2026-08-10), but nothing can read them back afterwards,
+      so a truncated or wrong paste becomes undebuggable. Values with `/` in
+      the password must be percent-encoded (`%2F`):
 
     | Name | Value |
     |---|---|
@@ -54,8 +62,12 @@ Console work only a human can do. Do it top to bottom; repo-side automation
 
     Check the prod project's env list for anything added since this doc was
     written; every extra var gets a QA-safe value here.
-- [ ] Settings → Git → Production Branch: `qa`.
-- [ ] Settings → Domains → add `qa.serveos.tech` and `*.qa.serveos.tech`
+- [ ] Push the `qa` branch first (`git push origin main:qa`) — the branch
+      picker only lists branches that exist on GitHub.
+- [ ] Settings → **Environments** → Production → Branch Tracking: `qa`
+      (the setting moved out of Settings → Git in the 2026 Vercel UI).
+- [ ] Settings → Domains (use the settings Find box if it's not in the
+      sidebar) → add `qa.serveos.tech` and `*.qa.serveos.tech`
       (serveos.tech is registered at Namecheap and already on Vercel
       nameservers — ns1/ns2.vercel-dns.com — for the prod wildcard, so both
       should verify automatically; fix DNS in Vercel's dashboard if not).

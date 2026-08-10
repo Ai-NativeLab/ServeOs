@@ -35,10 +35,12 @@ export default async function PaymentMethodsSettingsPage() {
       />
 
       {methods.length === 0 ? (
-        <EmptyState
-          title="No payment methods yet"
-          description="Add a Vodafone Cash, InstaPay, or mobile wallet method below so customers can pay offline at checkout."
-        />
+        <div className="mb-6">
+          <EmptyState
+            title="No payment methods yet"
+            description="Add a Vodafone Cash, InstaPay, or mobile wallet method below so customers can pay offline at checkout."
+          />
+        </div>
       ) : (
         <div className="grid gap-4 mb-6 max-w-2xl">
           {methods.map((m) => (

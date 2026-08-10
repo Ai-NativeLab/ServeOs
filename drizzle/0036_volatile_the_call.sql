@@ -1,0 +1,1 @@
+CREATE INDEX "stock_counts_tenant_started" ON "stock_counts" USING btree ("tenant_id","started_at");

@@ -165,7 +165,12 @@ describe("cross-channel sales aggregations", () => {
     await expect(getReconciliationSummary(tenantId, 30)).resolves.toEqual([]);
   });
 
-  it("every inventory + purchasing report returns [] (dependency guard) until Specs 8/9 ship", async () => {
+  // Spec 8 has migrated, so the inventory reports now execute real SQL against
+  // empty tables — this asserts they return [] on no data, which also means a
+  // column-name drift between Spec 8's schema and these queries fails loudly
+  // here instead of hiding behind the old missing-table guard. Purchasing
+  // (Spec 9) and low-stock (needs Spec 9's reorder_rules) are still guarded.
+  it("every inventory + purchasing report returns [] with no inventory data", async () => {
     const { tenantId } = await seedPosContext("owner");
     const guarded: [string, () => Promise<unknown[]>][] = [
       ["getInventoryValuation", () => getInventoryValuation(tenantId)],
