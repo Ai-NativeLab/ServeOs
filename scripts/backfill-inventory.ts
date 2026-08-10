@@ -24,7 +24,14 @@
  * because an overstated shelf sells goods that do not exist. Multi-branch
  * tenants are listed in the run summary so an operator knows to count them.
  *
- * Run: ENV_FILE=.env.local npx tsx scripts/backfill-inventory.ts
+ * Reads DATABASE_URL from the environment (no .env file is loaded — ENV_FILE
+ * has no effect here, unlike the seed scripts):
+ *
+ *   DATABASE_URL="$(grep -E '^DATABASE_URL=' .env.local | cut -d= -f2-)" \
+ *     npx tsx scripts/backfill-inventory.ts
+ *
+ * Runs automatically after every verified deploy and nightly — see
+ * .github/workflows/inventory-backfill.yml
  */
 import { asc, eq, isNotNull, and } from "drizzle-orm";
 import { db } from "@/db/client";
