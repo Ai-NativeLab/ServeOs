@@ -124,7 +124,9 @@ export default defineConfig({
     include: [
       "src/marketing-locale.test.ts",
       "src/proxy.test.ts",
-      "src/app/(marketing)/**/*.test.ts",
+      // Parens must be escaped: tinyglobby reads (marketing) as an extglob
+      // group, and silently matches ZERO files rather than erroring.
+      "src/app/\\(marketing\\)/**/*.test.ts",
       "src/server/demo/**/*.test.ts",
     ],
     env: { NODE_ENV: "test" },
@@ -144,9 +146,14 @@ In `package.json` `scripts`, after `"test:watch"`:
 - [ ] **Step 3: Verify it runs and finds nothing yet**
 
 Run: `npm run test:unit`
-Expected: exits cleanly reporting no test files — none of the listed paths exist yet. If it
-instead errors on the `(marketing)` glob, the parenthesised directory is being treated as a
-pattern group; quote it in the `include` array.
+Expected: it picks up the existing `src/proxy.test.ts` and nothing else — the other listed
+paths do not exist yet.
+
+Then prove the parenthesised glob actually matches, because its failure mode is silence rather
+than an error: create a throwaway `src/app/(marketing)/_lib/throwaway.test.ts` containing one
+trivial passing test, re-run, confirm the file count goes up by one, and delete it. The
+default `vitest.config.ts` is unaffected — its `src/**/*.test.ts` pattern contains no parens,
+so only a pattern that spells out `(marketing)` needs the escape.
 
 - [ ] **Step 4: Commit**
 
@@ -264,7 +271,7 @@ git commit -m "feat(marketing): locale routing decision for the marketing surfac
 
 **Files:**
 - Modify: `src/proxy.ts`
-- Test: `src/proxy.test.ts` (create)
+- Modify: `src/proxy.test.ts` — **this file already exists.** Append a new `describe` block; do not recreate or overwrite it. It currently pins `/api/health` pass-through across every host class, and those tests must keep passing.
 
 **Interfaces:**
 - Consumes: `marketingLocaleAction` (Task 1), `classifyHost`
@@ -274,49 +281,56 @@ Before writing, read `node_modules/next/dist/docs/01-app/03-api-reference/03-fil
 
 - [ ] **Step 1: Write the failing test**
 
-Create `src/proxy.test.ts`:
+Append to `src/proxy.test.ts`. The file already imports `describe/it/expect/vi/afterEach`,
+`NextRequest` and `proxy`, and already calls `afterEach(() => vi.unstubAllEnvs())` — reuse
+those rather than redeclaring them. Match the existing file's `vi.stubEnv` pattern; do not
+assign `process.env` directly.
 
 ```ts
-import { describe, it, expect, beforeAll } from "vitest";
-import { NextRequest } from "next/server";
-import { proxy } from "./proxy";
-
-beforeAll(() => {
-  process.env.ROOT_DOMAIN = "serveos.localhost";
-});
-
-function request(host: string, path: string) {
+function marketingRequest(host: string, path: string) {
   return new NextRequest(new URL(`http://${host}${path}`), { headers: { host } });
 }
 
 describe("proxy locale handling on the marketing surface", () => {
   it("rewrites / to /ar and stamps the Arabic locale", () => {
-    const res = proxy(request("serveos.localhost", "/"));
+    vi.stubEnv("ROOT_DOMAIN", "serveos.localhost");
+    const res = proxy(marketingRequest("serveos.localhost", "/"));
     expect(res.headers.get("x-middleware-rewrite")).toContain("/ar");
     expect(res.headers.get("x-middleware-request-x-locale")).toBe("ar");
   });
 
   it("passes /en through with the English locale", () => {
-    const res = proxy(request("serveos.localhost", "/en"));
+    vi.stubEnv("ROOT_DOMAIN", "serveos.localhost");
+    const res = proxy(marketingRequest("serveos.localhost", "/en"));
     expect(res.headers.get("x-middleware-rewrite")).toBeNull();
     expect(res.headers.get("x-middleware-request-x-locale")).toBe("en");
   });
 
   it("redirects /ar to the canonical root", () => {
-    const res = proxy(request("serveos.localhost", "/ar"));
+    vi.stubEnv("ROOT_DOMAIN", "serveos.localhost");
+    const res = proxy(marketingRequest("serveos.localhost", "/ar"));
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toBe("http://serveos.localhost/");
   });
 
   it("leaves the storefront surface untouched", () => {
-    const res = proxy(request("roma.serveos.localhost", "/"));
+    vi.stubEnv("ROOT_DOMAIN", "serveos.localhost");
+    const res = proxy(marketingRequest("roma.serveos.localhost", "/"));
     expect(res.headers.get("x-middleware-rewrite")).toBeNull();
     expect(res.headers.get("x-middleware-request-x-locale")).toBeNull();
     expect(res.headers.get("x-middleware-request-x-tenant-slug")).toBe("roma");
   });
 
   it("leaves /login on the marketing host untouched", () => {
-    const res = proxy(request("serveos.localhost", "/login"));
+    vi.stubEnv("ROOT_DOMAIN", "serveos.localhost");
+    const res = proxy(marketingRequest("serveos.localhost", "/login"));
+    expect(res.headers.get("x-middleware-rewrite")).toBeNull();
+    expect(res.headers.get("x-middleware-request-x-locale")).toBeNull();
+  });
+
+  it("still passes /api/health through on the marketing host", () => {
+    vi.stubEnv("ROOT_DOMAIN", "serveos.localhost");
+    const res = proxy(marketingRequest("serveos.localhost", "/api/health"));
     expect(res.headers.get("x-middleware-rewrite")).toBeNull();
     expect(res.headers.get("x-middleware-request-x-locale")).toBeNull();
   });
@@ -326,7 +340,7 @@ describe("proxy locale handling on the marketing surface", () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run src/proxy.test.ts`
-Expected: FAIL — `x-middleware-request-x-locale` is null on the first assertion; no locale handling exists yet.
+Expected: FAIL — `x-middleware-request-x-locale` is null on the first assertion; no locale handling exists yet. The four pre-existing `/api/health` tests must still pass.
 
 - [ ] **Step 3: Write the implementation**
 
