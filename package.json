@@ -13,6 +13,7 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:unit": "vitest run --config vitest.unit.config.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:migrate:test": "ENV_FILE=.env.test tsx scripts/migrate.ts",
