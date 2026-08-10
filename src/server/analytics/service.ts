@@ -521,17 +521,22 @@ export async function getReceivedVsInvoiced(tenantId: string, days: number): Pro
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   return withTenant(tenantId, async (tx) => {
     if (!(await tableExists(tx, "po_receipts"))) return [];
+    // Invoice entry is ONE header figure on the PO (the supplier's actual
+    // invoice), not a per-receipt-line amount — so the "invoiced" side reads
+    // po.invoice_total, never a SUM over receipt lines. The shipped stub's
+    // per-line `invoiced_amount` column was deliberately never created; the
+    // query was aligned to the real schema in the same PR (PR #116 precedent).
     const { rows } = await tx.execute<{ po_id: string; po_number: string; ordered: string; received: string; invoiced: string }>(sql`
       SELECT po.id AS po_id, po.po_number,
              COALESCE(po.total, 0) AS ordered,
              COALESCE(SUM(prl.received_qty * prl.unit_cost), 0) AS received,
-             COALESCE(SUM(prl.invoiced_amount), 0) AS invoiced
+             COALESCE(po.invoice_total, 0) AS invoiced
       FROM purchase_orders po
       JOIN po_receipts pr ON pr.purchase_order_id = po.id
       JOIN po_receipt_lines prl ON prl.po_receipt_id = pr.id
       WHERE po.created_at >= ${since}
-      GROUP BY po.id, po.po_number
-      ORDER BY po.created_at DESC
+      GROUP BY po.id, po.po_number, po.invoice_total
+      ORDER BY MAX(po.created_at) DESC
     `);
     return rows.map((r) => ({
       poId: r.po_id, poNumber: r.po_number,
