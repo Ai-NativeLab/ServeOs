@@ -10,7 +10,7 @@ import { products, productVariants } from "@/server/catalog/schema";
 import {
   inventoryItems, inventoryLots, storageLocations, stockLedger, stockCounts, stockCountLines,
   productInventoryLinks, recipes, recipeComponents,
-  type InventoryItem, type StorageLocation,
+  type InventoryItem, type StorageLocation, type StockCount,
 } from "./schema";
 import { qty, roundQty, toBase, withWaste, scaleForYield, assertInventoryUom, type Uom } from "./uom";
 import type { UnitOfMeasure } from "@/server/catalog/uom-values";
@@ -144,7 +144,14 @@ async function creditLot(
   return lot.id;
 }
 
-export type LotTake = { lotId: string; baseQty: number; unitCost: string | null };
+export type LotTake = {
+  lotId: string; baseQty: number; unitCost: string | null;
+  // Lot identity, carried so a consumer that re-creates lots (transfer) can
+  // preserve it. Dropping any of these on a move corrupts stock: a lost expiry
+  // launders expired goods into sellable ones, a lost length makes a board
+  // invisible to every cut sale, a lost receivedAt resets FIFO age.
+  lotCode: string | null; expiryAt: Date | null; receivedAt: Date; lengthMm: number | null;
+};
 
 /**
  * Consumes `baseQty` FIFO across an item's lots at one location, returning what
@@ -192,7 +199,11 @@ async function debitLots(
       .returning({ id: inventoryLots.id });
     if (hit.length === 0) continue; // a concurrent writer took it — try the next lot
 
-    taken.push({ lotId: lot.id, baseQty: take, unitCost: lot.unitCost });
+    taken.push({
+      lotId: lot.id, baseQty: take, unitCost: lot.unitCost,
+      lotCode: lot.lotCode, expiryAt: lot.expiryAt, receivedAt: lot.receivedAt,
+      lengthMm: lot.lengthMm != null ? Number(lot.lengthMm) : null,
+    });
     need = roundQty(need - take);
   }
   return { taken, shortfall: need > EPS ? need : 0 };
@@ -267,10 +278,26 @@ export async function adjustStock(tx: Tx, a: AdjustArgs): Promise<void> {
   const type = a.type ?? "adjustment";
 
   if (a.lotId) {
-    // An explicitly targeted lot: move that cost layer and nothing else.
-    await tx.update(inventoryLots)
-      .set({ qtyRemaining: sql`${inventoryLots.qtyRemaining} + ${qty(signed)}` })
-      .where(eq(inventoryLots.id, a.lotId));
+    // An explicitly targeted lot: move that cost layer and nothing else. The
+    // lot must actually BE this (item, location) — a mistyped id would write
+    // one item's ledger row while mutating another item's cache, and the two
+    // would disagree forever after.
+    const [lot] = await tx.select().from(inventoryLots).where(eq(inventoryLots.id, a.lotId)).limit(1);
+    if (!lot || lot.itemId !== a.itemId || lot.locationId !== a.locationId) {
+      throw new InventoryConfigError("lot does not belong to this item and location");
+    }
+    if (signed < 0) {
+      // Guarded like every other decrement: the cache must not go negative.
+      const hit = await tx.update(inventoryLots)
+        .set({ qtyRemaining: sql`${inventoryLots.qtyRemaining} + ${qty(signed)}` })
+        .where(and(eq(inventoryLots.id, a.lotId), sql`${inventoryLots.qtyRemaining} >= ${qty(-signed)}`))
+        .returning({ id: inventoryLots.id });
+      if (hit.length === 0) throw new InventoryConfigError("adjustment exceeds what the lot holds");
+    } else {
+      await tx.update(inventoryLots)
+        .set({ qtyRemaining: sql`${inventoryLots.qtyRemaining} + ${qty(signed)}` })
+        .where(eq(inventoryLots.id, a.lotId));
+    }
     await tx.insert(stockLedger).values({
       tenantId: a.tenantId, itemId: a.itemId, locationId: a.locationId, lotId: a.lotId,
       type, qty: qty(signed), uom, refType: "adjustment", refId: null,
@@ -352,11 +379,15 @@ export async function transferStock(tx: Tx, a: TransferArgs): Promise<void> {
       type: "transfer", qty: qty(-t.baseQty), uom, unitCost: t.unitCost,
       refType: "transfer", refId: groupId, byUserId: a.byUserId ?? null, note: a.note ?? null,
     });
-    // A fresh lot at the destination, carrying the source lot's cost so the
-    // move does not silently re-cost the goods.
+    // A fresh lot at the destination, carrying the source lot's cost AND its
+    // identity — expiry, lot code, received date, board length. A move changes
+    // where stock sits, nothing about what it is: an expired lot arrives still
+    // expired (still unsellable, still awaiting a write-off), a board arrives
+    // still cuttable, and FIFO age survives the trip.
     const lotId = await creditLot(tx, {
       tenantId: a.tenantId, itemId: a.itemId, locationId: a.toLocationId,
       baseQty: t.baseQty, unitCost: t.unitCost,
+      lotCode: t.lotCode, expiryAt: t.expiryAt, receivedAt: t.receivedAt, lengthMm: t.lengthMm,
     });
     await tx.insert(stockLedger).values({
       tenantId: a.tenantId, itemId: a.itemId, locationId: a.toLocationId, lotId,
@@ -408,6 +439,32 @@ export async function addCountLines(
       systemQty: qty(system), countedQty: qty(counted), varianceQty: qty(counted - system),
     });
   }
+}
+
+/**
+ * Opens a count against one of the branch's own locations. The membership check
+ * matters because a count SNAPSHOTS whatever location it is pointed at: opened
+ * against another branch's shelf, its variances would "correct" stock nobody
+ * actually counted. A cross-tenant id fails the same way — RLS makes it
+ * invisible, so it reads as simply not this branch's.
+ */
+export async function openCount(
+  tx: Tx, a: {
+    tenantId: string; branchId: string; locationId: string;
+    startedByUserId?: string | null; lines?: { itemId: string; countedQty: number }[];
+  },
+): Promise<StockCount> {
+  const [loc] = await tx.select().from(storageLocations)
+    .where(eq(storageLocations.id, a.locationId)).limit(1);
+  if (!loc || loc.branchId !== a.branchId) {
+    throw new InventoryConfigError("location does not belong to this branch");
+  }
+  const [created] = await tx.insert(stockCounts).values({
+    tenantId: a.tenantId, branchId: a.branchId, locationId: a.locationId,
+    startedByUserId: a.startedByUserId ?? null,
+  }).returning();
+  await addCountLines(tx, a.tenantId, created.id, a.lines ?? []);
+  return created;
 }
 
 /**
@@ -521,9 +578,23 @@ async function adoptLegacyTrackedStock(
     baseUom: "each", stockUom: "each", purchaseUom: "each", recipeUom: "each",
   }).returning({ id: inventoryItems.id });
 
-  await tx.insert(productInventoryLinks).values({
+  // Two tills can hit a product's first sale at once. The partial unique index
+  // on (product, variant) makes the link insert the race's arbiter: the loser
+  // conflicts, discards its own just-created item, and sells from the winner's
+  // — the same insert-then-reselect shape getOrCreateDefaultLocation uses.
+  const [link] = await tx.insert(productInventoryLinks).values({
     tenantId, productId, variantId, linkType: "finished_good", itemId: item.id,
-  });
+  }).onConflictDoNothing().returning({ id: productInventoryLinks.id });
+
+  if (!link) {
+    await tx.delete(inventoryItems).where(eq(inventoryItems.id, item.id));
+    const [winner] = await tx.select().from(productInventoryLinks).where(and(
+      eq(productInventoryLinks.productId, productId),
+      variantId ? eq(productInventoryLinks.variantId, variantId) : isNull(productInventoryLinks.variantId),
+    )).limit(1);
+    if (!winner?.itemId) throw new InventoryConfigError("could not resolve the adopted item for this sellable");
+    return winner.itemId;
+  }
 
   if (legacyQty > 0) {
     const lotId = await creditLot(tx, { tenantId, itemId: item.id, locationId, baseQty: legacyQty });
@@ -586,6 +657,12 @@ export async function syncLinkedSellable(tx: Tx, itemId: string, locationId: str
 async function mirrorLegacyStock(
   tx: Tx, itemId: string, locationId: string, productId: string, variantId: string | null,
 ): Promise<void> {
+  // KNOWN LIMIT: `stockQuantity` is one global integer but this writes ONE
+  // location's sellable figure, so for a multi-branch tenant the column holds
+  // whichever branch moved stock last. Exact for single-branch tenants (all of
+  // them today); accepted for multi-branch because the column is already
+  // scheduled to die when `inStock` reads the ledger (spec Migration §5) —
+  // that rewire must kill this function rather than inherit it.
   const remaining = Math.max(0, Math.floor(await sellableOnHand(tx, itemId, locationId)));
 
   if (variantId) {
@@ -630,6 +707,7 @@ async function deductCutToSize(
   tx: Tx, a: DeductArgs, item: InventoryItem, locationId: string, cutLengthMm: number,
 ): Promise<void> {
   const baseUom = baseUomOf(item);
+  let retries = 0;
 
   for (let piece = 0; piece < a.quantity; piece++) {
     const [lot] = await tx.select().from(inventoryLots).where(and(
@@ -650,6 +728,19 @@ async function deductCutToSize(
         qty: qty(-1), uom: baseUom, refType: "order_item", refId: a.orderItemId,
         byUserId: a.byUserId, note: `shortfall — no board ≥ ${cutLengthMm}mm`,
       });
+      // Same contract as the FIFO oversell path: the sale completes, a manager
+      // hears about it. Committed with the sale's own tx; the outbox sends.
+      await notify({ tenantId: a.tenantId }, {
+        type: "low_stock",
+        severity: "warning",
+        title: `${item.nameEn} oversold`,
+        body: `A ${cutLengthMm}mm cut of ${item.nameEn} sold with no board long enough — on-hand stays short until a count or delivery reconciles it.`,
+        entityType: "inventory_item",
+        entityId: item.id,
+        targets: [{ role: "owner" }, { role: "manager" }],
+        channels: ["in_app", "email"],
+        branchId: a.branchId,
+      }, tx);
       continue;
     }
 
@@ -657,7 +748,12 @@ async function deductCutToSize(
       .set({ qtyRemaining: sql`${inventoryLots.qtyRemaining} - 1` })
       .where(and(eq(inventoryLots.id, lot.id), sql`${inventoryLots.qtyRemaining} >= 1`))
       .returning({ id: inventoryLots.id });
-    if (hit.length === 0) { piece -= 1; continue; } // lost the race — retry this piece
+    if (hit.length === 0) {
+      // Lost the race — retry this piece, but bounded like debitLots' loop so
+      // pathological contention can never spin the transaction forever.
+      if (++retries < 10_000) { piece -= 1; continue; }
+      throw new InventoryConfigError("could not claim a board after repeated contention");
+    }
 
     await tx.insert(stockLedger).values({
       tenantId: a.tenantId, itemId: item.id, locationId, lotId: lot.id, type: "sale_deduction",
@@ -840,8 +936,11 @@ export type ReverseArgs = {
  * cost. A shortfall row (lotId null) is reversed as another lot-less row.
  */
 export async function reverseOrderDeductions(tx: Tx, a: ReverseArgs): Promise<void> {
+  // `sale_deduction` rows are what the sale took; `production` rows are what the
+  // sale MADE (a cut's offcut lot). A cancel reverses both, or a cut order comes
+  // back as the full board AND its offcut — a phantom piece per cut.
   const rows = await tx.select().from(stockLedger).where(and(
-    eq(stockLedger.type, "sale_deduction"),
+    inArray(stockLedger.type, ["sale_deduction", "production"]),
     eq(stockLedger.refType, "order_item"),
     // Refunds (Spec 3) reverse named lines; a cancel reverses the whole order.
     a.orderItemIds?.length
@@ -858,8 +957,33 @@ export async function reverseOrderDeductions(tx: Tx, a: ReverseArgs): Promise<vo
     )).limit(1);
     if (existing) continue;
 
-    const amount = roundQty(-Number(row.qty)); // the original is negative
-    if (amount <= EPS) continue;
+    // A deduction reverses positive (stock comes back); a production reverses
+    // negative (the offcut is un-made). Both land as `refund_restock` rows
+    // paired to their original, so the idempotency check above covers them all.
+    const amount = roundQty(-Number(row.qty));
+    if (Math.abs(amount) <= EPS) continue;
+
+    if (row.type === "production") {
+      // Cancel models cancel-before-cut: the saw never ran, so the offcut never
+      // existed. The guarded UPDATE proves it is still on the rack; if it has
+      // already been sold, the cut demonstrably DID happen — the offcut stays
+      // sold, the reversal is skipped, and a stock count reconciles the length
+      // drift, because un-producing sold stock would drive the lot negative.
+      if (row.lotId) {
+        const hit = await tx.update(inventoryLots)
+          .set({ qtyRemaining: sql`${inventoryLots.qtyRemaining} - ${qty(-amount)}` })
+          .where(and(eq(inventoryLots.id, row.lotId), sql`${inventoryLots.qtyRemaining} >= ${qty(-amount)}`))
+          .returning({ id: inventoryLots.id });
+        if (hit.length === 0) continue;
+      }
+      await tx.insert(stockLedger).values({
+        tenantId: a.tenantId, itemId: row.itemId, locationId: row.locationId, lotId: row.lotId,
+        type: "refund_restock", qty: qty(amount), uom: row.uom, unitCost: row.unitCost,
+        refType: "stock_ledger", refId: row.id, byUserId: a.byUserId ?? null,
+        note: "offcut removed — cut order cancelled",
+      });
+      continue;
+    }
 
     // Always restore to the ORIGINAL lot, including one since drained to zero —
     // that is exactly the right cost layer for goods that came out of it.
@@ -885,5 +1009,17 @@ export async function reverseOrderDeductions(tx: Tx, a: ReverseArgs): Promise<vo
         .set({ qtyRemaining: sql`${inventoryLots.qtyRemaining} + ${qty(amount)}` })
         .where(eq(inventoryLots.id, row.lotId));
     }
+  }
+
+  // The storefront flag has to follow the restored stock. The sale that drove
+  // the mirror to zero synced it on the way down; without the matching sync
+  // here, a cancelled sell-out leaves `stockQuantity` at 0 and the product
+  // advertising itself as sold out while the shelf holds it again.
+  const touched = new Map<string, { itemId: string; locationId: string }>();
+  for (const row of rows) {
+    touched.set(`${row.itemId}:${row.locationId}`, { itemId: row.itemId, locationId: row.locationId });
+  }
+  for (const t of touched.values()) {
+    await syncLinkedSellable(tx, t.itemId, t.locationId);
   }
 }

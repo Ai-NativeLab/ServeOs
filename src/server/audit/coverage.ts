@@ -139,6 +139,7 @@ export const AUDIT_ALLOWLIST: Record<string, string> = {
   // mutation — nothing about stock changes until commitCount, which emits
   // inventory.count.commit and carries the variance-line count with it.
   "service.addCountLines": "inventory.count.commit emitted by commitCount; lines alone move no stock",
+  "service.openCount": "inventory.count.commit emitted by commitCount; an open count moves no stock until committed",
   // Forward references — land with later specs; the guardrail enforces they emit then.
   "forward:refund.*": "Spec 3 refunds must emit refund.* via recordAuditEvent",
   "forward:purchase-order.*": "Spec 9 PO lifecycle must emit po.*",

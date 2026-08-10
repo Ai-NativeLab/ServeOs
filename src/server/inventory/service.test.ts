@@ -1,10 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
+import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
+import { tenants } from "@/server/tenancy/schema";
+import { recordAuditEvent } from "@/server/audit/service";
+import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { stockLedger, inventoryLots, stockCountLines } from "./schema";
 import {
-  onHand, adjustStock, transferStock, commitCount, addCountLines, deductForOrderLine, reverseOrderDeductions,
-  getOrCreateDefaultLocation, receiveStock,
+  onHand, adjustStock, transferStock, commitCount, addCountLines, openCount, deductForOrderLine,
+  reverseOrderDeductions, getOrCreateDefaultLocation, receiveStock, sellableOnHand,
 } from "./service";
 import { seedInventoryTenant, seedItem, seedLocation, stockLot, seedRecipeProduct } from "./test-helpers";
 import { OutOfStockError, DimensionalUomError, InventoryConfigError } from "./errors";
@@ -323,6 +327,34 @@ describe("inventory ledger", () => {
     expect(await onHand(tenantId, itemId, shelf)).toBe(10);
   });
 
+  it("a cancel re-advertises the stock the sale had hidden from the storefront", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant("retail");
+    const shelf = await seedLocation(tenantId, branchId, "retail");
+    const itemId = await seedItem(tenantId, { baseUom: "each", kind: "finished_good" });
+    await stockLot(tenantId, { itemId, locationId: shelf, baseQty: 5, uom: "each" });
+
+    const orderItemId = "00000000-0000-0000-0000-0000000000f2";
+    const productId = await withTenant(tenantId, async (tx) => {
+      const { productId } = await seedLinkedProduct(tx, tenantId, itemId);
+      await tx.execute(sql`UPDATE products SET track_stock = true, stock_quantity = 5 WHERE id = ${productId}`);
+      // Sell out — the mirror drops to 0 and the storefront shows sold out.
+      await deductForOrderLine(tx, deductArgs(tenantId, branchId, { productId, quantity: 5, orderItemId }));
+      return productId;
+    });
+    const mirror = async () => Number((await withTenant(tenantId, (tx) =>
+      tx.execute<{ stock_quantity: number }>(sql`SELECT stock_quantity FROM products WHERE id = ${productId}`)))
+      .rows[0].stock_quantity);
+    expect(await mirror()).toBe(0);
+
+    // The cancel restores the ledger — and the storefront flag must follow, or
+    // the product keeps advertising itself as sold out while 5 sit on the shelf.
+    await withTenant(tenantId, (tx) => reverseOrderDeductions(tx, {
+      tenantId, orderId: "unused", orderItemIds: [orderItemId],
+    }));
+    expect(await onHand(tenantId, itemId, shelf)).toBe(5);
+    expect(await mirror()).toBe(5);
+  });
+
   it("commitCount writes one variance row per discrepant line and closes the count", async () => {
     const { tenantId, branchId } = await seedInventoryTenant();
     const kitchen = await seedLocation(tenantId, branchId, "kitchen");
@@ -381,6 +413,41 @@ describe("inventory ledger", () => {
     expect(await onHand(tenantId, itemId, shelf)).toBe(0);
   });
 
+  it("two concurrent first sales of a legacy-tracked product both complete, adopting it once", async () => {
+    // Adoption happens lazily on first sale. Two tills can hit that first sale
+    // at once: the loser of the link-insert race must fall through to the
+    // winner's item — not die on a unique violation and 500 at the till.
+    const { tenantId, branchId } = await seedInventoryTenant("retail");
+    const productId = await withTenant(tenantId, async (tx) => {
+      const cat = await tx.execute<{ id: string }>(sql`
+        INSERT INTO categories (tenant_id, name_en, name_ar) VALUES (${tenantId}, 'C', 'ج') RETURNING id`);
+      const prod = await tx.execute<{ id: string }>(sql`
+        INSERT INTO products (tenant_id, category_id, name_en, name_ar, base_price, track_stock, stock_quantity)
+        VALUES (${tenantId}, ${cat.rows[0].id}, 'Legacy', 'قديم', '10.00', true, 5) RETURNING id`);
+      return prod.rows[0].id;
+    });
+
+    const sell = (orderItemId: string) => withTenant(tenantId, (tx) => deductForOrderLine(tx, deductArgs(tenantId, branchId, {
+      productId, quantity: 1, orderItemId, allowNegative: false,
+    })));
+    const settled = await Promise.allSettled([
+      sell("00000000-0000-0000-0000-00000000ab01"),
+      sell("00000000-0000-0000-0000-00000000ab02"),
+    ]);
+    expect(settled.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
+
+    // Adopted exactly once — the loser reused the winner's item instead of
+    // leaving an orphan behind in the item list.
+    const items = await withTenant(tenantId, (tx) =>
+      tx.execute<{ id: string }>(sql`SELECT id FROM inventory_items WHERE tenant_id = ${tenantId}`));
+    expect(items.rows).toHaveLength(1);
+
+    // Both sales deducted from the same adopted stock: 5 − 2 = 3.
+    const [p] = (await withTenant(tenantId, (tx) =>
+      tx.execute<{ stock_quantity: number }>(sql`SELECT stock_quantity FROM products WHERE id = ${productId}`))).rows;
+    expect(Number(p.stock_quantity)).toBe(3);
+  });
+
   it("count lines snapshot system qty, and re-counting an item corrects rather than double-counts", async () => {
     const { tenantId, branchId } = await seedInventoryTenant();
     const kitchen = await seedLocation(tenantId, branchId, "kitchen");
@@ -407,6 +474,36 @@ describe("inventory ledger", () => {
 
     await withTenant(tenantId, (tx) => commitCount(tx, tenantId, countId, null));
     expect(await onHand(tenantId, itemId, kitchen)).toBe(8);
+  });
+
+  it("refuses to open a count against a location that is not the branch's", async () => {
+    const a = await seedInventoryTenant();
+    const b = await seedInventoryTenant();
+    const locB = await seedLocation(b.tenantId, b.branchId, "kitchen");
+
+    // Another tenant's location id (invisible under RLS) and any location that
+    // is not this branch's are the same mistake: a count snapshotting shelves
+    // the operator is not standing in front of.
+    await expect(withTenant(a.tenantId, (tx) => openCount(tx, {
+      tenantId: a.tenantId, branchId: a.branchId, locationId: locB,
+    }))).rejects.toThrow(InventoryConfigError);
+  });
+
+  it("opens a count with snapshotted lines through the service", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const kitchen = await seedLocation(tenantId, branchId, "kitchen");
+    const itemId = await seedItem(tenantId, { baseUom: "g" });
+    await stockLot(tenantId, { itemId, locationId: kitchen, baseQty: 10, uom: "g" });
+
+    const count = await withTenant(tenantId, (tx) => openCount(tx, {
+      tenantId, branchId, locationId: kitchen, lines: [{ itemId, countedQty: 7 }],
+    }));
+    expect(count.status).toBe("open");
+
+    const lines = await withTenant(tenantId, (tx) =>
+      tx.select().from(stockCountLines).where(eq(stockCountLines.countId, count.id)));
+    expect(lines).toHaveLength(1);
+    expect(Number(lines[0].systemQty)).toBe(10);
   });
 
   it("refuses to add lines to a count that is already committed", async () => {
@@ -481,6 +578,91 @@ describe("inventory ledger", () => {
     await expect(withTenant(tenantId, (tx) => transferStock(tx, {
       tenantId, itemId, fromLocationId: back, toLocationId: kitchen, baseQty: 50, uom: "g",
     }))).rejects.toThrow(InventoryConfigError);
+  });
+
+  it("a transfer preserves lot identity: expiry, lot code and age travel with the stock", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant("retail");
+    const back = await seedLocation(tenantId, branchId, "back_of_house");
+    const shelf = await seedLocation(tenantId, branchId, "retail");
+    const itemId = await seedItem(tenantId, { baseUom: "each", kind: "finished_good", isPerishable: true });
+    const receivedAt = new Date(Date.now() - 30 * 86_400_000);
+    const expiredYesterday = new Date(Date.now() - 86_400_000);
+    await withTenant(tenantId, (tx) => receiveStock(tx, {
+      tenantId, itemId, locationId: back, baseQty: 6, uom: "each",
+      unitCost: "2", lotCode: "BATCH-7", receivedAt, expiryAt: expiredYesterday,
+    }));
+
+    await withTenant(tenantId, (tx) => transferStock(tx, {
+      tenantId, itemId, fromLocationId: back, toLocationId: shelf, baseQty: 6, uom: "each",
+    }));
+
+    const [dest] = await withTenant(tenantId, (tx) => tx.select().from(inventoryLots)
+      .where(and(eq(inventoryLots.locationId, shelf), sql`${inventoryLots.qtyRemaining} > 0`)));
+    expect(dest.lotCode).toBe("BATCH-7");
+    expect(dest.expiryAt?.getTime()).toBe(expiredYesterday.getTime());
+    expect(dest.receivedAt.getTime()).toBe(receivedAt.getTime());
+
+    // Moving expired stock must never launder it into sellable stock: it is on
+    // hand at the destination, still expired, still awaiting an explicit write-off.
+    expect(await onHand(tenantId, itemId, shelf)).toBe(6);
+    expect(await withTenant(tenantId, (tx) => sellableOnHand(tx, itemId, shelf))).toBe(0);
+  });
+
+  it("a transferred board keeps its length, so the destination can cut from it", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant("timber");
+    const back = await seedLocation(tenantId, branchId, "back_of_house");
+    const shelf = await seedLocation(tenantId, branchId, "retail");
+    const itemId = await seedItem(tenantId, { nameEn: "Pine 4x2", kind: "finished_good", baseUom: "each" });
+    await withTenant(tenantId, (tx) => receiveStock(tx, {
+      tenantId, itemId, locationId: back, baseQty: 1, uom: "each", unitCost: "100", lengthMm: 6000,
+    }));
+
+    await withTenant(tenantId, (tx) => transferStock(tx, {
+      tenantId, itemId, fromLocationId: back, toLocationId: shelf, baseQty: 1, uom: "each",
+    }));
+
+    // Without its length the board would be on hand at the shelf yet invisible
+    // to every cut sale, which only considers lots with a known length.
+    await withTenant(tenantId, async (tx) => {
+      const { productId } = await seedLinkedProduct(tx, tenantId, itemId);
+      await deductForOrderLine(tx, deductArgs(tenantId, branchId, { productId, quantity: 1, cutLengthMm: 2400 }));
+    });
+    const lots = await withTenant(tenantId, (tx) => tx.select().from(inventoryLots)
+      .where(and(eq(inventoryLots.locationId, shelf), sql`${inventoryLots.qtyRemaining} > 0`)));
+    expect(lots).toHaveLength(1);
+    expect(Number(lots[0].lengthMm)).toBe(3597);
+  });
+
+  it("a targeted-lot adjustment refuses a lot that belongs to another item or location", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const kitchen = await seedLocation(tenantId, branchId, "kitchen");
+    const back = await seedLocation(tenantId, branchId, "back_of_house");
+    const itemA = await seedItem(tenantId, { nameEn: "Flour", baseUom: "g" });
+    const itemB = await seedItem(tenantId, { nameEn: "Sugar", baseUom: "g" });
+    const lotOfB = await stockLot(tenantId, { itemId: itemB, locationId: kitchen, baseQty: 10, uom: "g" });
+
+    // Item A's ledger row against item B's lot would corrupt B's cache silently.
+    await expect(withTenant(tenantId, (tx) => adjustStock(tx, {
+      tenantId, itemId: itemA, locationId: kitchen, baseQty: -2, uom: "g", lotId: lotOfB,
+    }))).rejects.toThrow(InventoryConfigError);
+
+    // Right item, wrong location: same corruption through the other coordinate.
+    await expect(withTenant(tenantId, (tx) => adjustStock(tx, {
+      tenantId, itemId: itemB, locationId: back, baseQty: -2, uom: "g", lotId: lotOfB,
+    }))).rejects.toThrow(InventoryConfigError);
+  });
+
+  it("a targeted-lot adjustment cannot draw the lot below zero", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const kitchen = await seedLocation(tenantId, branchId, "kitchen");
+    const itemId = await seedItem(tenantId, { baseUom: "g" });
+    const lotId = await stockLot(tenantId, { itemId, locationId: kitchen, baseQty: 5, uom: "g" });
+
+    await expect(withTenant(tenantId, (tx) => adjustStock(tx, {
+      tenantId, itemId, locationId: kitchen, baseQty: -8, uom: "g", lotId,
+    }))).rejects.toThrow(InventoryConfigError);
+    // The refusal wrote nothing.
+    expect(await onHand(tenantId, itemId, kitchen)).toBe(5);
   });
 
   it("a positive adjustment creates a lot, so the stock it adds is actually sellable", async () => {
@@ -662,6 +844,56 @@ describe("inventory ledger", () => {
       expect(await onHand(tenantId, itemId, shelf)).toBe(0);
     });
 
+    it("a cut shortfall under allowNegative records the piece and raises a low_stock notification", async () => {
+      // The linear analog of the oversell path: the board is already promised,
+      // so the sale completes — but a manager has to hear about it, exactly as
+      // they do when a recipe oversells an ingredient.
+      const { tenantId, branchId, shelf, itemId } = await seedYard([{ lengthMm: 1000, qty: 1 }]);
+
+      await withTenant(tenantId, async (tx) => {
+        const { productId } = await seedLinkedProduct(tx, tenantId, itemId);
+        await deductForOrderLine(tx, deductArgs(tenantId, branchId, {
+          productId, quantity: 1, cutLengthMm: 5000, allowNegative: true,
+        }));
+      });
+
+      expect(await onHand(tenantId, itemId, shelf)).toBe(0); // 1 held − 1 shortfall piece
+      const notes = await withTenant(tenantId, (tx) =>
+        tx.execute<{ type: string }>(sql`SELECT type FROM notifications WHERE entity_id = ${itemId}`));
+      expect(notes.rows.map((r) => r.type)).toContain("low_stock");
+    });
+
+    it("cancelling a cut order restores the board and removes the offcut — no phantom stock", async () => {
+      const { tenantId, branchId, shelf, itemId } = await seedYard([{ lengthMm: 6000, qty: 10 }]);
+      const orderItemId = "00000000-0000-0000-0000-0000000000f3";
+
+      await withTenant(tenantId, async (tx) => {
+        const { productId } = await seedLinkedProduct(tx, tenantId, itemId);
+        await deductForOrderLine(tx, deductArgs(tenantId, branchId, {
+          productId, quantity: 1, cutLengthMm: 2400, orderItemId,
+        }));
+      });
+      // 9 full boards + 1 offcut on the rack.
+      expect(await onHand(tenantId, itemId, shelf)).toBe(10);
+
+      const cancel = () => withTenant(tenantId, (tx) => reverseOrderDeductions(tx, {
+        tenantId, orderId: "unused", orderItemIds: [orderItemId],
+      }));
+      await cancel();
+
+      // The yard held 10 boards before the order and holds 10 pieces after the
+      // cancel — restoring the board while KEEPING the offcut would invent an
+      // 11th piece out of a cancelled sale.
+      expect(await onHand(tenantId, itemId, shelf)).toBe(10);
+      const lots = await lotsAt(tenantId, shelf);
+      expect(lots.reduce((s, l) => s + Number(l.qtyRemaining), 0)).toBe(10);
+      expect(lots.every((l) => Number(l.lengthMm) === 6000)).toBe(true);
+
+      // Idempotent, like the rest of the reversal machinery.
+      await cancel();
+      expect(await onHand(tenantId, itemId, shelf)).toBe(10);
+    });
+
     it("refuses a cut longer than any single board, even when total length is ample", async () => {
       // Six 1 m offcuts are 6 m of timber and cannot yield a 5 m board. This is
       // the case linear-metre stock would get wrong.
@@ -700,6 +932,28 @@ describe("inventory ledger", () => {
       tx.execute(sql`UPDATE stock_ledger SET qty = '0' WHERE item_id = ${itemId}`)))).toMatch(/append-only/);
     expect(await rejectionText(() => withTenant(tenantId, (tx) =>
       tx.execute(sql`DELETE FROM stock_ledger WHERE item_id = ${itemId}`)))).toMatch(/append-only/);
+  });
+
+  it("a tenant delete cascades through the append-only ledger and audit trail (0034)", async () => {
+    // The append-only triggers fire only at pg_trigger_depth() = 0, so the FK
+    // cascade from a tenant delete passes while direct tampering still fails
+    // (the direct case is proven by the "rejects UPDATE and DELETE" test —
+    // together they pin both halves of the 0034 WHEN clause).
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const kitchen = await seedLocation(tenantId, branchId, "kitchen");
+    const itemId = await seedItem(tenantId, { baseUom: "g" });
+    await stockLot(tenantId, { itemId, locationId: kitchen, baseQty: 5, uom: "g" });
+    await withTenant(tenantId, (tx) => recordAuditEvent(
+      { tenantId, actorUserId: null, fingerprint: emptyFingerprint() },
+      { action: "test.seed", entityType: "tenant", entityId: tenantId, summary: "seed" },
+      tx,
+    ));
+
+    // Offboarding runs as the platform, not inside a tenant context.
+    await db.delete(tenants).where(eq(tenants.id, tenantId));
+
+    const gone = await db.execute(sql`SELECT 1 FROM tenants WHERE id = ${tenantId}`);
+    expect(gone.rows).toHaveLength(0);
   });
 
   it("rejects a sellable dimensional unit as an inventory unit", async () => {
