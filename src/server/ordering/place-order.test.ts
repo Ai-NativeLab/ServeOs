@@ -310,23 +310,42 @@ describe("placeOrder retail variants + stock", () => {
     expect(order.items[0].variantId).toBe(v35.id);
   });
 
-  it("decrements stock and rejects when insufficient", async () => {
+  // Stock now lives in the ledger, so these seed lots rather than the legacy
+  // integer — which no longer drives deduction at all.
+  it("deducts through the ledger and rejects when insufficient", async () => {
     const { t, branch, hinge, v35 } = await setupRetail("rv2");
     const { OutOfStockError } = await import("./errors");
+    const { seedFinishedGood } = await import("@/server/inventory/test-helpers");
+    const { onHand } = await import("@/server/inventory/service");
+    const { itemId, locationId } = await seedFinishedGood(t.id, {
+      branchId: branch.id, productId: hinge.id, variantId: v35.id, onHand: 2,
+    });
+
     await placeOrder(t.id, {
       branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
       lines: [{ productId: hinge.id, variantId: v35.id, quantity: 2, selectedOptionIds: [] }],
-    }); // stock now 0
+    });
+    expect(await onHand(t.id, itemId, locationId)).toBe(0);
+
     await expect(placeOrder(t.id, {
       branchId: branch.id, fulfillmentType: "pickup", customerName: "B", customerPhone: "2",
       lines: [{ productId: hinge.id, variantId: v35.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(OutOfStockError);
+
+    // Retail blocks rather than going negative, and the rejected order left nothing behind.
+    expect(await onHand(t.id, itemId, locationId)).toBe(0);
   });
 
   it("exactly one of two concurrent orders for the last unit succeeds", async () => {
     const { t, branch, hinge } = await setupRetail("rv3");
     const { upsertVariant } = await import("@/server/catalog/variants");
-    const last = await upsertVariant(t.id, hinge.id, { nameEn: "40mm", nameAr: "٤٠مم", price: "60", stockQuantity: 1 });
+    const { seedFinishedGood } = await import("@/server/inventory/test-helpers");
+    const { onHand } = await import("@/server/inventory/service");
+    const last = await upsertVariant(t.id, hinge.id, { nameEn: "40mm", nameAr: "٤٠مم", price: "60" });
+    const { itemId, locationId } = await seedFinishedGood(t.id, {
+      branchId: branch.id, productId: hinge.id, variantId: last.id, onHand: 1,
+    });
+
     const attempt = (name: string) => placeOrder(t.id, {
       branchId: branch.id, fulfillmentType: "pickup", customerName: name, customerPhone: "1",
       lines: [{ productId: hinge.id, variantId: last.id, quantity: 1, selectedOptionIds: [] }],
@@ -336,6 +355,8 @@ describe("placeOrder retail variants + stock", () => {
     const failed = results.filter((r) => r.status === "rejected");
     expect(ok.length).toBe(1);
     expect(failed.length).toBe(1);
+    // The per-lot guarded UPDATE serialized them: one unit sold, never oversold.
+    expect(await onHand(t.id, itemId, locationId)).toBe(0);
   });
 
   it("rejects an unknown or inactive variant", async () => {
@@ -347,17 +368,141 @@ describe("placeOrder retail variants + stock", () => {
     })).rejects.toThrow(InvalidVariantError);
   });
 
-  it("restocks on customer cancel", async () => {
+  it("restocks on customer cancel by reversing the ledger to the same lot", async () => {
     const { t, branch, hinge, v35 } = await setupRetail("rv5");
+    const { seedFinishedGood } = await import("@/server/inventory/test-helpers");
+    const { onHand } = await import("@/server/inventory/service");
+    const { itemId, locationId, lotId } = await seedFinishedGood(t.id, {
+      branchId: branch.id, productId: hinge.id, variantId: v35.id, onHand: 2,
+    });
+
     const res = await placeOrder(t.id, {
       branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
       lines: [{ productId: hinge.id, variantId: v35.id, quantity: 2, selectedOptionIds: [] }],
     });
+    expect(await onHand(t.id, itemId, locationId)).toBe(0);
+
     const { cancelOrderByToken } = await import("./service");
     await cancelOrderByToken(t.id, res.statusToken);
-    const { listVariants } = await import("@/server/catalog/variants");
-    const [v] = await listVariants(t.id, hinge.id);
-    expect(v.stockQuantity).toBe(2); // back to full
+
+    expect(await onHand(t.id, itemId, locationId)).toBe(2); // back to full
+    // Restored to the ORIGINAL lot, so its cost layer is not lost.
+    const { withTenant } = await import("@/db/with-tenant");
+    const { inventoryLots, stockLedger } = await import("@/server/inventory/schema");
+    const { eq } = await import("drizzle-orm");
+    const [lot] = await withTenant(t.id, (tx) =>
+      tx.select().from(inventoryLots).where(eq(inventoryLots.id, lotId)));
+    expect(Number(lot.qtyRemaining)).toBe(2);
+    const restocks = await withTenant(t.id, (tx) =>
+      tx.select().from(stockLedger).where(eq(stockLedger.type, "refund_restock")));
+    expect(restocks).toHaveLength(1);
+    expect(restocks[0].lotId).toBe(lotId);
+  });
+});
+
+describe("placeOrder — legacy stock adoption + storefront mirror", () => {
+  it("a product created AFTER the backfill still cannot be oversold", async () => {
+    // The backfill only linked rows that existed when it ran. Deduction is gated
+    // on a link, so without adoption this product would sell without any limit —
+    // the guarded integer UPDATE that used to stop it is gone.
+    const { t, branch, hinge, v35 } = await setupRetail("adopt1");
+    const { OutOfStockError } = await import("./errors");
+    void v35;
+
+    // No inventory seeding at all: `hinge` only has the legacy integer.
+    const { setProductStock } = await import("@/server/catalog/variants");
+    await setProductStock(t.id, hinge.id, 3);
+
+    await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: hinge.id, quantity: 3, selectedOptionIds: [] }],
+    });
+
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "B", customerPhone: "2",
+      lines: [{ productId: hinge.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(OutOfStockError);
+  });
+
+  it("selling down to zero flips the storefront's inStock flag", async () => {
+    // placeOrder no longer decrements products.stockQuantity, but the storefront
+    // still derives inStock from it — so it must be mirrored back or a sold-out
+    // item advertises itself forever.
+    const { t, branch } = await setupRetail("mirror1");
+    const { setProductStock } = await import("@/server/catalog/variants");
+    const { getPublishedMenu, createCategory, createProduct, updateProduct } = await import("@/server/catalog/service");
+
+    // A product with NO variants, so inStock is derived from the product's own
+    // stockQuantity rather than from its variants'.
+    const cat = await createCategory(t.id, { nameEn: "Screws", nameAr: "براغي" });
+    const screw = await createProduct(t.id, { nameEn: "Screw", nameAr: "برغي", basePrice: "10", categoryId: cat.id });
+    await updateProduct(t.id, screw.id, { isPublished: true });
+    await setProductStock(t.id, screw.id, 2);
+
+    const findProduct = async () =>
+      (await getPublishedMenu(t.id)).categories.flatMap((c) => c.products).find((p) => p.id === screw.id);
+
+    expect((await findProduct())?.inStock).toBe(true);
+
+    await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: screw.id, quantity: 2, selectedOptionIds: [] }],
+    });
+
+    expect((await findProduct())?.inStock).toBe(false);
+  });
+});
+
+describe("placeOrder — restaurant recipes (BOM)", () => {
+  it("selling a dish deducts its recipe ingredients from the branch kitchen", async () => {
+    const { t, branch, pizza } = await setup("bom1");
+    const { seedRecipeProduct } = await import("@/server/inventory/test-helpers");
+    const { onHand } = await import("@/server/inventory/service");
+    const { locationId, itemIds } = await seedRecipeProduct(t.id, {
+      branchId: branch.id, productId: pizza.id,
+      components: [
+        { nameEn: "Dough", qty: "200", uom: "g", onHand: 1000 },
+        { nameEn: "Mozzarella", qty: "150", uom: "g", onHand: 1000 },
+      ],
+    });
+
+    await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: pizza.id, quantity: 2, selectedOptionIds: [] }],
+    });
+
+    expect(await onHand(t.id, itemIds[0], locationId)).toBe(600); // 1000 - 2*200
+    expect(await onHand(t.id, itemIds[1], locationId)).toBe(700); // 1000 - 2*150
+  });
+
+  it("a kitchen is never blocked at the till: the sale completes and on-hand goes negative", async () => {
+    const { t, branch, pizza } = await setup("bom2");
+    const { seedRecipeProduct } = await import("@/server/inventory/test-helpers");
+    const { onHand } = await import("@/server/inventory/service");
+    // Only 100 g of dough on hand, but the customer is ordering two pizzas.
+    const { locationId, itemIds } = await seedRecipeProduct(t.id, {
+      branchId: branch.id, productId: pizza.id,
+      components: [{ nameEn: "Dough", qty: "200", uom: "g", onHand: 100 }],
+    });
+
+    // Restaurant default allowNegativeStock=true, so this must NOT throw.
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: pizza.id, quantity: 2, selectedOptionIds: [] }],
+    });
+    expect(res.orderId).toBeTruthy();
+
+    // 100 taken from the lot, 300 recorded as a lot-less shortfall.
+    expect(await onHand(t.id, itemIds[0], locationId)).toBe(-300);
+  });
+
+  it("a dish with no recipe link still sells — a restaurant can enable inventory before building recipes", async () => {
+    const { t, branch, pizza } = await setup("bom3");
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: pizza.id, quantity: 3, selectedOptionIds: [] }],
+    });
+    expect(res.orderId).toBeTruthy();
   });
 });
 

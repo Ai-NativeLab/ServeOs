@@ -1,0 +1,1 @@
+ALTER TABLE "inventory_lots" ADD COLUMN "length_mm" numeric;

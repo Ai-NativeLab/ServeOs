@@ -1,0 +1,33 @@
+{
+  "project": {
+    "number": 10,
+    "owner": "Ai-NativeLab",
+    "id": "PVT_kwDOEc-cyM4Bep06",
+    "fields": {
+      "size": {
+        "name": "Size",
+        "dataType": "SINGLE_SELECT",
+        "id": "PVTSSF_lADOEc-cyM4Bep06zhZCahU",
+        "options": {
+          "XS": "6c6483d2",
+          "S": "f784b110",
+          "M": "7515a9f1",
+          "L": "817d0097",
+          "XL": "db339eb2"
+        }
+      },
+      "hours": {
+        "name": "Estimate",
+        "dataType": "NUMBER",
+        "id": "PVTF_lADOEc-cyM4Bep06zhZCahY"
+      },
+      "points": null
+    }
+  },
+  "issueTypes": {
+    "Task": "IT_kwDOEc-cyM4CEV5Q",
+    "Bug": "IT_kwDOEc-cyM4CEV5R",
+    "Feature": "IT_kwDOEc-cyM4CEV5S"
+  },
+  "_comment": "GitHub Projects v2 coordinates, cached by the mo-ai GitHub skills. JSON so jq and Node both read it with no extra dependency (no yq). Regenerate with the github-project-status bootstrap."
+}

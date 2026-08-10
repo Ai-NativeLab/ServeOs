@@ -1,5 +1,11 @@
 # QA Environment + Database Backups Implementation Plan
 
+> **⚠️ Completed and superseded — historical record, do not follow verbatim.**
+> Two values below turned out wrong once QA was actually stood up: QA lives on
+> the **`aws-0`** pooler (not `aws-1`, which is prod) and on **`qa.serveos.tech`**
+> (not `.com`). Corrected in `docs/references/qa-environment-setup.md`, which is
+> the authoritative setup doc. This file is kept as-planned for provenance.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Stand up a persistent QA environment (own Supabase DB, own Vercel project on the `qa` branch, `*.qa.serveos.com`) and automated daily/weekly `pg_dump` backups of prod + QA to Cloudflare R2.

@@ -1,6 +1,6 @@
 import { config } from "dotenv";
 
-config({ path: process.env.ENV_FILE ?? ".env.local", override: true });
+config({ path: process.env.ENV_FILE ?? ".env.local", override: true, quiet: true });
 
 async function main() {
   // Dynamic import is intentional: static imports are hoisted before the dotenv

@@ -10,7 +10,7 @@
 import { config } from "dotenv";
 import { randomBytes } from "node:crypto";
 
-config({ path: process.env.ENV_FILE ?? ".env.local", override: true });
+config({ path: process.env.ENV_FILE ?? ".env.local", override: true, quiet: true });
 
 const SLUG = process.env.SLUG ?? "roma";
 const CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";

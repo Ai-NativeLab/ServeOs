@@ -2,9 +2,11 @@ import { describe, it, expect } from "vitest";
 import { dashboardNavItems } from "./nav-items";
 
 describe("dashboardNavItems", () => {
-  it("shows staff only Orders (no Home/Payments/Menu/Settings)", () => {
+  it("shows staff only Orders and Inventory (no Home/Payments/Menu/Settings)", () => {
     const hrefs = dashboardNavItems(["staff"]).map((i) => i.href);
-    expect(hrefs).toEqual(["/dashboard/orders", "/dashboard/orders/history"]);
+    // Staff reach Inventory deliberately: they hold inventory:view + inventory:count
+    // so they can count shelves, but not inventory:manage.
+    expect(hrefs).toEqual(["/dashboard/orders", "/dashboard/orders/history", "/dashboard/inventory"]);
   });
 
   it("does not show staff the Payments confirmation queue (owner/manager only)", () => {
@@ -15,7 +17,7 @@ describe("dashboardNavItems", () => {
   it("shows owners the full nav including Home, Payments, Settings, Audit and Customers", () => {
     const labels = dashboardNavItems(["owner"]).map((i) => i.label);
     expect(labels).toEqual([
-      "Home", "Analytics", "Orders", "Sales history", "Payments", "Menu", "Branches", "Banners", "Settings", "Audit", "Customers", "Prescriptions",
+      "Home", "Analytics", "Orders", "Sales history", "Payments", "Menu", "Inventory", "Branches", "Banners", "Settings", "Audit", "Customers", "Prescriptions",
     ]);
   });
 

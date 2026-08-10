@@ -15,7 +15,7 @@ if the storage bucket still does. Media backup is a known gap, accepted for now.
 1. GitHub → Actions → `db-restore-drill` → Run workflow → type `restore-into-qa`.
 2. The job downloads the newest `prod/daily/` dump, restores it into QA,
    re-points ownership/grants at the `app` role, and verifies row counts.
-3. Smoke-test `app.qa.serveos.com` with a real prod account flow.
+3. Smoke-test `app.qa.serveos.tech` with a real prod account flow.
 4. **Finish by re-seeding QA** so prod user data does not linger there:
 
     ```bash
@@ -31,7 +31,7 @@ PostgreSQL 17 client tools:
 ```bash
 # 1. Fetch the dump (Cloudflare dashboard, or aws cli with R2 creds):
 aws s3 cp s3://serveos-backups/prod/daily/serveos-prod-YYYY-MM-DD.dump . \
-  --endpoint-url https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+  --endpoint-url https://<ACCOUNT_ID>.eu.r2.cloudflarestorage.com
 
 # 2. STOP writes: Vercel → serveos project → pause deployments/traffic if possible.
 
@@ -50,8 +50,12 @@ pg_restore --clean --if-exists --no-owner --no-privileges \
 - Read the failed `db-backup` run log first.
 - `0 rows visible` canary error → grants/RLS problem: run `GRANT app TO postgres;`
   in the affected project's SQL editor (Supabase console).
-- Connection timeout on the **qa** matrix leg → the free-tier QA project likely
-  auto-paused (7 idle days). Restore it from the Supabase dashboard.
+- `FATAL: (ENOTFOUND) tenant/user postgres.<QA_REF> not found` → either the
+  connection URL points at the wrong pooler cluster (prod is
+  `aws-1-eu-central-1`, QA is `aws-0-eu-central-1` — copy the host from the
+  project's Connect dialog), or the free-tier QA project auto-paused (7 idle
+  days; the pooler forgets paused tenants entirely — restore it from the
+  Supabase dashboard). Fix, then re-run the workflow.
 - Cron not firing at all → GitHub disables schedules after 60 days without repo
   activity; push any commit and re-enable the workflow under Actions.
 

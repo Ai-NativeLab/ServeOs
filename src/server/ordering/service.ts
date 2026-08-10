@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { requireFeature, incrementUsage } from "@/server/entitlements/service";
-import { getCheckoutPricing } from "@/server/tenancy/settings";
+import { getCheckoutPricing, getAllowNegativeStock } from "@/server/tenancy/settings";
+import { deductForOrderLine, reverseOrderDeductions } from "@/server/inventory/service";
 import { computeOrderTotals, computeLineTotal } from "@/lib/order-totals";
 import { computeDimensionalUnitPrice } from "@/server/catalog/dimensional-pricing";
 import { isDimensionalUom } from "@/server/catalog/uom";
@@ -19,7 +20,9 @@ import { PaymentMethodNotEnabledError, InvalidProofError, PaymentAlreadyResolved
 import { sanitizeHttpUrl } from "@/lib/safe-url";
 import { orders, orderItems, orderStatusEvents, type SelectedModifier, type Order, type OrderWithItems, type OrderDetail, type OrderStatus } from "./schema";
 import { canTransition } from "./state-machine";
-import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, OutOfStockError, TotalMismatchError } from "./errors";
+// OutOfStockError is no longer thrown here — the inventory service raises it
+// from the FIFO deduction, on this same transaction, so the order still rolls back.
+import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, TotalMismatchError } from "./errors";
 import { recordAuditEvent, type AuditFingerprint } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { enqueueStatusUpdate } from "@/server/whatsapp/status-updates";
@@ -107,6 +110,10 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
   if (!tenant) throw new OrderValidationError("unknown tenant");
   const tz = tenant.timezone;
   const caps = getCapabilities(tenant.vertical as VerticalId);
+  // Resolved outside the transaction: it is a tenant policy, not per-line state.
+  // Restaurants default to true so a kitchen is never blocked at the till;
+  // retail defaults to false so a shortfall still refuses the sale.
+  const allowNegative = caps.inventory ? await getAllowNegativeStock(tenantId) : false;
 
   let scheduledFor: Date | null = null;
   if (input.scheduledFor !== undefined) {
@@ -209,28 +216,9 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
         unit = Number(effectiveBase) + modifiersTotal;
       }
 
-      // Stock decrement — guarded UPDATE makes the WHERE the serialization point:
-      // under READ COMMITTED the second concurrent writer re-evaluates the WHERE
-      // against the latest committed row after the first commits, so exactly one
-      // order gets the last unit. NULL stock (untracked) always passes via isNull.
-      if (caps.stockTracking) {
-        if (variantId) {
-          const hit = await tx.update(productVariants)
-            .set({ stockQuantity: sql`${productVariants.stockQuantity} - ${line.quantity}` })
-            .where(and(
-              eq(productVariants.id, variantId),
-              or(isNull(productVariants.stockQuantity), gte(productVariants.stockQuantity, line.quantity)),
-            ))
-            .returning({ id: productVariants.id });
-          if (hit.length === 0) throw new OutOfStockError(product.nameEn, product.nameAr);
-        } else if (product.trackStock) {
-          const hit = await tx.update(products)
-            .set({ stockQuantity: sql`${products.stockQuantity} - ${line.quantity}` })
-            .where(and(eq(products.id, product.id), gte(products.stockQuantity, line.quantity)))
-            .returning({ id: products.id });
-          if (hit.length === 0) throw new OutOfStockError(product.nameEn, product.nameAr);
-        }
-      }
+      // Stock is no longer decremented here. The flat integer counter is replaced
+      // by the append-only ledger, and deduction happens in one pass after the
+      // order items exist (below) so each movement can cite its order-item id.
 
       const lineDiscount = Math.min(
         Math.max(0, line.discountAmount ?? 0),
@@ -366,10 +354,43 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       await tx.update(prescriptions).set({ orderId: order.id }).where(eq(prescriptions.id, pendingRxId));
     }
 
-    const inserted = await tx.insert(orderItems)
-      .values(itemsToInsert.map((i) => ({ ...i, tenantId, orderId: order.id })))
-      .returning({ id: orderItems.id });
+    // Inserted one line at a time so each id is unambiguously paired with the
+    // line it came from. Postgres does not promise a multi-row INSERT ...
+    // RETURNING yields rows in VALUES order, and pairing by index on that
+    // assumption would make every sale_deduction cite the wrong order item — a
+    // cancel, or a per-line refund, would then restock the wrong product.
+    const inserted: { id: string }[] = [];
+    for (const i of itemsToInsert) {
+      const [row] = await tx.insert(orderItems)
+        .values({ ...i, tenantId, orderId: order.id })
+        .returning({ id: orderItems.id });
+      inserted.push(row);
+    }
     await tx.insert(orderStatusEvents).values({ tenantId, orderId: order.id, fromStatus: null, toStatus: "pending" });
+
+    // Inventory deduction — atomic with the order because it runs on THIS tx. A
+    // retail shortfall throws OutOfStockError and rolls the whole order back, so
+    // no order exists, exactly as the flat-integer guard behaved. A sellable with
+    // no product_inventory_links row deducts nothing, which is what lets an
+    // untracked product (and a restaurant that has not built recipes yet) sell
+    // freely. Deduction is deliberately after the items insert so every
+    // sale_deduction row can cite the order-item it came from.
+    if (caps.inventory) {
+      for (let i = 0; i < itemsToInsert.length; i++) {
+        const line = itemsToInsert[i];
+        await deductForOrderLine(tx, {
+          tenantId, branchId: input.branchId,
+          productId: line.productId, variantId: line.variantId,
+          quantity: line.quantity, orderItemId: inserted[i].id,
+          allowNegative, byUserId: input.cashierUserId ?? null,
+          productNameEn: line.nameEn, productNameAr: line.nameAr,
+          // Cut-to-size: the length actually cut drives what stock is consumed,
+          // so a 2.4m cut takes a board and returns the offcut rather than
+          // silently retiring a whole one.
+          cutLengthMm: line.dimensions?.lengthMm ?? null,
+        });
+      }
+    }
 
     await recordAuditEvent(
       {
@@ -405,22 +426,22 @@ export async function getOrderByToken(tenantId: string, token: string): Promise<
   });
 }
 
-/** Returns order-item quantities to stock. No-op for verticals without stockTracking.
- * NULL stock (untracked) is left NULL; `sql`x + n`` on NULL stays NULL, so no guard needed. */
-async function restockOrderItems(tx: Parameters<Parameters<typeof withTenant>[1]>[0], orderId: string, caps: { stockTracking: boolean }): Promise<void> {
-  if (!caps.stockTracking) return;
-  const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, orderId));
-  for (const item of items) {
-    if (item.variantId) {
-      await tx.update(productVariants)
-        .set({ stockQuantity: sql`${productVariants.stockQuantity} + ${item.quantity}` })
-        .where(eq(productVariants.id, item.variantId));
-    } else {
-      await tx.update(products)
-        .set({ stockQuantity: sql`${products.stockQuantity} + ${item.quantity}` })
-        .where(and(eq(products.id, item.productId), eq(products.trackStock, true)));
-    }
-  }
+/**
+ * Returns a cancelled order's stock by REVERSING the ledger, not by adding an
+ * integer back: each `sale_deduction` gets a matching `refund_restock` row
+ * against the same lot, so FIFO cost layers stay honest instead of a returned
+ * item re-entering stock at the wrong cost. Appending rather than editing is
+ * also the only option — the ledger is append-only.
+ *
+ * Idempotent: reverseOrderDeductions skips a deduction that already has a
+ * reversal, so a re-entrant cancel cannot double-restock.
+ */
+async function restockOrderItems(
+  tx: Parameters<Parameters<typeof withTenant>[1]>[0],
+  tenantId: string, orderId: string, caps: { inventory: boolean },
+): Promise<void> {
+  if (!caps.inventory) return;
+  await reverseOrderDeductions(tx, { tenantId, orderId });
 }
 
 /**
@@ -479,7 +500,7 @@ export async function cancelOrderByToken(tenantId: string, token: string, audit?
       .where(and(eq(orders.id, order.id), eq(orders.status, "pending")))
       .returning();
     if (!updated) throw new InvalidTransitionError(order.status, "cancelled");
-    await restockOrderItems(tx, order.id, caps);
+    await restockOrderItems(tx, tenantId, order.id, caps);
     await tx.insert(orderStatusEvents).values({
       tenantId, orderId: order.id, fromStatus: order.status, toStatus: "cancelled",
       changedByUserId: null, reason: "cancelled_by_customer",
@@ -573,7 +594,7 @@ export async function transitionStatus(tenantId: string, orderId: string, to: Or
       .where(and(eq(orders.id, orderId), eq(orders.status, order.status)))
       .returning();
     if (!updated) throw new InvalidTransitionError(order.status, to);
-    if (to === "cancelled" || to === "rejected") await restockOrderItems(tx, orderId, caps);
+    if (to === "cancelled" || to === "rejected") await restockOrderItems(tx, tenantId, orderId, caps);
     // WhatsApp orders announce confirmed/ready/out_for_delivery back into the
     // chat — enqueued here so the row commits with the transition, sent later
     // by the scheduled worker (Phase 3, D7).

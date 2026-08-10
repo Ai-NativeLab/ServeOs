@@ -1,5 +1,10 @@
 # QA Environment — One-Time Setup Checklist
 
+> **Status: completed 2026-08-10.** QA is live (`qa.serveos.tech`, Vercel
+> `serve-os-qa`, Supabase `ServeOs-qa`, nightly backups green). This
+> checklist is kept for re-runs; the live layout is documented in
+> [environments.md](environments.md).
+
 Console work only a human can do. Do it top to bottom; repo-side automation
 (`db-backup` / `db-restore-drill` workflows) assumes every box is ticked.
 
@@ -41,23 +46,31 @@ Console work only a human can do. Do it top to bottom; repo-side automation
 
 - [ ] Add New Project → import `Ai-NativeLab/ServeOs` again → name `serveos-qa`.
       The very first deploy may fail (env vars missing) — expected, ignore it.
-- [ ] Settings → Environment Variables (environment: **Production**). Do NOT mark
-      `DATABASE_URL` as Sensitive — the build-time migration step must read it:
+- [ ] Settings → Environment Variables (environment: **Production**). Prefer
+      NOT marking `DATABASE_URL` as Sensitive: builds can read sensitive
+      values (verified 2026-08-10), but nothing can read them back afterwards,
+      so a truncated or wrong paste becomes undebuggable. Values with `/` in
+      the password must be percent-encoded (`%2F`):
 
     | Name | Value |
     |---|---|
-    | `DATABASE_URL` | `postgresql://app.<QA_REF>:<APP_ROLE_PASSWORD>@aws-1-eu-central-1.pooler.supabase.com:6543/postgres` |
-    | `ROOT_DOMAIN` | `qa.serveos.com` |
+    | `DATABASE_URL` | `postgresql://app.<QA_REF>:<APP_ROLE_PASSWORD>@aws-0-eu-central-1.pooler.supabase.com:6543/postgres` |
+    | `ROOT_DOMAIN` | `qa.serveos.tech` |
     | `SUPABASE_URL` | `https://<QA_REF>.supabase.co` |
     | `SUPABASE_SERVICE_ROLE_KEY` | QA project's service_role key |
     | `SERVEOS_PAYTO` | test/sandbox value — never the prod payment target |
 
     Check the prod project's env list for anything added since this doc was
     written; every extra var gets a QA-safe value here.
-- [ ] Settings → Git → Production Branch: `qa`.
-- [ ] Settings → Domains → add `qa.serveos.com` and `*.qa.serveos.com`
-      (serveos.com is already on Vercel nameservers for the prod wildcard, so
-      both should verify automatically; fix DNS in Vercel's dashboard if not).
+- [ ] Push the `qa` branch first (`git push origin main:qa`) — the branch
+      picker only lists branches that exist on GitHub.
+- [ ] Settings → **Environments** → Production → Branch Tracking: `qa`
+      (the setting moved out of Settings → Git in the 2026 Vercel UI).
+- [ ] Settings → Domains (use the settings Find box if it's not in the
+      sidebar) → add `qa.serveos.tech` and `*.qa.serveos.tech`
+      (serveos.tech is registered at Namecheap and already on Vercel
+      nameservers — ns1/ns2.vercel-dns.com — for the prod wildcard, so both
+      should verify automatically; fix DNS in Vercel's dashboard if not).
 
 ## 4. Cloudflare — R2
 
@@ -78,11 +91,16 @@ Console work only a human can do. Do it top to bottom; repo-side automation
 
 Both database secrets use the **postgres** role and the **session pooler,
 port 5432** (not 6543 — pg_dump needs session mode; not the direct host —
-Actions runners have no IPv6):
+Actions runners have no IPv6).
+
+**The pooler hostname differs per project** — prod is on `aws-1-eu-central-1`,
+QA is on `aws-0-eu-central-1`. A wrong cluster fails with
+`FATAL: tenant/user … not found` even though the project is healthy. Always
+copy the host from the project's Connect dialog:
 
 ```bash
 gh secret set PROD_DATABASE_URL --body 'postgresql://postgres.<PROD_REF>:<PROD_DB_PASSWORD>@aws-1-eu-central-1.pooler.supabase.com:5432/postgres'
-gh secret set QA_DATABASE_URL   --body 'postgresql://postgres.<QA_REF>:<QA_DB_PASSWORD>@aws-1-eu-central-1.pooler.supabase.com:5432/postgres'
+gh secret set QA_DATABASE_URL   --body 'postgresql://postgres.<QA_REF>:<QA_DB_PASSWORD>@aws-0-eu-central-1.pooler.supabase.com:5432/postgres'
 gh secret set R2_ACCOUNT_ID     --body '<CLOUDFLARE_ACCOUNT_ID>'
 gh secret set R2_ACCESS_KEY_ID  --body '<R2_ACCESS_KEY_ID>'
 gh secret set R2_SECRET_ACCESS_KEY --body '<R2_SECRET_ACCESS_KEY>'
@@ -92,8 +110,8 @@ gh secret set R2_SECRET_ACCESS_KEY --body '<R2_SECRET_ACCESS_KEY>'
 
 ```bash
 cat > .env.qa <<'EOF'
-DATABASE_URL=postgresql://app.<QA_REF>:<APP_ROLE_PASSWORD>@aws-1-eu-central-1.pooler.supabase.com:6543/postgres
-ROOT_DOMAIN=qa.serveos.com
+DATABASE_URL=postgresql://app.<QA_REF>:<APP_ROLE_PASSWORD>@aws-0-eu-central-1.pooler.supabase.com:6543/postgres
+ROOT_DOMAIN=qa.serveos.tech
 EOF
 ```
 

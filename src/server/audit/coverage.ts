@@ -23,6 +23,8 @@ export const AUDITED_SERVICE_FILES = [
   "src/server/pos/cash-movements.ts",
   "src/server/catalog/service.ts",
   "src/server/catalog/variants.ts",
+  "src/server/inventory/service.ts",
+  "src/server/inventory/recipes.ts",
   "src/server/branches/service.ts",
   "src/server/tenancy/settings.ts",
   "src/server/tenancy/service.ts",
@@ -126,8 +128,24 @@ export const AUDIT_ALLOWLIST: Record<string, string> = {
   // Refund restock is a sub-effect of issueRefund, which emits refund.issued on
   // the same tx — the stock add-back is the refund's ledger, not a domain event.
   "service.restockRefundedLines": "refund.issued emitted by issueRefund on the same tx",
+  // Inventory (Spec 8). The operator-driven movements — adjustStock,
+  // transferStock, commitCount — emit inventory.* directly. These three write to
+  // the ledger without their own event because the action that causes them is
+  // already audited at a higher level, and a stock_ledger row is itself an
+  // immutable record (the table is append-only, enforced by trigger).
+  "service.receiveStock": "caller owns the event: po.received (Spec 9) or the backfill's opening balance",
+  "service.reverseOrderDeductions": "order.status_changed emitted by the cancel/refund that triggers it",
+  // Provisions a branch's default storage location on first use so a sale is
+  // never blocked on missing setup. Configuration of a location, not a stock
+  // movement — nothing about on-hand changes.
+  "service.getOrCreateDefaultLocation": "lazily provisions a branch default location; no stock movement",
+  // Entering counted lines is data capture on an open count, not a domain
+  // mutation — nothing about stock changes until commitCount, which emits
+  // inventory.count.commit and carries the variance-line count with it.
+  "service.addCountLines": "inventory.count.commit emitted by commitCount; lines alone move no stock",
+  "service.openCount": "inventory.count.commit emitted by commitCount; an open count moves no stock until committed",
   // Forward references — land with later specs; the guardrail enforces they emit then.
-  "forward:inventory.*": "Spec 8 ledger/lot/count must emit inventory.*",
+  "forward:refund.*": "Spec 3 refunds must emit refund.* via recordAuditEvent",
   "forward:purchase-order.*": "Spec 9 PO lifecycle must emit po.*",
   "forward:eta.*": "Spec 11 fiscal submissions must emit eta.*",
 };

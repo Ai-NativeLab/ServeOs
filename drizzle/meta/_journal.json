@@ -232,6 +232,34 @@
       "when": 1785758776572,
       "tag": "0032_slippery_mandroid",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1785845713109,
+      "tag": "0033_windy_hellcat",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1786205122206,
+      "tag": "0034_striped_dragon_lord",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1786284563992,
+      "tag": "0035_magical_silver_surfer",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1786327915033,
+      "tag": "0036_volatile_the_call",
+      "breakpoints": true
     }
   ]
 }

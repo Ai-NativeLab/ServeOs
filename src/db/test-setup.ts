@@ -1,7 +1,7 @@
 import { config } from "dotenv";
 import { afterAll, beforeEach } from "vitest";
 
-config({ path: ".env.test", override: true });
+config({ path: ".env.test", override: true, quiet: true });
 
 beforeEach(async () => {
   // Dynamic import is intentional: static imports are hoisted before the dotenv

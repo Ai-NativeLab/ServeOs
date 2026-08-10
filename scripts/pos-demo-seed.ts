@@ -11,7 +11,7 @@
 import { config } from "dotenv";
 import { randomBytes } from "node:crypto";
 
-config({ path: process.env.ENV_FILE ?? ".env.local", override: true });
+config({ path: process.env.ENV_FILE ?? ".env.local", override: true, quiet: true });
 
 const DEMO_SLUG = "posdemo";
 const CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
