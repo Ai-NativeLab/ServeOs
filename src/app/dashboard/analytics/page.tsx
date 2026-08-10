@@ -89,7 +89,10 @@ export default async function AnalyticsPage({
       </Card>
 
       <div className="grid gap-6 mb-6 lg:grid-cols-2">
-        <Card className="p-5">
+        {/* min-w-0: grid items default to a content-based automatic min width, so
+            the Table's whitespace-nowrap cells were locking this column open past
+            the viewport instead of letting Table's own overflow-x-auto handle it. */}
+        <Card className="min-w-0 p-5">
           <h2 className="eyebrow text-primary mb-3">Top products</h2>
           {topProducts.length === 0 ? (
             <p className="text-sm text-muted-foreground">No product sales in this period.</p>
