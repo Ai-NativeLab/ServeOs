@@ -27,6 +27,7 @@ export const AUDITED_SERVICE_FILES = [
   "src/server/inventory/recipes.ts",
   "src/server/purchasing/service.ts",
   "src/server/purchasing/suppliers.ts",
+  "src/server/purchasing/receiving.ts",
   "src/server/branches/service.ts",
   "src/server/tenancy/settings.ts",
   "src/server/tenancy/service.ts",
