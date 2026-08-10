@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { keyPaths } from "./types";
+import { CHROME } from "./chrome";
+import { STORY } from "./story";
+import { SURFACES } from "./surfaces";
+import { DEMO } from "./demo";
+import { FAQ } from "./faq";
 
 describe("keyPaths", () => {
   it("lists nested object paths", () => {
@@ -23,4 +28,26 @@ describe("keyPaths", () => {
     const en = { items: [{ q: "q" }] };
     expect(keyPaths(ar)).not.toEqual(keyPaths(en));
   });
+});
+
+describe("content parity between Arabic and English", () => {
+  const modules = { CHROME, STORY, SURFACES, DEMO, FAQ };
+
+  for (const [name, mod] of Object.entries(modules)) {
+    it(`${name} has identical key paths in both languages`, () => {
+      expect(keyPaths(mod.ar)).toEqual(keyPaths(mod.en));
+    });
+
+    it(`${name} has no empty strings`, () => {
+      const empties: string[] = [];
+      const walk = (v: unknown, path: string) => {
+        if (typeof v === "string" && v.trim() === "") empties.push(path);
+        else if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${path}[${i}]`));
+        else if (v && typeof v === "object")
+          Object.entries(v).forEach(([k, x]) => walk(x, `${path}.${k}`));
+      };
+      walk(mod, name);
+      expect(empties).toEqual([]);
+    });
+  }
 });
