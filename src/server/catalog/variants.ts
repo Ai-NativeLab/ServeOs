@@ -12,6 +12,7 @@ import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { productInventoryLinks, inventoryItems, stockLedger } from "@/server/inventory/schema";
 import { adjustStock, getOrCreateDefaultLocation, onHandOnTx } from "@/server/inventory/service";
+import { assertInventoryUom } from "@/server/inventory/uom";
 import { branches } from "@/server/branches/schema";
 import { productVariants, products, type ProductVariant } from "./schema";
 import { ProductNotFoundError } from "./errors";
@@ -160,9 +161,10 @@ async function reconcileLinkedOnHand(
   const delta = qty - current;
   if (Math.abs(delta) < 0.0005) return;
   // The item's own base unit — hardcoding "each" would reject a gram-based item
-  // outright now that adjustStock validates the dimension.
+  // outright now that adjustStock validates the dimension. Narrowed at runtime,
+  // not cast: a mis-seeded dimensional base must fail loudly, not sneak through.
   await adjustStock(tx, {
-    tenantId, itemId: link.itemId, locationId, baseQty: delta, uom: item.baseUom as "each",
+    tenantId, itemId: link.itemId, locationId, baseQty: delta, uom: assertInventoryUom(item.baseUom),
     byUserId: audit?.actorUserId ?? null, note: "legacy stock field set",
   });
 }

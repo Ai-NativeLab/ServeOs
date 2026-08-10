@@ -126,7 +126,11 @@ export const stockCounts = pgTable("stock_counts", {
   committedByUserId: uuid("committed_by_user_id").references(() => users.id),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
   committedAt: timestamp("committed_at", { withTimezone: true }),
-});
+}, (t) => [
+  // listCounts: RLS-filtered by tenant, newest first. Without this every
+  // listing is a seq scan over every tenant's counts.
+  index("stock_counts_tenant_started").on(t.tenantId, t.startedAt),
+]);
 
 export const stockCountLines = pgTable("stock_count_lines", {
   id: uuid("id").defaultRandom().primaryKey(),

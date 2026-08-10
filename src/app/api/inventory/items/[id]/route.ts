@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { resolveInventoryContext } from "@/app/dashboard/inventory-permission";
 import { withTenant } from "@/db/with-tenant";
-import { inventoryItems } from "@/server/inventory/schema";
-import { assertInventoryUom } from "@/server/inventory/uom";
+import { inventoryItems, inventoryItemKindEnum } from "@/server/inventory/schema";
+import { assertInventoryUom, assertSameDimension } from "@/server/inventory/uom";
 import { DimensionalUomError, InventoryConfigError } from "@/server/inventory/errors";
+import { invalidFactor } from "../validation";
 
 /**
  * Edits an item's descriptive fields, conversion factors and active flag.
@@ -25,6 +26,13 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       { error: "baseUom cannot be changed — existing ledger rows are stored in it. Create a new item instead." },
       { status: 400 },
     );
+  }
+
+  if (body?.kind !== undefined && !(inventoryItemKindEnum.enumValues as readonly string[]).includes(body.kind)) {
+    return NextResponse.json({ error: `kind must be one of: ${inventoryItemKindEnum.enumValues.join(", ")}` }, { status: 400 });
+  }
+  if (invalidFactor(body?.stockToBase) || invalidFactor(body?.purchaseToBase) || invalidFactor(body?.recipeToBase)) {
+    return NextResponse.json({ error: "conversion factors must be positive numbers" }, { status: 400 });
   }
 
   try {
@@ -49,8 +57,21 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       return NextResponse.json({ error: "no editable fields supplied" }, { status: 400 });
     }
 
-    const [updated] = await withTenant(ctx.tenantId, (tx) => tx.update(inventoryItems)
-      .set(patch).where(eq(inventoryItems.id, id)).returning());
+    const updated = await withTenant(ctx.tenantId, async (tx) => {
+      const [current] = await tx.select().from(inventoryItems).where(eq(inventoryItems.id, id)).limit(1);
+      if (!current) return null;
+      // A patched unit must stay in the base unit's dimension — the base is
+      // immutable (guard above), so it is the fixed point every conversion
+      // has to reach. Checked here, the mistake dies as a 400 at authoring
+      // rather than a refused movement at the till.
+      const baseUom = assertInventoryUom(current.baseUom);
+      if (patch.stockUom !== undefined) assertSameDimension(assertInventoryUom(patch.stockUom), baseUom);
+      if (patch.purchaseUom !== undefined) assertSameDimension(assertInventoryUom(patch.purchaseUom), baseUom);
+      if (patch.recipeUom !== undefined) assertSameDimension(assertInventoryUom(patch.recipeUom), baseUom);
+      const [row] = await tx.update(inventoryItems)
+        .set(patch).where(eq(inventoryItems.id, id)).returning();
+      return row ?? null;
+    });
     if (!updated) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return NextResponse.json(updated);
   } catch (e) {

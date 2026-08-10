@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { resolveInventoryContext } from "@/app/dashboard/inventory-permission";
 import { withTenant } from "@/db/with-tenant";
 import { listCounts } from "@/server/inventory/read";
-import { addCountLines } from "@/server/inventory/service";
-import { stockCounts } from "@/server/inventory/schema";
+import { openCount } from "@/server/inventory/service";
+import { InventoryConfigError } from "@/server/inventory/errors";
 import type { StockCount } from "@/server/inventory/schema";
 
 export async function GET(req: NextRequest) {
@@ -37,16 +37,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "each line needs an itemId and a numeric countedQty" }, { status: 400 });
   }
 
-  const count = await withTenant(ctx.tenantId, async (tx) => {
-    const [created] = await tx.insert(stockCounts).values({
+  try {
+    // Opening with lines is a convenience for a one-pass count; openCount uses
+    // the same helper as POST /counts/:id/lines, so both paths snapshot
+    // systemQty identically — and it verifies the location is this branch's.
+    const count = await withTenant(ctx.tenantId, (tx) => openCount(tx, {
       tenantId: ctx.tenantId, branchId: body.branchId, locationId: body.locationId,
-      startedByUserId: ctx.user.id,
-    }).returning();
-    // Opening with lines is a convenience for a one-pass count; the same helper
-    // backs POST /counts/:id/lines, so both paths snapshot systemQty identically.
-    await addCountLines(tx, ctx.tenantId, created.id, lines);
-    return created;
-  });
-
-  return NextResponse.json(count, { status: 201 });
+      startedByUserId: ctx.user.id, lines,
+    }));
+    return NextResponse.json(count, { status: 201 });
+  } catch (e) {
+    if (e instanceof InventoryConfigError) return NextResponse.json({ error: e.message }, { status: 400 });
+    throw e;
+  }
 }
