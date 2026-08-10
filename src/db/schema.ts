@@ -22,3 +22,4 @@ export * from "../server/catalog/uom";
 export * from "../server/prescriptions/schema";
 export * from "../server/inventory/schema";
 export * from "../server/purchasing/schema";
+export * from "../server/purchasing/reorder-schema";
