@@ -10,11 +10,17 @@ export const metadata: Metadata = {
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const surface = (await headers()).get("x-surface");
+  const h = await headers();
+  const surface = h.get("x-surface");
   const isStorefront = surface === "storefront";
+  // Marketing is Arabic-first and the proxy declares the locale, so the correct
+  // dir/lang ship in the first byte — no client-side flip, no layout reflow.
+  // Every other surface is unchanged: no x-locale, so en/ltr as before.
+  const locale = h.get("x-locale") === "ar" ? "ar" : "en";
   return (
     <html
-      lang="en"
+      lang={locale}
+      dir={locale === "ar" ? "rtl" : "ltr"}
       className={`${bricolage.variable} ${spaceGrotesk.variable} ${jetbrainsMono.variable} ${plexArabic.variable}`}
     >
       <head>{isStorefront && <link rel="manifest" href="/manifest.webmanifest" />}</head>
