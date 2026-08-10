@@ -26,6 +26,10 @@
  *
  * Run: ENV_FILE=.env.local npx tsx scripts/backfill-inventory.ts
  */
+import { config } from "dotenv";
+
+config({ path: process.env.ENV_FILE ?? ".env.local", override: true, quiet: true });
+
 import { asc, eq, isNotNull, and } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
