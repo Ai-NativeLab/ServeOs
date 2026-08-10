@@ -184,10 +184,22 @@ git commit -m "ci(inventory): back-fill the stock ledger after deploys and night
 
 ---
 
-### Task 2: Correct the script's usage comment
+### Task 2: Correct the script's usage comment — SUPERSEDED, do not implement
+
+**Superseded by PR #131** (`fix/backfill-env`), which fixes the same trap the
+better way: it adds the standard `ENV_FILE` dotenv preamble so the documented
+command works as written, matching every other script in `scripts/`. This
+task's comment-only fix was reverted from this branch (commit `eb2f899`) so
+the two changes cannot contradict each other — a textual auto-merge would
+have left a comment saying "no .env file is loaded" directly above a line
+loading one. The workflow is unaffected either way: it passes `DATABASE_URL`
+as step env, and dotenv finds no `.env.local` on a runner, so nothing
+overrides it.
+
+Kept below for the record only.
 
 **Files:**
-- Modify: `scripts/backfill-inventory.ts:27`
+- ~~Modify: `scripts/backfill-inventory.ts:27`~~ (no longer part of this branch)
 
 The header says `Run: ENV_FILE=.env.local npx tsx scripts/backfill-inventory.ts`, but this script loads no dotenv file — `ENV_FILE` does nothing and the run dies with "DATABASE_URL is not set". An operator following it exactly gets a confusing failure.
 
