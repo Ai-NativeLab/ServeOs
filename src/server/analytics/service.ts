@@ -508,7 +508,7 @@ export async function getSpendBySupplier(tenantId: string, days: number): Promis
     const { rows } = await tx.execute<{ supplier_id: string; name: string; po_count: string; spend: string }>(sql`
       SELECT po.supplier_id, s.name, COUNT(*) AS po_count, COALESCE(SUM(po.total), 0) AS spend
       FROM purchase_orders po JOIN suppliers s ON s.id = po.supplier_id
-      WHERE po.created_at >= ${since}
+      WHERE po.created_at >= ${since} AND po.status != 'cancelled'
       GROUP BY po.supplier_id, s.name ORDER BY spend DESC
     `);
     return rows.map((r) => ({ supplierId: r.supplier_id, name: r.name, poCount: Number(r.po_count), spend: Number(r.spend) }));

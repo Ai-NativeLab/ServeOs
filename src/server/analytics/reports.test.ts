@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { eq } from "drizzle-orm";
+import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { posAdjustmentEvents } from "@/server/pos/tender-schema";
 import { placeOrder, transitionStatus } from "@/server/ordering/service";
@@ -6,6 +8,14 @@ import { getCheckoutPricing } from "@/server/tenancy/settings";
 import { computeCartTotals } from "@/lib/order-totals";
 import { recordSale } from "@/server/pos/record-sale";
 import { seedPosContext, openShiftForCtx } from "@/server/pos/test-helpers";
+import { seedInventoryTenant, seedItem } from "@/server/inventory/test-helpers";
+import { users } from "@/server/auth/schema";
+import { purchaseOrders, purchaseOrderLines } from "@/server/purchasing/schema";
+import { createSupplier } from "@/server/purchasing/suppliers";
+import { createDraftPo, cancelPurchaseOrder } from "@/server/purchasing/service";
+import { postReceipt } from "@/server/purchasing/receiving";
+import { enterInvoiceTotal } from "@/server/purchasing/variance";
+import type { PurchasingActor } from "@/server/purchasing/suppliers";
 import {
   getRevenueTrend,
   getSalesByChannel,
@@ -184,6 +194,54 @@ describe("cross-channel sales aggregations", () => {
     for (const [name, fn] of guarded) {
       await expect(fn(), name).resolves.toEqual([]);
     }
+  });
+
+  // Spec 9 ships the real purchasing services, so these queries now execute
+  // against real rows (the PR #116 lesson, handled in-PR this time). Seed one
+  // received+invoiced PO and one cancelled PO through the actual services and
+  // assert all three purchasing reports read them correctly.
+  it("purchasing analytics read a real received+invoiced PO; cancelled POs are excluded", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const [user] = await db.insert(users).values({
+      tenantId, name: "Buyer", email: `buy-${crypto.randomUUID().slice(0, 8)}@x.com`, status: "active",
+    }).returning({ id: users.id });
+    const actor: PurchasingActor = { tenantId, branchId, actorUserId: user.id, vertical: "restaurant" };
+    const supplierId = await createSupplier(actor, { name: "Main Supplier" });
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+
+    // Received + invoiced: 10 of item @ 5 = 100.00 ordered (wait, 10 × 5 = 50).
+    const { poId } = await createDraftPo(actor, {
+      supplierId, branchId, lines: [{ itemId, qtyOrdered: 20, uom: "each", unitCost: 5 }], // total 100.00
+    });
+    await withTenant(tenantId, (tx) =>
+      tx.update(purchaseOrders).set({ status: "sent" }).where(eq(purchaseOrders.id, poId)));
+    const [poLine] = await withTenant(tenantId, (tx) =>
+      tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId)));
+    await postReceipt(actor, poId, { lines: [{ poLineId: poLine!.id, receivedQty: 18, uom: "each", unitCost: 5 }] });
+    await enterInvoiceTotal(actor, poId, 95);
+
+    // Cancelled PO — must not appear in spend.
+    const dead = await createDraftPo(actor, {
+      supplierId, branchId, lines: [{ itemId, qtyOrdered: 10, uom: "each", unitCost: 100 }],
+    });
+    await cancelPurchaseOrder(actor, dead.poId);
+
+    const spend = await getSpendBySupplier(tenantId, 30);
+    expect(spend).toHaveLength(1);
+    expect(spend[0].name).toBe("Main Supplier");
+    expect(spend[0].poCount).toBe(1); // the cancelled one is excluded
+    expect(spend[0].spend).toBeCloseTo(100, 2); // ordered total, not received
+
+    const rvi = await getReceivedVsInvoiced(tenantId, 30);
+    expect(rvi).toHaveLength(1);
+    expect(rvi[0].poNumber).toBe(1);
+    expect(rvi[0].ordered).toBeCloseTo(100, 2);
+    expect(rvi[0].received).toBeCloseTo(90, 2); // 18 × 5
+    expect(rvi[0].invoiced).toBeCloseTo(95, 2);
+    expect(rvi[0].variance).toBeCloseTo(-5, 2);
+
+    // reorder_rules exists but nothing is below a point → still empty.
+    await expect(getLowStock(tenantId)).resolves.toEqual([]);
   });
 
   it("RLS: a second tenant's orders never leak into any breakdown", async () => {
