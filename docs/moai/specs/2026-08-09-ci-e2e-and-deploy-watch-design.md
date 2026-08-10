@@ -139,10 +139,11 @@ repo secret:
    rejected at validation (check vercel.json against plan limits)."* This is
    the exact failure mode that went unnoticed for a week.
 
-   Phase 1 prefers a deployment **created after this run started**
-   (fast-forward promotions mean the same SHA can already have an older
-   preview deployment; locking onto it would squeeze the real build into
-   phase 3's short window), falling back to the newest prior deployment only
+   Phase 1 prefers a deployment **created around this run's start** — a
+   2-minute grace window absorbs runner-queue delay — because fast-forward
+   promotions mean the same SHA can already have an older preview
+   deployment, and locking onto it would squeeze the real build into
+   phase 3's short window. It falls back to the newest prior deployment only
    at deadline with a warning — a re-push of an already-deployed commit may
    create no new deployment at all. Dispatch runs get their own concurrency
    group so a manual test never cancels a real watch, and API curls use `-S`

@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       sha:
-        description: "Commit SHA to watch (defaults to the branch head)"
+        description: "Full 40-char commit SHA to watch (defaults to the branch head; short SHAs never match the health check)"
         required: false
 
 # Two pushes racing inside the ~20-minute watch window would otherwise

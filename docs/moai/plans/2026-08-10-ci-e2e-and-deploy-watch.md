@@ -603,7 +603,7 @@ Per the spec's "Testing the work itself". The PR itself proves the e2e job; the 
 - [ ] **Step 1: Push and open a PR**
 
 ```bash
-git push -u origin feat/ci-e2e-deploy-watch
+git push -u origin HEAD:feat/ci-e2e-deploy-watch
 gh pr create --title "CI E2E job + Vercel deploy watchdog" \
   --body "Implements docs/moai/specs/2026-08-09-ci-e2e-and-deploy-watch-design.md (spec review applied 2026-08-10). Plan: docs/moai/plans/2026-08-10-ci-e2e-and-deploy-watch.md"
 ```
