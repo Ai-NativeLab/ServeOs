@@ -15,6 +15,7 @@ export const AUDITED_SERVICE_FILES = [
   "src/server/notifications/worker.ts",
   "src/server/ordering/service.ts",
   "src/server/pos/record-sale.ts",
+  "src/server/pos/refund.ts",
   "src/server/pos/cashier.ts",
   "src/server/pos/held-tickets.ts",
   "src/server/pos/service.ts",
@@ -124,6 +125,9 @@ export const AUDIT_ALLOWLIST: Record<string, string> = {
   // the same actor and reason. Confirming, which has no such delegate, emits
   // payment.confirmed directly.
   "service.rejectOrderPayment": "order.status_changed emitted by the transitionStatus it delegates to",
+  // Refund restock is a sub-effect of issueRefund, which emits refund.issued on
+  // the same tx — the stock add-back is the refund's ledger, not a domain event.
+  "service.restockRefundedLines": "refund.issued emitted by issueRefund on the same tx",
   // Inventory (Spec 8). The operator-driven movements — adjustStock,
   // transferStock, commitCount — emit inventory.* directly. These three write to
   // the ledger without their own event because the action that causes them is

@@ -66,6 +66,142 @@ export type SaleReceipt = {
 };
 export type HeldTicket = { id: string; label: string; draftJson: unknown; createdAt: string };
 
+/** Sales-history search. Mirrors /api/pos/v1/sales query params. */
+export type SalesSearch = {
+  from?: string;
+  to?: string;
+  cashier?: string;
+  orderNumber?: number;
+  phone?: string;
+  amount?: number;
+  page?: number;
+};
+
+/** One finalized sale as the search list renders it (server Order → summary). */
+export type SalesRow = {
+  id: string;
+  orderNumber: number;
+  customerName: string;
+  customerPhone: string;
+  fulfillmentType: "pickup" | "delivery";
+  total: string;
+  status: string;
+  paymentStatus: string;
+  placedAt: string;
+};
+
+export type SaleDetailItem = {
+  id: string;
+  nameEn: string;
+  nameAr: string;
+  variantNameEn: string | null;
+  variantNameAr: string | null;
+  quantity: number;
+  lineTotal: string;
+  discountAmount: string;
+  selectedModifiers: unknown[];
+};
+
+export type SaleDetailTender = {
+  id: string;
+  method: string;
+  amount: string;
+  tipAmount: string;
+  changeAmount: string | null;
+};
+
+export type SaleDetailAdjustment = {
+  id: string;
+  type: string;
+  amount: string;
+  reasonCode: string;
+  reasonText: string | null;
+};
+
+export type SaleRefund = {
+  id: string;
+  kind: "full" | "partial";
+  totalAmount: string;
+  reasonCode: string;
+  reasonText: string | null;
+  byUserId: string;
+  authorizedByUserId: string | null;
+  createdAt: string;
+  lines: { id: string; orderItemId: string; quantity: number; amount: string; restock: boolean }[];
+  payments: { id: string; method: string; amount: string }[];
+};
+
+export type SaleDetail = {
+  id: string;
+  orderNumber: number;
+  customerName: string;
+  customerPhone: string;
+  fulfillmentType: "pickup" | "delivery";
+  total: string;
+  subtotal: string;
+  vatAmount: string;
+  serviceChargeAmount: string | null;
+  deliveryFee: string;
+  status: string;
+  paymentStatus: string;
+  placedAt: string;
+  branchId: string;
+  items: SaleDetailItem[];
+  tenders: SaleDetailTender[];
+  adjustments: SaleDetailAdjustment[];
+  refunds: SaleRefund[];
+};
+
+export type RefundSaleInput = {
+  orderId: string;
+  kind: "full" | "partial";
+  lines: { orderItemId: string; quantity: number; amount: number; restock: boolean }[];
+  payments: { method: "cash" | "card" | "store_credit" | "other"; amount: number; reference?: string }[];
+  reasonCode: string;
+  reasonText?: string;
+  clientRefundId: string;
+  grantToken?: string;
+};
+
+export type RefundSaleResult = {
+  refundId: string;
+  totalAmount: number;
+  paymentStatus: string;
+  idempotent: boolean;
+};
+
+/** The re-rendered receipt for a Reprint (sale + one slip per prior refund). */
+export type ReprintReceipt = {
+  sale: {
+    orderNumber: number;
+    customerName: string;
+    customerPhone: string;
+    placedAt: string;
+    total: string;
+    paymentStatus: string;
+    items: {
+      nameEn: string;
+      nameAr: string;
+      variantNameEn: string | null;
+      variantNameAr: string | null;
+      quantity: number;
+      lineTotal: string;
+      discountAmount: string;
+    }[];
+    tenders: { method: string; amount: string; tipAmount: string; changeAmount: string | null }[];
+    adjustments: { type: string; amount: string; reasonCode: string; reasonText: string | null }[];
+  };
+  refundSlips: {
+    kind: "full" | "partial";
+    totalAmount: string;
+    reasonCode: string;
+    reasonText: string | null;
+    createdAt: string;
+    lines: { orderItemId: string; quantity: number; amount: string; restock: boolean }[];
+    payments: { method: string; amount: string }[];
+  }[];
+};
+
 export type PosShiftSummary = {
   id: string;
   status: "open" | "closed";
@@ -346,6 +482,63 @@ export class PosMain {
       headers: this.authHeaders(),
       body: JSON.stringify({ orderId, toStatus }),
     });
+  }
+
+  /** Finalized-sale search. Only pos:sell is needed to LOOK a sale up — the
+   *  privileged refund step is resolved server-side via issueRefund. */
+  async listSales(search: SalesSearch = {}): Promise<SalesRow[]> {
+    if (!this.device || !this.cashier) return [];
+    const qs = new URLSearchParams();
+    if (search.from) qs.set("from", search.from);
+    if (search.to) qs.set("to", search.to);
+    if (search.cashier) qs.set("cashier", search.cashier);
+    if (search.orderNumber !== undefined) qs.set("orderNumber", String(search.orderNumber));
+    if (search.phone) qs.set("phone", search.phone);
+    if (search.amount !== undefined) qs.set("amount", String(search.amount));
+    if (search.page !== undefined) qs.set("page", String(search.page));
+    const res = await fetch(`${this.baseUrl}/api/pos/v1/sales?${qs.toString()}`, { headers: this.authHeaders() });
+    if (!res.ok) return [];
+    return (await res.json()) as SalesRow[];
+  }
+
+  async getSale(orderId: string): Promise<SaleDetail> {
+    if (!this.device) throw new Error("Not paired");
+    if (!this.cashier) throw new Error("No cashier signed in");
+    const res = await fetch(`${this.baseUrl}/api/pos/v1/sales/${orderId}`, { headers: this.authHeaders() });
+    if (!res.ok) throw new Error(`Could not load the sale (${res.status})`);
+    return (await res.json()) as SaleDetail;
+  }
+
+  /** Reprint = pos:sell; returns the re-rendered receipt with prior refund slips. */
+  async reprintReceipt(orderId: string): Promise<ReprintReceipt> {
+    if (!this.device) throw new Error("Not paired");
+    if (!this.cashier) throw new Error("No cashier signed in");
+    const res = await fetch(`${this.baseUrl}/api/pos/v1/sales/${orderId}/reprint`, {
+      method: "POST",
+      headers: this.authHeaders(),
+    });
+    if (!res.ok) throw new Error(`Could not reprint (${res.status})`);
+    return (await res.json()) as ReprintReceipt;
+  }
+
+  /** Full or partial refund. A 403 (missing pos:refund) is surfaced with a
+   *  code so the renderer can open ManagerAuthModal and resubmit with the grant. */
+  async refundSale(input: RefundSaleInput): Promise<RefundSaleResult> {
+    if (!this.device) throw new Error("Not paired");
+    if (!this.cashier) throw new Error("No cashier signed in");
+    const { orderId, ...body } = input;
+    const res = await fetch(`${this.baseUrl}/api/pos/v1/sales/${orderId}/refund`, {
+      method: "POST",
+      headers: this.authHeaders(),
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      const e = new Error(err.error ?? `Refund failed (${res.status})`) as Error & { code?: string };
+      if (res.status === 403) e.code = "NEEDS_MANAGER";
+      throw e;
+    }
+    return (await res.json()) as RefundSaleResult;
   }
 
   /** Maps the drawer routes' status codes onto something the renderer can branch on. */

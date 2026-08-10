@@ -127,7 +127,7 @@ describe("cross-channel sales aggregations", () => {
     expect(t.cashChange).toBeCloseTo(20, 2);
   });
 
-  it("getRefundsAndVoids reads voids from pos_adjustment_events; refunds null until Spec 3", async () => {
+  it("getRefundsAndVoids reads voids from pos_adjustment_events; refunds is an empty rollup once the table exists", async () => {
     const { ctx, tenantId, productId, managerId, total } = await seedPosContext("owner");
     await openShiftForCtx(ctx);
     const sale = await recordSale(ctx, {
@@ -156,8 +156,8 @@ describe("cross-channel sales aggregations", () => {
     expect(rv.voids.reduce((s, v) => s + v.count, 0)).toBe(2);
     expect(rv.voids.find((v) => v.type === "line_void")!.amount).toBeCloseTo(30, 2);
     expect(rv.voids.find((v) => v.type === "order_void")!.amount).toBeCloseTo(50, 2);
-    // refunds table does not exist yet → hidden (null), never zero and never an error.
-    expect(rv.refunds).toBeNull();
+    // refunds now exists (Spec 3 shipped): no refunds → an empty rollup, never an error.
+    expect(rv.refunds).toEqual({ amount: 0, count: 0, byReason: [] });
   });
 
   it("getReconciliationSummary degrades to [] while reconciliation_runs is absent (Spec 7)", async () => {

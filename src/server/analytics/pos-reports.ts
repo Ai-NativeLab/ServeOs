@@ -104,7 +104,7 @@ async function gatherDayTotals(tx: Tx, branchId: string): Promise<Omit<PosReport
   let refunds = 0;
   if (await tableExists(tx, "refunds")) {
     const { rows } = await tx.execute<{ amount: string }>(sql`
-      SELECT COALESCE(SUM(total), 0) AS amount FROM refunds
+      SELECT COALESCE(SUM(total_amount), 0) AS amount FROM refunds
       WHERE created_at >= date_trunc('day', now() AT TIME ZONE (SELECT timezone FROM tenants LIMIT 1))
                           AT TIME ZONE (SELECT timezone FROM tenants LIMIT 1)
     `);

@@ -3,6 +3,7 @@ import { LoginScreen } from "./screens/LoginScreen";
 import { CashierSignIn } from "./screens/CashierSignIn";
 import { OrderScreen } from "./screens/OrderScreen";
 import { OrdersQueue } from "./screens/OrdersQueue";
+import { SalesHistory } from "./screens/SalesHistory";
 import { HeldTickets } from "./screens/HeldTickets";
 import { DrawerScreen } from "./screens/DrawerScreen";
 import { OpenDrawerScreen } from "./screens/OpenDrawerScreen";
@@ -10,13 +11,14 @@ import { XReportScreen } from "./screens/XReport";
 import { ZReportScreen } from "./screens/ZReport";
 import type { CartLine } from "./order/cart";
 
-type View = "order" | "queue" | "held" | "drawer" | "reports";
+type View = "order" | "queue" | "held" | "drawer" | "reports" | "history";
 export type Cashier = { name: string; permissions: string[] };
 type RecalledDraft = { lines: CartLine[]; orderDiscount: number };
 
 const TABS: { view: View; label: string }[] = [
   { view: "order", label: "Take order" },
   { view: "queue", label: "Live orders" },
+  { view: "history", label: "History" },
   { view: "held", label: "Parked" },
   { view: "drawer", label: "Drawer" },
   { view: "reports", label: "Reports" },
@@ -137,6 +139,7 @@ export function App() {
         />
       )}
       {view === "queue" && <OrdersQueue />}
+      {view === "history" && <SalesHistory />}
       {view === "held" && (
         <HeldTickets
           onRecall={(lines, orderDiscount) => {

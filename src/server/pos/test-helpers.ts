@@ -13,6 +13,7 @@ import { signInCashier } from "./cashier";
 import { openShift } from "./shifts";
 import type { PosShift } from "./shift-schema";
 import type { PosCashierContext } from "./require-cashier";
+import type { VerticalId } from "@/server/verticals";
 
 /**
  * Opens a drawer for a fixture. Cash cannot be taken without one, so any test
@@ -29,8 +30,15 @@ let n = 0;
  * a signed-in cashier of the given role. `total` is the server's total for a
  * single unit — tests assert against it rather than hardcoding a number that
  * would drift with the tenant's VAT/service-charge defaults.
+ *
+ * `opts.vertical` defaults to restaurant (stockTracking off). A stock-tracking
+ * vertical (retail/pharmacy/timber) plus a `trackStock` product is how a test
+ * proves the refund-restock integer add-back actually moves stock.
  */
-export async function seedPosContext(role: "owner" | "manager" | "staff" = "owner"): Promise<{
+export async function seedPosContext(
+  role: "owner" | "manager" | "staff" = "owner",
+  opts: { vertical?: VerticalId; trackStock?: boolean; stockQuantity?: number | null } = {},
+): Promise<{
   ctx: PosCashierContext;
   tenantId: string;
   branchId: string;
@@ -39,8 +47,9 @@ export async function seedPosContext(role: "owner" | "manager" | "staff" = "owne
   total: number;
 }> {
   const i = n++;
+  const vertical = opts.vertical ?? "restaurant";
   const [t] = await db.insert(tenants).values({
-    slug: `pos-sale-${i}`, name: "T", country: "EG", vertical: "restaurant",
+    slug: `pos-sale-${i}`, name: "T", country: "EG", vertical,
   }).returning();
   await seedDefaultPlans();
   await startTrial(t.id, "pro");
@@ -51,6 +60,7 @@ export async function seedPosContext(role: "owner" | "manager" | "staff" = "owne
   const cat = await createCategory(t.id, { nameEn: "Pizza", nameAr: "بيتزا" });
   const prod = await createProduct(t.id, {
     nameEn: "Margherita", nameAr: "مارجريتا", basePrice: "100", categoryId: cat.id,
+    trackStock: opts.trackStock ?? false, stockQuantity: opts.stockQuantity ?? null,
   });
   await updateProduct(t.id, prod.id, { isPublished: true });
 
