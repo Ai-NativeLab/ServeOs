@@ -67,7 +67,10 @@ test("sign out from the user menu ends the session", async ({ page }) => {
   await page.locator('form button[type="submit"]').click();
   await expect(page).toHaveURL(/\/dashboard/);
 
-  await page.locator("header").getByRole("button", { name: /Owner|owner@roma/i }).first().click();
+  // The user-menu button's accessible name is the seeded owner's display name
+  // (`ownerName` in scripts/seed.ts, currently "Sam Adel") — Topbar always renders
+  // user.name (a NOT NULL DB column), never an email fallback.
+  await page.locator("header").getByRole("button", { name: /Sam Adel|Owner|owner@roma/i }).first().click();
   await page.getByRole("button", { name: "Sign out" }).click();
 
   await expect(page).toHaveURL(/\/login/);
