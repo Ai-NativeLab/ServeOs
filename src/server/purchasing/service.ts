@@ -92,6 +92,16 @@ export async function getPurchaseOrder(tenantId: string, poId: string) {
   });
 }
 
+export async function listPurchaseOrders(tenantId: string, opts: { status?: PoStatus } = {}) {
+  return withTenant(tenantId, async (tx) => {
+    const where = opts.status ? eq(purchaseOrders.status, opts.status) : undefined;
+    const rows = where
+      ? await tx.select().from(purchaseOrders).where(where).orderBy(sql`${purchaseOrders.createdAt} DESC`)
+      : await tx.select().from(purchaseOrders).orderBy(sql`${purchaseOrders.createdAt} DESC`);
+    return rows;
+  });
+}
+
 async function loadPo(tx: Parameters<typeof withTenant>[1] extends (tx: infer T) => unknown ? T : never, poId: string) {
   const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId));
   if (!po) throw new PoNotFoundError();

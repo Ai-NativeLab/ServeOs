@@ -17,6 +17,8 @@ export function dashboardNavItems(roleKeys: RoleKey[], catalogLabel = "Menu"): N
   // Staff hold inventory:view + inventory:count, so they reach the stock screen
   // to count shelves even though they cannot manage items.
   if (has("inventory:view")) items.push({ label: "Inventory", href: "/dashboard/inventory", icon: "inventory" });
+  if (has("purchasing:manage")) items.push({ label: "Purchasing", href: "/dashboard/purchase-orders", icon: "receipt" });
+  if (has("suppliers:manage")) items.push({ label: "Suppliers", href: "/dashboard/suppliers", icon: "store" });
   if (has("menu:manage")) items.push({ label: "Branches", href: "/dashboard/branches", icon: "store" });
   if (has("menu:manage")) items.push({ label: "Banners", href: "/dashboard/banners", icon: "image" });
   if (has("fulfillment:manage")) items.push({ label: "Settings", href: "/dashboard/settings", icon: "settings" });

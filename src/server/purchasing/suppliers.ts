@@ -8,7 +8,6 @@ import type { UnitOfMeasure } from "@/server/catalog/uom";
 import { assertInventoryUom } from "@/server/inventory/uom";
 import { money } from "@/server/ordering/service";
 import { suppliers, supplierItems } from "./schema";
-
 export type PurchasingActor = {
   tenantId: string;
   branchId: string;
@@ -123,4 +122,9 @@ export async function upsertSupplierItem(actor: PurchasingActor, input: UpsertSu
 export async function listSuppliers(tenantId: string) {
   return withTenant(tenantId, async (tx) =>
     tx.select().from(suppliers).orderBy(suppliers.name));
+}
+
+export async function listSupplierItems(tenantId: string, supplierId: string) {
+  return withTenant(tenantId, async (tx) =>
+    tx.select().from(supplierItems).where(eq(supplierItems.supplierId, supplierId)));
 }
