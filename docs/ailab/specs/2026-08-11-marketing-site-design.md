@@ -155,7 +155,20 @@ second source of truth for colour.
 
 ### Client islands
 
-Three, and only three:
+Locale is resolved entirely on the server. Trade is not: switching trade must not cost a page
+navigation, so the sections that vary by trade — hero, trade band, surface tour, features,
+steps, photo — are client components reading a `TradeProvider`, the same shape the old
+`VerticalProvider` used. The honest consequence is that all four trades' copy for the current
+locale ships to the browser. That is a few KB of text, and it buys instant switching; the
+alternative — rendering four copies of every trade-dependent section and toggling them with
+CSS — costs four times the markup and four times the images.
+
+The provider imports its content directly rather than receiving it as props. Trade content
+carries `LucideIcon` values, and lucide-react ships no `"use client"` directive, so those are
+plain functions in the server graph — passing them across the boundary throws at render.
+
+Sections that do not vary by trade — story, outcomes, pricing, FAQ, header, footer, demo band
+— stay server components. Beyond the provider, three islands carry interactivity:
 
 - **`TradeSwitcher`** — sets the active trade. Writes `--trade-accent` as a CSS custom
   property on a wrapper element; every section reads that variable, so re-tinting the page
@@ -195,8 +208,10 @@ Implemented once in `PaperSurface` and a small set of tokens, then reused:
 5. **Marker highlight** — the payoff phrase gets a translucent accent swipe as a background,
    not a colour swap. Direction-agnostic, so it survives RTL unchanged.
 6. **Duotone photography** — two full-bleed placements, tinted to the active accent.
-7. **Motion** — ticket entry, one-shot stat counters, 12px fade-rise on section entry, all
-   behind `prefers-reduced-motion`.
+7. **Motion** — ticket entry and a 12px rise on section entry, behind `prefers-reduced-motion`.
+   No stat counters: no section on this page renders a statistic, so there is nothing to count
+   up. Sections render visible in the served HTML and the animation is armed by script, so a
+   visitor without JavaScript — or a crawler that doesn't execute it — sees the whole page.
 
 Typography uses the existing `fonts.ts`: Bricolage for display, Space Grotesk for Latin body,
 IBM Plex Sans Arabic for Arabic body and display, JetBrains Mono for eyebrows and numerals.
@@ -212,7 +227,7 @@ touch it → what it costs → objections → start.*
 | ٠٢ | Hero | Trade-aware headline, marker highlight, dual CTA, layered stack with `LiveTicket`, trust line |
 | ٠٣ | Trade band | Four chips; switching re-tints and re-copies the whole page |
 | ٠٤ | ليه بنينا ServeOS | Two paragraphs: a POS, a delivery app's commission, and a designer for a menu — three systems that don't talk |
-| ٠٥ | Surface tour | Four bands — storefront, dashboard, POS, WhatsApp. First three are real captures; WhatsApp is a live component (see below) |
+| ٠٥ | Surface tour | Four bands — storefront, dashboard, POS, WhatsApp. Storefront and dashboard are automated captures; POS is a manual asset; WhatsApp is a live component (see below) |
 | ٠٦ | Photo band | Duotone, full-bleed, one line of copy |
 | ٠٧ | Feature grid | Six per trade from existing copy; `roadmap: true` items keep their قريبًا chip |
 | ٠٨ | كيف تعمل | Three steps in editorial numerals |
@@ -258,17 +273,26 @@ change:
 3. Waits for network idle and a per-surface settled selector before capturing.
 4. Writes `public/marketing/shots/<trade>/<surface>.<locale>.webp`.
 
-### Matrix — 24 files
+### Matrix — 16 automated files
 
 | Set | Count |
 |---|---|
-| storefront, dashboard, POS × 4 trades, Arabic, desktop 1440 | 12 |
-| storefront, dashboard × 4 trades, English, desktop 1440 | 8 |
-| storefront × 4 trades, Arabic, mobile 390 | 4 |
+| storefront, dashboard × 4 trades × both locales, desktop 1440 | 16 |
 
-POS and dashboard have no mobile capture: both are desk surfaces, and the page presents them
-in a browser frame that scales down legibly. Storefront is the only surface a customer meets
-on a phone, so it is the only one captured there.
+Every band the page renders is captured in every locale it renders in. The matrix is derived
+from what the tour actually shows, not maintained beside it, so the two cannot drift.
+
+**POS is captured manually — it is not a web route.** The point of sale is a separate Electron
+application in `apps/pos`, not a page in this Next app, so the Playwright pipeline cannot
+reach it. Its band is served by two committed one-off assets
+(`/marketing/shots/pos.ar.png`, `pos.en.png`) captured by hand from the running POS. The
+counter is too central to what justifies the paid tiers to drop from the page, and automating
+an Electron capture for two images is not worth a second pipeline. The manual origin is
+recorded in the capture manifest so the assets' age stays visible.
+
+No mobile captures. The storefront is the only surface a customer meets on a phone, but the
+page frames every screenshot in browser chrome that scales legibly, and a mobile set that no
+section renders is a set that silently rots.
 
 ### Guards
 

@@ -15,7 +15,8 @@
 ## Global Constraints
 
 - **Vitest only runs `src/**/*.test.ts` in a `node` environment.** There is no jsdom and no `.tsx` test support. Do **not** attempt React component unit tests — component behaviour is verified by Playwright E2E only. Unit tests cover pure TypeScript: locale routing, term maths, formatting, content parity, demo URLs.
-- Vitest boots a real Postgres via `src/db/test-global-setup.ts`. Tests are serialised (`fileParallelism: false`); this is expected and slow.
+- Vitest boots a real Postgres via `src/db/test-global-setup.ts`, and `src/db/test-setup.ts` truncates the whole schema in a `beforeEach` — two remote round-trips per test. **None of this plan's ~60 tests touch the database.** Task 0 adds a second config so they can run without that cost; every `npx vitest run <path>` command below may be run as `npx vitest run --config vitest.unit.config.ts <path>` for the same result in a fraction of the time. The default `npm test` is unchanged and still covers everything.
+- **The marketing page is broken between Task 2 and Task 10.** Task 2 rewrites `/` to `/ar`, and `/ar` does not exist until Task 10 — so `/` 404s and `tests/e2e/marketing.spec.ts` fails across that window. This is expected; per-task verification runs unit tests only. Do not "fix" the 404 before Task 10.
 - E2E requires a seeded DB (`npm run db:seed`) and the dev server. `playwright.config.ts` starts it automatically at `http://localhost:3000`.
 - On `localhost`, `classifyHost` falls through to `marketing`, so `/` in E2E is the marketing surface. This is how the existing marketing E2E works and must keep working.
 - The four trade accents come from `src/server/verticals/registry.ts` (`VERTICAL_ACCENTS`). Never hardcode a hex for a trade.
@@ -57,9 +58,9 @@
 |---|---|
 | `terms.ts` | `TERMS`, `termTotal`, `monthlyEquivalent` |
 | `terms.test.ts` | Term maths against all four price points |
-| `format.ts` | `formatEgp` — Arabic-Indic digits under `ar` |
+| `format.ts` | `formatEgp` and `ordinal` — Arabic-Indic digits and section numerals under `ar` |
 | `format.test.ts` | Digit-system assertions |
-| `shots.ts` | `shotPath(trade, surface, locale, viewport)` — the one place capture paths are constructed |
+| `shots.ts` | `shotPath(trade, surface, locale)`, `posShotPath(locale)` — the one place capture paths are constructed |
 | `shots.test.ts` | Path construction + every referenced file exists on disk |
 
 **New — server**
@@ -91,6 +92,68 @@
 **Deleted (Task 20, last)**
 
 `src/app/_components/marketing/` in full — `Header`, `Hero`, `Features`, `HowItWorks`, `CtaBand`, `Footer`, `LangProvider`, `LangToggle`, `TicketCard`, `VerticalProvider`, `VerticalSwitcher`, `i18n.ts`, `verticals.ts`.
+
+---
+
+## Task 0: A test config that does not touch the database
+
+**Files:**
+- Create: `vitest.unit.config.ts`
+- Modify: `package.json`
+
+Every test this plan adds is pure logic — locale routing, term maths, formatting, content
+parity, URL construction. Under the default config each one pays a `pg_tables` query and a
+full-schema `TRUNCATE … RESTART IDENTITY CASCADE` against a remote Supabase, serialised. This
+task buys that back for ten minutes of work, and changes nothing about the existing suite.
+
+- [ ] **Step 1: Write the config**
+
+Create `vitest.unit.config.ts`:
+
+```ts
+import { defineConfig } from "vitest/config";
+import path from "node:path";
+
+/**
+ * Pure-logic tests only — no globalSetup, no DB truncation harness.
+ * The default vitest.config.ts still runs everything, including these.
+ */
+export default defineConfig({
+  test: {
+    environment: "node",
+    include: [
+      "src/marketing-locale.test.ts",
+      "src/proxy.test.ts",
+      "src/app/(marketing)/**/*.test.ts",
+      "src/server/demo/**/*.test.ts",
+    ],
+    env: { NODE_ENV: "test" },
+  },
+  resolve: { alias: { "@": path.resolve(__dirname, "src") } },
+});
+```
+
+- [ ] **Step 2: Add the npm script**
+
+In `package.json` `scripts`, after `"test:watch"`:
+
+```json
+    "test:unit": "vitest run --config vitest.unit.config.ts",
+```
+
+- [ ] **Step 3: Verify it runs and finds nothing yet**
+
+Run: `npm run test:unit`
+Expected: exits cleanly reporting no test files — none of the listed paths exist yet. If it
+instead errors on the `(marketing)` glob, the parenthesised directory is being treated as a
+pattern group; quote it in the `include` array.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add vitest.unit.config.ts package.json
+git commit -m "chore(test): add a database-free config for pure-logic tests"
+```
 
 ---
 
@@ -331,6 +394,10 @@ git add src/proxy.ts src/proxy.test.ts
 git commit -m "feat(marketing): route / to Arabic and /en to English via the proxy"
 ```
 
+> **From this commit until Task 10, `/` returns a 404** — it now rewrites to `/ar`, which has
+> no route yet. `tests/e2e/marketing.spec.ts` fails for the same reason and is rewritten in
+> Task 21. Both are expected. Do not add a stopgap route; Task 10 is the fix.
+
 ---
 
 ## Task 3: Root layout sets lang and dir from the locale header
@@ -411,12 +478,22 @@ describe("keyPaths", () => {
     expect(keyPaths({ a: 1, b: { c: 2 } })).toEqual(["a", "b.c"]);
   });
 
-  it("treats an array as one path regardless of length", () => {
-    expect(keyPaths({ items: [{ x: 1 }, { x: 2 }] })).toEqual(["items[]"]);
+  it("ignores array length, which may legitimately differ between languages", () => {
+    expect(keyPaths({ items: [{ x: 1 }, { x: 2 }] })).toEqual(["items[].x"]);
   });
 
-  it("descends into the first element of an array so item shape is compared", () => {
-    expect(keyPaths({ items: [{ x: 1, y: 2 }] })).toEqual(["items[]"]);
+  it("descends into the first element so item shape is compared", () => {
+    expect(keyPaths({ items: [{ x: 1, y: 2 }] })).toEqual(["items[].x", "items[].y"]);
+  });
+
+  it("reports an empty array as a bare path rather than throwing", () => {
+    expect(keyPaths({ items: [] })).toEqual(["items[]"]);
+  });
+
+  it("catches a field present in one language only", () => {
+    const ar = { items: [{ q: "س", a: "ج" }] };
+    const en = { items: [{ q: "q" }] };
+    expect(keyPaths(ar)).not.toEqual(keyPaths(en));
   });
 });
 ```
@@ -441,10 +518,17 @@ import type { Locale } from "@/shared/errors";
  */
 export type Localized<T> = Record<Locale, T>;
 
-/** Sorted, dot-joined key paths. Arrays collapse to `name[]` — length may
- *  legitimately differ between languages, item shape may not. */
+/**
+ * Sorted, dot-joined key paths. An array contributes its FIRST element's shape
+ * under `name[]` — length may legitimately differ between languages, item shape
+ * may not. Descending matters: footer links, FAQ items, features, steps, ticket
+ * lines and outcomes are all arrays, so collapsing them would leave most of the
+ * content unchecked.
+ */
 export function keyPaths(value: unknown, prefix = ""): string[] {
-  if (Array.isArray(value)) return [`${prefix}[]`];
+  if (Array.isArray(value)) {
+    return value.length === 0 ? [`${prefix}[]`] : keyPaths(value[0], `${prefix}[]`);
+  }
   if (value === null || typeof value !== "object") return prefix ? [prefix] : [];
   return Object.entries(value as Record<string, unknown>)
     .flatMap(([k, v]) => keyPaths(v, prefix ? `${prefix}.${k}` : k))
@@ -455,7 +539,7 @@ export function keyPaths(value: unknown, prefix = ""): string[] {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run "src/app/(marketing)/_content/parity.test.ts"`
-Expected: PASS — 3 tests.
+Expected: PASS — 5 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -554,7 +638,7 @@ export const CHROME: Localized<ChromeContent> = {
         ]},
         { heading: "الأنشطة", links: [
           { label: "مطاعم", href: "#demo" },
-          { label: "تجزئة", href: "#demo" },
+          { label: "متاجر", href: "#demo" },
           { label: "صيدليات", href: "#demo" },
           { label: "أخشاب", href: "#demo" },
         ]},
@@ -816,7 +900,19 @@ git commit -m "feat(marketing): chrome, story, surface, demo and FAQ content in 
 - Produces: `TradeContent`, `TRADE_CONTENT: Record<VerticalId, Localized<TradeContent>>`
 - Consumed by: Tasks 11, 12, 13
 
-`src/app/_components/marketing/verticals.ts` already holds this copy in both languages for all four trades. **Migrate it verbatim** — this task is a move plus a shape change, not a rewrite. The only additions are `photoCaption` and `outcome`.
+**English migrates verbatim. Arabic is rewritten into Egyptian colloquial.**
+
+`src/app/_components/marketing/verticals.ts` holds this copy for all four trades today. The English blocks move across unchanged. The Arabic blocks are Modern Standard Arabic — `ليس لديك موقع لمطعمك؟` — which reads like a bank letter to the shop owner this page is written for. All four trades are rewritten into Egyptian colloquial: `مش لاقي موقع لمطعمك؟`.
+
+That makes this a copywriting task, not a move. Budget accordingly, and hold these rules:
+
+- **Structure is migrated, voice is rewritten.** Same keys, same array lengths, same six features and three steps per trade.
+- **Every `roadmap: true` flag survives exactly.** These mark features that do not exist in `src/server`. Losing one turns the page into a false claim.
+- **Feature titles stay nouns a buyer can scan** — colloquial applies to sentences, not to labels. `نقطة البيع` stays `نقطة البيع`.
+- **Ticket amounts use Arabic-Indic digits** (`١٨٠٫٠٠`), matching the editorial numerals elsewhere.
+- **Nothing gains a claim the English did not make.** If the English says a feature is coming soon, so does the Arabic.
+
+The restaurant block below is the finished article in both languages — use it as the voice reference for the other three.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -898,7 +994,7 @@ export const TRADE_CONTENT: Record<VerticalId, Localized<TradeContent>> = {
 
 - [ ] **Step 4: Migrate each trade**
 
-For each of the four trades, create `src/app/(marketing)/_content/trades/<trade>.ts` by copying that trade's `copy.en` and `copy.ar` blocks out of `src/app/_components/marketing/verticals.ts` unchanged, dropping the `accent` field (it now comes from `VERTICAL_ACCENTS`), and adding one new `photoCaption` string per language. Restaurant is shown in full as the template:
+For each of the four trades, create `src/app/(marketing)/_content/trades/<trade>.ts`: copy the `copy.en` block out of `src/app/_components/marketing/verticals.ts` unchanged, rewrite the `copy.ar` block into Egyptian colloquial per the rules above, drop the `accent` field (it now comes from `VERTICAL_ACCENTS`), and add one `photoCaption` per language. Restaurant is shown complete — both languages, already rewritten:
 
 ```ts
 import { QrCode, MessageCircle, CalendarCheck, Monitor, Package, ChartColumn } from "lucide-react";
@@ -971,7 +1067,7 @@ export const restaurant: Localized<TradeContent> = {
 };
 ```
 
-Repeat for `retail.ts`, `pharmacy.ts` and `timber.ts`, taking each block verbatim from the old file — including every `roadmap: true` flag, which must survive the migration exactly. Add one `photoCaption` per language:
+Repeat for `retail.ts`, `pharmacy.ts` and `timber.ts`: English verbatim from the old file, Arabic rewritten to match the restaurant block's register, every `roadmap: true` flag preserved. For reference, the MSA being replaced reads `ليس لديك موقع لمتجرك؟` (retail), `ليس لديك موقع لصيدليتك؟` (pharmacy) and `ليس لديك موقع لمخزن الأخشاب؟` (timber). Add one `photoCaption` per language:
 
 - retail — ar: `"من الرف للفاتورة في نفس النظام."` / en: `"From the shelf to the receipt in one system."`
 - pharmacy — ar: `"صيدلية شغّالة، مش برنامج تاني."` / en: `"A working pharmacy, not another program."`
@@ -998,7 +1094,7 @@ git commit -m "feat(marketing): migrate per-trade copy into content modules"
 - Create: `src/app/(marketing)/_lib/format.ts`, `format.test.ts`
 
 **Interfaces:**
-- Produces: `TERMS`, `TermKey`, `termTotal`, `monthlyEquivalent`, `formatEgp`
+- Produces: `TERMS`, `TermKey`, `termTotal`, `monthlyEquivalent`, `formatEgp`, `ordinal`
 - Consumed by: Task 16 (`Pricing`, `PricingTerms`, `PlanCard`)
 
 - [ ] **Step 1: Write the failing tests**
@@ -1059,7 +1155,7 @@ Create `src/app/(marketing)/_lib/format.test.ts`:
 
 ```ts
 import { describe, it, expect } from "vitest";
-import { formatEgp } from "./format";
+import { formatEgp, ordinal } from "./format";
 
 const ARABIC_INDIC = /[٠-٩]/;
 const WESTERN = /[0-9]/;
@@ -1083,6 +1179,22 @@ describe("formatEgp", () => {
 
   it("formats zero without throwing", () => {
     expect(formatEgp(0, "ar")).toMatch(ARABIC_INDIC);
+  });
+});
+
+describe("ordinal", () => {
+  it("pads Arabic numerals with an Arabic-Indic zero", () => {
+    expect(ordinal(0, "ar")).toBe("٠١");
+    expect(ordinal(2, "ar")).toBe("٠٣");
+  });
+
+  it("pads English numerals with an ASCII zero", () => {
+    expect(ordinal(0, "en")).toBe("01");
+    expect(ordinal(2, "en")).toBe("03");
+  });
+
+  it("does not pad past two digits", () => {
+    expect(ordinal(9, "en")).toBe("10");
   });
 });
 ```
@@ -1141,12 +1253,22 @@ export function formatEgp(amount: number, locale: Locale): string {
     maximumFractionDigits: 0,
   }).format(amount);
 }
+
+/**
+ * Zero-padded section numerals — ٠١ ٠٢ ٠٣ in Arabic, 01 02 03 in English.
+ * Part of the editorial furniture, and shared so the surface tour, the WhatsApp
+ * band and the steps cannot drift into different numbering systems.
+ */
+export function ordinal(index: number, locale: Locale): string {
+  const n = new Intl.NumberFormat(locale === "ar" ? "ar-EG" : "en-US").format(index + 1);
+  return n.padStart(2, locale === "ar" ? "٠" : "0");
+}
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `npx vitest run "src/app/(marketing)/_lib"`
-Expected: PASS — 12 tests. If `en-EG` renders Arabic-Indic digits on this ICU build, change the English locale tag to `en-US` in `format.ts` and re-run; the test is asserting the requirement, not the tag.
+Expected: PASS — 15 tests. If `en-EG` renders Arabic-Indic digits on this ICU build, change the English locale tag to `en-US` in `format.ts` and re-run; the test is asserting the requirement, not the tag.
 
 - [ ] **Step 5: Commit**
 
@@ -1264,7 +1386,7 @@ git commit -m "feat(marketing): demo entry URL contract"
 - Create: `public/marketing/shots/.gitkeep`
 
 **Interfaces:**
-- Produces: `SHOT_MATRIX`, `shotPath(trade, surface, locale, viewport)`
+- Produces: `CAPTURED_SURFACES`, `SHOT_MATRIX`, `shotPath(trade, surface, locale)`, `posShotPath(locale)`
 - Consumed by: Task 14 (`SurfaceBand`), Task 19 (capture script)
 
 One module builds every capture path so the page and the capture script cannot disagree about where a file lives. The existence test is written now and **will fail until Task 19 produces the files** — it is skipped until then via an explicit guard, and Task 19 removes the guard.
@@ -1277,54 +1399,65 @@ Create `src/app/(marketing)/_lib/shots.test.ts`:
 import { describe, it, expect } from "vitest";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { SHOT_MATRIX, shotPath } from "./shots";
+import { CAPTURED_SURFACES, SHOT_MATRIX, posShotPath, shotPath } from "./shots";
+import { SURFACE_KEYS } from "../_content/surfaces";
+import { VERTICAL_IDS } from "@/server/verticals";
 
 describe("shotPath", () => {
-  it("builds a public path from trade, surface, locale and viewport", () => {
-    expect(shotPath("pharmacy", "dashboard", "ar", "desktop")).toBe(
-      "/marketing/shots/pharmacy/dashboard.ar.desktop.webp",
-    );
+  it("builds a public path from trade, surface and locale", () => {
+    expect(shotPath("pharmacy", "dashboard", "ar")).toBe("/marketing/shots/pharmacy/dashboard.ar.png");
   });
 
-  it("distinguishes viewports", () => {
-    expect(shotPath("retail", "storefront", "ar", "mobile")).toBe(
-      "/marketing/shots/retail/storefront.ar.mobile.webp",
-    );
+  it("distinguishes locales", () => {
+    expect(shotPath("retail", "storefront", "en")).toBe("/marketing/shots/retail/storefront.en.png");
+  });
+});
+
+describe("posShotPath", () => {
+  it("is trade-independent, because the counter looks the same whatever it sells", () => {
+    expect(posShotPath("ar")).toBe("/marketing/shots/pos.ar.png");
+    expect(posShotPath("en")).toBe("/marketing/shots/pos.en.png");
   });
 });
 
 describe("SHOT_MATRIX", () => {
-  it("captures 24 shots", () => {
-    expect(SHOT_MATRIX).toHaveLength(24);
+  it("captures 16 shots", () => {
+    expect(SHOT_MATRIX).toHaveLength(16);
   });
 
-  it("captures three surfaces in Arabic for every trade", () => {
-    const ar = SHOT_MATRIX.filter((s) => s.locale === "ar" && s.viewport === "desktop");
-    expect(ar).toHaveLength(12);
+  it("captures every automated surface for every trade in both locales", () => {
+    for (const trade of VERTICAL_IDS) {
+      for (const surface of CAPTURED_SURFACES) {
+        for (const locale of ["ar", "en"] as const) {
+          expect(SHOT_MATRIX).toContainEqual({ trade, surface, locale });
+        }
+      }
+    }
   });
 
-  it("captures storefront and dashboard in English for every trade", () => {
-    const en = SHOT_MATRIX.filter((s) => s.locale === "en");
-    expect(en).toHaveLength(8);
-    expect(new Set(en.map((s) => s.surface))).toEqual(new Set(["storefront", "dashboard"]));
+  it("only automates surfaces the tour actually renders", () => {
+    for (const surface of CAPTURED_SURFACES) {
+      expect(SURFACE_KEYS).toContain(surface);
+    }
   });
 
-  it("captures the storefront on mobile only", () => {
-    const mobile = SHOT_MATRIX.filter((s) => s.viewport === "mobile");
-    expect(mobile).toHaveLength(4);
-    expect(new Set(mobile.map((s) => s.surface))).toEqual(new Set(["storefront"]));
+  it("does not automate POS, which is an Electron app rather than a route", () => {
+    expect(CAPTURED_SURFACES).not.toContain("pos");
   });
 
   it("has no duplicate paths", () => {
-    const paths = SHOT_MATRIX.map((s) => shotPath(s.trade, s.surface, s.locale, s.viewport));
+    const paths = SHOT_MATRIX.map((s) => shotPath(s.trade, s.surface, s.locale));
     expect(new Set(paths).size).toBe(paths.length);
   });
 
-  // Enabled by the capture task once the files exist. Until then the page
-  // renders a documented placeholder rather than a broken image.
-  it.skip("every shot in the matrix exists on disk", () => {
-    const missing = SHOT_MATRIX.map((s) => shotPath(s.trade, s.surface, s.locale, s.viewport))
-      .filter((p) => !existsSync(path.join(process.cwd(), "public", p)));
+  // Enabled by the capture task once the files exist. Until then the screenshot
+  // slots render broken images in development, which is expected.
+  it.skip("every referenced shot exists on disk", () => {
+    const referenced = [
+      ...SHOT_MATRIX.map((s) => shotPath(s.trade, s.surface, s.locale)),
+      ...(["ar", "en"] as const).map(posShotPath),
+    ];
+    const missing = referenced.filter((x) => !existsSync(path.join(process.cwd(), "public", x)));
     expect(missing).toEqual([]);
   });
 });
@@ -1342,41 +1475,51 @@ Create `src/app/(marketing)/_lib/shots.ts`:
 ```ts
 import { VERTICAL_IDS, type VerticalId } from "@/server/verticals";
 import type { Locale } from "@/shared/errors";
-import { SURFACE_KEYS, type SurfaceKey } from "../_content/surfaces";
 
-export type Viewport = "desktop" | "mobile";
-export type Shot = { trade: VerticalId; surface: SurfaceKey; locale: Locale; viewport: Viewport };
+/**
+ * The surfaces the Playwright pipeline can reach. POS is deliberately absent:
+ * it is an Electron application in apps/pos, not a route in this Next app, so
+ * no browser automation against localhost can render it.
+ */
+export const CAPTURED_SURFACES = ["storefront", "dashboard"] as const;
+export type CapturedSurface = (typeof CAPTURED_SURFACES)[number];
 
-/** Public URL for a capture. The single place these paths are constructed. */
-export function shotPath(trade: VerticalId, surface: SurfaceKey, locale: Locale, viewport: Viewport): string {
-  // PNG because Playwright writes PNG or JPEG only, and next/image serves the
-  // browser a modern format regardless of the source — converting buys nothing.
-  return `/marketing/shots/${trade}/${surface}.${locale}.${viewport}.png`;
+export type Shot = { trade: VerticalId; surface: CapturedSurface; locale: Locale };
+
+/**
+ * Public URL for a capture. The single place these paths are constructed.
+ *
+ * PNG because Playwright writes PNG or JPEG only, and next/image serves the
+ * browser a modern format regardless of the source — converting buys nothing.
+ */
+export function shotPath(trade: VerticalId, surface: CapturedSurface, locale: Locale): string {
+  return `/marketing/shots/${trade}/${surface}.${locale}.png`;
 }
 
 /**
- * 24 captures.
- *
- * Arabic desktop covers all three surfaces because Arabic is the default and
- * every band is shown in it. English only needs the two surfaces a non-Arabic
- * visitor is shown before deciding. Mobile covers the storefront alone — it is
- * the only surface a customer meets on a phone; dashboard and POS are desk
- * surfaces and the page frames them in a browser chrome that scales down
- * legibly.
+ * The POS band's image. Captured by hand from the running Electron app and
+ * committed — see the capture task. Trade-independent, because the counter
+ * looks the same whatever it is selling, so this is two files rather than
+ * eight.
  */
-export const SHOT_MATRIX: Shot[] = [
-  ...VERTICAL_IDS.flatMap((trade) =>
-    SURFACE_KEYS.map((surface) => ({ trade, surface, locale: "ar" as const, viewport: "desktop" as const })),
+export function posShotPath(locale: Locale): string {
+  return `/marketing/shots/pos.${locale}.png`;
+}
+
+/**
+ * 16 captures: every automated surface, for every trade, in both locales.
+ *
+ * Derived from CAPTURED_SURFACES rather than maintained beside the tour, so the
+ * matrix cannot drift from what the page renders. Every band the tour shows in a
+ * locale is captured in that locale — an earlier draft captured Arabic-only for
+ * some surfaces while the tour rendered them in both, which would have shipped
+ * four broken images on /en.
+ */
+export const SHOT_MATRIX: Shot[] = VERTICAL_IDS.flatMap((trade) =>
+  CAPTURED_SURFACES.flatMap((surface) =>
+    (["ar", "en"] as const).map((locale) => ({ trade, surface, locale })),
   ),
-  ...VERTICAL_IDS.flatMap((trade) =>
-    (["storefront", "dashboard"] as const).map((surface) => ({
-      trade, surface, locale: "en" as const, viewport: "desktop" as const,
-    })),
-  ),
-  ...VERTICAL_IDS.map((trade) => ({
-    trade, surface: "storefront" as const, locale: "ar" as const, viewport: "mobile" as const,
-  })),
-];
+);
 ```
 
 - [ ] **Step 4: Create the output directory**
@@ -1388,7 +1531,7 @@ mkdir -p public/marketing/shots && touch public/marketing/shots/.gitkeep
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `npx vitest run "src/app/(marketing)/_lib/shots.test.ts"`
-Expected: PASS — 7 passing, 1 skipped.
+Expected: PASS — 8 passing, 1 skipped.
 
 - [ ] **Step 6: Commit**
 
@@ -1411,7 +1554,9 @@ git commit -m "feat(marketing): screenshot path matrix and existence guard"
 - Produces: the `/ar` and `/en` routes, `useTrade()`
 - Consumed by: every section task after this one
 
-**Note on the spec's "three client islands".** Trade-dependent copy has to change without a page navigation, so the sections that vary by trade (hero, trade band, surface tour, features, steps, photo) are client components reading a `TradeProvider` context — the same pattern the old `VerticalProvider` used. Locale stays entirely server-side, which is the part that mattered. Non-trade sections (story, outcomes, pricing, FAQ, footer) remain server components.
+**Trade-dependent sections are client components.** Trade must change without a page navigation, so the sections that vary by trade (hero, trade band, surface tour, features, steps, photo) read a `TradeProvider` context — the same pattern the old `VerticalProvider` used. Locale stays entirely server-side, which is the part that mattered. Non-trade sections (story, outcomes, pricing, FAQ, header, footer, demo band) remain server components. All four trades' copy for the current locale ships to the browser; that is a few KB of text and it buys instant switching.
+
+**The provider imports its own content — do not pass it in as props.** `TradeContent.features[].icon` is a `LucideIcon`, and lucide-react ships no `"use client"` directive, so those are plain functions in the server graph. Passing them from the server page into a client component throws *"Functions cannot be passed directly to Client Components"* on every render, and because it is a runtime error `tsc` will not warn you.
 
 - [ ] **Step 1: Write the provider**
 
@@ -1419,16 +1564,16 @@ Create `src/app/(marketing)/_components/TradeProvider.tsx`:
 
 ```tsx
 "use client";
-import { createContext, useContext, useState } from "react";
-import type { VerticalId } from "@/server/verticals";
+import { createContext, useContext, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { VERTICAL_ACCENTS, VERTICAL_IDS, type VerticalId } from "@/server/verticals";
 import type { Locale } from "@/shared/errors";
-import type { TradeContent } from "../_content/trades";
-
-type TradeBundle = { content: Record<VerticalId, TradeContent>; accents: Record<VerticalId, string> };
+import { TRADE_CONTENT, type TradeContent } from "../_content/trades";
 
 type TradeContextValue = {
   id: VerticalId;
   setTrade: (id: VerticalId) => void;
+  /** The active trade, resolved to the current locale. */
   trade: TradeContent;
   accent: string;
   locale: Locale;
@@ -1437,22 +1582,54 @@ type TradeContextValue = {
 
 const TradeContext = createContext<TradeContextValue | null>(null);
 
-export function TradeProvider({
-  bundle, locale, initial, children,
-}: {
-  bundle: TradeBundle;
-  locale: Locale;
-  initial: VerticalId;
-  children: React.ReactNode;
-}) {
-  const [id, setTrade] = useState<VerticalId>(initial);
+function isTrade(value: string | null): value is VerticalId {
+  return value !== null && (VERTICAL_IDS as readonly string[]).includes(value);
+}
+
+/**
+ * Content is imported here, NOT passed in as props.
+ *
+ * Trade content carries `LucideIcon` values, and lucide-react ships no
+ * "use client" directive, so in the server graph those are plain functions.
+ * Handing them from the server page to this client component throws
+ * "Functions cannot be passed directly to Client Components" at render time —
+ * and being a runtime error, tsc will not warn you.
+ */
+export function TradeProvider({ locale, children }: { locale: Locale; children: React.ReactNode }) {
+  const params = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+
+  const fromUrl = params.get("trade");
+  const [id, setId] = useState<VerticalId>(isTrade(fromUrl) ? fromUrl : "restaurant");
+
+  const all = useMemo(
+    () =>
+      Object.fromEntries(VERTICAL_IDS.map((t) => [t, TRADE_CONTENT[t][locale]])) as Record<
+        VerticalId,
+        TradeContent
+      >,
+    [locale],
+  );
+
+  function setTrade(next: VerticalId) {
+    setId(next);
+    // Mirrored to the URL so a link shared into a WhatsApp group opens on the
+    // right trade. replace, not push — the back button should leave the page
+    // rather than walk back through four trades. scroll:false keeps the reader
+    // where they were.
+    const q = new URLSearchParams(params.toString());
+    q.set("trade", next);
+    router.replace(`${pathname}?${q.toString()}`, { scroll: false });
+  }
+
   return (
     <TradeContext.Provider
-      value={{ id, setTrade, trade: bundle.content[id], accent: bundle.accents[id], locale, all: bundle.content }}
+      value={{ id, setTrade, trade: all[id], accent: VERTICAL_ACCENTS[id], locale, all }}
     >
       {/* Every section reads --trade-accent, so switching trade re-tints the
           page through CSS rather than re-rendering anything that doesn't care. */}
-      <div style={{ ["--trade-accent" as string]: bundle.accents[id] }} data-trade={id}>
+      <div style={{ ["--trade-accent" as string]: VERTICAL_ACCENTS[id] }} data-trade={id}>
         {children}
       </div>
     </TradeContext.Provider>
@@ -1530,12 +1707,11 @@ It exists so marketing can gain shared chrome later without touching the app-wid
 Create `src/app/(marketing)/[lang]/page.tsx`:
 
 ```tsx
+import { Suspense } from "react";
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import type { Locale } from "@/shared/errors";
-import { VERTICAL_IDS, VERTICAL_ACCENTS, type VerticalId } from "@/server/verticals";
-import { TRADE_CONTENT, type TradeContent } from "../_content/trades";
 import { PaperSurface } from "../_components/PaperSurface";
 import { TradeProvider } from "../_components/TradeProvider";
 
@@ -1577,20 +1753,17 @@ export default async function MarketingPage({ params }: { params: Promise<{ lang
   const surface = (await headers()).get("x-surface");
   if (surface !== "marketing") notFound();
 
-  const content = Object.fromEntries(
-    VERTICAL_IDS.map((id) => [id, TRADE_CONTENT[id][locale]]),
-  ) as Record<VerticalId, TradeContent>;
-
+  // TradeProvider reads useSearchParams, so it sits behind a Suspense boundary.
+  // This route is already dynamic (headers() above), but the boundary keeps it
+  // correct if that ever changes.
   return (
-    <TradeProvider
-      bundle={{ content, accents: VERTICAL_ACCENTS }}
-      locale={locale}
-      initial="restaurant"
-    >
-      <PaperSurface>
-        <main id="hero" />
-      </PaperSurface>
-    </TradeProvider>
+    <Suspense>
+      <TradeProvider locale={locale}>
+        <PaperSurface>
+          <main id="hero" />
+        </PaperSurface>
+      </TradeProvider>
+    </Suspense>
   );
 }
 ```
@@ -1992,7 +2165,7 @@ export function Hero() {
       <div className="relative min-h-[300px]">
         <div className="overflow-hidden rounded-xl border border-border bg-card shadow-[0_26px_60px_rgba(58,51,44,0.16)]" style={{ transform: "rotate(-1.2deg)" }}>
           <Image
-            src={shotPath(id, "dashboard", locale, "desktop")}
+            src={shotPath(id, "dashboard", locale)}
             alt=""
             width={1440}
             height={900}
@@ -2068,19 +2241,27 @@ Create `src/app/(marketing)/_components/SurfaceBand.tsx`:
 import Image from "next/image";
 import type { SurfaceKey } from "../_content/surfaces";
 import { SURFACES } from "../_content/surfaces";
-import { shotPath } from "../_lib/shots";
+import { ordinal } from "../_lib/format";
+import { CAPTURED_SURFACES, posShotPath, shotPath, type CapturedSurface } from "../_lib/shots";
 import { useTrade } from "./TradeProvider";
+
+function isCaptured(surface: SurfaceKey): surface is CapturedSurface {
+  return (CAPTURED_SURFACES as readonly string[]).includes(surface);
+}
 
 export function SurfaceBand({ surface, index }: { surface: SurfaceKey; index: number }) {
   const { id, locale } = useTrade();
   const t = SURFACES[locale].bands[surface];
   const flip = index % 2 === 1;
+  // POS is an Electron app, so its image is a hand-captured asset rather than
+  // one of the automated per-trade captures.
+  const src = isCaptured(surface) ? shotPath(id, surface, locale) : posShotPath(locale);
 
   return (
     <div className="grid items-center gap-10 py-12 lg:grid-cols-2 lg:gap-16">
       <div className={flip ? "lg:order-2" : undefined}>
         <p className="font-mono text-[11px] tracking-[0.2em]" style={{ color: "var(--trade-accent)" }}>
-          {String(index + 1).padStart(2, "0")}
+          {ordinal(index, locale)}
         </p>
         <h3 className="mt-3 text-2xl font-bold tracking-[-0.02em]">{t.title}</h3>
         <p className="mt-3 max-w-md text-[15px] leading-8 text-muted-foreground">{t.body}</p>
@@ -2090,7 +2271,7 @@ export function SurfaceBand({ surface, index }: { surface: SurfaceKey; index: nu
       <div className={flip ? "lg:order-1" : undefined}>
         <div className="overflow-hidden rounded-xl border border-border bg-card shadow-[0_20px_50px_rgba(58,51,44,0.14)]">
           <Image
-            src={shotPath(id, surface, locale, "desktop")}
+            src={src}
             alt={t.title}
             width={1440}
             height={900}
@@ -2111,6 +2292,7 @@ Create `src/app/(marketing)/_components/WhatsappBand.tsx`:
 ```tsx
 "use client";
 import { SURFACES } from "../_content/surfaces";
+import { ordinal } from "../_lib/format";
 import { useTrade } from "./TradeProvider";
 
 /**
@@ -2126,7 +2308,7 @@ export function WhatsappBand({ index }: { index: number }) {
     <div className="grid items-center gap-10 py-12 lg:grid-cols-2 lg:gap-16">
       <div>
         <p className="font-mono text-[11px] tracking-[0.2em]" style={{ color: "var(--trade-accent)" }}>
-          {String(index + 1).padStart(2, "0")}
+          {ordinal(index, locale)}
         </p>
         <h3 className="mt-3 text-2xl font-bold tracking-[-0.02em]">{t.title}</h3>
         <p className="mt-3 max-w-md text-[15px] leading-8 text-muted-foreground">{t.body}</p>
@@ -2309,18 +2491,13 @@ Create `src/app/(marketing)/_components/Steps.tsx`:
 
 ```tsx
 "use client";
+import { ordinal } from "../_lib/format";
 import { useTrade } from "./TradeProvider";
 
 const HEADING = {
   ar: { eyebrow: "كيف تعمل", heading: "انطلق في ثلاث خطوات." },
   en: { eyebrow: "How it works", heading: "Live in three steps." },
 } as const;
-
-/** Arabic-Indic section numerals — ٠١ ٠٢ ٠٣ — part of the editorial furniture. */
-function ordinal(index: number, locale: "ar" | "en"): string {
-  const n = String(index + 1).padStart(2, "0");
-  return locale === "ar" ? new Intl.NumberFormat("ar-EG").format(index + 1).padStart(2, "٠") : n;
-}
 
 export function Steps() {
   const { trade, locale } = useTrade();
@@ -2406,13 +2583,15 @@ export function DemoCard({
       </span>
 
       <div className="mt-5 flex flex-col gap-2">
-        <Link
+        {/* A plain anchor, not next/link — this is a different origin, and
+            Link would attempt a prefetch that cannot succeed. */}
+        <a
           href={storefrontUrl}
           className="rounded-md px-4 py-2.5 text-center text-sm font-medium text-[#14120F]"
           style={{ backgroundColor: accent }}
         >
           {openStorefront}
-        </Link>
+        </a>
         <Link
           href={dashboardUrl}
           className="rounded-md border border-white/20 px-4 py-2.5 text-center text-sm text-white/90 hover:bg-white/5"
@@ -2802,8 +2981,13 @@ export function PlanCard({ plan, term, locale }: { plan: Plan; term: Term; local
   const isFree = monthly === 0;
   const name = t.planNames[plan.key] ?? plan.name;
 
+  // Zero-valued limits are not features. The seeded basic plan has
+  // whatsapp_numbers: 0 and messages_per_month: 0 — listing those would sell
+  // "0 WhatsApp numbers" as a benefit.
   const rows = [
-    ...Object.entries(plan.limits).map(([k, v]) => `${v} ${t.limits[k as keyof typeof t.limits]}`),
+    ...Object.entries(plan.limits)
+      .filter(([, v]) => v > 0)
+      .map(([k, v]) => `${v} ${t.limits[k as keyof typeof t.limits]}`),
     ...Object.entries(plan.features)
       .filter(([, on]) => on)
       .map(([k]) => t.features[k as keyof typeof t.features]),
@@ -2922,7 +3106,9 @@ import { listPlans } from "@/server/subscription";
 ```
 
 ```tsx
-  const plans = await listPlans();
+  // listPlans() has no isActive predicate, so filter here rather than change a
+  // shared service the admin console also calls. isActive is a text column.
+  const plans = (await listPlans()).filter((p) => p.isActive === "true");
 ```
 
 ```tsx
@@ -3017,21 +3203,31 @@ Create `src/app/(marketing)/_components/MotionReveal.tsx`:
 import { useEffect, useRef, useState } from "react";
 
 /**
- * A 12px fade-rise on entry. Honours prefers-reduced-motion by rendering the
- * revealed state immediately and never observing.
+ * A 12px rise on entry.
+ *
+ * The served HTML is fully VISIBLE — the animation is armed by script after
+ * mount, never before. Rendering opacity:0 on the server would hide seven of
+ * the thirteen sections from anyone without JavaScript and from any crawler
+ * that does not execute it, on a page whose whole job is to be found and read.
+ *
+ * Honours prefers-reduced-motion by never arming at all.
  */
 export function MotionReveal({ children }: { children: React.ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
+  const [armed, setArmed] = useState(false);
   const [shown, setShown] = useState(false);
 
   useEffect(() => {
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduced) {
-      setShown(true);
-      return;
-    }
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const el = ref.current;
     if (!el) return;
+
+    // Already on screen at mount? Leave it alone — animating content the reader
+    // is currently looking at is a flash, not a reveal.
+    const rect = el.getBoundingClientRect();
+    if (rect.top < window.innerHeight) return;
+
+    setArmed(true);
     const io = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting) {
@@ -3045,11 +3241,13 @@ export function MotionReveal({ children }: { children: React.ReactNode }) {
     return () => io.disconnect();
   }, []);
 
+  const hidden = armed && !shown;
+
   return (
     <div
       ref={ref}
       className="transition-all duration-500 motion-reduce:transition-none"
-      style={{ opacity: shown ? 1 : 0, transform: shown ? "none" : "translateY(12px)" }}
+      style={{ opacity: hidden ? 0 : 1, transform: hidden ? "translateY(12px)" : "none" }}
     >
       {children}
     </div>
@@ -3125,16 +3323,28 @@ import { SHOT_MATRIX, shotPath, type Shot } from "../src/app/(marketing)/_lib/sh
  */
 const args = process.argv.slice(2);
 const baseUrl = args[args.indexOf("--base-url") + 1] ?? "http://localhost:3000";
+const port = new URL(baseUrl).port || "3000";
+const rootDomain = process.env.ROOT_DOMAIN ?? "serveos.localhost";
 const email = process.env.DEMO_USER_EMAIL ?? "demo@serveos.com";
 const password = process.env.DEMO_USER_PASSWORD ?? "demo1234";
 
-const VIEWPORTS = { desktop: { width: 1440, height: 900 }, mobile: { width: 390, height: 844 } } as const;
-
-/** Where each surface lives, and what proves it has finished rendering. */
-const SURFACE_ROUTE: Record<Shot["surface"], { path: (slug: string) => string; settled: string; auth: boolean }> = {
-  storefront: { path: (slug) => `/?tenant=${slug}`, settled: "[data-testid='storefront']", auth: false },
-  dashboard: { path: () => "/dashboard", settled: "main", auth: true },
-  pos: { path: () => "/dashboard/pos", settled: "main", auth: true },
+/**
+ * Where each surface lives, and what proves it has finished rendering.
+ *
+ * The storefront resolves by HOST, not by a query parameter — src/proxy.ts
+ * classifies the subdomain and sets x-tenant-slug, and src/app/page.tsx reads
+ * that header. Hitting localhost with ?tenant= would screenshot the marketing
+ * page and label it "storefront".
+ *
+ * Both surfaces render into <main> (StorefrontShell and the dashboard layout),
+ * which is the settled selector. There is no storefront test id in this repo.
+ */
+const SURFACE_ROUTE: Record<
+  Shot["surface"],
+  { url: (slug: string) => string; settled: string; auth: boolean }
+> = {
+  storefront: { url: (slug) => `http://${slug}.${rootDomain}:${port}/`, settled: "main", auth: false },
+  dashboard: { url: () => `${baseUrl}/dashboard`, settled: "main", auth: true },
 };
 
 async function signIn(page: Page, slug: string) {
@@ -3153,18 +3363,18 @@ async function main() {
     const slug = `demo-${shot.trade}`;
     const route = SURFACE_ROUTE[shot.surface];
     const context = await browser.newContext({
-      viewport: VIEWPORTS[shot.viewport],
+      viewport: { width: 1440, height: 900 },
       locale: shot.locale === "ar" ? "ar-EG" : "en-US",
       deviceScaleFactor: 2,
     });
     const page = await context.newPage();
 
     if (route.auth) await signIn(page, slug);
-    await page.goto(`${baseUrl}${route.path(slug)}`);
+    await page.goto(route.url(slug));
     await page.waitForSelector(route.settled, { timeout: 30_000 });
     await page.waitForLoadState("networkidle");
 
-    const out = path.join(process.cwd(), "public", shotPath(shot.trade, shot.surface, shot.locale, shot.viewport));
+    const out = path.join(process.cwd(), "public", shotPath(shot.trade, shot.surface, shot.locale));
     await mkdir(path.dirname(out), { recursive: true });
     await page.screenshot({ path: out, type: "png" });
     console.log(`captured ${path.relative(process.cwd(), out)}`);
@@ -3177,7 +3387,8 @@ async function main() {
   const manifest = {
     capturedAt: new Date().toISOString(),
     baseUrl,
-    shots: SHOT_MATRIX.map((s) => shotPath(s.trade, s.surface, s.locale, s.viewport)),
+    shots: SHOT_MATRIX.map((s) => shotPath(s.trade, s.surface, s.locale)),
+    manual: ["/marketing/shots/pos.ar.png", "/marketing/shots/pos.en.png"],
   };
   await writeFile(
     path.join(process.cwd(), "public", "marketing", "shots", "manifest.json"),
@@ -3209,18 +3420,38 @@ npm run dev          # in one terminal
 npm run marketing:shots
 ```
 
-Expected: 24 lines of `captured public/marketing/shots/…` and a final `24 shots captured ✓`.
+Expected: 16 lines of `captured public/marketing/shots/…` and a final `16 shots captured ✓`.
 
-- [ ] **Step 4: Enable the existence test**
+- [ ] **Step 4: Capture the two POS images by hand**
 
-In `src/app/(marketing)/_lib/shots.test.ts`, change `it.skip("every shot in the matrix exists on disk"` to `it("every shot in the matrix exists on disk"` and delete the two-line comment above it.
+POS is an Electron application in `apps/pos`, not a route in this Next app, so no browser
+automation against `localhost:3000` can reach it. Capture it manually, once:
 
-- [ ] **Step 5: Run the test**
+```bash
+npm run pos:dev
+```
+
+With the POS running and signed into a demo tenant, take a full-window screenshot of the sale
+screen with a few lines on the ticket — once with the app in Arabic and once in English — and
+save them as:
+
+- `public/marketing/shots/pos.ar.png`
+- `public/marketing/shots/pos.en.png`
+
+Trim any OS window chrome. Target roughly 1440×900 so the band matches the automated captures.
+These are the only hand-made assets in the build; the manifest records them under `manual` so
+their age stays visible.
+
+- [ ] **Step 5: Enable the existence test**
+
+In `src/app/(marketing)/_lib/shots.test.ts`, change `it.skip("every referenced shot exists on disk"` to `it("every referenced shot exists on disk"` and delete the two-line comment above it.
+
+- [ ] **Step 6: Run the test**
 
 Run: `npx vitest run "src/app/(marketing)/_lib/shots.test.ts"`
-Expected: PASS — 8 tests, none skipped.
+Expected: PASS — 9 tests, none skipped.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add scripts/capture-marketing-shots.ts package.json "src/app/(marketing)/_lib/shots.test.ts" public/marketing/shots
