@@ -5,6 +5,8 @@ import { STORY } from "./story";
 import { SURFACES } from "./surfaces";
 import { DEMO } from "./demo";
 import { FAQ } from "./faq";
+import { TRADE_CONTENT } from "./trades";
+import { VERTICAL_IDS } from "@/server/verticals";
 
 describe("keyPaths", () => {
   it("lists nested object paths", () => {
@@ -48,6 +50,25 @@ describe("content parity between Arabic and English", () => {
       };
       walk(mod, name);
       expect(empties).toEqual([]);
+    });
+  }
+});
+
+describe("trade content", () => {
+  it("covers every registered trade", () => {
+    expect(Object.keys(TRADE_CONTENT).sort()).toEqual([...VERTICAL_IDS].sort());
+  });
+
+  for (const id of VERTICAL_IDS) {
+    it(`${id} has identical key paths in both languages`, () => {
+      expect(keyPaths(TRADE_CONTENT[id].ar)).toEqual(keyPaths(TRADE_CONTENT[id].en));
+    });
+
+    it(`${id} offers exactly six features and three steps in both languages`, () => {
+      for (const locale of ["ar", "en"] as const) {
+        expect(TRADE_CONTENT[id][locale].features).toHaveLength(6);
+        expect(TRADE_CONTENT[id][locale].steps).toHaveLength(3);
+      }
     });
   }
 });
