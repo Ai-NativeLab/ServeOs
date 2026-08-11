@@ -14,7 +14,7 @@ import { Cursor } from "../_motion/Cursor";
 import { Reveal } from "../_motion/Reveal";
 import { ScrollProvider } from "../_motion/ScrollProvider";
 import { Outcomes } from "../_components/Outcomes";
-import { PaperSurface, isSurfaceVariant } from "../_components/PaperSurface";
+import { PaperSurface } from "../_components/PaperSurface";
 import { PhotoBand } from "../_components/PhotoBand";
 import { Pricing } from "../_components/Pricing";
 import { Steps } from "../_components/Steps";
@@ -56,17 +56,10 @@ export async function generateMetadata({ params }: { params: Promise<{ lang: str
 
 export default async function MarketingPage({
   params,
-  searchParams,
 }: {
   params: Promise<{ lang: string }>;
-  searchParams: Promise<{ surface?: string }>;
 }) {
   const locale = toLocale((await params).lang);
-
-  // TEMPORARY: lets the surface treatment be compared live via ?surface=.
-  // Removed once one is chosen.
-  const requested = (await searchParams).surface;
-  const surfaceVariant = isSurfaceVariant(requested) ? requested : "converge";
 
   // /ar and /en are reachable on any host; only the marketing surface serves them.
   const surface = (await headers()).get("x-surface");
@@ -88,7 +81,7 @@ export default async function MarketingPage({
   return (
     <ScrollProvider>
       <TradeProvider locale={locale}>
-        <PaperSurface variant={surfaceVariant}>
+        <PaperSurface>
         <Cursor />
         <Header locale={locale} />
         <main>
