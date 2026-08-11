@@ -11,9 +11,10 @@ import { FeatureGrid } from "../_components/FeatureGrid";
 import { Footer } from "../_components/Footer";
 import { Header } from "../_components/Header";
 import { Hero } from "../_components/Hero";
-import { MotionReveal } from "../_components/MotionReveal";
+import { Reveal } from "../_motion/Reveal";
+import { ScrollProvider } from "../_motion/ScrollProvider";
 import { Outcomes } from "../_components/Outcomes";
-import { PaperSurface } from "../_components/PaperSurface";
+import { PaperSurface, isSurfaceVariant } from "../_components/PaperSurface";
 import { PhotoBand } from "../_components/PhotoBand";
 import { Pricing } from "../_components/Pricing";
 import { Steps } from "../_components/Steps";
@@ -53,8 +54,19 @@ export async function generateMetadata({ params }: { params: Promise<{ lang: str
   };
 }
 
-export default async function MarketingPage({ params }: { params: Promise<{ lang: string }> }) {
+export default async function MarketingPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ lang: string }>;
+  searchParams: Promise<{ surface?: string }>;
+}) {
   const locale = toLocale((await params).lang);
+
+  // TEMPORARY: lets the surface treatment be compared live via ?surface=.
+  // Removed once one is chosen.
+  const requested = (await searchParams).surface;
+  const surfaceVariant = isSurfaceVariant(requested) ? requested : "converge";
 
   // /ar and /en are reachable on any host; only the marketing surface serves them.
   const surface = (await headers()).get("x-surface");
@@ -69,27 +81,33 @@ export default async function MarketingPage({ params }: { params: Promise<{ lang
   // correct if that ever changes.
   return (
     <Suspense>
-      <TradeProvider locale={locale}>
-        <PaperSurface>
+      <ScrollProvider>
+        <TradeProvider locale={locale}>
+          <PaperSurface variant={surfaceVariant}>
           <Header locale={locale} />
           <main>
             <Hero />
             <TradeBand />
-            <MotionReveal><Story locale={locale} /></MotionReveal>
-            <MotionReveal><SurfaceTour /></MotionReveal>
-            <PhotoBand />
-            <MotionReveal><FeatureGrid /></MotionReveal>
-            <MotionReveal><Steps /></MotionReveal>
-            <DemoBand locale={locale} />
-            <MotionReveal><Outcomes locale={locale} /></MotionReveal>
-            <MotionReveal><Pricing plans={plans} locale={locale} /></MotionReveal>
-            <MotionReveal><Faq locale={locale} /></MotionReveal>
-            <PhotoBand />
-            <ClosingCta locale={locale} />
+            {/* Each section arrives differently, so the page reads as a sequence
+                rather than the same 12px rise eight times. Hero and TradeBand are
+                deliberately unwrapped — above-the-fold content must not need
+                JavaScript to become visible. */}
+            <Reveal kind="blur"><Story locale={locale} /></Reveal>
+            <SurfaceTour />
+            <Reveal kind="wipe"><PhotoBand /></Reveal>
+            <Reveal kind="stagger"><FeatureGrid /></Reveal>
+            <Reveal kind="slide"><Steps /></Reveal>
+            <Reveal kind="wipe"><DemoBand locale={locale} /></Reveal>
+            <Reveal kind="stagger"><Outcomes locale={locale} /></Reveal>
+            <Reveal kind="scale"><Pricing plans={plans} locale={locale} /></Reveal>
+            <Reveal kind="stagger"><Faq locale={locale} /></Reveal>
+            <Reveal kind="wipe"><PhotoBand /></Reveal>
+            <Reveal kind="blur"><ClosingCta locale={locale} /></Reveal>
           </main>
-          <Footer locale={locale} />
-        </PaperSurface>
-      </TradeProvider>
+            <Footer locale={locale} />
+          </PaperSurface>
+        </TradeProvider>
+      </ScrollProvider>
     </Suspense>
   );
 }
