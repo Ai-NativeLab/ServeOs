@@ -7,6 +7,9 @@ import { Footer } from "../_components/Footer";
 import { Header } from "../_components/Header";
 import { Hero } from "../_components/Hero";
 import { PaperSurface } from "../_components/PaperSurface";
+import { PhotoBand } from "../_components/PhotoBand";
+import { Story } from "../_components/Story";
+import { SurfaceTour } from "../_components/SurfaceTour";
 import { TradeBand } from "../_components/TradeBand";
 import { TradeProvider } from "../_components/TradeProvider";
 
@@ -59,6 +62,9 @@ export default async function MarketingPage({ params }: { params: Promise<{ lang
           <main>
             <Hero />
             <TradeBand />
+            <Story locale={locale} />
+            <SurfaceTour />
+            <PhotoBand />
           </main>
           <Footer locale={locale} />
         </PaperSurface>
