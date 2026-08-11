@@ -13,7 +13,7 @@ export function WhatsappBand({ index }: { index: number }) {
   const t = SURFACES[locale].whatsapp;
 
   return (
-    <div className="grid items-center gap-10 py-12 lg:grid-cols-2 lg:gap-16">
+    <div className="grid items-center gap-10 py-12 lg:grid-cols-[minmax(0,34%)_minmax(0,66%)] lg:gap-14 lg:py-0">
       <div>
         <p className="font-mono text-[11px] tracking-[0.2em]" style={{ color: "var(--trade-accent)" }}>
           {ordinal(index, locale)}

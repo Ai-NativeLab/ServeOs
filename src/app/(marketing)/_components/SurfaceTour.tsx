@@ -16,7 +16,14 @@ export function SurfaceTour() {
   const labels = [...SURFACE_KEYS.map((s) => t.bands[s].title), t.whatsapp.title];
 
   return (
-    <section ref={scope} id="surfaces" className="mx-auto max-w-6xl px-6 py-16 lg:min-h-screen lg:py-24">
+    // On desktop the section is exactly one viewport and its content is
+    // distributed through it, rather than min-h-screen letting short panels
+    // float at the top with a void underneath.
+    <section
+      ref={scope}
+      id="surfaces"
+      className="mx-auto max-w-6xl px-6 py-16 lg:flex lg:h-screen lg:flex-col lg:justify-center lg:py-12"
+    >
       <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t.eyebrow}</p>
       <h2 className="mt-4 max-w-2xl text-3xl font-bold leading-tight tracking-[-0.03em]">{t.heading}</h2>
 
