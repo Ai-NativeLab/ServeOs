@@ -1,0 +1,127 @@
+/**
+ * Background motion for the marketing surface.
+ *
+ * Everything here is decorative and sits behind aria-hidden layers. All of it is
+ * disabled wholesale under prefers-reduced-motion at the bottom of this file —
+ * add new animations above that block, never below it.
+ *
+ * Only transform, opacity and stroke-dashoffset are animated: the first two are
+ * compositor properties, and dashoffset on a handful of thin paths is cheap.
+ * Nothing here animates layout.
+ */
+
+/* Dashes travelling along a path — orders arriving down a channel. */
+@keyframes mk-flow {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: -320;
+  }
+}
+
+/* A node waking up, then settling. */
+@keyframes mk-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.6);
+  }
+}
+
+/* A ring leaving the core and fading as it goes. */
+@keyframes mk-ring {
+  from {
+    opacity: 0.5;
+    transform: scale(0.2);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.9);
+  }
+}
+
+/* A lattice drifting slowly across itself. */
+@keyframes mk-drift {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 96px 96px;
+  }
+}
+
+/* The spine breathing, so the meeting point reads as live. */
+@keyframes mk-breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.mk-flow {
+  stroke-dasharray: 10 26;
+  animation: mk-flow 5.5s linear infinite;
+}
+
+.mk-pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: mk-pulse 4.5s ease-in-out infinite;
+}
+
+.mk-ring {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: mk-ring 7s ease-out infinite;
+}
+
+.mk-drift {
+  animation: mk-drift 40s linear infinite;
+}
+
+.mk-breathe {
+  animation: mk-breathe 6s ease-in-out infinite;
+}
+
+/* Staggers, so a set of elements arrives as a sequence rather than a block. */
+.mk-d1 {
+  animation-delay: 0.7s;
+}
+.mk-d2 {
+  animation-delay: 1.4s;
+}
+.mk-d3 {
+  animation-delay: 2.1s;
+}
+.mk-d4 {
+  animation-delay: 2.8s;
+}
+.mk-d5 {
+  animation-delay: 3.5s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mk-flow,
+  .mk-pulse,
+  .mk-ring,
+  .mk-drift,
+  .mk-breathe {
+    animation: none !important;
+  }
+  /* Rings would otherwise sit collapsed at scale(0.2) with no motion to explain it. */
+  .mk-ring {
+    opacity: 0.18;
+    transform: scale(1.1);
+  }
+  .mk-pulse {
+    opacity: 0.5;
+  }
+}
