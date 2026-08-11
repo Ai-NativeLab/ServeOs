@@ -1,12 +1,13 @@
 "use client";
 import { VERTICAL_IDS } from "@/server/verticals";
+import { CHROME } from "../_content/chrome";
 import { useTrade } from "./TradeProvider";
 
 export function TradeSwitcher() {
-  const { id, setTrade, all } = useTrade();
+  const { id, setTrade, all, locale } = useTrade();
 
   return (
-    <div role="tablist" aria-label="Trade" className="flex flex-wrap items-center gap-2">
+    <div role="tablist" aria-label={CHROME[locale].a11y.tradeSwitcher} className="flex flex-wrap items-center gap-2">
       {VERTICAL_IDS.map((tradeId) => {
         const selected = tradeId === id;
         return (

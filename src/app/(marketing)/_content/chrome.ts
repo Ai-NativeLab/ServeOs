@@ -5,6 +5,9 @@ export type ChromeContent = {
   signIn: string;
   getStarted: string;
   otherLocale: string;
+  /** Accessible names for landmarks that carry no visible text of their own.
+   *  Arabic is the default locale, so these cannot be hardcoded English. */
+  a11y: { primaryNav: string; tradeSwitcher: string };
   footer: {
     columns: { heading: string; links: { label: string; href: string }[] }[];
     trust: string[];
@@ -18,6 +21,7 @@ export const CHROME: Localized<ChromeContent> = {
     signIn: "تسجيل الدخول",
     getStarted: "ابدأ مجانًا",
     otherLocale: "English",
+    a11y: { primaryNav: "التنقل الرئيسي", tradeSwitcher: "اختيار النشاط" },
     footer: {
       columns: [
         { heading: "المنصة", links: [
@@ -51,6 +55,7 @@ export const CHROME: Localized<ChromeContent> = {
     nav: { platform: "Platform", trades: "Trades", pricing: "Pricing", demo: "Live demo" },
     signIn: "Sign in",
     getStarted: "Start free",
+    a11y: { primaryNav: "Primary navigation", tradeSwitcher: "Choose your trade" },
     otherLocale: "العربية",
     footer: {
       columns: [

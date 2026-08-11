@@ -17,7 +17,7 @@ export function Header({ locale }: { locale: Locale }) {
           <Wordmark className="text-lg" />
         </Link>
 
-        <nav aria-label="Primary" className="hidden items-center gap-8 text-sm font-medium text-muted-foreground md:flex">
+        <nav aria-label={t.a11y.primaryNav} className="hidden items-center gap-8 text-sm font-medium text-muted-foreground md:flex">
           <a href="#surfaces" className="hover:text-foreground">{t.nav.platform}</a>
           <a href="#features" className="hover:text-foreground">{t.nav.trades}</a>
           <a href="#pricing" className="hover:text-foreground">{t.nav.pricing}</a>
