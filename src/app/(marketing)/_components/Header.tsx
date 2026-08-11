@@ -4,6 +4,7 @@ import { Wordmark } from "@/components/brand/Wordmark";
 import { Button } from "@/components/ui/button";
 import type { Locale } from "@/shared/errors";
 import { CHROME } from "../_content/chrome";
+import "../_motion/surface-links.css";
 
 export function Header({ locale }: { locale: Locale }) {
   const t = CHROME[locale];
@@ -18,10 +19,10 @@ export function Header({ locale }: { locale: Locale }) {
         </Link>
 
         <nav aria-label={t.a11y.primaryNav} className="hidden items-center gap-8 text-sm font-medium text-muted-foreground md:flex">
-          <a href="#surfaces" className="hover:text-foreground">{t.nav.platform}</a>
-          <a href="#features" className="hover:text-foreground">{t.nav.trades}</a>
-          <a href="#pricing" className="hover:text-foreground">{t.nav.pricing}</a>
-          <a href="#demo" className="hover:text-foreground">{t.nav.demo}</a>
+          <a href="#surfaces" className="mk-underline hover:text-foreground">{t.nav.platform}</a>
+          <a href="#features" className="mk-underline hover:text-foreground">{t.nav.trades}</a>
+          <a href="#pricing" className="mk-underline hover:text-foreground">{t.nav.pricing}</a>
+          <a href="#demo" className="mk-underline hover:text-foreground">{t.nav.demo}</a>
         </nav>
 
         <div className="flex items-center gap-3">

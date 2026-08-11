@@ -10,6 +10,7 @@ import { FeatureGrid } from "../_components/FeatureGrid";
 import { Footer } from "../_components/Footer";
 import { Header } from "../_components/Header";
 import { Hero } from "../_components/Hero";
+import { Cursor } from "../_motion/Cursor";
 import { Reveal } from "../_motion/Reveal";
 import { ScrollProvider } from "../_motion/ScrollProvider";
 import { Outcomes } from "../_components/Outcomes";
@@ -88,6 +89,7 @@ export default async function MarketingPage({
     <ScrollProvider>
       <TradeProvider locale={locale}>
         <PaperSurface variant={surfaceVariant}>
+        <Cursor />
         <Header locale={locale} />
         <main>
           <Hero />
