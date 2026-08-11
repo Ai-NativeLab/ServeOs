@@ -1,0 +1,15 @@
+{
+  "capturedAt": "2026-08-11T19:52:37.960Z",
+  "baseUrl": "http://localhost:3000",
+  "rootDomain": "serveos.localhost",
+  "shots": [
+    "/marketing/shots/restaurant/storefront.png",
+    "/marketing/shots/restaurant/dashboard.png",
+    "/marketing/shots/retail/storefront.png",
+    "/marketing/shots/retail/dashboard.png",
+    "/marketing/shots/pharmacy/storefront.png",
+    "/marketing/shots/pharmacy/dashboard.png",
+    "/marketing/shots/timber/storefront.png",
+    "/marketing/shots/timber/dashboard.png"
+  ]
+}

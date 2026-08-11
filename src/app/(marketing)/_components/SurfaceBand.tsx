@@ -1,4 +1,5 @@
 "use client";
+import { Check } from "lucide-react";
 import Image from "next/image";
 import type { SurfaceKey } from "../_content/surfaces";
 import { SURFACES } from "../_content/surfaces";
@@ -29,7 +30,20 @@ export function SurfaceBand({ surface, index }: { surface: SurfaceKey; index: nu
         </p>
         <h3 className="mt-3 text-2xl font-bold tracking-[-0.02em] lg:text-3xl">{t.title}</h3>
         <p className="mt-4 max-w-md text-[15px] leading-8 text-muted-foreground">{t.body}</p>
-        <p className="mt-5 inline-block rounded-full border border-border px-3 py-1 text-xs text-muted-foreground">
+
+        {/* Concrete capabilities, not slogans. A heading and one sentence beside
+            a tall screenshot leaves a void; three checked bullets give the column
+            real vertical content. */}
+        <ul className="mt-5 space-y-2.5">
+          {t.bullets.map((b) => (
+            <li key={b} className="flex items-start gap-2.5 text-sm leading-6">
+              <Check aria-hidden="true" className="mt-0.5 size-4 shrink-0" style={{ color: "var(--trade-accent)" }} />
+              <span>{b}</span>
+            </li>
+          ))}
+        </ul>
+
+        <p className="mt-6 inline-block rounded-full border border-border px-3 py-1 text-xs text-muted-foreground">
           {t.callout}
         </p>
       </div>

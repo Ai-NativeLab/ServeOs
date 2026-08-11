@@ -21,6 +21,7 @@
     "db:check:test": "ENV_FILE=.env.test tsx scripts/db-check.ts",
     "db:repair": "tsx scripts/db-repair.ts",
     "db:seed": "tsx scripts/seed.ts",
+    "demo:seed": "tsx scripts/seed-demo-tenants.ts",
     "admin:check": "tsx scripts/ensure-platform-admin.ts",
     "test:e2e": "playwright test",
     "pos:dev": "npm run dev -w pos",

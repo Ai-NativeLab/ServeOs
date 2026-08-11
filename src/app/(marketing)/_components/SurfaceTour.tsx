@@ -16,13 +16,18 @@ export function SurfaceTour() {
   const labels = [...SURFACE_KEYS.map((s) => t.bands[s].title), t.whatsapp.title];
 
   return (
-    // On desktop the section is exactly one viewport and its content is
+    // A tinted, rounded panel rather than bare page. Competitors (SumUp, Zid,
+    // Shopify) all put the product tour on a deliberate colour field, because
+    // the space around a screenshot then reads as breathing room instead of
+    // blank canvas — the cheapest fix for a section that looks empty.
+    //
+    // On desktop the section is exactly one viewport with its content
     // distributed through it, rather than min-h-screen letting short panels
     // float at the top with a void underneath.
     <section
       ref={scope}
       id="surfaces"
-      className="mx-auto max-w-6xl px-6 py-16 lg:flex lg:h-screen lg:flex-col lg:justify-center lg:py-12"
+      className="mx-auto my-8 max-w-6xl rounded-3xl bg-card/70 px-6 py-16 ring-1 ring-border/50 sm:px-10 lg:flex lg:h-[calc(100vh-4rem)] lg:flex-col lg:justify-center lg:py-12"
     >
       <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t.eyebrow}</p>
       <h2 className="mt-4 max-w-2xl text-3xl font-bold leading-tight tracking-[-0.03em]">{t.heading}</h2>
