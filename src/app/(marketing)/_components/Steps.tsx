@@ -16,7 +16,7 @@ export function Steps() {
       <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t.eyebrow}</p>
       <h2 className="mt-4 text-3xl font-bold leading-tight tracking-[-0.03em]">{t.heading}</h2>
 
-      <ol className="mt-10 grid gap-10 sm:grid-cols-3">
+      <ol data-trade-anim className="mt-10 grid gap-10 sm:grid-cols-3">
         {trade.steps.map((step, i) => (
           <li key={step.title} className={i > 0 ? "border-border/60 sm:border-s sm:ps-8" : undefined}>
             <p className="font-mono text-[11px] tracking-[0.2em]" style={{ color: "var(--trade-accent)" }}>
