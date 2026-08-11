@@ -4,11 +4,14 @@ import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { listPlans } from "@/server/subscription";
 import type { Locale } from "@/shared/errors";
+import { ClosingCta } from "../_components/ClosingCta";
 import { DemoBand } from "../_components/DemoBand";
+import { Faq } from "../_components/Faq";
 import { FeatureGrid } from "../_components/FeatureGrid";
 import { Footer } from "../_components/Footer";
 import { Header } from "../_components/Header";
 import { Hero } from "../_components/Hero";
+import { MotionReveal } from "../_components/MotionReveal";
 import { Outcomes } from "../_components/Outcomes";
 import { PaperSurface } from "../_components/PaperSurface";
 import { PhotoBand } from "../_components/PhotoBand";
@@ -72,14 +75,17 @@ export default async function MarketingPage({ params }: { params: Promise<{ lang
           <main>
             <Hero />
             <TradeBand />
-            <Story locale={locale} />
-            <SurfaceTour />
+            <MotionReveal><Story locale={locale} /></MotionReveal>
+            <MotionReveal><SurfaceTour /></MotionReveal>
             <PhotoBand />
-            <FeatureGrid />
-            <Steps />
+            <MotionReveal><FeatureGrid /></MotionReveal>
+            <MotionReveal><Steps /></MotionReveal>
             <DemoBand locale={locale} />
-            <Outcomes locale={locale} />
-            <Pricing plans={plans} locale={locale} />
+            <MotionReveal><Outcomes locale={locale} /></MotionReveal>
+            <MotionReveal><Pricing plans={plans} locale={locale} /></MotionReveal>
+            <MotionReveal><Faq locale={locale} /></MotionReveal>
+            <PhotoBand />
+            <ClosingCta locale={locale} />
           </main>
           <Footer locale={locale} />
         </PaperSurface>
