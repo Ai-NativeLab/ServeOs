@@ -8,9 +8,15 @@ export function LiveTicket() {
   return (
     <div
       data-testid="ticket"
-      // Fixed min-height: the docket must not resize when the trade changes,
-      // or the hero jumps on every switch. An E2E test pins this.
-      className="min-h-[260px] w-full max-w-[280px] rounded-lg border border-border bg-card shadow-[0_18px_40px_rgba(58,51,44,0.20)] motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2"
+      // Fixed min-height AND fixed width: the docket must not resize when the
+      // trade changes, or the hero jumps on every switch. Width used to be
+      // `w-full` inside a shrink-to-fit absolute wrapper, which sized to each
+      // trade's longest line — under the docket's rotate() transform, that
+      // width difference alone shifted its axis-aligned bounding box height.
+      // A fixed width (clamped by max-w-full for narrow viewports) keeps both
+      // dimensions — and therefore the rotated footprint — identical across
+      // trades. An E2E test pins this.
+      className="min-h-[260px] w-[280px] max-w-full rounded-lg border border-border bg-card shadow-[0_18px_40px_rgba(58,51,44,0.20)] motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2"
       style={{ transform: "rotate(2.4deg)" }}
     >
       <div className="flex items-center justify-between border-b border-dashed border-border px-3.5 py-2.5">

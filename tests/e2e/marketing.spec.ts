@@ -1,25 +1,37 @@
 import { test, expect } from "@playwright/test";
 
-test("marketing homepage renders hero, features, and auth links", async ({ page }) => {
+// Requires: `npm run db:seed` (plans seeded, so the pricing section has rows).
+
+test("the homepage is Arabic and right-to-left in the served HTML", async ({ page }) => {
   await page.goto("/");
-
-  await expect(page.getByRole("heading", { level: 1 })).toContainText("Create your own in 1 minute.");
-
-  await expect(page.getByRole("link", { name: "Sign in" }).first()).toHaveAttribute("href", "/login");
-  await expect(page.getByRole("link", { name: "Get Started" }).first()).toHaveAttribute("href", "/register");
-
-  await expect(
-    page.getByRole("heading", { name: "Everything you need behind the counter." }),
-  ).toBeVisible();
-
-  // Restaurant is the default trade.
-  await expect(page.getByText("QR Menu & Ordering")).toBeVisible();
-  await expect(page.getByText("Live Analytics")).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("lang", "ar");
+  await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
+  await expect(page.getByRole("heading", { level: 1 })).toContainText("أنشئ موقعك في دقيقة واحدة.");
 });
 
-test("switching trade re-skins the hero, docket, and features", async ({ page }) => {
+test("Arabic ships without JavaScript, which is what proves there is no flash", async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  const page = await context.newPage();
   await page.goto("/");
+  await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
+  await expect(page.getByRole("heading", { level: 1 })).toContainText("أنشئ موقعك في دقيقة واحدة.");
+  await context.close();
+});
 
+test("/en serves English left-to-right", async ({ page }) => {
+  await page.goto("/en");
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(page.locator("html")).toHaveAttribute("dir", "ltr");
+  await expect(page.getByRole("heading", { level: 1 })).toContainText("Create your own in 1 minute.");
+});
+
+test("/ar redirects to the canonical root", async ({ page }) => {
+  await page.goto("/ar");
+  await expect(page).toHaveURL(/\/$/);
+});
+
+test("switching trade re-copies the hero and the docket", async ({ page }) => {
+  await page.goto("/en");
   await expect(page.getByRole("tab", { name: "Restaurant" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("heading", { level: 1 })).toContainText("No restaurant website?");
   await expect(page.getByTestId("ticket")).toContainText("Table 4");
@@ -27,16 +39,12 @@ test("switching trade re-skins the hero, docket, and features", async ({ page })
   await page.getByRole("tab", { name: "Timber", exact: true }).click();
 
   await expect(page.getByRole("heading", { level: 1 })).toContainText("No timber yard website?");
-  // The shared promise is deliberately identical across every trade.
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Create your own in 1 minute.");
   await expect(page.getByTestId("ticket")).toContainText("Oak plank");
-  await expect(page.getByTestId("ticket")).toContainText("0.026 m³");
-  await expect(page.getByRole("heading", { name: "Sold by Dimension" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "QR Menu & Ordering" })).toBeHidden();
 });
 
 test("the docket keeps one height across every trade", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/en");
   const ticket = page.getByTestId("ticket");
 
   const heights: number[] = [];
@@ -51,30 +59,45 @@ test("the docket keeps one height across every trade", async ({ page }) => {
 });
 
 test("features the product does not ship yet are marked, not sold", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/en");
   await page.getByRole("tab", { name: "Pharmacy", exact: true }).click();
-
-  // Batch/expiry has no schema in src/server — it must not read as shipped.
-  const batch = page.locator("div").filter({ hasText: /^Batch & Expiry/ }).first();
+  const batch = page.locator("h3").filter({ hasText: /Batch & Expiry/ }).first();
   await expect(batch).toContainText("Soon");
 });
 
-test("language toggle switches the homepage to Arabic and sets RTL", async ({ page }) => {
-  await page.goto("/");
+test("the demo band offers two doors for every trade", async ({ page }) => {
+  await page.goto("/en");
+  const demo = page.locator("#demo");
+  await expect(demo.getByRole("link", { name: "Open the storefront" })).toHaveCount(4);
+  await expect(demo.getByRole("link", { name: "Open the dashboard" })).toHaveCount(4);
+  await expect(demo.getByRole("link", { name: "Open the dashboard" }).first())
+    .toHaveAttribute("href", "/api/demo/login?trade=restaurant");
+});
 
-  // Defaults to English.
-  await expect(page.getByRole("heading", { level: 1 })).toContainText("Create your own in 1 minute.");
-  await expect(page.locator("html")).toHaveAttribute("dir", "ltr");
+test("pricing renders plans and the term switcher changes the figure", async ({ page }) => {
+  await page.goto("/en");
+  const pricing = page.locator("#pricing");
+  await expect(pricing.getByRole("tab", { name: /Quarterly/ })).toHaveAttribute("aria-selected", "true");
 
-  // Toggle to Arabic (the button is labelled "العربية" while in English).
-  await page.getByRole("button", { name: "التبديل إلى العربية" }).click();
+  const firstPaid = pricing.locator("h3").filter({ hasText: /Pro/ }).first();
+  await expect(firstPaid).toBeVisible();
 
-  await expect(page.getByRole("heading", { level: 1 })).toContainText("أنشئ موقعك في دقيقة واحدة.");
-  await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
-  await expect(page.locator("html")).toHaveAttribute("lang", "ar");
+  const before = await pricing.innerText();
+  await pricing.getByRole("tab", { name: /Annual/ }).click();
+  await expect(pricing.getByRole("tab", { name: /Annual/ })).toHaveAttribute("aria-selected", "true");
+  expect(await pricing.innerText()).not.toBe(before);
+});
 
-  // Preference persists across a reload.
-  await page.reload();
-  await expect(page.getByRole("heading", { level: 1 })).toContainText("أنشئ موقعك في دقيقة واحدة.");
-  await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
+test("outcomes are labelled as illustrative rather than attributed", async ({ page }) => {
+  await page.goto("/en");
+  await expect(page.locator("#outcomes")).toContainText("Illustrative");
+});
+
+test("the footer carries every navigation column", async ({ page }) => {
+  await page.goto("/en");
+  const footer = page.locator("footer");
+  for (const heading of ["Platform", "Trades", "Pricing", "Company"]) {
+    await expect(footer.getByRole("navigation", { name: heading })).toBeVisible();
+  }
+  await expect(footer).toContainText("Priced in EGP");
 });

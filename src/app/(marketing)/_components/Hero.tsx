@@ -46,6 +46,7 @@ export function Hero() {
         </p>
 
         <h1
+          key={`${id}-${locale}`}
           data-hero="headline"
           className="text-4xl font-extrabold leading-[1.18] tracking-[-0.035em] sm:text-5xl"
         >

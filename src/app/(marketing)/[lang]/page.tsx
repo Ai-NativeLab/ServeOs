@@ -1,4 +1,3 @@
-import { Suspense } from "react";
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
@@ -76,38 +75,42 @@ export default async function MarketingPage({
   // shared service the admin console also calls. isActive is a text column.
   const plans = (await listPlans()).filter((p) => p.isActive === "true");
 
-  // TradeProvider reads useSearchParams, so it sits behind a Suspense boundary.
-  // This route is already dynamic (headers() above), but the boundary keeps it
-  // correct if that ever changes.
+  // TradeProvider reads useSearchParams, which normally wants a Suspense
+  // boundary above it — but this route is unconditionally dynamic (headers()
+  // above forces that), so Next never needs to defer it, and a boundary here
+  // earns nothing. It used to wrap the whole tree in one anyway, and React's
+  // streaming SSR ships a Suspense boundary's content hidden
+  // (`style="display:none"`) behind a same-document reveal <script> — so with
+  // JavaScript off, the entire page, Hero included, never became visible.
+  // Above-the-fold content must not need JavaScript to become visible, so
+  // nothing here may sit inside a Suspense boundary that isn't earning its keep.
   return (
-    <Suspense>
-      <ScrollProvider>
-        <TradeProvider locale={locale}>
-          <PaperSurface variant={surfaceVariant}>
-          <Header locale={locale} />
-          <main>
-            <Hero />
-            <TradeBand />
-            {/* Each section arrives differently, so the page reads as a sequence
-                rather than the same 12px rise eight times. Hero and TradeBand are
-                deliberately unwrapped — above-the-fold content must not need
-                JavaScript to become visible. */}
-            <Reveal kind="blur"><Story locale={locale} /></Reveal>
-            <SurfaceTour />
-            <Reveal kind="wipe"><PhotoBand /></Reveal>
-            <Reveal kind="stagger"><FeatureGrid /></Reveal>
-            <Reveal kind="slide"><Steps /></Reveal>
-            <Reveal kind="wipe"><DemoBand locale={locale} /></Reveal>
-            <Reveal kind="stagger"><Outcomes locale={locale} /></Reveal>
-            <Reveal kind="scale"><Pricing plans={plans} locale={locale} /></Reveal>
-            <Reveal kind="stagger"><Faq locale={locale} /></Reveal>
-            <Reveal kind="wipe"><PhotoBand /></Reveal>
-            <Reveal kind="blur"><ClosingCta locale={locale} /></Reveal>
-          </main>
-            <Footer locale={locale} />
-          </PaperSurface>
-        </TradeProvider>
-      </ScrollProvider>
-    </Suspense>
+    <ScrollProvider>
+      <TradeProvider locale={locale}>
+        <PaperSurface variant={surfaceVariant}>
+        <Header locale={locale} />
+        <main>
+          <Hero />
+          <TradeBand />
+          {/* Each section arrives differently, so the page reads as a sequence
+              rather than the same 12px rise eight times. Hero and TradeBand are
+              deliberately unwrapped — above-the-fold content must not need
+              JavaScript to become visible. */}
+          <Reveal kind="blur"><Story locale={locale} /></Reveal>
+          <SurfaceTour />
+          <Reveal kind="wipe"><PhotoBand /></Reveal>
+          <Reveal kind="stagger"><FeatureGrid /></Reveal>
+          <Reveal kind="slide"><Steps /></Reveal>
+          <Reveal kind="wipe"><DemoBand locale={locale} /></Reveal>
+          <Reveal kind="stagger"><Outcomes locale={locale} /></Reveal>
+          <Reveal kind="scale"><Pricing plans={plans} locale={locale} /></Reveal>
+          <Reveal kind="stagger"><Faq locale={locale} /></Reveal>
+          <Reveal kind="wipe"><PhotoBand /></Reveal>
+          <Reveal kind="blur"><ClosingCta locale={locale} /></Reveal>
+        </main>
+          <Footer locale={locale} />
+        </PaperSurface>
+      </TradeProvider>
+    </ScrollProvider>
   );
 }
