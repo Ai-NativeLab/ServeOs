@@ -5,6 +5,7 @@ import { notFound } from "next/navigation";
 import type { Locale } from "@/shared/errors";
 import { Footer } from "../_components/Footer";
 import { Header } from "../_components/Header";
+import { Hero } from "../_components/Hero";
 import { PaperSurface } from "../_components/PaperSurface";
 import { TradeBand } from "../_components/TradeBand";
 import { TradeProvider } from "../_components/TradeProvider";
@@ -56,6 +57,7 @@ export default async function MarketingPage({ params }: { params: Promise<{ lang
         <PaperSurface>
           <Header locale={locale} />
           <main>
+            <Hero />
             <TradeBand />
           </main>
           <Footer locale={locale} />
