@@ -6,6 +6,7 @@ import type { Locale } from "@/shared/errors";
 import { Footer } from "../_components/Footer";
 import { Header } from "../_components/Header";
 import { PaperSurface } from "../_components/PaperSurface";
+import { TradeBand } from "../_components/TradeBand";
 import { TradeProvider } from "../_components/TradeProvider";
 
 function toLocale(lang: string): Locale {
@@ -54,7 +55,9 @@ export default async function MarketingPage({ params }: { params: Promise<{ lang
       <TradeProvider locale={locale}>
         <PaperSurface>
           <Header locale={locale} />
-          <main />
+          <main>
+            <TradeBand />
+          </main>
           <Footer locale={locale} />
         </PaperSurface>
       </TradeProvider>
