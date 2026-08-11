@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import type { Locale } from "@/shared/errors";
+import { DemoBand } from "../_components/DemoBand";
 import { FeatureGrid } from "../_components/FeatureGrid";
 import { Footer } from "../_components/Footer";
 import { Header } from "../_components/Header";
@@ -69,6 +70,7 @@ export default async function MarketingPage({ params }: { params: Promise<{ lang
             <PhotoBand />
             <FeatureGrid />
             <Steps />
+            <DemoBand locale={locale} />
           </main>
           <Footer locale={locale} />
         </PaperSurface>
