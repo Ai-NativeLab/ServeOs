@@ -11,11 +11,11 @@ export const pharmacy: Localized<TradeContent> = {
       "رفوفك أونلاين، وكاونترك ملتزم — بيع الأدوية اللي من غير وصفة من متجرك، واصرف الوصفة على الكاونتر، ومتبيعش علبة منتهية الصلاحية خالص. لوحة واحدة للمخزون والتشغيلات والمبيعات.",
     photoCaption: "صيدلية شغّالة، مش برنامج تاني.",
     features: [
-      { icon: CalendarClock, title: "التشغيلة والصلاحية", description: "كل علبة عليها رقم التشغيلة وتاريخ الصلاحية — والكاونتر يرفض اللي منتهي.", roadmap: true },
-      { icon: ShieldCheck, title: "صرف الوصفات", description: "ميّز الأدوية اللي محتاجة وصفة أو رقابة، عشان ما تتصرفش من غير تحقق.", roadmap: true },
+      { icon: CalendarClock, title: "التشغيلة والصلاحية", description: "كل علبة عليها رقم التشغيلة وتاريخ الصلاحية — والكاونتر يرفض اللي منتهي." },
+      { icon: ShieldCheck, title: "صرف الوصفات", description: "ميّز الأدوية اللي محتاجة وصفة أو رقابة، عشان ما تتصرفش من غير تحقق." },
       { icon: Pill, title: "البدائل الجنيسة", description: "اعرض البديل المكافئ لما الصنف التجاري يخلص.", roadmap: true },
       { icon: Monitor, title: "نقطة البيع", description: "نظام واحد للكاونتر والويب — من غير مصالحة يدوية." },
-      { icon: Package, title: "إدارة المخزون", description: "كل بيعة بتحرّك المخزون، فالرف والشاشة يفضلوا متطابقين.", roadmap: true },
+      { icon: Package, title: "إدارة المخزون", description: "كل بيعة بتحرّك المخزون، فالرف والشاشة يفضلوا متطابقين." },
       { icon: ChartColumn, title: "تقارير لحظية", description: "اعرف بيتحرك إيه، وإيه اللي قرب يخلص، وفي أي فرع." },
     ],
     steps: [
@@ -42,11 +42,11 @@ export const pharmacy: Localized<TradeContent> = {
       "Your shelf online, your counter compliant — sell over-the-counter lines from a storefront, handle prescriptions at the counter, and never sell an expired box. One dashboard for stock, batches, and sales.",
     photoCaption: "A working pharmacy, not another program.",
     features: [
-      { icon: CalendarClock, title: "Batch & Expiry", description: "Every box carries its batch and expiry date — the counter blocks what's out of date.", roadmap: true },
-      { icon: ShieldCheck, title: "Prescription Handling", description: "Flag Rx-only and controlled lines so they never leave the counter unchecked.", roadmap: true },
+      { icon: CalendarClock, title: "Batch & Expiry", description: "Every box carries its batch and expiry date — the counter blocks what's out of date." },
+      { icon: ShieldCheck, title: "Prescription Handling", description: "Flag Rx-only and controlled lines so they never leave the counter unchecked." },
       { icon: Pill, title: "Generic Substitutes", description: "Offer the equivalent when the brand is out of stock.", roadmap: true },
       { icon: Monitor, title: "Point of Sale", description: "One system for the counter and the web — nothing to reconcile by hand." },
-      { icon: Package, title: "Stock Control", description: "Every sale moves stock, so the shelf and the screen agree.", roadmap: true },
+      { icon: Package, title: "Stock Control", description: "Every sale moves stock, so the shelf and the screen agree." },
       { icon: ChartColumn, title: "Live Analytics", description: "See what's moving, what's expiring, and in which branch." },
     ],
     steps: [

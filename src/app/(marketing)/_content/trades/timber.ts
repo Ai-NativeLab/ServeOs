@@ -11,11 +11,11 @@ export const timber: Localized<TradeContent> = {
       "مستودعك أونلاين، وقائمة القص متزامنة معاه — الزبون يطلب الألواح بالأبعاد، وانت تسعّر بالمتر المكعب، وكل قصة وتوصيلة، كله بيوصل لوحة تحكم واحدة.",
     photoCaption: "المقاس بالمتر، والحساب مظبوط.",
     features: [
-      { icon: Ruler, title: "البيع بالأبعاد", description: "سعّر بالمتر المكعب، أو الطولي، أو باللوح — مش بالقطعة.", roadmap: true },
+      { icon: Ruler, title: "البيع بالأبعاد", description: "سعّر بالمتر المكعب، أو الطولي، أو باللوح — مش بالقطعة." },
       { icon: Scissors, title: "قوائم القص", description: "الطلب معاه قائمة القص، فالمنشار يعرف قبل ما الزبون يوصل.", roadmap: true },
       { icon: Truck, title: "التوصيل والاستلام", description: "استلام من المستودع، أو توصيل للموقع، بسعر على حسب المنطقة." },
       { icon: Monitor, title: "نقطة البيع", description: "نظام واحد لكاونتر المستودع والويب — من غير مصالحة يدوية." },
-      { icon: Package, title: "إدارة المخزون", description: "كل قصة بتحرّك المخزون، فالرف والشاشة يفضلوا متطابقين.", roadmap: true },
+      { icon: Package, title: "إدارة المخزون", description: "كل قصة بتحرّك المخزون، فالرف والشاشة يفضلوا متطابقين." },
       { icon: ChartColumn, title: "تقارير لحظية", description: "اعرف أي الأنواع والمقاسات بتتحرك، وإيه اللي راكد في الرف." },
     ],
     steps: [
@@ -42,11 +42,11 @@ export const timber: Localized<TradeContent> = {
       "Your yard online, your cut list in sync — customers order boards by dimension, you price by the cubic metre, and every cut, offcut, and delivery lands in one dashboard.",
     photoCaption: "Cut to size, priced to the millimetre.",
     features: [
-      { icon: Ruler, title: "Sold by Dimension", description: "Price by cubic metre, linear metre, or sheet — not by the piece.", roadmap: true },
+      { icon: Ruler, title: "Sold by Dimension", description: "Price by cubic metre, linear metre, or sheet — not by the piece." },
       { icon: Scissors, title: "Cut-to-Order Lists", description: "The order carries the cut list, so the saw knows before the customer arrives.", roadmap: true },
       { icon: Truck, title: "Delivery & Collection", description: "Yard collection or site delivery, priced by area." },
       { icon: Monitor, title: "Point of Sale", description: "One system for the yard counter and the web — nothing to reconcile by hand." },
-      { icon: Package, title: "Stock Control", description: "Every cut moves stock, so the rack and the screen agree.", roadmap: true },
+      { icon: Package, title: "Stock Control", description: "Every cut moves stock, so the rack and the screen agree." },
       { icon: ChartColumn, title: "Live Analytics", description: "See which species and sizes move, and what's sitting in the rack." },
     ],
     steps: [

@@ -15,7 +15,7 @@ export const restaurant: Localized<TradeContent> = {
       { icon: MessageCircle, title: "الطلب من واتساب", description: "من غير تطبيق — الزبون يطلب من شات فاتح عنده أصلًا." },
       { icon: CalendarCheck, title: "حجز الطاولات", description: "احجز من غير ما التليفون يفضل مشغول طول الخدمة.", roadmap: true },
       { icon: Monitor, title: "نقطة البيع", description: "نظام واحد للطلبات الأونلاين والمبيعات في المحل — من غير مصالحة يدوية." },
-      { icon: Package, title: "إدارة المخزون", description: "المخزون بيتحدث مع كل طلب، فتعرف اللي قرب يخلص.", roadmap: true },
+      { icon: Package, title: "إدارة المخزون", description: "المخزون بيتحدث مع كل طلب، فتعرف اللي قرب يخلص." },
       { icon: ChartColumn, title: "تقارير لحظية", description: "اعرف بيتباع إيه، وإمتى، وفين — أول بأول." },
     ],
     steps: [
@@ -46,7 +46,7 @@ export const restaurant: Localized<TradeContent> = {
       { icon: MessageCircle, title: "WhatsApp Ordering", description: "No app required — customers order straight from a chat they already have open." },
       { icon: CalendarCheck, title: "Table Reservations", description: "Take bookings without a phone tied up all service.", roadmap: true },
       { icon: Monitor, title: "Point of Sale", description: "One system for online orders and in-house sales — nothing to reconcile by hand." },
-      { icon: Package, title: "Inventory Control", description: "Stock updates as orders come in, so you know what's running low.", roadmap: true },
+      { icon: Package, title: "Inventory Control", description: "Stock updates as orders come in, so you know what's running low." },
       { icon: ChartColumn, title: "Live Analytics", description: "See what's selling, when, and where — as it happens." },
     ],
     steps: [

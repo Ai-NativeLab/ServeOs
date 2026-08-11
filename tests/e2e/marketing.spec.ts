@@ -61,8 +61,17 @@ test("the docket keeps one height across every trade", async ({ page }) => {
 test("features the product does not ship yet are marked, not sold", async ({ page }) => {
   await page.goto("/en");
   await page.getByRole("tab", { name: "Pharmacy", exact: true }).click();
-  const batch = page.locator("h3").filter({ hasText: /Batch & Expiry/ }).first();
-  await expect(batch).toContainText("Soon");
+
+  // Generic Substitutes has no implementation anywhere in src/server, so it
+  // must carry the chip. Batch & Expiry deliberately does NOT — it has schema
+  // (lotCode/expiryAt) and dashboard UI, so chipping it would under-sell a
+  // feature that ships. Both halves matter: this test fails if we advertise
+  // vapour, and equally if we hide something real.
+  const unshipped = page.locator("h3").filter({ hasText: /Generic Substitutes/ }).first();
+  await expect(unshipped).toContainText("Soon");
+
+  const shipped = page.locator("h3").filter({ hasText: /Batch & Expiry/ }).first();
+  await expect(shipped).not.toContainText("Soon");
 });
 
 test("the demo band offers two doors for every trade", async ({ page }) => {

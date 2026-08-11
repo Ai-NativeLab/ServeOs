@@ -12,10 +12,10 @@ export const retail: Localized<TradeContent> = {
     photoCaption: "من الرف للفاتورة في نفس النظام.",
     features: [
       { icon: ScanBarcode, title: "الدفع بالباركود", description: "امسح، وسجّل، وخلاص — كاونتر يواكب الطابور.", roadmap: true },
-      { icon: Layers, title: "الأنواع والمقاسات", description: "المقاس واللون والعبوة — كل واحد بسعره ومخزونه لوحده.", roadmap: true },
+      { icon: Layers, title: "الأنواع والمقاسات", description: "المقاس واللون والعبوة — كل واحد بسعره ومخزونه لوحده." },
       { icon: Globe, title: "متجر إلكتروني", description: "نفس الكتالوج اللي بيبيع منه متجرك، متاح على النت." },
       { icon: Monitor, title: "نقطة البيع", description: "نظام واحد للكاونتر والويب — من غير مصالحة يدوية." },
-      { icon: Package, title: "إدارة المخزون", description: "كل بيعة بتحرّك المخزون، فالرف والشاشة يفضلوا متطابقين.", roadmap: true },
+      { icon: Package, title: "إدارة المخزون", description: "كل بيعة بتحرّك المخزون، فالرف والشاشة يفضلوا متطابقين." },
       { icon: ChartColumn, title: "تقارير لحظية", description: "اعرف بيتباع إيه، وإمتى، وفي أي فرع — أول بأول." },
     ],
     steps: [
@@ -43,10 +43,10 @@ export const retail: Localized<TradeContent> = {
     photoCaption: "From the shelf to the receipt in one system.",
     features: [
       { icon: ScanBarcode, title: "Barcode Checkout", description: "Scan, ring, done — the counter keeps up with a queue.", roadmap: true },
-      { icon: Layers, title: "Variants", description: "Size, colour, and pack — priced and counted separately.", roadmap: true },
+      { icon: Layers, title: "Variants", description: "Size, colour, and pack — priced and counted separately." },
       { icon: Globe, title: "Online Storefront", description: "The same catalogue your shop sells from, open to the web." },
       { icon: Monitor, title: "Point of Sale", description: "One system for the till and the web — nothing to reconcile by hand." },
-      { icon: Package, title: "Stock Control", description: "Every sale moves stock, so the shelf and the screen agree.", roadmap: true },
+      { icon: Package, title: "Stock Control", description: "Every sale moves stock, so the shelf and the screen agree." },
       { icon: ChartColumn, title: "Live Analytics", description: "See what's selling, when, and in which branch — as it happens." },
     ],
     steps: [
