@@ -3,6 +3,8 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import type { Locale } from "@/shared/errors";
+import { Footer } from "../_components/Footer";
+import { Header } from "../_components/Header";
 import { PaperSurface } from "../_components/PaperSurface";
 import { TradeProvider } from "../_components/TradeProvider";
 
@@ -51,7 +53,9 @@ export default async function MarketingPage({ params }: { params: Promise<{ lang
     <Suspense>
       <TradeProvider locale={locale}>
         <PaperSurface>
-          <main id="hero" />
+          <Header locale={locale} />
+          <main />
+          <Footer locale={locale} />
         </PaperSurface>
       </TradeProvider>
     </Suspense>
