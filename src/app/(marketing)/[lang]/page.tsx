@@ -3,11 +3,13 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import type { Locale } from "@/shared/errors";
+import { FeatureGrid } from "../_components/FeatureGrid";
 import { Footer } from "../_components/Footer";
 import { Header } from "../_components/Header";
 import { Hero } from "../_components/Hero";
 import { PaperSurface } from "../_components/PaperSurface";
 import { PhotoBand } from "../_components/PhotoBand";
+import { Steps } from "../_components/Steps";
 import { Story } from "../_components/Story";
 import { SurfaceTour } from "../_components/SurfaceTour";
 import { TradeBand } from "../_components/TradeBand";
@@ -65,6 +67,8 @@ export default async function MarketingPage({ params }: { params: Promise<{ lang
             <Story locale={locale} />
             <SurfaceTour />
             <PhotoBand />
+            <FeatureGrid />
+            <Steps />
           </main>
           <Footer locale={locale} />
         </PaperSurface>
