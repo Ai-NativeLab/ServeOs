@@ -5,6 +5,7 @@ import { STORY } from "./story";
 import { SURFACES } from "./surfaces";
 import { DEMO } from "./demo";
 import { FAQ } from "./faq";
+import { OUTCOMES } from "./outcomes";
 import { TRADE_CONTENT } from "./trades";
 import { VERTICAL_IDS } from "@/server/verticals";
 
@@ -33,7 +34,7 @@ describe("keyPaths", () => {
 });
 
 describe("content parity between Arabic and English", () => {
-  const modules = { CHROME, STORY, SURFACES, DEMO, FAQ };
+  const modules = { CHROME, STORY, SURFACES, DEMO, FAQ, OUTCOMES };
 
   for (const [name, mod] of Object.entries(modules)) {
     it(`${name} has identical key paths in both languages`, () => {
@@ -71,4 +72,20 @@ describe("trade content", () => {
       }
     });
   }
+});
+
+describe("outcomes", () => {
+  it("ships three scenarios in both languages", () => {
+    for (const locale of ["ar", "en"] as const) {
+      expect(OUTCOMES[locale].items).toHaveLength(3);
+    }
+  });
+
+  it("attributes nothing to a named person until a real quote exists", () => {
+    for (const locale of ["ar", "en"] as const) {
+      for (const item of OUTCOMES[locale].items) {
+        expect(item.attribution).toBeUndefined();
+      }
+    }
+  });
 });

@@ -8,6 +8,7 @@ import { FeatureGrid } from "../_components/FeatureGrid";
 import { Footer } from "../_components/Footer";
 import { Header } from "../_components/Header";
 import { Hero } from "../_components/Hero";
+import { Outcomes } from "../_components/Outcomes";
 import { PaperSurface } from "../_components/PaperSurface";
 import { PhotoBand } from "../_components/PhotoBand";
 import { Steps } from "../_components/Steps";
@@ -71,6 +72,7 @@ export default async function MarketingPage({ params }: { params: Promise<{ lang
             <FeatureGrid />
             <Steps />
             <DemoBand locale={locale} />
+            <Outcomes locale={locale} />
           </main>
           <Footer locale={locale} />
         </PaperSurface>
