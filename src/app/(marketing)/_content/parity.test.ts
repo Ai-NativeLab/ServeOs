@@ -6,8 +6,10 @@ import { SURFACES } from "./surfaces";
 import { DEMO } from "./demo";
 import { FAQ } from "./faq";
 import { OUTCOMES } from "./outcomes";
+import { PRICING } from "./pricing";
 import { TRADE_CONTENT } from "./trades";
 import { VERTICAL_IDS } from "@/server/verticals";
+import { TERMS } from "../_lib/terms";
 
 describe("keyPaths", () => {
   it("lists nested object paths", () => {
@@ -34,7 +36,7 @@ describe("keyPaths", () => {
 });
 
 describe("content parity between Arabic and English", () => {
-  const modules = { CHROME, STORY, SURFACES, DEMO, FAQ, OUTCOMES };
+  const modules = { CHROME, STORY, SURFACES, DEMO, FAQ, OUTCOMES, PRICING };
 
   for (const [name, mod] of Object.entries(modules)) {
     it(`${name} has identical key paths in both languages`, () => {
@@ -85,6 +87,16 @@ describe("outcomes", () => {
     for (const locale of ["ar", "en"] as const) {
       for (const item of OUTCOMES[locale].items) {
         expect(item.attribution).toBeUndefined();
+      }
+    }
+  });
+});
+
+describe("pricing content", () => {
+  it("labels every billing term in both languages", () => {
+    for (const locale of ["ar", "en"] as const) {
+      for (const term of TERMS) {
+        expect(PRICING[locale].terms[term.key]).toBeTruthy();
       }
     }
   });

@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
+import { listPlans } from "@/server/subscription";
 import type { Locale } from "@/shared/errors";
 import { DemoBand } from "../_components/DemoBand";
 import { FeatureGrid } from "../_components/FeatureGrid";
@@ -11,6 +12,7 @@ import { Hero } from "../_components/Hero";
 import { Outcomes } from "../_components/Outcomes";
 import { PaperSurface } from "../_components/PaperSurface";
 import { PhotoBand } from "../_components/PhotoBand";
+import { Pricing } from "../_components/Pricing";
 import { Steps } from "../_components/Steps";
 import { Story } from "../_components/Story";
 import { SurfaceTour } from "../_components/SurfaceTour";
@@ -55,6 +57,10 @@ export default async function MarketingPage({ params }: { params: Promise<{ lang
   const surface = (await headers()).get("x-surface");
   if (surface !== "marketing") notFound();
 
+  // listPlans() has no isActive predicate, so filter here rather than change a
+  // shared service the admin console also calls. isActive is a text column.
+  const plans = (await listPlans()).filter((p) => p.isActive === "true");
+
   // TradeProvider reads useSearchParams, so it sits behind a Suspense boundary.
   // This route is already dynamic (headers() above), but the boundary keeps it
   // correct if that ever changes.
@@ -73,6 +79,7 @@ export default async function MarketingPage({ params }: { params: Promise<{ lang
             <Steps />
             <DemoBand locale={locale} />
             <Outcomes locale={locale} />
+            <Pricing plans={plans} locale={locale} />
           </main>
           <Footer locale={locale} />
         </PaperSurface>
