@@ -16,7 +16,7 @@ export function SurfaceBand({ surface, index }: { surface: SurfaceKey; index: nu
   const flip = index % 2 === 1;
   // POS is an Electron app, so its image is a hand-captured asset rather than
   // one of the automated per-trade captures.
-  const src = isCaptured(surface) ? shotPath(id, surface, locale) : posShotPath(locale);
+  const src = isCaptured(surface) ? shotPath(id, surface) : posShotPath();
 
   return (
     // The copy column is deliberately narrow — a heading, two lines and a chip

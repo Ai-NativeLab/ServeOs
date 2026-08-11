@@ -96,7 +96,7 @@ export function Hero() {
           style={{ transform: "rotate(-1.2deg)" }}
         >
           <Image
-            src={shotPath(id, "dashboard", locale)}
+            src={shotPath(id, "dashboard")}
             alt=""
             width={1440}
             height={900}
