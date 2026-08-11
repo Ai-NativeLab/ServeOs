@@ -3,7 +3,7 @@ import { useTrade } from "./TradeProvider";
 import { TradeSwitcher } from "./TradeSwitcher";
 
 const LABEL = { ar: "اختر نشاطك", en: "Choose your trade" } as const;
-const NOTE = { ar: "اللون والمحتوى بيتغيروا مع النشاط", en: "Colour and copy follow the trade" } as const;
+const NOTE = { ar: "يتغيّر اللون والمحتوى بتغيّر النشاط", en: "Colour and copy follow the trade" } as const;
 
 export function TradeBand() {
   const { locale } = useTrade();

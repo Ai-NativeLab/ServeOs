@@ -36,7 +36,7 @@ export function useHeroTimeline(dependencies: unknown[] = []) {
          * Arabic is the default locale:
          *
          * 1. Arabic is cursive and joins contextually. Wrapping each character
-         *    in its own element severs those joins, so "مش لاقي" renders as
+         *    in its own element severs those joins, so "ألا تملك" renders as
          *    isolated letterforms. Word boundaries are safe: joining happens
          *    inside a word, never across a space.
          * 2. `mask: "lines"` clips overflow, and Arabic descenders (ق ج ي) sit

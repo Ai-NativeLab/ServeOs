@@ -15,7 +15,7 @@ const TRUST = {
 } as const;
 
 const CTA = {
-  ar: { start: "ابدأ مجانًا", demo: "شوف تجربة حية" },
+  ar: { start: "ابدأ مجانًا", demo: "شاهد تجربة حية" },
   en: { start: "Start free", demo: "See a live demo" },
 } as const;
 

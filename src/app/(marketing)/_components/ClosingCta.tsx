@@ -4,7 +4,7 @@ import type { Locale } from "@/shared/errors";
 import { CHROME } from "../_content/chrome";
 
 const COPY = {
-  ar: { heading: "ابدأ النهارده. الباقة المجانية من غير بطاقة.", sub: "دقيقة واحدة، وأول طلب يقدر يوصلك." },
+  ar: { heading: "ابدأ اليوم. الباقة المجانية دون بطاقة.", sub: "دقيقة واحدة، ويمكن أن يصلك أول طلب." },
   en: { heading: "Start today. The free plan needs no card.", sub: "One minute, and your first order can arrive." },
 } as const;
 

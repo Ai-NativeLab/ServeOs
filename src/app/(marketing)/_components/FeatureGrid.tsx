@@ -3,7 +3,7 @@ import { SOON } from "../_content/trades";
 import { useTrade } from "./TradeProvider";
 
 const HEADING = {
-  ar: { eyebrow: "ما الذي تحصل عليه", heading: "كل ما تحتاجه خلف الكاونتر." },
+  ar: { eyebrow: "ما الذي تحصل عليه", heading: "كل ما تحتاجه خلف المنضدة." },
   en: { eyebrow: "What you get", heading: "Everything you need behind the counter." },
 } as const;
 
