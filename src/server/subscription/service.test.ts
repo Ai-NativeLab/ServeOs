@@ -37,6 +37,6 @@ describe("subscription service", () => {
   it("listPlans returns all seeded plans ordered by price", async () => {
     await seedDefaultPlans();
     const all = await listPlans();
-    expect(all.map((p) => p.key)).toEqual(["basic", "pro", "enterprise"]);
+    expect(all.map((p) => p.key)).toEqual(["basic", "pro", "growth", "enterprise"]);
   });
 });

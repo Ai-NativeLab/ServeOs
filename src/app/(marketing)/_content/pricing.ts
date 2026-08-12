@@ -29,7 +29,7 @@ export const PRICING: Localized<PricingContent> = {
     freePrice: "مجاني",
     cta: "ابدأ الآن",
     ctaFree: "ابدأ مجانًا",
-    planNames: { basic: "الأساسية", pro: "الاحترافية", enterprise: "المؤسسات" },
+    planNames: { basic: "المجانية", pro: "البداية", growth: "النمو", enterprise: "الاحترافية" },
     limits: {
       branches: "فرع",
       staff: "مستخدم",
@@ -57,7 +57,7 @@ export const PRICING: Localized<PricingContent> = {
     freePrice: "Free",
     cta: "Get started",
     ctaFree: "Start free",
-    planNames: { basic: "Basic", pro: "Pro", enterprise: "Enterprise" },
+    planNames: { basic: "Free", pro: "Starter", growth: "Growth", enterprise: "Professional" },
     limits: {
       branches: "branches",
       staff: "staff",
