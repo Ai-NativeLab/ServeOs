@@ -140,7 +140,21 @@ export function reduce(input: ReducerInput): ReducerOutput {
   if (inbound.kind === "text") {
     const word = inbound.text.trim().toLowerCase();
     if (CANCEL_WORDS.has(word)) return reset(input, "No problem — I've cleared that. Say \"menu\" whenever you'd like to order.");
-    if (RESTART_WORDS.has(word)) return reset(input, "Welcome! Say \"menu\" to see what's available.");
+    // Reset the cart, then offer the way in rather than instructing the customer
+    // to send the same word again — "menu" IS a restart word, so text-only here
+    // looped forever.
+    if (RESTART_WORDS.has(word)) {
+      const v = input.stateVersion + 1;
+      return {
+        nextState: "idle", nextCart: [], nextBranchId: null, nextCustomerName: null,
+        pendingProductId: null, effects: [],
+        outbound: [{
+          kind: "buttons",
+          body: "Welcome! Ready to order?",
+          buttons: [{ id: actionId("start", v, "go"), title: "Start an order" }],
+        }],
+      };
+    }
     if (HUMAN_WORDS.has(word)) return keep(input, [{ kind: "text", body: "I'll pass you to the team — please call the number on our page and someone will help." }]);
   }
 
@@ -163,8 +177,8 @@ export function reduce(input: ReducerInput): ReducerOutput {
         return keep(input, [cartSummary(input, cart)], { nextState: "cart", nextCart: cart });
       }
       if (!tap) {
+        const v = nextVersion(input);
         if (input.lastCart && input.lastCart.length > 0) {
-          const v = nextVersion(input);
           return keep(input, [{
             kind: "buttons",
             body: "Welcome back! Order the same as last time?",
@@ -174,7 +188,18 @@ export function reduce(input: ReducerInput): ReducerOutput {
             ],
           }], { nextState: "idle" });
         }
-        return reprompt(input, 'Say "menu" to start an order.');
+        // A FIRST-TIME customer must be given a way in. This branch used to
+        // return bare text telling them to say "menu" — but "menu" is a restart
+        // word, so it reset to idle and printed the same instruction again, and
+        // any other text landed right back here. There was no path to the
+        // catalogue at all: `start` is only ever emitted as a button, and the
+        // only other place emitting one is the returning-customer branch above,
+        // which needs a previous WhatsApp order to reach.
+        return keep(input, [{
+          kind: "buttons",
+          body: "Welcome! Ready to order?",
+          buttons: [{ id: actionId("start", v, "go"), title: "Start an order" }],
+        }], { nextState: "idle" });
       }
       // One branch means no choice worth asking for.
       if (input.branches.length === 1) {
