@@ -16,6 +16,11 @@ export type SurfacesContent = {
     body: string;
     bullets: string[];
     callout: string;
+    /** The contact name in the mocked conversation's header. Deliberately
+     *  generic — it stands for the reader's own shop, not a named business. */
+    contact: string;
+    /** Decorative placeholder in the composer at the foot of the mock. */
+    composer: string;
     chat: { from: "shop" | "customer"; text: string }[];
   };
 };
@@ -49,6 +54,8 @@ export const SURFACES: Localized<SurfacesContent> = {
       body: "يطلب العميل من محادثة مفتوحة لديه بالفعل، ويصل الطلب إلى لوحة التحكم كأي طلب آخر.",
       bullets: ["دون تطبيق يثبّته العميل", "سلة الطلب تنتقل إلى المتجر بضغطة", "سجل المحادثة مرتبط بالطلب"],
       callout: "نفس القناة التي يستخدمها كل يوم",
+      contact: "متجرك",
+      composer: "اكتب رسالة",
       chat: [
         { from: "customer", text: "أريد أن أطلب" },
         { from: "shop", text: "أهلًا 👋 تفضّل القائمة" },
@@ -85,6 +92,8 @@ export const SURFACES: Localized<SurfacesContent> = {
       body: "Customers order from a chat they already have open, and it lands in the dashboard like any other order.",
       bullets: ["No app for the customer to install", "The basket carries over to the storefront", "The conversation stays attached to the order"],
       callout: "The channel they already use daily",
+      contact: "Your shop",
+      composer: "Type a message",
       chat: [
         { from: "customer", text: "I'd like to order" },
         { from: "shop", text: "Hi 👋 here's the menu" },

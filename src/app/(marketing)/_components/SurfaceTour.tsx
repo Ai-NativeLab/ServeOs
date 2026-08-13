@@ -27,15 +27,19 @@ export function SurfaceTour() {
     <section
       ref={scope}
       id="surfaces"
-      // While pinned, this panel is the entire screen for ~3000px of scrolling,
-      // so it has to FILL the viewport — a 685px panel in a 900px viewport
-      // leaves empty bands above and below it for that whole stretch, which is
-      // what "white space above and below" was.
+      // While pinned this panel IS the screen for ~3 viewports of scroll, so a
+      // content-height section leaves visible bands above and below it for that
+      // whole stretch. It therefore fills the viewport on desktop.
       //
-      // Filling the viewport is only half of it: the content must fill the
-      // panel too, or the slack just moves inside. Hence flex column here and
-      // a screenshot that grows into the space rather than a fixed aspect box.
-      className="mx-auto flex max-w-6xl flex-col rounded-3xl bg-card/70 px-6 py-12 ring-1 ring-border/50 sm:px-10 lg:h-[calc(100vh-2rem)] lg:py-10"
+      // The earlier attempt at this stretched the SCREENSHOT to take up the
+      // slack, which cropped a landscape capture into a portrait slice. The
+      // difference now is that the frames are height-capped and keep their
+      // capture aspect (DeviceFrame), and the slack is absorbed by centring the
+      // band in the space instead. Nothing is stretched to fill anything.
+      //
+      // The extra top padding on desktop clears the sticky header (h-16), which
+      // sits at z-50 over the pinned section and was clipping the eyebrow.
+      className="mx-auto flex max-w-6xl flex-col rounded-3xl bg-card/70 px-6 py-12 ring-1 ring-border/50 sm:px-10 lg:min-h-[calc(100vh-2rem)] lg:pb-14 lg:pt-24"
     >
       <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t.eyebrow}</p>
       <h2 className="mt-4 max-w-2xl text-3xl font-bold leading-tight tracking-[-0.03em]">{t.heading}</h2>
@@ -60,10 +64,10 @@ export function SurfaceTour() {
 
       {/* On desktop the panels are stacked in one grid cell and cross-faded; on
           mobile they fall back to a normal divided list. */}
-      {/* flex-1 + min-h-0 lets this claim the panel's remaining height instead
-          of sitting at its natural size with slack underneath. min-h-0 is
-          required or the grid refuses to shrink below its content. */}
-      <div className="mt-6 divide-y divide-border/60 lg:mt-8 lg:grid lg:min-h-0 lg:flex-1 lg:divide-y-0 lg:[&>*]:col-start-1 lg:[&>*]:row-start-1">
+      {/* flex-1 claims the leftover height so the band can centre itself in it,
+          rather than sitting at its natural size with the slack dumped below.
+          min-h-0 is required or the grid refuses to shrink under its content. */}
+      <div className="mt-6 divide-y divide-border/60 lg:mt-8 lg:grid lg:min-h-0 lg:flex-1 lg:items-center lg:divide-y-0 lg:[&>*]:col-start-1 lg:[&>*]:row-start-1">
         {SURFACE_KEYS.map((surface, i) => (
           <div key={surface} data-tour="panel">
             <SurfaceBand surface={surface} index={i} />
