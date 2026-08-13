@@ -1,6 +1,6 @@
 {
-  "id": "224a57f2-b5e7-4cc0-b038-f71d2b392e74",
-  "prevId": "0f40158b-7d02-4cd7-93f4-f797df0a4201",
+  "id": "0f40158b-7d02-4cd7-93f4-f797df0a4201",
+  "prevId": "765e097d-d856-449b-88ad-594e7f593d02",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -8534,27 +8534,6 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "reorder_rules_tenant_active": {
-          "name": "reorder_rules_tenant_active",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "is_active",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}

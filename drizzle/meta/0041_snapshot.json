@@ -1,6 +1,6 @@
 {
-  "id": "765e097d-d856-449b-88ad-594e7f593d02",
-  "prevId": "8b7b934c-ad29-46f6-bba9-dcb1875a70ab",
+  "id": "224a57f2-b5e7-4cc0-b038-f71d2b392e74",
+  "prevId": "0f40158b-7d02-4cd7-93f4-f797df0a4201",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -8439,6 +8439,178 @@
             "id"
           ],
           "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.reorder_rules": {
+      "name": "reorder_rules",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "item_id": {
+          "name": "item_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "location_id": {
+          "name": "location_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reorder_point": {
+          "name": "reorder_point",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reorder_qty": {
+          "name": "reorder_qty",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "preferred_supplier_id": {
+          "name": "preferred_supplier_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_alerted_at": {
+          "name": "last_alerted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_active": {
+          "name": "is_active",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "reorder_rules_item_location": {
+          "name": "reorder_rules_item_location",
+          "columns": [
+            {
+              "expression": "item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "location_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "reorder_rules_tenant_active": {
+          "name": "reorder_rules_tenant_active",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "is_active",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "reorder_rules_tenant_id_tenants_id_fk": {
+          "name": "reorder_rules_tenant_id_tenants_id_fk",
+          "tableFrom": "reorder_rules",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "reorder_rules_item_id_inventory_items_id_fk": {
+          "name": "reorder_rules_item_id_inventory_items_id_fk",
+          "tableFrom": "reorder_rules",
+          "tableTo": "inventory_items",
+          "columnsFrom": [
+            "item_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "reorder_rules_location_id_storage_locations_id_fk": {
+          "name": "reorder_rules_location_id_storage_locations_id_fk",
+          "tableFrom": "reorder_rules",
+          "tableTo": "storage_locations",
+          "columnsFrom": [
+            "location_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "reorder_rules_preferred_supplier_id_suppliers_id_fk": {
+          "name": "reorder_rules_preferred_supplier_id_suppliers_id_fk",
+          "tableFrom": "reorder_rules",
+          "tableTo": "suppliers",
+          "columnsFrom": [
+            "preferred_supplier_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
