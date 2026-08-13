@@ -913,6 +913,33 @@ async function seedOneTenant(cfg: TenantSeedConfig, adminId: string) {
   console.log(`  ${cfg.slug.padEnd(16)} owner: ${cfg.ownerEmail} / ${cfg.ownerPassword}`);
 }
 
+/**
+ * --reset drops each demo tenant before re-seeding it, rather than reconciling
+ * it in place.
+ *
+ * The demo is publicly writable: anyone who opens the dashboard door can edit
+ * products, place orders, close shifts. Reconciliation cannot undo all of
+ * that — the catalogue rebuild only fires when the SEED's own fields drift,
+ * and it would leave a visitor's orders, shifts and stock movements behind
+ * forever. Deleting the tenant row does undo it: every table that references
+ * tenants does so with onDelete: cascade.
+ *
+ * Only ever applied to slugs this file owns, all of which are `demo-<trade>`.
+ */
+async function resetTenants(): Promise<void> {
+  const { db } = await import("../src/db/client");
+  const { tenants } = await import("../src/server/tenancy/schema");
+  const { eq: equals } = await import("drizzle-orm");
+
+  for (const cfg of TENANTS) {
+    if (!cfg.slug.startsWith("demo-")) {
+      throw new Error(`refusing to reset "${cfg.slug}" — only demo- tenants may be dropped`);
+    }
+    const deleted = await db.delete(tenants).where(equals(tenants.slug, cfg.slug)).returning({ id: tenants.id });
+    if (deleted.length > 0) console.log(`  reset: dropped ${cfg.slug}`);
+  }
+}
+
 async function main() {
   const { db, pool } = await import("../src/db/client");
   const { users } = await import("../src/server/auth/schema");
@@ -921,6 +948,11 @@ async function main() {
   const { ensurePlatformSuperAdmin } = await import("../src/server/auth/platform-admin");
 
   await seedDefaultPlans();
+
+  if (process.argv.includes("--reset")) {
+    console.log("Resetting demo tenants (--reset)...\n");
+    await resetTenants();
+  }
 
   // Platform super-admin, needed to approve each new tenant (mirrors scripts/seed.ts).
   const adminEmail = "admin@serveos.com";
