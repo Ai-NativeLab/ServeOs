@@ -41,6 +41,34 @@ describe("supplier CRUD", () => {
     expect(row?.isActive).toBe(false);
   });
 
+  it("partial PATCH preserves fields the payload omitted — isActive-only and name-only probes (reviewer pin)", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const actor = await seedActor(tenantId, branchId);
+
+    const supplierId = await createSupplier(actor, {
+      name: "Full Co", email: "sales@x.com", phone: "+20100", contactName: "Ali", paymentTerms: "NET30",
+    });
+
+    // isActive-only: the mutable contact fields must survive untouched.
+    await updateSupplier(actor, supplierId, { isActive: false });
+    let [row] = await withTenant(tenantId, (tx) => tx.select().from(suppliers).where(eq(suppliers.id, supplierId)));
+    expect(row?.isActive).toBe(false);
+    expect(row?.email).toBe("sales@x.com");
+    expect(row?.phone).toBe("+20100");
+    expect(row?.contactName).toBe("Ali");
+    expect(row?.paymentTerms).toBe("NET30");
+
+    // name-only: same, nothing else clobbered.
+    await updateSupplier(actor, supplierId, { name: "Renamed Co" });
+    [row] = await withTenant(tenantId, (tx) => tx.select().from(suppliers).where(eq(suppliers.id, supplierId)));
+    expect(row?.name).toBe("Renamed Co");
+    expect(row?.email).toBe("sales@x.com");
+    expect(row?.phone).toBe("+20100");
+    expect(row?.contactName).toBe("Ali");
+    expect(row?.paymentTerms).toBe("NET30");
+    expect(row?.isActive).toBe(false);
+  });
+
   it("upsertSupplierItem is unique per (supplierId, itemId): the second upsert updates lastUnitCost", async () => {
     const { tenantId, branchId } = await seedInventoryTenant();
     const actor = await seedActor(tenantId, branchId);
