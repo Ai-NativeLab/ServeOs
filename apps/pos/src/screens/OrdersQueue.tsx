@@ -16,7 +16,11 @@ const STATUS_LABEL: Record<string, string> = {
   rejected: "Rejected", cancelled: "Cancelled",
 };
 
-export function OrdersQueue() {
+/** Web (online-placed) orders live only on the server — there is no local
+ *  copy to fall back on, so an outage means the queue has nothing to show
+ *  rather than a stale one (pos-main's getOrders already answers `[]` while
+ *  offline; this notice explains why instead of just looking empty). */
+export function OrdersQueue({ offline }: { offline: boolean }) {
   const [orders, setOrders] = useState<OrderSummary[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -25,12 +29,13 @@ export function OrdersQueue() {
   }, []);
 
   useEffect(() => {
+    if (offline) return;
     // Fetch on mount + poll; setState happens after an async fetch, not synchronously.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh();
     const id = setInterval(() => void refresh(), 8000);
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [refresh, offline]);
 
   async function advance(o: OrderSummary) {
     const next = NEXT[o.status];
@@ -42,6 +47,15 @@ export function OrdersQueue() {
     } finally {
       setBusy(null);
     }
+  }
+
+  if (offline) {
+    return (
+      <div className="grid place-items-center gap-1 py-20 text-center text-sm text-muted-foreground">
+        <p className="font-medium text-ink">Web orders are unavailable offline</p>
+        <p>This queue reads live from the server — it will catch up once the till reconnects.</p>
+      </div>
+    );
   }
 
   if (orders.length === 0) {

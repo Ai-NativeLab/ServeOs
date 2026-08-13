@@ -9,7 +9,9 @@ import { DrawerScreen } from "./screens/DrawerScreen";
 import { OpenDrawerScreen } from "./screens/OpenDrawerScreen";
 import { XReportScreen } from "./screens/XReport";
 import { ZReportScreen } from "./screens/ZReport";
+import { SyncBadge, SyncHaltedModal } from "./components/SyncBadge";
 import type { CartLine } from "./order/cart";
+import type { SyncStatus } from "../electron/preload";
 
 type View = "order" | "queue" | "held" | "drawer" | "reports" | "history";
 export type Cashier = { name: string; permissions: string[] };
@@ -31,10 +33,14 @@ export function App() {
   const [view, setView] = useState<View>("order");
   const [recalled, setRecalled] = useState<RecalledDraft | null>(null);
   const [recallNonce, setRecallNonce] = useState(0);
-  // null while we have not asked the server yet — the drawer prompt must not
-  // flash before we know whether one is already open.
-  const [hasOpenShift, setHasOpenShift] = useState<boolean | null>(null);
+  // Task 11: currentShift() answers from local state (Task 10) — nothing here
+  // is a network call, so there is nothing worth gating the whole shell
+  // behind. Default to the safe assumption (closed: cash tenders stay
+  // refused until this is confirmed open) and correct it the moment the
+  // local read comes back, typically within one render.
+  const [hasOpenShift, setHasOpenShift] = useState(false);
   const [skippedDrawer, setSkippedDrawer] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
 
   useEffect(() => {
     window.pos.isPaired().then(async (p) => {
@@ -44,6 +50,13 @@ export function App() {
         setCashier(await window.pos.cashier());
       }
     });
+  }, []);
+
+  // Primed once from the current value, then kept live by the engine's push
+  // (pos:syncState) — the badge and the halt alert never poll for it.
+  useEffect(() => {
+    window.pos.syncState().then(setSyncStatus);
+    return window.pos.onSyncState(setSyncStatus);
   }, []);
 
   const refreshShift = useCallback(async () => {
@@ -58,6 +71,13 @@ export function App() {
     if (!cashier) return;
     window.pos.currentShift().then(({ shift }) => setHasOpenShift(Boolean(shift)));
   }, [cashier]);
+
+  // Computed once and appended to whichever screen below actually renders:
+  // a halt can be sitting in the queue from a PRIOR session (the engine comes
+  // back up halted on restart — sync.ts's constructor) before a cashier ever
+  // signs in this session, so the alert must not be reachable only from the
+  // main tabbed shell — it has to block every screen past pairing.
+  const haltedModal = syncStatus?.state === "halted" ? <SyncHaltedModal status={syncStatus} /> : null;
 
   if (paired === null) {
     return <div className="min-h-screen grid place-items-center bg-background text-sm text-muted-foreground">Loading…</div>;
@@ -75,22 +95,26 @@ export function App() {
   }
 
   if (!cashier) {
-    return <CashierSignIn branchName={branchName} onSignedIn={setCashier} />;
-  }
-
-  if (hasOpenShift === null) {
-    return <div className="min-h-screen grid place-items-center bg-background text-sm text-muted-foreground">Checking the drawer…</div>;
+    return (
+      <>
+        <CashierSignIn branchName={branchName} onSignedIn={setCashier} />
+        {haltedModal}
+      </>
+    );
   }
 
   // Offered, not forced: card-only selling is legitimate without a drawer, and
   // the server refuses cash when there is none.
   if (!hasOpenShift && !skippedDrawer) {
     return (
-      <OpenDrawerScreen
-        branchName={branchName}
-        onOpened={() => setHasOpenShift(true)}
-        onSkip={() => setSkippedDrawer(true)}
-      />
+      <>
+        <OpenDrawerScreen
+          branchName={branchName}
+          onOpened={() => setHasOpenShift(true)}
+          onSkip={() => setSkippedDrawer(true)}
+        />
+        {haltedModal}
+      </>
     );
   }
 
@@ -101,6 +125,7 @@ export function App() {
           <span className="font-display text-base font-bold">Serve<span className="text-primary">OS</span> POS</span>
           <span className="text-sm text-muted-foreground">{branchName}</span>
           {!hasOpenShift && <span className="rounded-md bg-secondary px-2 py-0.5 text-xs text-muted-foreground">No drawer</span>}
+          {syncStatus && <SyncBadge status={syncStatus} />}
         </div>
         <nav className="flex items-center gap-1">
           {TABS.map((tab) => (
@@ -118,7 +143,7 @@ export function App() {
             onClick={async () => {
               await window.pos.signOutCashier();
               setCashier(null);
-              setHasOpenShift(null);
+              setHasOpenShift(false);
               setSkippedDrawer(false);
             }}
             className="ml-2 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-secondary"
@@ -138,8 +163,8 @@ export function App() {
           onCartConsumed={() => setRecalled(null)}
         />
       )}
-      {view === "queue" && <OrdersQueue />}
-      {view === "history" && <SalesHistory />}
+      {view === "queue" && <OrdersQueue offline={syncStatus?.state === "offline"} />}
+      {view === "history" && <SalesHistory offline={syncStatus?.state === "offline"} />}
       {view === "held" && (
         <HeldTickets
           onRecall={(lines, orderDiscount) => {
@@ -151,6 +176,11 @@ export function App() {
       )}
       {view === "drawer" && <DrawerScreen branchName={branchName} onChanged={refreshShift} />}
       {view === "reports" && <ReportsTab />}
+
+      {/* Blocking: the queue is stuck behind a refused event (Task 10's sticky
+       *  halt) — every tab above is still mounted underneath, but this overlay
+       *  is the only thing the operator can interact with until it resolves. */}
+      {haltedModal}
     </div>
   );
 }
