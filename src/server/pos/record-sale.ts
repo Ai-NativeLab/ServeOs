@@ -103,6 +103,35 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
     }
   }
 
+  // Paid/change math is a pure function of the tenders — no dependency on the
+  // placed order — so it can run before placeOrder. Whether that paid amount
+  // is WITHIN the amount due needs placed.total, so that guard (and every
+  // write it gates: tenders, adjustments, paymentStatus, audit chain, receipt)
+  // runs inside onPlaced, on the order's own tx — a throw there rolls back the
+  // order together with the sale, instead of leaving an orphan behind it.
+  const paidAmount = round2(input.payments.reduce((s, p) => s + p.amount, 0));
+  let changeAmount = 0;
+  const tenderData = input.payments.map((p) => {
+    const change = p.method === "cash" && p.tenderedAmount !== undefined
+      ? Math.max(0, round2(p.tenderedAmount - p.amount))
+      : 0;
+    changeAmount = round2(changeAmount + change);
+    return {
+      tenantId: ctx.tenantId,
+      method: p.method,
+      amount: money(p.amount),
+      tipAmount: money(p.tipAmount ?? 0),
+      tenderedAmount: p.tenderedAmount !== undefined ? money(p.tenderedAmount) : null,
+      changeAmount: p.method === "cash" ? money(change) : null,
+      reference: p.reference ?? null,
+      takenByUserId: ctx.cashierUserId,
+      shiftId: shift?.id ?? null,
+      clientPaymentId: p.clientPaymentId,
+    };
+  });
+  const paymentStatusFor = (total: number): "paid" | "partially_paid" =>
+    paidAmount >= total - 0.001 ? "paid" : "partially_paid";
+
   const placed = await placeOrder(ctx.tenantId, {
     branchId: ctx.branchId,
     fulfillmentType: "pickup",
@@ -116,113 +145,90 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
     orderDiscountReason: input.orderDiscountReason,
     expectedTotal: input.expectedTotal,
     audit: { fingerprint: ctx.fingerprint, actorUserId: ctx.cashierUserId, actorType: "user" },
-  });
+    onPlaced: async (tx, placed) => {
+      if (paidAmount > placed.total + 0.001) {
+        throw new PosSaleError("Tenders exceed the amount due");
+      }
 
-  const paidAmount = round2(input.payments.reduce((s, p) => s + p.amount, 0));
-  if (paidAmount > placed.total + 0.001) {
-    throw new PosSaleError("Tenders exceed the amount due");
-  }
+      const tenderRows = tenderData.map((t) => ({ ...t, orderId: placed.orderId }));
+      if (tenderRows.length > 0) await tx.insert(orderPayments).values(tenderRows);
 
-  // Only cash produces change: it is the difference between what was handed
-  // over and what was applied to the order.
-  let changeAmount = 0;
-  const tenderRows = input.payments.map((p) => {
-    const change = p.method === "cash" && p.tenderedAmount !== undefined
-      ? Math.max(0, round2(p.tenderedAmount - p.amount))
-      : 0;
-    changeAmount = round2(changeAmount + change);
-    return {
-      tenantId: ctx.tenantId,
-      orderId: placed.orderId,
-      method: p.method,
-      amount: money(p.amount),
-      tipAmount: money(p.tipAmount ?? 0),
-      tenderedAmount: p.tenderedAmount !== undefined ? money(p.tenderedAmount) : null,
-      changeAmount: p.method === "cash" ? money(change) : null,
-      reference: p.reference ?? null,
-      takenByUserId: ctx.cashierUserId,
-      shiftId: shift?.id ?? null,
-      clientPaymentId: p.clientPaymentId,
-    };
-  });
-
-  const paymentStatus: "paid" | "partially_paid" =
-    paidAmount >= placed.total - 0.001 ? "paid" : "partially_paid";
-
-  await withTenant(ctx.tenantId, async (tx) => {
-    if (tenderRows.length > 0) await tx.insert(orderPayments).values(tenderRows);
-
-    const events = [];
-    input.lines.forEach((line, i) => {
-      if ((line.discountAmount ?? 0) > 0) {
+      const events = [];
+      input.lines.forEach((line, i) => {
+        if ((line.discountAmount ?? 0) > 0) {
+          events.push({
+            tenantId: ctx.tenantId,
+            orderId: placed.orderId,
+            orderItemId: placed.itemIds[i],
+            type: "line_discount" as const,
+            amount: money(line.discountAmount!),
+            reasonCode: line.discountReason ?? "other",
+            byUserId: ctx.cashierUserId,
+            authorizedByUserId: discountAuthorizer!,
+          });
+        }
+      });
+      if (hasOrderDiscount) {
         events.push({
           tenantId: ctx.tenantId,
           orderId: placed.orderId,
-          orderItemId: placed.itemIds[i],
-          type: "line_discount" as const,
-          amount: money(line.discountAmount!),
-          reasonCode: line.discountReason ?? "other",
+          orderItemId: null,
+          type: "order_discount" as const,
+          amount: money(input.orderDiscountAmount!),
+          reasonCode: input.orderDiscountReason ?? "other",
           byUserId: ctx.cashierUserId,
           authorizedByUserId: discountAuthorizer!,
         });
       }
-    });
-    if (hasOrderDiscount) {
-      events.push({
-        tenantId: ctx.tenantId,
-        orderId: placed.orderId,
-        orderItemId: null,
-        type: "order_discount" as const,
-        amount: money(input.orderDiscountAmount!),
-        reasonCode: input.orderDiscountReason ?? "other",
-        byUserId: ctx.cashierUserId,
-        authorizedByUserId: discountAuthorizer!,
-      });
-    }
-    if (events.length > 0) await tx.insert(posAdjustmentEvents).values(events);
+      if (events.length > 0) await tx.insert(posAdjustmentEvents).values(events);
 
-    await tx.update(orders).set({ paymentStatus, updatedAt: new Date() }).where(eq(orders.id, placed.orderId));
+      const paymentStatus = paymentStatusFor(placed.total);
+      await tx.update(orders).set({ paymentStatus, updatedAt: new Date() }).where(eq(orders.id, placed.orderId));
 
-    // Emit the audit chain for this sale on the SAME tx. order.placed was already
-    // appended by placeOrder above; discount.* rows come next, and sale.recorded
-    // last so it is the tip. Forward emission points (void.line, void.order,
-    // refund.*, inventory/PO/ETA events) attach to this same helper in
-    // Specs 3/8/9/11 — no chain change.
-    const auditCtx = { tenantId: ctx.tenantId, branchId: ctx.branchId, actorUserId: ctx.cashierUserId, fingerprint: ctx.fingerprint };
-    for (let i = 0; i < input.lines.length; i++) {
-      const line = input.lines[i];
-      if ((line.discountAmount ?? 0) > 0) {
+      // Emit the audit chain for this sale on the SAME tx. order.placed was already
+      // appended by placeOrder above; discount.* rows come next, and sale.recorded
+      // last so it is the tip. Forward emission points (void.line, void.order,
+      // refund.*, inventory/PO/ETA events) attach to this same helper in
+      // Specs 3/8/9/11 — no chain change.
+      const auditCtx = { tenantId: ctx.tenantId, branchId: ctx.branchId, actorUserId: ctx.cashierUserId, fingerprint: ctx.fingerprint };
+      for (let i = 0; i < input.lines.length; i++) {
+        const line = input.lines[i];
+        if ((line.discountAmount ?? 0) > 0) {
+          await recordAuditEvent(auditCtx, {
+            action: "discount.line_applied", entityType: "order", entityId: placed.orderId,
+            summary: `Line discount ${money(line.discountAmount!)}`,
+            metadata: { orderItemId: placed.itemIds[i], amount: money(line.discountAmount!), reasonCode: line.discountReason ?? "other", byUserId: ctx.cashierUserId, authorizedByUserId: discountAuthorizer },
+            actorType: "user",
+          }, tx);
+        }
+      }
+      if (hasOrderDiscount) {
         await recordAuditEvent(auditCtx, {
-          action: "discount.line_applied", entityType: "order", entityId: placed.orderId,
-          summary: `Line discount ${money(line.discountAmount!)}`,
-          metadata: { orderItemId: placed.itemIds[i], amount: money(line.discountAmount!), reasonCode: line.discountReason ?? "other", byUserId: ctx.cashierUserId, authorizedByUserId: discountAuthorizer },
+          action: "discount.order_applied", entityType: "order", entityId: placed.orderId,
+          summary: `Order discount ${money(input.orderDiscountAmount!)}`,
+          metadata: { amount: money(input.orderDiscountAmount!), reasonCode: input.orderDiscountReason ?? "other", byUserId: ctx.cashierUserId, authorizedByUserId: discountAuthorizer },
           actorType: "user",
         }, tx);
       }
-    }
-    if (hasOrderDiscount) {
       await recordAuditEvent(auditCtx, {
-        action: "discount.order_applied", entityType: "order", entityId: placed.orderId,
-        summary: `Order discount ${money(input.orderDiscountAmount!)}`,
-        metadata: { amount: money(input.orderDiscountAmount!), reasonCode: input.orderDiscountReason ?? "other", byUserId: ctx.cashierUserId, authorizedByUserId: discountAuthorizer },
-        actorType: "user",
+        action: "sale.recorded", entityType: "order", entityId: placed.orderId,
+        summary: `Sale #${placed.orderNumber} — ${paymentStatus}`,
+        metadata: {
+          orderNumber: String(placed.orderNumber), total: money(placed.total), paymentStatus,
+          tenders: input.payments.map((p) => ({ method: p.method, amount: money(p.amount) })),
+        }, actorType: "user",
       }, tx);
-    }
-    await recordAuditEvent(auditCtx, {
-      action: "sale.recorded", entityType: "order", entityId: placed.orderId,
-      summary: `Sale #${placed.orderNumber} — ${paymentStatus}`,
-      metadata: {
-        orderNumber: String(placed.orderNumber), total: money(placed.total), paymentStatus,
-        tenders: input.payments.map((p) => ({ method: p.method, amount: money(p.amount) })),
-      }, actorType: "user",
-    }, tx);
-  });
 
-  await db.insert(posOrderReceipts).values({
-    deviceId: ctx.deviceId,
-    clientOrderId: input.clientOrderId,
-    orderId: placed.orderId,
-    orderNumber: String(placed.orderNumber),
+      // No RLS on pos_order_receipts (by design — it's the idempotency lookup,
+      // queried before a tenant tx exists), but the insert itself still runs
+      // fine on this tenant tx: it commits with the sale instead of racing it.
+      await tx.insert(posOrderReceipts).values({
+        deviceId: ctx.deviceId,
+        clientOrderId: input.clientOrderId,
+        orderId: placed.orderId,
+        orderNumber: String(placed.orderNumber),
+      });
+    },
   });
 
   return {
@@ -231,7 +237,7 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
     total: placed.total,
     paidAmount,
     changeAmount,
-    paymentStatus,
+    paymentStatus: paymentStatusFor(placed.total),
     idempotent: false,
   };
 }

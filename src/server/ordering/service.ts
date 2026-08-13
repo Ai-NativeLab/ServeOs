@@ -64,6 +64,9 @@ export type PlaceOrderInput = {
   /** What the client displayed. Compared, never trusted. */
   expectedTotal?: number;
   audit?: { fingerprint: AuditFingerprint; actorUserId?: string | null; actorType?: AuditActorType };
+  /** Runs inside the SAME transaction after the order is written. POS uses this
+   *  to make tenders + receipt atomic with the order. Throwing rolls everything back. */
+  onPlaced?: (tx: Parameters<Parameters<typeof withTenant>[1]>[0], placed: PlaceOrderResult) => Promise<void>;
 };
 export type PlaceOrderResult = {
   orderId: string;
@@ -407,7 +410,11 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       tx,
     );
 
-    return { orderId: order.id, orderNumber, statusToken, total: totals.total, itemIds: inserted.map((i) => i.id) };
+    const placed: PlaceOrderResult = { orderId: order.id, orderNumber, statusToken, total: totals.total, itemIds: inserted.map((i) => i.id) };
+    // Last statement before the transaction returns: a throw here rolls back
+    // the order, its items, the stock deduction, and order.placed together.
+    await input.onPlaced?.(tx, placed);
+    return placed;
   });
 
   // Meter usage (control table, outside the tenant tx). By design (spec §2)
