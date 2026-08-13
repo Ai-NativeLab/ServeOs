@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { arabicDescription } from "./bilingual";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { formatMoney } from "@/lib/money";
@@ -47,8 +48,13 @@ export function ProductSheet({
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="flex flex-col gap-0">
+        {/* mt-4 keeps the image clear of the sheet's close button, which is
+            absolutely positioned at top-4 right-4. The sheet's p-6 leaves a
+            24px gutter and the icon eats 16px of it, so without this the X's
+            bottom-left corner sits ON the photo — overlapping it by 8px in
+            both directions. */}
         {product.imageUrl && (
-          <div className="relative mb-4 aspect-[16/10] w-full flex-none">
+          <div className="relative mt-4 mb-4 aspect-[16/10] w-full flex-none">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={product.imageUrl}
@@ -64,7 +70,18 @@ export function ProductSheet({
         <div className="min-h-0 flex-1 overflow-y-auto">
           <SheetHeader>
             <SheetTitle className="text-xl sm:text-2xl">{product.nameEn}</SheetTitle>
+            {/* The Arabic name comes along too. The grid card already shows both
+                names, so a detail sheet that drops to English-only — and then
+                carries an Arabic description under it — reads like a bug. */}
+            {product.nameAr && (
+              <span dir="rtl" className="block text-sm text-muted-foreground">{product.nameAr}</span>
+            )}
             {product.descriptionEn && <SheetDescription>{product.descriptionEn}</SheetDescription>}
+            {arabicDescription(product.descriptionEn, product.descriptionAr) && (
+              <SheetDescription dir="rtl">
+                {arabicDescription(product.descriptionEn, product.descriptionAr)}
+              </SheetDescription>
+            )}
           </SheetHeader>
 
           {product.modifierGroups.map((g) => {

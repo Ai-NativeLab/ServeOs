@@ -3,13 +3,19 @@ import { LogoMark } from "@/components/brand/LogoMark";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { loginAction } from "./actions";
+import { DEFAULT_NEXT, safeNext } from "./safe-next";
 
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; next?: string }>;
 }) {
-  const { error } = await searchParams;
+  const { error, next: rawNext } = await searchParams;
+  // Sanitised here as well as in loginAction. The action is what actually
+  // guards the redirect, but echoing an attacker's "https://evil.example"
+  // straight back into a hidden field puts a hostile value in the DOM and
+  // invites the next reader to trust it. Both ends run the same guard.
+  const next = safeNext(rawNext);
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-background p-6">
@@ -31,6 +37,11 @@ export default async function LoginPage({
         )}
 
         <form action={loginAction} className="grid gap-4">
+          {/* Carries the intended destination through the round trip — someone
+              who came here from a pricing CTA gets taken to that plan, not
+              dumped on the dashboard. loginAction re-validates it; a `next`
+              that is not a same-site path is discarded there, not here. */}
+          {next !== DEFAULT_NEXT && <input type="hidden" name="next" value={next} />}
           <label className="grid gap-1.5">
             <span className="text-xs font-medium text-foreground">Restaurant</span>
             <Input name="slug" placeholder="e.g. roma" required />

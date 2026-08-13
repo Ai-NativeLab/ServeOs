@@ -1,4 +1,5 @@
 import { headers } from "next/headers";
+import { notFound } from "next/navigation";
 import { getTenantBySlug, isTenantServable } from "@/server/tenancy";
 import { getPublishedMenu } from "@/server/catalog/service";
 import { getActiveBanners } from "@/server/banners/service";
@@ -18,14 +19,6 @@ import { RetailStorefront } from "./_components/storefront/templates/RetailStore
 import { PharmacyStorefront } from "./_components/storefront/templates/PharmacyStorefront";
 import { TimberStorefront } from "./_components/storefront/templates/TimberStorefront";
 import { EmptyState } from "@/components/dashboard/EmptyState";
-import { MarketingHeader } from "./_components/marketing/Header";
-import { MarketingHero } from "./_components/marketing/Hero";
-import { MarketingFeatures } from "./_components/marketing/Features";
-import { MarketingHowItWorks } from "./_components/marketing/HowItWorks";
-import { MarketingCtaBand } from "./_components/marketing/CtaBand";
-import { MarketingFooter } from "./_components/marketing/Footer";
-import { LangProvider } from "./_components/marketing/LangProvider";
-import { VerticalProvider } from "./_components/marketing/VerticalProvider";
 
 export default async function Home({
   searchParams,
@@ -157,20 +150,9 @@ export default async function Home({
     );
   }
 
-  return (
-    <LangProvider>
-      <VerticalProvider>
-        <div className="min-h-screen">
-          <MarketingHeader />
-          <MarketingHero />
-          <MarketingFeatures />
-          <MarketingHowItWorks />
-          <MarketingCtaBand />
-          <MarketingFooter />
-        </div>
-      </VerticalProvider>
-    </LangProvider>
-  );
+  // Marketing lives at src/app/(marketing)/[lang]; the proxy rewrites the
+  // marketing host's "/" to "/ar", so this route only ever serves storefronts.
+  notFound();
 }
 
 /**
