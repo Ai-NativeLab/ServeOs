@@ -3,6 +3,7 @@ import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { users } from "@/server/auth/schema";
 import { recordAuditEvent, type AuditFingerprint } from "@/server/audit/service";
+import { publishTenantEvent } from "@/server/realtime/publish";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { PERMISSIONS, type Permission } from "@/server/rbac/permissions";
 import type { PlaceOrderLine, LineSnapshot } from "@/server/ordering/service";
@@ -590,6 +591,10 @@ function fail(eventId: string, code: string, message: string): SyncResult {
 export async function ingestEvents(device: PosDeviceContext, events: SyncEvent[]): Promise<SyncResult[]> {
   const results: SyncResult[] = [];
   let lastSeq = await lastReceiptSeq(device.deviceId);
+  // What this batch actually changed, for the one broadcast at the end.
+  // Duplicates changed nothing, so they contribute nothing.
+  let applied = 0;
+  const orderIds: string[] = [];
 
   for (const e of events) {
     // eventId gates the very first DB call below (findSyncReceipt), which
@@ -629,6 +634,10 @@ export async function ingestEvents(device: PosDeviceContext, events: SyncEvent[]
         result,
         ...(actor.flags?.length ? { flags: actor.flags } : {}),
       });
+      if (!idempotent) {
+        applied++;
+        if (e.type === "sale.recorded" && typeof result.orderId === "string") orderIds.push(result.orderId);
+      }
       lastSeq = e.seq;
     } catch (err) {
       // A concurrent duplicate ingest of this SAME event races here, on
@@ -646,6 +655,17 @@ export async function ingestEvents(device: PosDeviceContext, events: SyncEvent[]
       const { code, message } = toErrorShape(err);
       results.push(fail(e.eventId, code, message));
       break;
+    }
+  }
+
+  // Once per batch, after every event's own transaction has committed — a
+  // fifty-event flush must not mean fifty awaited round-trips on the path a
+  // reconnecting till is waiting on. Sales moved stock too, so the inventory
+  // screens get their own signal rather than inferring one from sync.applied.
+  if (applied > 0) {
+    await publishTenantEvent(device.tenantId, { type: "sync.applied", entityIds: orderIds });
+    if (orderIds.length > 0) {
+      await publishTenantEvent(device.tenantId, { type: "stock.changed", entityIds: orderIds });
     }
   }
 

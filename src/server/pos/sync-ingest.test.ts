@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
@@ -270,5 +270,81 @@ describe("ingestEvents", () => {
       tx.select().from(auditEvents).where(eq(auditEvents.action, "auth.cashier_signed_in")).orderBy(desc(auditEvents.seq)).limit(1));
     expect(signInRow.actorUserId).toBe(ctx.cashierUserId);
     expect(signInRow.metadata).toMatchObject({ offline: true });
+  });
+});
+
+describe("ingestEvents realtime propagation", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  function captureBroadcasts(): { topic: string; event: string; entityIds: string[] }[] {
+    const seen: { topic: string; event: string; entityIds: string[] }[] = [];
+    vi.stubEnv("SUPABASE_URL", "https://proj.supabase.co");
+    vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "svc-key");
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      const msg = JSON.parse(String(init.body)).messages[0];
+      seen.push({ topic: msg.topic, event: msg.event, entityIds: msg.payload.entityIds });
+      return new Response(null, { status: 202 });
+    }));
+    return seen;
+  }
+
+  const sale = (ctx: PosCashierContext, seq: number, productId: string, total: number, clientOrderId: string) =>
+    event(ctx.cashierUserId, seq, "sale.recorded", {
+      clientOrderId,
+      lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+      lineSnapshots: [{ productId, productNameEn: "M", productNameAr: "م", unitPrice: 100, quantity: 1, lineTotal: 100 }],
+      expectedTotal: total,
+      payments: [{ clientPaymentId: `p-${seq}`, method: "cash", amount: total, tenderedAmount: total }],
+    });
+
+  it("publishes once per batch — not once per replayed sale", async () => {
+    const { ctx, productId, total } = await seedPosContext("owner");
+    await openShiftForCtx(ctx);
+    const seen = captureBroadcasts();
+
+    const results = await ingestEvents(toDevice(ctx), [
+      sale(ctx, 1, productId, total, "batch-sale-1"),
+      sale(ctx, 2, productId, total, "batch-sale-2"),
+      cashMovement(ctx.cashierUserId, 3, { type: "pay_in", amount: 10, reasonCode: "float_top_up" }),
+    ]);
+    expect(results.map((r) => r.status)).toEqual(["applied", "applied", "applied"]);
+
+    const orderIds = results.slice(0, 2).map((r) => resultOf(r).orderId as string);
+    // Two sales, one signal each for the queues and the stock screens. The
+    // per-order broadcast placeOrder makes for a live sale is deliberately
+    // suppressed on the replay path.
+    expect(seen).toEqual([
+      { topic: `tenant:${ctx.tenantId}`, event: "sync.applied", entityIds: orderIds },
+      { topic: `tenant:${ctx.tenantId}`, event: "stock.changed", entityIds: orderIds },
+    ]);
+  });
+
+  it("stays silent when a batch applied nothing new", async () => {
+    const { ctx, productId, total } = await seedPosContext("owner");
+    await openShiftForCtx(ctx);
+    const batch = [sale(ctx, 1, productId, total, "dup-sale-1")];
+    await ingestEvents(toDevice(ctx), batch);
+
+    const seen = captureBroadcasts();
+    const replay = await ingestEvents(toDevice(ctx), batch);
+
+    expect(replay[0].status).toBe("duplicate");
+    expect(seen).toEqual([]);
+  });
+
+  it("a broadcast failure does not fail the flush", async () => {
+    const { ctx, productId, total } = await seedPosContext("owner");
+    await openShiftForCtx(ctx);
+    vi.stubEnv("SUPABASE_URL", "https://proj.supabase.co");
+    vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "svc-key");
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("realtime is down");
+    }));
+
+    const results = await ingestEvents(toDevice(ctx), [sale(ctx, 1, productId, total, "fail-sale-1")]);
+    expect(results[0].status).toBe("applied");
   });
 });

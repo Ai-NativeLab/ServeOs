@@ -24,6 +24,7 @@ import { canTransition } from "./state-machine";
 // from the FIFO deduction, on this same transaction, so the order still rolls back.
 import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, TotalMismatchError } from "./errors";
 import { recordAuditEvent, type AuditFingerprint } from "@/server/audit/service";
+import { publishTenantEvent } from "@/server/realtime/publish";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { enqueueStatusUpdate } from "@/server/whatsapp/status-updates";
 import type { AuditActorType } from "@/server/audit/canonical";
@@ -583,6 +584,13 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
   // there is NO hard cap in v1 — orders/month is recorded for visibility only,
   // so checkUsage is intentionally not enforced at placement.
   await incrementUsage(tenantId, "orders");
+  // Outside the transaction, after it commits: a broadcast for an order that
+  // then rolled back would send every subscriber to refetch a row that never
+  // existed. A replayed sale is silent here — its batch publishes once, in
+  // ingestEvents, instead of once per event on the flush path.
+  if (!input.replay) {
+    await publishTenantEvent(tenantId, { type: "orders.changed", entityIds: [result.orderId] });
+  }
   return result;
 }
 
@@ -746,7 +754,7 @@ export async function ordersThisMonthCount(tenantId: string): Promise<number> {
 export async function transitionStatus(tenantId: string, orderId: string, to: OrderStatus, userId: string, reason?: string, audit?: { fingerprint: AuditFingerprint }): Promise<Order> {
   const tenant = await getTenantById(tenantId);
   const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalId);
-  return withTenant(tenantId, async (tx) => {
+  const updated = await withTenant(tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
     if (!order) throw new OrderNotFoundError();
     if (!canTransition(order.status, to, order.fulfillmentType)) throw new InvalidTransitionError(order.status, to);
@@ -778,6 +786,11 @@ export async function transitionStatus(tenantId: string, orderId: string, to: Or
     );
     return updated;
   });
+  // Post-commit (see placeOrder): the queue screens the customer and the till
+  // are watching refetch on this, so a status the dashboard just set is on the
+  // storefront within a second instead of on the next poll.
+  await publishTenantEvent(tenantId, { type: "orders.changed", entityIds: [orderId] });
+  return updated;
 }
 
 export async function markPaid(tenantId: string, orderId: string, userId: string, audit?: { fingerprint: AuditFingerprint }): Promise<Order> {
@@ -831,7 +844,7 @@ export async function confirmOrderPayment(
   userId: string | null,
   audit?: { fingerprint: AuditFingerprint },
 ): Promise<Order> {
-  return withTenant(tenantId, async (tx) => {
+  const confirmed = await withTenant(tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
     if (!order) throw new OrderNotFoundError();
     if (order.paymentStatus !== "pending_verification") throw new PaymentAlreadyResolvedError();
@@ -874,6 +887,10 @@ export async function confirmOrderPayment(
     );
     return updated;
   });
+  // Post-commit (see placeOrder). The payments queue is a shared work list —
+  // a colleague's confirmation should drop the row off everyone's screen.
+  await publishTenantEvent(tenantId, { type: "orders.changed", entityIds: [orderId] });
+  return confirmed;
 }
 
 /** Merchant rejects an offline payment: cancel the order + restock.
