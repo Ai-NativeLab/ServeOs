@@ -1,6 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "regions": ["fra1"],
+  "installCommand": "npm ci --workspaces=false --include-workspace-root",
   "crons": [
     { "path": "/api/notifications/worker", "schedule": "0 3 * * *" }
   ]
