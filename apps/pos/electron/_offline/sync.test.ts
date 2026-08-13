@@ -1,3 +1,8 @@
+// PARKED — excluded in vitest.config.ts. Tests the old order_outbox +
+// postOrder SyncEngine (sync.ts), which Task 10 (SyncEngine v2, plan
+// docs/moai/plans/2026-08-09-pos-offline-sync.md) rewrites against the
+// local_events log Task 8 added. Do not delete; un-exclude once sync.ts is
+// rewritten and this file is updated to match the new engine's API.
 import { describe, it, expect, vi } from "vitest";
 import { openDb } from "./db";
 import { Store } from "./store";

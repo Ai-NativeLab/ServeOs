@@ -30,7 +30,11 @@ export class SyncEngine {
     this.emit("syncing");
     try {
       const { menu, syncedAt } = await this.api.getCatalog();
-      this.store.saveCatalog(JSON.stringify(menu), syncedAt);
+      // This engine (order_outbox-based) predates catalog pricing/version
+      // (Task 8); Task 10's rewrite fetches and threads them through. Stubbed
+      // here only to keep this parked file compiling against the new
+      // saveCatalog signature.
+      this.store.saveCatalog(JSON.stringify(menu), "", 0, syncedAt);
       this.emit("online");
     } catch (e) {
       if ((e as NetworkError).isNetwork) {

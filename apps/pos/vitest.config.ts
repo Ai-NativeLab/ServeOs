@@ -9,8 +9,10 @@ export default defineConfig({
     },
   },
   test: {
-    // The offline SQLite store/sync tests are parked (need the native
-    // better-sqlite3 build); exclude them from the default online-first run.
-    exclude: [...configDefaults.exclude, "**/electron/_offline/**"],
+    // sync.ts/sync.test.ts still test the old parked SyncEngine (order_outbox
+    // + postOrder), superseded by the local_events-driven engine Task 10
+    // builds. Leave them out until that rewrite lands; everything else under
+    // _offline (db/store/reducer, Task 8) runs for real against better-sqlite3.
+    exclude: [...configDefaults.exclude, "**/electron/_offline/sync.test.ts"],
   },
 });
