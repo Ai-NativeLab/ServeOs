@@ -1,6 +1,7 @@
 import { config } from "dotenv";
 config({ path: process.env.ENV_FILE ?? ".env.local", override: true, quiet: true });
 import { and, eq, isNull } from "drizzle-orm";
+import { DEMO_IMAGES } from "../src/server/demo/images";
 
 /**
  * Seeds one public demo tenant per vertical — demo-restaurant, demo-retail,
@@ -18,63 +19,13 @@ import { and, eq, isNull } from "drizzle-orm";
  *   npx tsx scripts/seed-demo-tenants.ts
  */
 
-const IMG = (id: string) => `https://images.unsplash.com/photo-${id}?w=800&q=80&auto=format&fit=crop`;
+const {
+  restaurant: { GRILL_PLATTER, MEZZE_SPREAD, RICE_SIDES, DRINKS_TRAY, LEMONADE, DESSERTS, RESTAURANT_COVER, RESTAURANT_LOGO },
+  retail: { GLOVED_HANDS, SOFT_DRINKS, DAIRY_EGGS, HOUSEHOLD_CLEANING },
+  pharmacy: { MEDICINES, PERSONAL_CARE, BABY_CARE, SUPPLEMENTS, PHARMACY_COVER, PHARMACY_LOGO },
+  timber: { SHEET_GOODS, PLANED_TIMBER, MOULDINGS, FIXINGS, HINGES, HANDLES, TIMBER_COVER, TIMBER_LOGO },
+} = DEMO_IMAGES;
 
-/**
- * Photography, named by what each shot actually DEPICTS rather than by where
- * it happens to be used.
- *
- * Every id below has been checked to return 200 from images.unsplash.com. That
- * matters because a guessed id 404s and next/image is not involved here — the
- * storefront renders product photos with a plain <img>, so a dead id is a
- * broken image on a customer's screen with nothing to catch it.
- *
- * Naming them is the point. These used to be inline `IMG("1584949...")` calls
- * repeated per product, which is how retail's entire Snacks aisle — chips,
- * chocolate, biscuits, peanuts — ended up sharing one photo of a computer
- * screen: nothing in the code said what the id showed, so nobody noticed.
- *
- * KNOWN GAP: the pool is one photo per CATEGORY, inherited from Roma's Italian
- * seed plus these demo tenants. There is no honest per-dish photography for an
- * Egyptian grill house, an Egyptian pharmacy or a timber yard in it, so within
- * a category products still share a shot. Fixing that needs real assets, not
- * more code — see the handover note.
- */
-const GRILL_PLATTER = IMG("1544025162-d76694265947");
-const MEZZE_SPREAD = IMG("1512621776951-a57141f2eefd");
-const RICE_SIDES = IMG("1587854692152-cbe660dbde88");
-const DRINKS_TRAY = IMG("1621905251189-08b45d6a269e");
-const LEMONADE = IMG("1621263764928-df1444c5e859");
-const DESSERTS = IMG("1551024601-bec78aea704b");
-
-const GROCERY_SHELF = IMG("1585421514738-01798e348b17");
-const SOFT_DRINKS = IMG("1607619056574-7b8d3ee536b2");
-const DAIRY_EGGS = IMG("1560343090-f0409e92791a");
-const HOUSEHOLD_CLEANING = IMG("1590212151175-e58edd96185b");
-
-const MEDICINES = IMG("1587293852726-70cdb56c2866");
-const PERSONAL_CARE = IMG("1583258292688-d0213dc5a3a8");
-const BABY_CARE = IMG("1512909006721-3d6018887383");
-const SUPPLEMENTS = IMG("1567620905732-2d1ec7ab7445");
-
-const SHEET_GOODS = IMG("1600585154340-be6161a56a0c");
-const PLANED_TIMBER = IMG("1583947215259-38e31be8751f");
-const MOULDINGS = IMG("1584308666744-24d5c474f2ae");
-const FIXINGS = IMG("1600891964092-4316c288032e");
-const HINGES = IMG("1530124566582-a618bc2615dc");
-const HANDLES = IMG("1556228453-efd6c1ff04f6");
-
-/**
- * Restaurant modifier groups, shared by reference across the grills.
- *
- * These exist so the demo exercises the modifier path at all: the POS
- * take-order screen branches on `p.modifierGroups.length` and opens a
- * selection sheet, and until now every demo product had zero groups, so that
- * sheet could not be reached from any seeded tenant.
- *
- * The rules must satisfy upsertModifierGroup's validation — min <= max, and
- * `required` implies min >= 1 — or seeding throws.
- */
 const SPICE_LEVEL: SeedModifierGroup = {
   nameEn: "Spice level", nameAr: "درجة الحرارة", required: true, minSelections: 1, maxSelections: 1,
   options: [
@@ -183,8 +134,8 @@ const RESTAURANT: TenantSeedConfig = {
   ownerName: "Mona Fathy",
   ownerEmail: "owner@demo-restaurant.serveos.com",
   ownerPassword: "demo1234",
-  coverImg: IMG("1600335895229-6e75511892c8"),
-  logoImg: IMG("1607330289024-1535c6b4e1c1"),
+  coverImg: RESTAURANT_COVER,
+  logoImg: RESTAURANT_LOGO,
   areas: [
     { nameEn: "Dokki", nameAr: "الدقي", fee: "20", minOrder: "80", eta: 30 },
     { nameEn: "Mohandessin", nameAr: "المهندسين", fee: "30", minOrder: "100", eta: 40 },
@@ -315,19 +266,19 @@ const RETAIL: TenantSeedConfig = {
   ownerName: "Hassan Ibrahim",
   ownerEmail: "owner@demo-retail.serveos.com",
   ownerPassword: "demo1234",
-  coverImg: IMG("1585421514738-01798e348b17"),
-  logoImg: IMG("1541529086526-db283c563270"),
+  coverImg: GLOVED_HANDS,
+  logoImg: DAIRY_EGGS,
   areas: [
     { nameEn: "Heliopolis", nameAr: "مصر الجديدة", fee: "15", minOrder: "50", eta: 25 },
   ],
   catalog: [
     // NOTE: this aisle used to point every product at a photo of a computer
     // screen. See the photography block at the top of this file.
-    { nameEn: "Snacks", nameAr: "سناكس", img: GROCERY_SHELF, products: [
+    { nameEn: "Snacks", nameAr: "سناكس", img: GLOVED_HANDS, products: [
       { nameEn: "Potato Chips Family Pack", nameAr: "شيبسي عبوة كبيرة",
         descEn: "Sharing bag, 165g. Salted or chilli — pick below.",
         descAr: "كيس عائلي ١٦٥ جم. مملح أو شطة — اختر من الأسفل.",
-        price: "45", img: GROCERY_SHELF, featured: true,
+        price: "45", img: GLOVED_HANDS, featured: true,
         variants: [
           { nameEn: "Salted", nameAr: "مملح", price: "45", stock: 60 },
           { nameEn: "Chilli", nameAr: "شطة", price: "45", stock: 45 },
@@ -335,15 +286,15 @@ const RETAIL: TenantSeedConfig = {
       { nameEn: "Chocolate Bar", nameAr: "شيكولاتة",
         descEn: "Milk chocolate bar, 80g.",
         descAr: "لوح شيكولاتة بالحليب، ٨٠ جم.",
-        price: "25", img: GROCERY_SHELF },
+        price: "25", img: GLOVED_HANDS },
       { nameEn: "Biscuits Pack", nameAr: "بسكويت",
         descEn: "Tea biscuits, twin-wrapped roll.",
         descAr: "بسكويت شاي، لفة مزدوجة.",
-        price: "20", img: GROCERY_SHELF },
+        price: "20", img: GLOVED_HANDS },
       { nameEn: "Salted Peanuts", nameAr: "فول سوداني مملح",
         descEn: "Roasted and salted, 200g bag.",
         descAr: "محمّص ومملح، كيس ٢٠٠ جم.",
-        price: "30", img: GROCERY_SHELF, trackStock: true, stockQuantity: 0 },
+        price: "30", img: GLOVED_HANDS, trackStock: true, stockQuantity: 0 },
     ] },
     { nameEn: "Beverages", nameAr: "مشروبات", img: SOFT_DRINKS, products: [
       { nameEn: "Bottled Water 6-pack", nameAr: "مياه معدنية ٦ عبوات",
@@ -427,8 +378,8 @@ const PHARMACY: TenantSeedConfig = {
   ownerName: "Dr. Yara Mostafa",
   ownerEmail: "owner@demo-pharmacy.serveos.com",
   ownerPassword: "demo1234",
-  coverImg: IMG("1550989460-0adf9ea622e2"),
-  logoImg: IMG("1584362917165-526a968579e8"),
+  coverImg: PHARMACY_COVER,
+  logoImg: PHARMACY_LOGO,
   areas: [
     { nameEn: "Nasr City", nameAr: "مدينة نصر", fee: "15", minOrder: "60", eta: 25 },
   ],
@@ -537,8 +488,8 @@ const TIMBER: TenantSeedConfig = {
   ownerName: "Tarek Aboul-Fotouh",
   ownerEmail: "owner@demo-timber.serveos.com",
   ownerPassword: "demo1234",
-  coverImg: IMG("1583947581924-860bda6a26df"),
-  logoImg: IMG("1584017911766-d451b3d0e843"),
+  coverImg: TIMBER_COVER,
+  logoImg: TIMBER_LOGO,
   areas: [
     { nameEn: "Sheikh Zayed", nameAr: "الشيخ زايد", fee: "50", minOrder: "300", eta: 90 },
   ],
