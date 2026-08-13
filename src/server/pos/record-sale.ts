@@ -1,15 +1,16 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
-import { placeOrder, money, type PlaceOrderLine } from "@/server/ordering/service";
+import { placeOrder, money, type PlaceOrderLine, type LineSnapshot } from "@/server/ordering/service";
 import { orders } from "@/server/ordering/schema";
+import { users } from "@/server/auth/schema";
 import type { Permission } from "@/server/rbac/permissions";
 import { posOrderReceipts } from "./schema";
 import { orderPayments, posAdjustmentEvents } from "./tender-schema";
 import { posShifts, type PosShift } from "./shift-schema";
 import { findOpenShift } from "./shifts";
 import { resolveAuthorizer } from "./grants";
-import { NoOpenShiftError, PosSaleError } from "./errors";
+import { NoOpenShiftError, PosForbiddenError, PosSaleError } from "./errors";
 import type { PosCashierContext } from "./require-cashier";
 import { recordAuditEvent } from "@/server/audit/service";
 
@@ -45,6 +46,19 @@ export type RecordSaleInput = {
   /** Replay-only: the server shiftId, for a sale replaying against a shift
    *  that was opened online (so it never had a clientShiftId). */
   shiftId?: string;
+  /** Till-wins replay (offline-sync design doc). Forwarded verbatim into
+   *  placeOrder's own `replay` input — see PlaceOrderInput.replay for what
+   *  it does to line validation, `now`, and the TOTAL_MISMATCH check. */
+  replay?: { occurredAt: Date; lineSnapshots: LineSnapshot[]; catalogVersion?: number };
+  /**
+   * Replay-only substitute for a live grant token: a live cashier/grant token
+   * cannot exist after the outage that produced this event, so a synced
+   * discount names its manager directly. Validated in-tenant below; ignored
+   * unless `replay` is set — recordSale is the enforcement point, so even a
+   * caller upstream that forgets to strip this from live input can't use it
+   * to forge an authorizer.
+   */
+  authorizedByUserId?: string;
 };
 
 export type SaleReceipt = {
@@ -141,9 +155,24 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
   const grantFor = (p: Permission) => input.grants?.find((g) => g.permission === p)?.token;
   const hasLineDiscount = input.lines.some((l) => (l.discountAmount ?? 0) > 0);
   const hasOrderDiscount = (input.orderDiscountAmount ?? 0) > 0;
-  const discountAuthorizer = hasLineDiscount || hasOrderDiscount
-    ? await resolveAuthorizer(ctx, "pos:discount", grantFor("pos:discount"))
-    : null;
+  let discountAuthorizer: string | null = null;
+  // True only when the replay authorizer resolved below turns out to be a
+  // manager deactivated sometime between the sale and this ingest — the
+  // authorization stands (it was valid at the till, when it happened), but
+  // the audit trail carries the flag rather than staying silent about it.
+  let discountAuthorizerDeactivated = false;
+  if (hasLineDiscount || hasOrderDiscount) {
+    if (input.replay && input.authorizedByUserId) {
+      const [authorizer] = await db.select({ id: users.id, status: users.status }).from(users)
+        .where(and(eq(users.id, input.authorizedByUserId), eq(users.tenantId, ctx.tenantId)))
+        .limit(1);
+      if (!authorizer) throw new PosForbiddenError("pos:discount");
+      discountAuthorizer = authorizer.id;
+      discountAuthorizerDeactivated = authorizer.status !== "active";
+    } else {
+      discountAuthorizer = await resolveAuthorizer(ctx, "pos:discount", grantFor("pos:discount"));
+    }
+  }
 
   // Validate tenders before touching the DB.
   for (const p of input.payments) {
@@ -195,6 +224,7 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
     orderDiscountReason: input.orderDiscountReason,
     expectedTotal: input.expectedTotal,
     audit: { fingerprint: ctx.fingerprint, actorUserId: ctx.cashierUserId, actorType: "user" },
+    replay: input.replay,
     onPlaced: async (tx, placed) => {
       if (paidAmount > placed.total + 0.001) {
         throw new PosSaleError("Tenders exceed the amount due");
@@ -247,7 +277,11 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
           await recordAuditEvent(auditCtx, {
             action: "discount.line_applied", entityType: "order", entityId: placed.orderId,
             summary: `Line discount ${money(line.discountAmount!)}`,
-            metadata: { orderItemId: placed.itemIds[i], amount: money(line.discountAmount!), reasonCode: line.discountReason ?? "other", byUserId: ctx.cashierUserId, authorizedByUserId: discountAuthorizer },
+            metadata: {
+              orderItemId: placed.itemIds[i], amount: money(line.discountAmount!), reasonCode: line.discountReason ?? "other",
+              byUserId: ctx.cashierUserId, authorizedByUserId: discountAuthorizer,
+              ...(discountAuthorizerDeactivated ? { authorizerDeactivated: true } : {}),
+            },
             actorType: "user",
           }, tx);
         }
@@ -256,7 +290,11 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
         await recordAuditEvent(auditCtx, {
           action: "discount.order_applied", entityType: "order", entityId: placed.orderId,
           summary: `Order discount ${money(input.orderDiscountAmount!)}`,
-          metadata: { amount: money(input.orderDiscountAmount!), reasonCode: input.orderDiscountReason ?? "other", byUserId: ctx.cashierUserId, authorizedByUserId: discountAuthorizer },
+          metadata: {
+            amount: money(input.orderDiscountAmount!), reasonCode: input.orderDiscountReason ?? "other",
+            byUserId: ctx.cashierUserId, authorizedByUserId: discountAuthorizer,
+            ...(discountAuthorizerDeactivated ? { authorizerDeactivated: true } : {}),
+          },
           actorType: "user",
         }, tx);
       }
