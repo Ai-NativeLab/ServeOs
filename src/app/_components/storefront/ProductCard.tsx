@@ -1,5 +1,6 @@
 "use client";
 import type { PublishedMenu } from "@/server/catalog/schema";
+import { arabicDescription } from "./bilingual";
 import { formatMoney } from "@/lib/money";
 import { Badge } from "./Badge";
 
@@ -38,8 +39,10 @@ export function ProductCard({
             Arabic-first storefront showed its customers English prose under a
             bilingual product name. */}
         {product.descriptionEn && <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{product.descriptionEn}</p>}
-        {product.descriptionAr && (
-          <p dir="rtl" className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{product.descriptionAr}</p>
+        {arabicDescription(product.descriptionEn, product.descriptionAr) && (
+          <p dir="rtl" className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+            {arabicDescription(product.descriptionEn, product.descriptionAr)}
+          </p>
         )}
         <div className="mt-auto flex items-center justify-between pt-2.5">
           <span className="font-display font-bold text-ink">{formatMoney(product.effectivePrice, currency)}</span>

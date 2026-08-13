@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { arabicDescription } from "./bilingual";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { formatMoney } from "@/lib/money";
@@ -71,8 +72,10 @@ export function ProductSheet({
               <span dir="rtl" className="block text-sm text-muted-foreground">{product.nameAr}</span>
             )}
             {product.descriptionEn && <SheetDescription>{product.descriptionEn}</SheetDescription>}
-            {product.descriptionAr && (
-              <SheetDescription dir="rtl">{product.descriptionAr}</SheetDescription>
+            {arabicDescription(product.descriptionEn, product.descriptionAr) && (
+              <SheetDescription dir="rtl">
+                {arabicDescription(product.descriptionEn, product.descriptionAr)}
+              </SheetDescription>
             )}
           </SheetHeader>
 
