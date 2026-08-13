@@ -10,9 +10,18 @@ import { formatMoney } from "@/lib/money";
 import { formatDayTime } from "@/lib/datetime";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { StatusPoller } from "./StatusPoller";
+import { PaymentProof } from "./PaymentProof";
 
 const STEPS_DELIVERY = ["pending", "confirmed", "preparing", "ready", "out_for_delivery", "completed"];
 const STEPS_PICKUP = ["pending", "confirmed", "preparing", "ready", "completed"];
+
+/** Customer-facing names for the paymentMethod enum. */
+const PAYMENT_METHOD_LABEL: Record<string, string> = {
+  cash: "Cash on delivery",
+  instapay: "InstaPay",
+  vodafone_cash: "Vodafone Cash",
+  mobile_wallet: "Mobile wallet",
+};
 
 export default async function OrderStatusPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
@@ -132,8 +141,27 @@ export default async function OrderStatusPage({ params }: { params: Promise<{ to
               {branch?.address && <><br /><span className="text-muted-foreground">{branch.address}</span></>}
             </p>
           )}
-          <p className="mt-2 text-muted-foreground">Cash · {order.paymentStatus}</p>
         </section>
+
+        {/* Was a hardcoded "Cash · <status>" line, which an InstaPay order also
+            showed. The method is now the real one, and an order awaiting the
+            shop's confirmation gets the panel that explains what happens next. */}
+        {order.paymentStatus === "pending_verification" ? (
+          <PaymentProof
+            token={token}
+            slug={slug}
+            methodLabel={PAYMENT_METHOD_LABEL[order.paymentMethod] ?? order.paymentMethod}
+            initialUrl={order.paymentProofUrl}
+          />
+        ) : (
+          <section className="card-lift mt-4 rounded-2xl border border-border bg-card p-5 text-sm">
+            <div className="eyebrow text-muted-foreground">Payment</div>
+            <p className="mt-1.5 text-ink">
+              {PAYMENT_METHOD_LABEL[order.paymentMethod] ?? order.paymentMethod}
+              {order.paymentStatus === "paid" ? " · paid" : " · not yet paid"}
+            </p>
+          </section>
+        )}
 
         {whatsappNumber && (
           <a

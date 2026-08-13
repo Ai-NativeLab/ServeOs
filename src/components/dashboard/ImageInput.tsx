@@ -3,13 +3,14 @@ import { useRef, useState } from "react";
 import { Upload, X, ImageIcon, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { ALLOWED_IMAGE_TYPES, MAX_UPLOAD_BYTES } from "@/lib/upload-limits";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 type UploadType = "product" | "category" | "banner" | "logo" | "cover";
 
-const MAX_BYTES = 5 * 1024 * 1024; // keep in sync with the /api/media-upload route
-const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+const MAX_BYTES = MAX_UPLOAD_BYTES;
+const ACCEPTED_TYPES = Object.keys(ALLOWED_IMAGE_TYPES);
 
 export function ImageInput({
   name,

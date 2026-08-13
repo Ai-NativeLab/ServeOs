@@ -22,9 +22,20 @@ export default async function PaymentsQueuePage() {
     <>
       <PageHeader
         eyebrow="Payments"
-        title="Awaiting payment confirmation"
-        description="Confirm you received the transfer, then the order proceeds."
+        title="Awaiting your confirmation"
+        description="Check the transfer landed in your own account, then confirm and the order proceeds."
       />
+
+      {/* The one thing this screen must not imply is that ServeOS checked
+          anything. There is no InstaPay or wallet integration — the reference
+          and screenshot are what the customer typed and uploaded, and the
+          decision is entirely the merchant's. */}
+      {orders.length > 0 && (
+        <p className="mb-4 max-w-3xl rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+          ServeOS does not check transfers with the bank or wallet. The reference and screenshot
+          below are supplied by the customer — open your own account to confirm the money arrived.
+        </p>
+      )}
       {orders.length === 0 ? (
         <EmptyState title="Nothing awaiting confirmation" />
       ) : (
@@ -36,10 +47,12 @@ export default async function PaymentsQueuePage() {
                 <div className="text-muted-foreground">
                   {o.paymentMethod} · ref {o.paymentReference ?? "—"} · {Number(o.total).toFixed(2)}
                 </div>
-                {o.paymentProofUrl && SAFE_URL_RE.test(o.paymentProofUrl) && (
+                {o.paymentProofUrl && SAFE_URL_RE.test(o.paymentProofUrl) ? (
                   <a href={o.paymentProofUrl} target="_blank" rel="noreferrer" className="text-primary hover:underline">
-                    View screenshot
+                    View customer&apos;s screenshot
                   </a>
+                ) : (
+                  <span className="text-muted-foreground">No screenshot attached</span>
                 )}
               </div>
               <div className="flex items-center gap-2">

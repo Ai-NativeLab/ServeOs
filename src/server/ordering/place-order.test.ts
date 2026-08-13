@@ -798,3 +798,73 @@ describe("rejectOrderPayment atomicity", () => {
     expect(order.status === "cancelled" && order.paymentStatus === "paid").toBe(false);
   });
 });
+
+describe("attachPaymentProof", () => {
+  async function pendingOrder(tag: string) {
+    const { t, branch, pizza, user } = await setup(tag);
+    const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
+    await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      paymentMethod: "instapay", paymentReference: `REF-${tag}`,
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    return { t, user, res };
+  }
+
+  it("attaches a screenshot to an order awaiting confirmation", async () => {
+    const { t, res } = await pendingOrder("pp1");
+    const { attachPaymentProof, getOrder } = await import("./service");
+
+    await attachPaymentProof(t.id, res.statusToken, "https://cdn.example.com/proof.png");
+
+    expect((await getOrder(t.id, res.orderId)).paymentProofUrl).toBe("https://cdn.example.com/proof.png");
+  });
+
+  // The token is the whole authorisation: guest checkout has no session, so
+  // possession of the server-minted token is what makes the upload attributable.
+  it("refuses a token that belongs to no order", async () => {
+    const { t } = await pendingOrder("pp2");
+    const { attachPaymentProof } = await import("./service");
+    const { OrderNotFoundError } = await import("./errors");
+
+    await expect(attachPaymentProof(t.id, "00000000-0000-0000-0000-000000000000", "https://x.test/a.png"))
+      .rejects.toThrow(OrderNotFoundError);
+  });
+
+  it("refuses a javascript: URL rather than storing it for a merchant to click", async () => {
+    const { t, res } = await pendingOrder("pp3");
+    const { attachPaymentProof, getOrder } = await import("./service");
+    const { InvalidProofError } = await import("./errors");
+
+    await expect(attachPaymentProof(t.id, res.statusToken, "javascript:alert(1)"))
+      .rejects.toThrow(InvalidProofError);
+    expect((await getOrder(t.id, res.orderId)).paymentProofUrl).toBeNull();
+  });
+
+  // Once the merchant has decided, the evidence is frozen — otherwise a
+  // customer could swap the screenshot under a confirmed or rejected order.
+  it("refuses once the merchant has already confirmed", async () => {
+    const { t, user, res } = await pendingOrder("pp4");
+    const { attachPaymentProof, confirmOrderPayment } = await import("./service");
+    const { PaymentAlreadyResolvedError } = await import("@/server/payments/offline");
+
+    await confirmOrderPayment(t.id, res.orderId, user.id);
+
+    await expect(attachPaymentProof(t.id, res.statusToken, "https://x.test/a.png"))
+      .rejects.toThrow(PaymentAlreadyResolvedError);
+  });
+
+  it("refuses on a cash order, which has no transfer to evidence", async () => {
+    const { t, branch, pizza } = await setup("pp5");
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const { attachPaymentProof } = await import("./service");
+    const { PaymentAlreadyResolvedError } = await import("@/server/payments/offline");
+
+    await expect(attachPaymentProof(t.id, res.statusToken, "https://x.test/a.png"))
+      .rejects.toThrow(PaymentAlreadyResolvedError);
+  });
+});

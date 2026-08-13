@@ -348,7 +348,15 @@ export function CheckoutForm({
               placeholder="Transaction reference"
               aria-invalid={missingPaymentRef}
               className="mt-2"
+              maxLength={64}
             />
+            {/* Says what actually happens. ServeOS has no connection to
+                InstaPay or any wallet — the shop looks at its own account and
+                decides — so nothing here may imply an automatic check. */}
+            <p className="mt-2 text-xs text-muted-foreground">
+              The shop confirms it received the transfer before starting your order. You can attach a
+              screenshot afterwards.
+            </p>
           </div>
         )}
       </div>

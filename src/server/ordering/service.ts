@@ -515,6 +515,51 @@ export async function cancelOrderByToken(tenantId: string, token: string, audit?
   });
 }
 
+/**
+ * Customer attaches a transfer screenshot, authorised by the status token.
+ *
+ * Deliberately post-placement rather than a field at checkout: an upload
+ * endpoint reachable before an order exists is anonymous (guest checkout needs
+ * no session) and this codebase has no rate limiting anywhere, so the token —
+ * which the server minted and only this customer holds — is what makes the
+ * upload attributable.
+ *
+ * Nothing here verifies the payment. The screenshot is evidence for the
+ * merchant to look at, and the merchant is still the one who decides.
+ * Restricted to `pending_verification` so a proof cannot be bolted onto a cash
+ * order, nor onto one already confirmed or rejected.
+ */
+export async function attachPaymentProof(
+  tenantId: string,
+  token: string,
+  proofUrl: string,
+  audit?: { fingerprint: AuditFingerprint },
+): Promise<Order> {
+  const safe = sanitizeProofUrl(proofUrl);
+  if (!safe) throw new InvalidProofError();
+
+  return withTenant(tenantId, async (tx) => {
+    const [order] = await tx.select().from(orders).where(eq(orders.statusToken, token)).limit(1);
+    if (!order) throw new OrderNotFoundError();
+
+    // The status guard lives in the WHERE, so a merchant confirming at the same
+    // moment wins and this returns no row rather than mutating a resolved order.
+    const [updated] = await tx.update(orders)
+      .set({ paymentProofUrl: safe, updatedAt: new Date() })
+      .where(and(eq(orders.id, order.id), eq(orders.paymentStatus, "pending_verification")))
+      .returning();
+    if (!updated) throw new PaymentAlreadyResolvedError();
+
+    await recordAuditEvent(
+      { tenantId, branchId: updated.branchId, actorUserId: null, fingerprint: audit?.fingerprint ?? emptyFingerprint() },
+      { action: "order.payment_proof_attached", entityType: "order", entityId: order.id,
+        summary: `Customer attached payment proof`, metadata: { paymentMethod: updated.paymentMethod }, actorType: "customer" },
+      tx,
+    );
+    return updated;
+  });
+}
+
 export async function getOrder(tenantId: string, orderId: string): Promise<OrderDetail> {
   return withTenant(tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);

@@ -31,7 +31,11 @@ export default async function PaymentMethodsSettingsPage() {
       <PageHeader
         eyebrow="Settings"
         title="Payment methods"
-        description="Configure the offline pay-to channels customers can choose at checkout. Cash on delivery is always available and isn't configured here."
+        // States the model up front, at the point the merchant opts in. These
+        // are pay-to details we show the customer, not integrations — ServeOS
+        // never sees the transfer, so every one of these orders lands in your
+        // Payments queue for you to confirm by hand.
+        description="Pay-to details customers can choose at checkout. ServeOS is not connected to InstaPay or any wallet — it shows the customer where to send the money, then asks you to confirm it arrived. Cash on delivery is always available and isn't configured here."
       />
 
       {methods.length === 0 ? (
