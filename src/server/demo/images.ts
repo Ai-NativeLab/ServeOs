@@ -3,6 +3,19 @@ import type { VerticalId } from "@/server/verticals";
 const IMG = (id: string) => `https://images.unsplash.com/photo-${id}?w=800&q=80&auto=format&fit=crop`;
 
 /**
+ * A photo committed to public/marketing/demo/ rather than hotlinked.
+ *
+ * Preferred over IMG() for anything new. Hotlinking puts a third party in the
+ * render path of a customer-facing storefront: the id can be withdrawn, the
+ * host can rate-limit, and product images bypass next/image so there is
+ * nothing between a dead link and a broken tile. A committed file cannot rot.
+ *
+ * Only CC0 / public-domain sources, so redistributing them from our own domain
+ * is unambiguously fine and no attribution is owed on a commercial page.
+ */
+const LOCAL = (file: string) => `/marketing/demo/${file}`;
+
+/**
  * Demo photography, grouped by the trade it belongs to.
  *
  * Grouping is the point. These were inline `IMG("1584949...")` calls scattered
@@ -40,10 +53,22 @@ export const DEMO_IMAGES = {
     RESTAURANT_LOGO: IMG("1607330289024-1535c6b4e1c1"),
   },
   retail: {
-    // NEEDS REPLACING — see the note at the foot of this file. It reads as
-    // blue gloved hands, which is not a snack and barely a grocery. Kept
-    // because it is retail's and it resolves; replacing it needs someone who
-    // can look at a photo, not a rename.
+    // The Snacks aisle, one photo per product. It previously ran on a single
+    // shot of blue gloved hands — the whole aisle, crisps to peanuts.
+    //
+    // All four are CC0 and committed locally. Sourced by searching Openverse
+    // for the licence, then confirming the subject from the host's own
+    // metadata rather than from a filename: Wikimedia Commons puts
+    // potato-chips.jpg in categories "Potato chips" and "Side dishes", which
+    // is human-curated and worth more than a name. That check matters — the
+    // same search returned "Potato Chip Rock", which is a hiking trail.
+    POTATO_CHIPS: LOCAL("potato-chips.jpg"),
+    CHOCOLATE: LOCAL("chocolate.jpg"),
+    BISCUITS: LOCAL("biscuits.jpg"),
+    PEANUTS: LOCAL("peanuts.jpg"),
+
+    // Kept as the shop's cover only. It reads as blue gloved hands, which
+    // suits a mini-market poorly, but it is retail's own and it resolves.
     GLOVED_HANDS: IMG("1585421514738-01798e348b17"),
     SOFT_DRINKS: IMG("1607619056574-7b8d3ee536b2"),
     DAIRY_EGGS: IMG("1560343090-f0409e92791a"),
@@ -97,7 +122,12 @@ export function imagesFor(trade: VerticalId): string[] {
  * it ships.
  */
 
-/** The Unsplash photo id inside a built URL, for identity comparisons. */
+/**
+ * A stable identity for a photo, so two trades can be compared for overlap
+ * regardless of where the file lives — the Unsplash id for a hotlink, the path
+ * for a committed file.
+ */
 export function photoId(url: string): string | null {
+  if (url.startsWith("/")) return url;
   return url.match(/photo-([^?]+)/)?.[1] ?? null;
 }

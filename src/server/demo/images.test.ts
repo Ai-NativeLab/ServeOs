@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { DEMO_IMAGES, imagesFor, photoId } from "./images";
 import { VERTICAL_IDS } from "@/server/verticals";
@@ -13,13 +13,28 @@ describe("DEMO_IMAGES", () => {
     }
   });
 
-  it("builds real Unsplash urls", () => {
+  it("is either a committed local file or an Unsplash photo, nothing else", () => {
     for (const trade of VERTICAL_IDS) {
       for (const url of imagesFor(trade)) {
-        expect(url).toMatch(/^https:\/\/images\.unsplash\.com\/photo-/);
+        const local = url.startsWith("/marketing/demo/");
+        const unsplash = url.startsWith("https://images.unsplash.com/photo-");
+        expect(local || unsplash, `${url} is neither`).toBe(true);
         expect(photoId(url)).toBeTruthy();
       }
     }
+  });
+
+  // A committed path that points at nothing renders a broken tile, and product
+  // images bypass next/image so nothing else would catch it.
+  it("every committed file actually exists on disk", () => {
+    const missing: string[] = [];
+    for (const trade of VERTICAL_IDS) {
+      for (const url of imagesFor(trade)) {
+        if (!url.startsWith("/")) continue;
+        if (!existsSync(path.join(process.cwd(), "public", url))) missing.push(url);
+      }
+    }
+    expect(missing).toEqual([]);
   });
 
   // THE RULE: food stays in restaurants, medicines in pharmacies, boards in
