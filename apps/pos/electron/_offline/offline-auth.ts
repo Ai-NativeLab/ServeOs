@@ -145,6 +145,23 @@ export function offlineGrant(
 }
 
 /**
+ * Files a grant the LIVE `/authorize` route minted under its own token, so one
+ * token satisfies both worlds: the server-backed routes that still redeem it
+ * (refunds) and the event payloads that need the manager's id. Necessary
+ * because the live route answers with the manager's NAME, never their id —
+ * the id here comes from the same roster check `offlineGrant` does.
+ */
+export function rememberGrant(
+  vault: OfflineGrantVault,
+  token: string,
+  permission: string,
+  authorizedByUserId: string,
+): void {
+  if (!isPermission(permission)) return;
+  vault.set(token, { permission, authorizedByUserId, expiresAt: Date.now() + GRANT_TTL_MS });
+}
+
+/**
  * Single-use: deletes on read whether or not it matches, mirroring
  * grants.ts's consumeGrant — a redemption attempt against the wrong
  * permission still burns the token instead of leaving it replayable.

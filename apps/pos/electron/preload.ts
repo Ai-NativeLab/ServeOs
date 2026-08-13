@@ -18,6 +18,7 @@ import type {
   RefundSaleInput,
   RefundSaleResult,
   ReprintReceipt,
+  SyncStatus,
 } from "./pos-main";
 
 export type OrderSummary = {
@@ -45,6 +46,7 @@ export type {
   RefundSaleInput,
   RefundSaleResult,
   ReprintReceipt,
+  SyncStatus,
 } from "./pos-main";
 
 export interface PosBridge {
@@ -74,6 +76,13 @@ export interface PosBridge {
   cashMovement(input: CashMovementInput): Promise<DrawerResult<{ movement: CashMovementRow }>>;
   xReport(): Promise<DayReport | null>;
   zReport(shiftId?: string): Promise<DayZReport | null>;
+  /** Current connectivity/queue state. Cheap — it reads local state only. */
+  syncState(): Promise<SyncStatus>;
+  /** Pushes on every change (Task 11's badge). Returns the unsubscribe. */
+  onSyncState(cb: (status: SyncStatus) => void): () => void;
+  /** Clears a sticky halt: the refused event goes back to pending and the
+   *  queue resumes from its seq. */
+  retryFailedSync(): Promise<SyncStatus>;
 }
 
 contextBridge.exposeInMainWorld("pos", {
@@ -108,4 +117,13 @@ contextBridge.exposeInMainWorld("pos", {
   cashMovement: (input: CashMovementInput) => ipcRenderer.invoke("pos:cashMovement", input),
   xReport: () => ipcRenderer.invoke("pos:xReport"),
   zReport: (shiftId?: string) => ipcRenderer.invoke("pos:zReport", shiftId),
+  syncState: () => ipcRenderer.invoke("pos:syncState"),
+  onSyncState: (cb: (status: SyncStatus) => void) => {
+    // The IpcRendererEvent never crosses the bridge — a renderer callback that
+    // received it would hold a handle to the sender.
+    const listener = (_e: unknown, status: SyncStatus) => cb(status);
+    ipcRenderer.on("pos:syncState", listener);
+    return () => ipcRenderer.removeListener("pos:syncState", listener);
+  },
+  retryFailedSync: () => ipcRenderer.invoke("pos:retryFailedSync"),
 } satisfies PosBridge);

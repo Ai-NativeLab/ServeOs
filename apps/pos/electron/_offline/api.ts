@@ -1,62 +1,79 @@
-import type { PosApiClient } from "./sync";
+import type { AuthUser } from "./store";
+import type { CatalogSnapshot, PosApiClient, SyncEvent, SyncResult } from "./sync";
 
-interface NetworkError extends Error {
-  isNetwork?: boolean;
+/**
+ * The engine treats `isNetwork` as "try again later, nobody needs to be told"
+ * and everything else as "the server has an opinion about this request". A
+ * 5xx and a timeout belong on the first side: the till is not at fault and no
+ * event may be marked failed because of one.
+ */
+function networkError(e: unknown, fallback: string): Error & { isNetwork: true } {
+  const err = e instanceof Error ? e : new Error(fallback);
+  return Object.assign(err, { isNetwork: true as const });
 }
 
-function withNetworkFlag(e: unknown): Error & { isNetwork: boolean } {
-  const err = e as Error & { isNetwork?: boolean };
-  if (err instanceof TypeError || err instanceof Error && /fetch|network|ENOTFOUND|ECONNREFUSED|EAI_AGAIN/i.test(err.message)) {
-    err.isNetwork = true;
-  } else {
-    err.isNetwork = false;
-  }
-  return err as Error & { isNetwork: boolean };
+function serverError(message: string): Error & { isNetwork: false } {
+  return Object.assign(new Error(message), { isNetwork: false as const });
 }
 
-export function createApiClient(baseUrl: string, getToken: () => string | null): PosApiClient {
+/** Long enough for a slow café uplink, short enough that a hung socket can
+ *  never stall the sale the cashier is standing in front of. */
+const TIMEOUT_MS = 15_000;
+
+export type TokenSource = {
+  deviceToken(): string | null;
+  cashierToken(): string | null;
+};
+
+export function createApiClient(baseUrl: string, tokens: TokenSource): PosApiClient {
   const base = baseUrl.replace(/\/$/, "");
 
-  async function request(path: string, init: RequestInit): Promise<unknown> {
-    const token = getToken();
-    const headers = new Headers(init.headers);
-    if (token) headers.set("Authorization", `Bearer ${token}`);
-    if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  async function request(path: string, init: RequestInit & { cashier?: boolean } = {}): Promise<unknown> {
+    const { cashier, ...rest } = init;
+    const headers = new Headers(rest.headers);
+    headers.set("Authorization", `Bearer ${tokens.deviceToken() ?? ""}`);
+    // Only the roster pull is cashier-gated. sync/events is device-authenticated
+    // by design (sync-ingest.ts): no live cashier token can survive the outage
+    // that produced the batch, so sending one would be meaningless at best.
+    if (cashier) {
+      const token = tokens.cashierToken();
+      if (token) headers.set("X-POS-Cashier", token);
+    }
+    if (rest.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+
     let res: Response;
     try {
-      res = await fetch(`${base}${path}`, { ...init, headers });
+      res = await fetch(`${base}${path}`, { ...rest, headers, signal: AbortSignal.timeout(TIMEOUT_MS) });
     } catch (e) {
-      throw withNetworkFlag(e);
+      throw networkError(e, "network unreachable");
     }
-    if (res.status >= 500) {
-      const err = new Error(`Server error: ${res.status}`) as Error & { isNetwork: boolean };
-      err.isNetwork = true;
-      throw err;
-    }
+    if (res.status >= 500) throw networkError(new Error(`Server error: ${res.status}`), "server error");
     if (!res.ok) {
-      let body: unknown;
-      try { body = await res.json(); } catch { body = await res.text().catch(() => null); }
-      const err = new Error(`HTTP ${res.status}: ${typeof body === "string" ? body : JSON.stringify(body)}`) as Error & { isNetwork: boolean };
-      err.isNetwork = false;
-      throw err;
+      const body = await res.json().catch(() => null) as { error?: string } | null;
+      throw serverError(`HTTP ${res.status}: ${body?.error ?? res.statusText}`);
     }
     return res.json();
   }
 
   return {
-    async getCatalog() {
-      const data = (await request("/api/pos/v1/catalog", { method: "GET" })) as {
-        menu: unknown;
-        syncedAt: string;
-      };
-      return data;
+    async ping() {
+      await request("/api/pos/v1/ping");
     },
-    async postOrder(body) {
-      const data = (await request("/api/pos/v1/orders", {
+
+    async getCatalog(): Promise<CatalogSnapshot> {
+      return (await request("/api/pos/v1/catalog")) as CatalogSnapshot;
+    },
+
+    async getAuthRoster(): Promise<{ users: AuthUser[]; syncedAt: string }> {
+      return (await request("/api/pos/v1/sync/auth", { cashier: true })) as { users: AuthUser[]; syncedAt: string };
+    },
+
+    async postEvents(events: SyncEvent[]): Promise<SyncResult[]> {
+      const data = (await request("/api/pos/v1/sync/events", {
         method: "POST",
-        body: JSON.stringify(body),
-      })) as { orderId: string; orderNumber: string };
-      return data;
+        body: JSON.stringify({ events }),
+      })) as { results: SyncResult[] };
+      return data.results;
     },
   };
 }

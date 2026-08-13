@@ -101,6 +101,24 @@ describe("Store — local_events (Task 8)", () => {
     expect(s.pendingEvents()).toHaveLength(0);
   });
 
+  it("unsyncedEvents keeps failed events (their effect happened at the till) but drops synced ones", () => {
+    const s = makeStore();
+    const a = s.appendEvent("shift.opened", { n: 1 });
+    const b = s.appendEvent("sale.recorded", { n: 2 });
+    const c = s.appendEvent("cash.movement", { n: 3 });
+    s.markEventSynced(a.eventId, { ok: true });
+    s.markEventFailed(b.eventId, "forbidden");
+    // The confirmed snapshot has absorbed `a` and nothing else, so boot must
+    // replay exactly b and c on top of it — in seq order.
+    expect(s.unsyncedEvents().map((r) => r.event_id)).toEqual([b.eventId, c.eventId]);
+  });
+
+  it("appendEvent reports the occurred_at it stamped, so a caller can project the event without re-reading it", () => {
+    const s = makeStore();
+    const { eventId, occurredAt } = s.appendEvent("shift.opened", { n: 1 });
+    expect(s.pendingEvents().find((r) => r.event_id === eventId)?.occurred_at).toBe(occurredAt);
+  });
+
   it("hasFailedEvents is true after a markEventFailed and false after retry", () => {
     const s = makeStore();
     const a = s.appendEvent("cash.movement", { n: 1 });

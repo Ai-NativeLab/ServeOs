@@ -22,7 +22,11 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  posMain = new PosMain();
+  // The engine pushes state changes; the window may not exist yet on the very
+  // first one, and a destroyed one must never be sent to.
+  posMain = new PosMain((status) => {
+    if (win && !win.isDestroyed()) win.webContents.send("pos:syncState", status);
+  });
 
   ipcMain.handle("pos:isPaired", () => posMain?.isPaired() ?? false);
   ipcMain.handle("pos:branchName", () => posMain?.branchName() ?? "");
@@ -55,9 +59,15 @@ app.whenReady().then(() => {
   ipcMain.handle("pos:cashMovement", (_e, input: CashMovementInput) => posMain!.cashMovement(input));
   ipcMain.handle("pos:xReport", () => posMain!.xReport());
   ipcMain.handle("pos:zReport", (_e, shiftId?: string) => posMain!.zReport(shiftId));
+  ipcMain.handle("pos:syncState", () => posMain!.syncState());
+  ipcMain.handle("pos:retryFailedSync", () => posMain!.retryFailedSync());
 
   createWindow();
+  // Started after the window exists so the first state push has somewhere to
+  // land; nothing here blocks the first render either way.
+  posMain.start();
 });
 
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
+app.on("before-quit", () => posMain?.stop());
 app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

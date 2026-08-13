@@ -153,7 +153,7 @@ export class Store {
    *  event shape. `occurred_at` is stamped now: it is the till's own clock at
    *  the moment the operator acted, which is what the server's business-day
    *  and clock-skew logic keys off. */
-  appendEvent(type: string, payload: unknown): { eventId: string; seq: number } {
+  appendEvent(type: string, payload: unknown): { eventId: string; seq: number; occurredAt: string } {
     const eventId = crypto.randomUUID();
     const occurredAt = new Date().toISOString();
     const row = this.db
@@ -163,13 +163,24 @@ export class Store {
          RETURNING seq`,
       )
       .get(eventId, type, JSON.stringify(payload), occurredAt) as { seq: number };
-    return { eventId, seq: row.seq };
+    return { eventId, seq: row.seq, occurredAt };
   }
 
   /** Everything still owed to the server, oldest first — the flush order. */
   pendingEvents(): EventRow[] {
     return this.db
       .prepare("SELECT * FROM local_events WHERE status = 'pending' ORDER BY seq ASC")
+      .all() as EventRow[];
+  }
+
+  /** Pending AND failed, oldest first: everything the server has not accepted,
+   *  which is exactly what the till-state snapshot has not absorbed yet (the
+   *  snapshot advances one event at a time as each is confirmed). A failed
+   *  event still happened at the till — the money moved — so boot must replay
+   *  it into local state even though the queue is halted behind it. */
+  unsyncedEvents(): EventRow[] {
+    return this.db
+      .prepare("SELECT * FROM local_events WHERE status <> 'synced' ORDER BY seq ASC")
       .all() as EventRow[];
   }
 
