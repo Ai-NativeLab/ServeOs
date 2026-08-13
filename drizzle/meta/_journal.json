@@ -271,29 +271,8 @@
     {
       "idx": 38,
       "version": "7",
-      "when": 1786633158947,
-      "tag": "0038_tense_ultimo",
-      "breakpoints": true
-    },
-    {
-      "idx": 39,
-      "version": "7",
-      "when": 1786638118828,
-      "tag": "0039_hard_spectrum",
-      "breakpoints": true
-    },
-    {
-      "idx": 40,
-      "version": "7",
-      "when": 1786642185045,
-      "tag": "0040_brief_bloodstrike",
-      "breakpoints": true
-    },
-    {
-      "idx": 41,
-      "version": "7",
-      "when": 1786648790372,
-      "tag": "0041_milky_mockingbird",
+      "when": 1786606008833,
+      "tag": "0038_famous_slyde",
       "breakpoints": true
     }
   ]
