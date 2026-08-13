@@ -1,9 +1,12 @@
 import { describe, it, expect } from "vitest";
+import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { tenants } from "@/server/tenancy/schema";
 import { users, roles, userRoles } from "@/server/auth/schema";
 import { hashPassword } from "@/server/auth/password";
 import { signInCashier, resolveCashier } from "./cashier";
+import { posCashierSessions } from "./schema";
+import { tokenHash } from "./token-hash";
 import { PosCashierError } from "./errors";
 
 let n = 0;
@@ -52,12 +55,40 @@ describe("signInCashier", () => {
   it("resolves a signed-in cashier from their token", async () => {
     const { tenantId, email, userId } = await seedUser("owner");
     const { cashierToken } = await signInCashier(tenantId, email, "pw123456");
-    const resolved = resolveCashier(cashierToken);
+    const resolved = await resolveCashier(cashierToken);
     expect(resolved?.userId).toBe(userId);
     expect(resolved?.tenantId).toBe(tenantId);
   });
 
-  it("does not resolve an unknown token", () => {
-    expect(resolveCashier("nope")).toBeNull();
+  it("does not resolve an unknown token", async () => {
+    expect(await resolveCashier("nope")).toBeNull();
+  });
+
+  it("survives a process restart: session resolves from the DB, not memory", async () => {
+    const { tenantId, email } = await seedUser("owner");
+    const { cashierToken } = await signInCashier(tenantId, email, "pw123456");
+
+    // sign in, then resolve — must come from the DB row, stored hashed
+    const resolved = await resolveCashier(cashierToken);
+    expect(resolved?.tenantId).toBe(tenantId);
+    const [row] = await db.select().from(posCashierSessions)
+      .where(eq(posCashierSessions.tokenHash, tokenHash(cashierToken)));
+    expect(row).toBeDefined();
+  });
+
+  it("expired sessions resolve to null and are deleted", async () => {
+    const { tenantId, email } = await seedUser("owner");
+    const { cashierToken } = await signInCashier(tenantId, email, "pw123456");
+    const hash = tokenHash(cashierToken);
+
+    await db.update(posCashierSessions)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(posCashierSessions.tokenHash, hash));
+
+    expect(await resolveCashier(cashierToken)).toBeNull();
+
+    const [row] = await db.select().from(posCashierSessions)
+      .where(eq(posCashierSessions.tokenHash, hash));
+    expect(row).toBeUndefined();
   });
 });

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, lt } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { users } from "@/server/auth/schema";
@@ -9,6 +9,8 @@ import { ROLE_PERMISSIONS, type Permission } from "@/server/rbac/permissions";
 import { recordAuditEvent, type AuditFingerprint } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { PosCashierError } from "./errors";
+import { posCashierSessions } from "./schema";
+import { tokenHash } from "./token-hash";
 
 const CASHIER_TTL_MS = 12 * 60 * 60 * 1000; // one long shift
 
@@ -19,17 +21,6 @@ export type CashierSession = {
   permissions: Permission[];
   expiresAt: number;
 };
-
-/**
- * Cashier sessions live in process memory, not the database: a counter session
- * is meant to die when the app or the server does. The device token (durable,
- * in `pos_devices`) is what survives — this only identifies the human.
- */
-const sessions = new Map<string, CashierSession>();
-
-function sweep(now: number): void {
-  for (const [token, s] of sessions) if (s.expiresAt <= now) sessions.delete(token);
-}
 
 /**
  * Union of the counter permissions granted by any of the user's roles — the
@@ -81,9 +72,16 @@ export async function signInCashier(
 
   const cashierToken = randomBytes(32).toString("hex");
   const now = Date.now();
-  sweep(now);
-  sessions.set(cashierToken, {
-    userId: user.id, tenantId, name: user.name, permissions, expiresAt: now + CASHIER_TTL_MS,
+  // Opportunistic sweep: no cron for this control-plane table, so each sign-in
+  // clears rows that have aged out before inserting its own.
+  await db.delete(posCashierSessions).where(lt(posCashierSessions.expiresAt, new Date()));
+  await db.insert(posCashierSessions).values({
+    tokenHash: tokenHash(cashierToken),
+    userId: user.id,
+    tenantId,
+    name: user.name,
+    permissions,
+    expiresAt: new Date(now + CASHIER_TTL_MS),
   });
 
   await withTenant(tenantId, (tx) => recordAuditEvent(
@@ -96,14 +94,19 @@ export async function signInCashier(
   return { cashierToken, userId: user.id, name: user.name, permissions };
 }
 
-export function resolveCashier(token: string): CashierSession | null {
-  const s = sessions.get(token);
+export async function resolveCashier(token: string): Promise<CashierSession | null> {
+  const hash = tokenHash(token);
+  const [s] = await db.select().from(posCashierSessions)
+    .where(eq(posCashierSessions.tokenHash, hash)).limit(1);
   if (!s) return null;
-  if (s.expiresAt <= Date.now()) {
-    sessions.delete(token);
+  if (s.expiresAt.getTime() <= Date.now()) {
+    await db.delete(posCashierSessions).where(eq(posCashierSessions.tokenHash, hash));
     return null;
   }
-  return s;
+  return {
+    userId: s.userId, tenantId: s.tenantId, name: s.name,
+    permissions: s.permissions as Permission[], expiresAt: s.expiresAt.getTime(),
+  };
 }
 
 /** Verifies a manager's credentials and that they hold `permission`. Used by grants. */

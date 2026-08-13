@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, uniqueIndex, index, jsonb } from "drizzle-orm/pg-core";
 import { tenants } from "@/server/tenancy/schema";
 import { branches } from "@/server/branches/schema";
 import { users } from "@/server/auth/schema";
@@ -38,6 +38,20 @@ export const posOrderReceipts = pgTable("pos_order_receipts", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [uniqueIndex("pos_order_receipts_device_client").on(t.deviceId, t.clientOrderId)]);
 
+/** Cashier sessions. Control-plane like pos_devices: no RLS. Keyed by the
+ *  SHA-256 of the bearer token — a read-only DB leak must not hand out live
+ *  sessions. A row outliving its expiry is inert — resolveCashier checks expiresAt. */
+export const posCashierSessions = pgTable("pos_cashier_sessions", {
+  tokenHash: text("token_hash").primaryKey(),   // sha256 hex of the raw token
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  permissions: jsonb("permissions").$type<string[]>().notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("pos_cashier_sessions_expires").on(t.expiresAt)]);
+
 export type PosDevice = typeof posDevices.$inferSelect;
 export type PosPairingCode = typeof posPairingCodes.$inferSelect;
 export type PosOrderReceipt = typeof posOrderReceipts.$inferSelect;
+export type PosCashierSession = typeof posCashierSessions.$inferSelect;
