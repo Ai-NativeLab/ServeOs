@@ -162,7 +162,13 @@ type TenantSeedConfig = {
   logoImg: string;
   areas: DeliveryAreaSeed[];
   catalog: SeedCategory[];
-  /** Simple, each-priced, non-Rx, non-variant products safe to run through placeOrder. */
+  /**
+   * Simple, each-priced, non-Rx, non-variant products safe to run through
+   * placeOrder — and, since modifiers were added, products with no REQUIRED
+   * modifier group either. Checked by assertOrderable at startup so the
+   * mismatch surfaces as a named config error rather than as an opaque
+   * "required modifier missing" from deep inside order validation.
+   */
   orderableNames: string[];
 };
 
@@ -290,7 +296,12 @@ const RESTAURANT: TenantSeedConfig = {
         price: "60", img: DESSERTS },
     ] },
   ],
-  orderableNames: ["Grilled Chicken Half", "Kofta Skewer", "Hummus", "Rice with Vermicelli", "Om Ali"],
+  // No grills here: every one of them now carries a REQUIRED spice-level
+  // group, and placeOrder rejects a line that omits a required modifier
+  // ("required modifier missing"). The seeded orders exist to give the
+  // dashboard real numbers, not to exercise modifier selection, so they use
+  // the plain products. assertOrderable below enforces this.
+  orderableNames: ["Hummus", "Fattoush Salad", "Rice with Vermicelli", "Hibiscus Tea", "Om Ali"],
 };
 
 // ── demo-retail: Baraka Mini Market ─────────────────────────────────────────
@@ -633,6 +644,32 @@ const TIMBER: TenantSeedConfig = {
 
 const TENANTS: TenantSeedConfig[] = [RESTAURANT, RETAIL, PHARMACY, TIMBER];
 
+/**
+ * Fails fast when a config lists a product that placeOrder cannot actually
+ * order, instead of letting the seed run for a minute and then die on the
+ * first order with "required modifier missing" — which is what happened the
+ * first time required modifier groups were added while the grills were still
+ * in the restaurant's orderableNames.
+ */
+function assertOrderable(cfg: TenantSeedConfig): void {
+  const byName = new Map(cfg.catalog.flatMap((c) => c.products).map((p) => [p.nameEn, p]));
+  for (const name of cfg.orderableNames) {
+    const product = byName.get(name);
+    if (!product) {
+      throw new Error(`${cfg.slug}: orderableNames lists "${name}", which is not in the catalog`);
+    }
+    if (product.modifiers?.some((g) => g.required)) {
+      throw new Error(
+        `${cfg.slug}: orderableNames lists "${name}", which has a required modifier group — ` +
+          `placeOrder would reject it. Use a product without one.`,
+      );
+    }
+    if (product.requiresPrescription) {
+      throw new Error(`${cfg.slug}: orderableNames lists "${name}", which requires a prescription`);
+    }
+  }
+}
+
 async function seedOneTenant(cfg: TenantSeedConfig, adminId: string) {
   const { db } = await import("../src/db/client");
   const { tenants } = await import("../src/server/tenancy/schema");
@@ -895,6 +932,10 @@ async function main() {
       .returning();
   }
   await ensurePlatformSuperAdmin(adminEmail);
+
+  // Validate every config before writing anything — a bad orderableNames
+  // entry should not be discovered three tenants into the run.
+  for (const cfg of TENANTS) assertOrderable(cfg);
 
   console.log("Seeding demo tenants...\n");
   for (const cfg of TENANTS) {
