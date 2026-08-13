@@ -83,6 +83,23 @@ describe("supplier CRUD", () => {
     expect(Number(rows[0]!.lastUnitCost)).toBe(12);
   });
 
+  it("a cost-only upsert preserves supplierSku and packUom (C7 reviewer pin)", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const actor = await seedActor(tenantId, branchId);
+    const itemId = await seedItem(tenantId, { baseUom: "g" });
+    const supplierId = await createSupplier(actor, { name: "S" });
+
+    await upsertSupplierItem(actor, { supplierId, itemId, supplierSku: "SKU1", packUom: "kg", lastUnitCost: 10 });
+    await upsertSupplierItem(actor, { supplierId, itemId, lastUnitCost: 12 });
+
+    const [row] = await withTenant(tenantId, (tx) => tx.select().from(supplierItems)
+      .where(eq(supplierItems.supplierId, supplierId)));
+    expect(Number(row?.lastUnitCost)).toBe(12);
+    // The omitted keys survive — a partial upsert must not erase them.
+    expect(row?.supplierSku).toBe("SKU1");
+    expect(row?.packUom).toBe("kg");
+  });
+
   it("tenant B never sees tenant A's suppliers (RLS)", async () => {
     const a = await seedInventoryTenant();
     const b = await seedInventoryTenant();
