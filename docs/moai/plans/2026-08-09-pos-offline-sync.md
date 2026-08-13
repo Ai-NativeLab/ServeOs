@@ -401,6 +401,43 @@ Till-wins in `placeOrder`: add `replay?: { occurredAt: Date; lineSnapshots: Line
 
 ---
 
+## Client wire contract — learned by driving the real API (binding on Tasks 8–11)
+
+The server half is built and proven by `src/server/pos/offline-lifecycle.test.ts`, which
+ingests a full offline shift (`session.signed_in` → `shift.opened` → 2 sales → pay-out →
+count → `shift.closed`) and asserts the resulting rows, Z-report, audit chain, and a
+no-op replay. Driving it surfaced five rules the client MUST follow — each is a real
+failure, not a style preference:
+
+1. **Every `sale.recorded` carries `clientShiftId` (or `shiftId`) — including card-only
+   sales.** Without it `recordSale` falls back to `findOpenShift`; a sale replayed after
+   its drawer closed then gets `shiftId: null` on its tender and silently drops out of
+   the Z-report's sales count and tender totals. Money quietly disappears from
+   reconciliation.
+2. **An over-threshold `cash.movement` MUST carry `authorizedByUserId`.** Without it the
+   event throws `forbidden`, and because the halt is sticky (spec §Sync engine) that
+   **jams the entire queue** behind it. The till has to capture the manager offline at
+   the moment of the pay-out — there is no way to supply it later.
+3. **`grant.issued` gates nothing on its own.** It is an audit record. The gated event
+   (discounted sale, cross-user close, over-threshold pay-out) must carry its own
+   `authorizedByUserId`. The event also requires a valid `Permission` string or it fails
+   validation.
+4. **`order.discountAmount` is order-level only.** Line discounts live on
+   `order_items.discountAmount` and `pos_adjustment_events`. A local X/Z view that reads
+   `order.discountAmount` as "total discount" will under-report.
+5. **`seq` is strictly increasing per device and gap-free.** A failed event leaves no
+   receipt, so a corrected retry at the same `seq` resumes correctly — but skipping a
+   `seq` is rejected as `out_of_order`.
+
+Verified server behaviour the client can rely on: business timestamps come from
+`occurredAt` (orders' `placedAt`, shift open/close, cash counts), so offline work lands
+in the correct business day; a batch halts at its first failure leaving later events
+completely untouched (no partial writes, no receipts); a full replay is a byte-identical
+no-op; and `status` is `"duplicate"` for a genuine concurrent race across all event
+types.
+
+---
+
 ## Phase 3 — Client store & offline auth
 
 ### Task 8: SQLite store v2 — `local_events`, `auth_cache`, `local_state`
