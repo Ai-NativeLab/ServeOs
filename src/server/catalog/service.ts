@@ -55,8 +55,11 @@ export type CreateCategoryInput = Pick<NewCategory, "nameEn" | "nameAr" | "descr
 export type UpdateCategoryInput = Partial<CreateCategoryInput & { isActive: boolean }>;
 
 export async function listCategories(tenantId: string): Promise<Category[]> {
+  // Explicitly scoped, not RLS-only — see the note on listBranches.
   return withTenant(tenantId, (tx) =>
-    tx.select().from(categories).orderBy(categories.sortOrder),
+    tx.select().from(categories)
+      .where(eq(categories.tenantId, tenantId))
+      .orderBy(categories.sortOrder),
   );
 }
 

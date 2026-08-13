@@ -20,6 +20,30 @@ async function makeTenant(slug = "t1") {
 }
 
 describe("branches service", () => {
+  // The seeding failure this guards: with a connection whose role BYPASSES RLS
+  // (superuser — which the maintenance scripts use), listBranches returned a
+  // DIFFERENT tenant's branch. The caller then handed that foreign id to an
+  // ownership-checked update, which matched no rows and threw
+  // "Branch not found". The query now carries its own tenant predicate.
+  //
+  // Note this test's own role has RLS enforced, so it would also pass without
+  // the predicate. It pins the contract — a tenant's list is its own — rather
+  // than reproducing the superuser case, which needs a privileged connection
+  // the suite deliberately does not have.
+  it("lists only the asking tenant's branches, never another's", async () => {
+    const a = await makeTenant("scope-a");
+    const b = await makeTenant("scope-b");
+    const aBranch = await createBranch(a.id, { name: "A Main" });
+
+    expect(await listBranches(b.id)).toEqual([]);
+
+    const bBranch = await createBranch(b.id, { name: "B Main" });
+    const aList = await listBranches(a.id);
+    const bList = await listBranches(b.id);
+    expect(aList.map((x) => x.id)).toEqual([aBranch.id]);
+    expect(bList.map((x) => x.id)).toEqual([bBranch.id]);
+  });
+
   it("creates and lists branches within tenant context", async () => {
     const t = await makeTenant();
     const b = await createBranch(t.id, { name: "Main Branch" });
