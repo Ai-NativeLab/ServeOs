@@ -71,8 +71,10 @@ export function RetailProductSheet({
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="flex flex-col gap-0">
+        {/* mt-4 clears the sheet's absolutely-positioned close button — see the
+            fuller note in ProductSheet. */}
         {product.imageUrl && (
-          <div className="relative mb-4 aspect-[16/10] w-full flex-none">
+          <div className="relative mt-4 mb-4 aspect-[16/10] w-full flex-none">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={product.imageUrl} alt={product.nameEn} loading="lazy" width={800} height={500} className="sf-img h-full w-full" />
           </div>
