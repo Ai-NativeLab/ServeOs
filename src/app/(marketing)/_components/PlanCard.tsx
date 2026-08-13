@@ -41,8 +41,14 @@ export function PlanCard({ plan, term, locale }: { plan: Plan; term: Term; local
         {rows.map((row) => <li key={row}>{row}</li>)}
       </ul>
 
+      {/* The free plan is a sign-up; a paid plan is not.
+          Sending both to /register told someone choosing a 1099 EGP plan that
+          the next step was creating an account, and then said nothing about
+          how they would ever pay for it. Paid plans now go to /subscribe,
+          which routes to the billing page — signing in first if it has to —
+          with this plan carried along. */}
       <Link
-        href="/register"
+        href={isFree ? "/register" : `/subscribe?plan=${encodeURIComponent(plan.key)}`}
         className="mt-6 rounded-md border border-border px-4 py-2.5 text-center text-sm font-medium hover:bg-muted"
       >
         {isFree ? t.ctaFree : t.cta}

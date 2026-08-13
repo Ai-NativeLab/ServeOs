@@ -267,6 +267,13 @@
       "when": 1786329824373,
       "tag": "0037_red_bloodstorm",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1786606008833,
+      "tag": "0038_famous_slyde",
+      "breakpoints": true
     }
   ]
 }

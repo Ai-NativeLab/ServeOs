@@ -7,9 +7,9 @@ import { loginAction } from "./actions";
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; next?: string }>;
 }) {
-  const { error } = await searchParams;
+  const { error, next } = await searchParams;
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-background p-6">
@@ -31,6 +31,11 @@ export default async function LoginPage({
         )}
 
         <form action={loginAction} className="grid gap-4">
+          {/* Carries the intended destination through the round trip — someone
+              who came here from a pricing CTA gets taken to that plan, not
+              dumped on the dashboard. loginAction re-validates it; a `next`
+              that is not a same-site path is discarded there, not here. */}
+          {next && <input type="hidden" name="next" value={next} />}
           <label className="grid gap-1.5">
             <span className="text-xs font-medium text-foreground">Restaurant</span>
             <Input name="slug" placeholder="e.g. roma" required />
