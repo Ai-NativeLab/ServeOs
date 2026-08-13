@@ -82,9 +82,11 @@ export type SyncEngineOptions = {
   intervalMs?: number;
   batchSize?: number;
   /**
-   * Called once per event the server accepted, in seq order, right after it
-   * is marked synced. PosMain uses it to advance the confirmed till-state
-   * snapshot — the engine itself has no opinion about till state.
+   * Called once per event the server accepted, in seq order, INSIDE the same
+   * store transaction that marks it synced (Task 14 — store.markEventSynced's
+   * `onCommit`). PosMain uses it to advance the confirmed till-state snapshot,
+   * so "synced" and "snapshot advanced past it" commit or roll back together
+   * — the engine itself has no opinion about till state.
    */
   onApplied?: (row: EventRow, result: Record<string, unknown>) => void;
 };
@@ -341,9 +343,9 @@ export class SyncEngine {
           }
           // `duplicate` is a success: a batch replayed after a reconnect is
           // answered from the server's receipts, byte-identical to the
-          // original apply.
-          this.store.markEventSynced(row.event_id, result.result);
-          this.opts.onApplied?.(row, result.result);
+          // original apply. onApplied runs inside markEventSynced's own
+          // transaction (Task 14 fold-in) — see SyncEngineOptions.onApplied.
+          this.store.markEventSynced(row.event_id, result.result, () => this.opts.onApplied?.(row, result.result));
           progressed = true;
         }
         if (!progressed) {

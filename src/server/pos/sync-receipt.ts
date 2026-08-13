@@ -1,6 +1,6 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "@/db/client";
-import { posSyncEventReceipts, type PosSyncEventReceipt } from "./schema";
+import { posSyncEventReceipts, posDevices, type PosSyncEventReceipt } from "./schema";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -56,6 +56,46 @@ export async function lastReceiptSeq(deviceId: string): Promise<number> {
     .from(posSyncEventReceipts)
     .where(eq(posSyncEventReceipts.deviceId, deviceId));
   return row?.maxSeq ?? 0;
+}
+
+export type ClockSkewReceipt = {
+  eventId: string;
+  deviceId: string;
+  deviceLabel: string;
+  type: string;
+  /** The till's own clock at the moment it recorded the event. */
+  occurredAt: Date;
+  /** The server's clock when the batch carrying it landed — more than 48h
+   *  apart from `occurredAt` is what earns the flag (isClockSkewed,
+   *  sync-ingest.ts). */
+  receivedAt: Date;
+};
+
+/**
+ * Task 14's dashboard read for the hardening plan's "clock-skew-flagged
+ * receipts ... appear on the audit page" item. `clockSkewFlagged` lives only
+ * on `pos_sync_event_receipts` — a till's wall clock being wrong is a device
+ * fact, not a tenant-mutating action, so it was never worth recording as its
+ * own `audit_events` row (unlike `pos.replay.price_drift`, which already
+ * flows through `recordAuditEvent` and is filterable there today). This table
+ * carries no RLS (see schema.ts), so tenant scoping is done here explicitly
+ * via the `pos_devices` join rather than relying on `withTenant`.
+ */
+export async function listClockSkewFlaggedReceipts(tenantId: string, limit = 20): Promise<ClockSkewReceipt[]> {
+  return db
+    .select({
+      eventId: posSyncEventReceipts.eventId,
+      deviceId: posSyncEventReceipts.deviceId,
+      deviceLabel: posDevices.label,
+      type: posSyncEventReceipts.type,
+      occurredAt: posSyncEventReceipts.occurredAt,
+      receivedAt: posSyncEventReceipts.receivedAt,
+    })
+    .from(posSyncEventReceipts)
+    .innerJoin(posDevices, eq(posSyncEventReceipts.deviceId, posDevices.id))
+    .where(and(eq(posDevices.tenantId, tenantId), eq(posSyncEventReceipts.clockSkewFlagged, true)))
+    .orderBy(desc(posSyncEventReceipts.receivedAt))
+    .limit(limit);
 }
 
 /**

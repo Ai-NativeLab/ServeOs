@@ -1,18 +1,37 @@
 import { describe, it, expect } from "vitest";
 import type Database from "better-sqlite3";
-import { openDb } from "./db";
+import { openDb, type AtRestCipher } from "./db";
 import { Store, type AuthUser } from "./store";
 
 function makeStore(): Store {
   return new Store(openDb(":memory:"));
 }
 
-/** Some assertions need to inspect raw columns (server_response JSON) that
- *  the Store API deliberately doesn't expose a getter for — this opens the
- *  same connection two ways rather than reaching into Store's private db. */
-function makeStoreWithDb(): { store: Store; db: Database.Database } {
+/** Some assertions need to inspect raw columns (server_response JSON, or a
+ *  plaintext-vs-ciphertext row) that the Store API deliberately doesn't
+ *  expose a getter for — this opens the same connection two ways rather than
+ *  reaching into Store's private db. `cipher` defaults to none, same as
+ *  `makeStore`. */
+function makeStoreWithDb(cipher?: AtRestCipher): { store: Store; db: Database.Database } {
   const db = openDb(":memory:");
-  return { store: new Store(db), db };
+  return { store: cipher ? new Store(db, cipher) : new Store(db), db };
+}
+
+/** A deterministic, reversible stand-in for safeStorage: proves Store calls
+ *  through to whatever cipher it's given, without needing Electron. Ciphertext
+ *  is trivially distinguishable from plaintext, which is exactly what the
+ *  round-trip assertions below need. */
+function fakeCipher(available: boolean): AtRestCipher {
+  return {
+    isAvailable: () => available,
+    encryptString: (s) => Buffer.from(`ENC(${s})`, "utf8"),
+    decryptString: (b) => {
+      const s = b.toString("utf8");
+      const m = /^ENC\((.*)\)$/s.exec(s);
+      if (!m) throw new Error("fakeCipher: not its own ciphertext");
+      return m[1];
+    },
+  };
 }
 
 describe("Store — order outbox (pre-existing)", () => {
@@ -161,6 +180,131 @@ describe("Store — local_events (Task 8)", () => {
       .get(a.eventId) as { status: string; server_response: string };
     expect(raw.status).toBe("synced");
     expect(JSON.parse(raw.server_response)).toEqual({ shiftId: "srv-1" });
+  });
+
+  it("markEventSynced runs onCommit inside the same transaction as the status update (Task 14 fold-in)", () => {
+    const { store: s, db } = makeStoreWithDb();
+    const a = s.appendEvent("shift.opened", { n: 1 });
+
+    s.markEventSynced(a.eventId, { ok: true }, () => s.setState("till_state", { snapshotOf: a.eventId }));
+
+    const row = db.prepare("SELECT status FROM local_events WHERE event_id = ?").get(a.eventId) as { status: string };
+    expect(row.status).toBe("synced");
+    expect(s.getState("till_state")).toEqual({ snapshotOf: a.eventId });
+  });
+
+  it("markEventSynced rolls back the status update when onCommit throws — the event stays pending for the next flush", () => {
+    const s = makeStore();
+    const a = s.appendEvent("shift.opened", { n: 1 });
+
+    expect(() =>
+      s.markEventSynced(a.eventId, { ok: true }, () => {
+        throw new Error("snapshot write failed");
+      }),
+    ).toThrow("snapshot write failed");
+
+    // Not "synced" (rolled back) and not "failed" either — the send simply
+    // never happened as far as the log is concerned, so it goes out again.
+    expect(s.pendingEvents().map((r) => r.event_id)).toEqual([a.eventId]);
+    expect(s.hasFailedEvents()).toBe(false);
+  });
+});
+
+describe("Store — local_events retention (Task 14)", () => {
+  it("deletes a synced event once it falls outside the 30-day window", () => {
+    const { store: s, db } = makeStoreWithDb();
+    const a = s.appendEvent("shift.opened", { n: 1 });
+    s.markEventSynced(a.eventId, { ok: true });
+    const in31Days = new Date(Date.now() + 31 * 24 * 60 * 60 * 1000);
+
+    expect(s.pruneSyncedEvents(in31Days)).toBe(1);
+    expect(db.prepare("SELECT 1 FROM local_events WHERE event_id = ?").get(a.eventId)).toBeUndefined();
+  });
+
+  it("leaves a synced event inside the window untouched", () => {
+    const s = makeStore();
+    const a = s.appendEvent("shift.opened", { n: 1 });
+    s.markEventSynced(a.eventId, { ok: true });
+
+    expect(s.pruneSyncedEvents(new Date())).toBe(0);
+    expect(s.getState("anything")).toBeNull(); // sanity: db still usable
+  });
+
+  it("never prunes pending or failed rows, no matter how old — only status='synced' is eligible", () => {
+    const s = makeStore();
+    const pending = s.appendEvent("cash.movement", { n: 1 });
+    const failed = s.appendEvent("cash.movement", { n: 2 });
+    s.markEventFailed(failed.eventId, "boom");
+    const farFuture = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+
+    expect(s.pruneSyncedEvents(farFuture)).toBe(0);
+    expect(s.pendingEvents().map((r) => r.event_id)).toEqual([pending.eventId]);
+    expect(s.hasFailedEvents()).toBe(true);
+  });
+});
+
+describe("Store — at-rest encryption (Task 14)", () => {
+  const alice: AuthUser = {
+    userId: "u1",
+    name: "Alice",
+    email: "alice@example.com",
+    passwordHash: "salt:hash1",
+    permissions: ["pos:sell"],
+  };
+
+  it("encrypts auth_cache.password_hash when a cipher is available, and findAuthUser decrypts it back transparently", () => {
+    const { store: s, db } = makeStoreWithDb(fakeCipher(true));
+    s.saveAuthRoster([alice], "t1");
+
+    const raw = db.prepare("SELECT password_hash FROM auth_cache WHERE user_id = ?").get("u1") as { password_hash: string };
+    expect(raw.password_hash).not.toBe(alice.passwordHash);
+    expect(raw.password_hash.startsWith("enc:v1:")).toBe(true);
+    expect(s.findAuthUser("alice@example.com")?.passwordHash).toBe(alice.passwordHash);
+  });
+
+  it("stores plaintext when the cipher reports unavailable — same degrade as no cipher at all", () => {
+    const { store: s, db } = makeStoreWithDb(fakeCipher(false));
+    s.saveAuthRoster([alice], "t1");
+
+    const raw = db.prepare("SELECT password_hash FROM auth_cache WHERE user_id = ?").get("u1") as { password_hash: string };
+    expect(raw.password_hash).toBe(alice.passwordHash);
+    expect(s.findAuthUser("alice@example.com")?.passwordHash).toBe(alice.passwordHash);
+  });
+
+  it("still reads a plaintext row written before encryption was available, once a cipher is wired up later", () => {
+    const db = openDb(":memory:");
+    new Store(db).saveAuthRoster([alice], "t1"); // no cipher — an existing dev install's plaintext row
+
+    const upgraded = new Store(db, fakeCipher(true)); // same file, reopened with encryption now on
+    expect(upgraded.findAuthUser("alice@example.com")?.passwordHash).toBe(alice.passwordHash);
+  });
+
+  it("encrypts catalog_cache.json when a cipher is available, and getCatalog decrypts it back transparently", () => {
+    const { store: s, db } = makeStoreWithDb(fakeCipher(true));
+    s.saveCatalog('{"categories":["secret menu"]}', "p1", "sp1", 1, "t1");
+
+    const raw = db.prepare("SELECT json FROM catalog_cache WHERE id = 1").get() as { json: string };
+    expect(raw.json).not.toContain("secret menu");
+    expect(s.getCatalog()?.json).toContain("secret menu");
+  });
+
+  it("still reads a plaintext catalog_cache.json written before encryption was available", () => {
+    const db = openDb(":memory:");
+    new Store(db).saveCatalog('{"categories":[]}', "p1", "sp1", 1, "t1");
+
+    const upgraded = new Store(db, fakeCipher(true));
+    expect(upgraded.getCatalog()?.json).toBe('{"categories":[]}');
+  });
+
+  it("never encrypts pricing_json or shift_policy_json — only json is in scope", () => {
+    const { store: s, db } = makeStoreWithDb(fakeCipher(true));
+    s.saveCatalog("{}", '{"vatEnabled":true}', '{"payoutThreshold":500}', 1, "t1");
+
+    const raw = db
+      .prepare("SELECT pricing_json AS pricingJson, shift_policy_json AS shiftPolicyJson FROM catalog_cache WHERE id = 1")
+      .get() as { pricingJson: string; shiftPolicyJson: string };
+    expect(raw.pricingJson).toBe('{"vatEnabled":true}');
+    expect(raw.shiftPolicyJson).toBe('{"payoutThreshold":500}');
   });
 });
 

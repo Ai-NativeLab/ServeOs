@@ -2,7 +2,7 @@ import { app, safeStorage } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
-import { openDb } from "./_offline/db";
+import { openDb, type AtRestCipher } from "./_offline/db";
 import { Store, type EventRow } from "./_offline/store";
 import {
   offlineSignIn, offlineGrant, createGrantVault, consumeOfflineGrant, rememberGrant,
@@ -33,6 +33,17 @@ export type PosRealtimeMessage =
 
 /** The till only cares about work arriving in its queue. */
 const REALTIME_EVENTS: TenantEventType[] = ["orders.changed", "sync.applied"];
+
+/** The real at-rest cipher (Task 14), over the same `safeStorage` `load`/
+ *  `persist` below already use for `pos-device.json` — `isAvailable()` and
+ *  `encrypt/decryptString` map straight onto safeStorage's own methods, so
+ *  the degrade-to-plaintext behavior (encryption unavailable, e.g. headless
+ *  Linux) is identical to the device-file precedent. */
+const authCacheCipher: AtRestCipher = {
+  isAvailable: () => safeStorage.isEncryptionAvailable(),
+  encryptString: (s) => safeStorage.encryptString(s),
+  decryptString: (b) => safeStorage.decryptString(b),
+};
 
 // In dev (vite serving), default to the local backend; otherwise the
 // configured/placeholder production host. POS_API_URL always wins.
@@ -351,7 +362,7 @@ export class PosMain {
   /** In memory only: closing the app signs the cashier out but leaves the device paired. */
   private cashier: Cashier | null = null;
   private readonly file = path.join(app.getPath("userData"), "pos-device.json");
-  private readonly store = new Store(openDb(path.join(app.getPath("userData"), "pos.db")));
+  private readonly store = new Store(openDb(path.join(app.getPath("userData"), "pos.db")), authCacheCipher);
   /** Single-use manager grants (Task 9) — device-local, never persisted. */
   private readonly grantVault: OfflineGrantVault = createGrantVault();
   private readonly api: PosApi = createApiClient(this.baseUrl, {
@@ -386,6 +397,10 @@ export class PosMain {
     onRealtime?: (message: PosRealtimeMessage) => void,
   ) {
     this.load();
+    // Retention (Task 14): synced rows older than the window are dead weight
+    // on every pendingEvents/unsyncedEvents scan — pending and failed rows are
+    // untouched (pruneSyncedEvents only ever deletes status = 'synced').
+    this.store.pruneSyncedEvents();
     this.snapshot = this.store.getState<TillState>(TILL_STATE_KEY) ?? EMPTY_TILL_STATE;
     // Crash-safe boot: the durable snapshot plus the tail of the log IS the
     // till's state. No network call gates the first render.

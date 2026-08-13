@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import crypto from "node:crypto";
+import { noCipher, encryptAtRest, decryptAtRest, type AtRestCipher } from "./db";
 
 export interface OutboxRow {
   client_order_id: string;
@@ -35,8 +36,9 @@ export interface EventRow {
 
 /** Mirrors the server's `PosRosterUser` (src/app/api/pos/v1/sync/auth/route.ts)
  *  field for field, so the offline roster and the online roster never drift
- *  apart in shape. `passwordHash` is stored exactly as given — encrypting it
- *  at rest (safeStorage) is the caller's job, not the store's. */
+ *  apart in shape. `passwordHash` is given and returned as plaintext (the
+ *  scrypt hash, not a raw password) — `saveAuthRoster`/`findAuthUser`
+ *  encrypt/decrypt it at rest (Task 14) transparently, at the store boundary. */
 export interface AuthUser {
   userId: string;
   name: string;
@@ -54,11 +56,21 @@ interface AuthCacheRow {
   synced_at: string;
 }
 
+/** Task 14's local_events retention window. */
+const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
 export class Store {
-  constructor(private db: Database.Database) {}
+  /** `cipher` defaults to a plaintext passthrough (every test, and any build
+   *  that never wires one up) — see db.ts's AtRestCipher. `pos-main.ts` is the
+   *  only caller that passes the real safeStorage-backed one. */
+  constructor(private db: Database.Database, private cipher: AtRestCipher = noCipher) {}
 
   // ---- catalog (existing table; gains pricing + version, Task 8) ----
 
+  /** `json` (the menu) is encrypted at rest (Task 14) — `pricingJson` and
+   *  `shiftPolicyJson` are not, since neither is customer or credential data
+   *  and both are read on every checkout render, where decrypting on a cold
+   *  cache would be wasted work for no confidentiality gain. */
   saveCatalog(json: string, pricingJson: string, shiftPolicyJson: string, catalogVersion: number, syncedAt: string): void {
     this.db
       .prepare(
@@ -70,7 +82,7 @@ export class Store {
            catalog_version = excluded.catalog_version,
            synced_at = excluded.synced_at`,
       )
-      .run(json, pricingJson, shiftPolicyJson, catalogVersion, syncedAt);
+      .run(encryptAtRest(this.cipher, json), pricingJson, shiftPolicyJson, catalogVersion, syncedAt);
   }
 
   getCatalog(): {
@@ -85,7 +97,7 @@ export class Store {
       .get() as
       | { json: string; pricingJson: string | null; shiftPolicyJson: string | null; catalogVersion: number | null; syncedAt: string }
       | undefined;
-    return row ?? null;
+    return row ? { ...row, json: decryptAtRest(this.cipher, row.json) } : null;
   }
 
   // ---- order outbox (pre-existing; superseded by local_events for new work) ----
@@ -209,10 +221,25 @@ export class Store {
       .run(eventId);
   }
 
-  markEventSynced(eventId: string, response: unknown): void {
-    this.db
-      .prepare(`UPDATE local_events SET status = 'synced', server_response = ? WHERE event_id = ?`)
-      .run(JSON.stringify(response), eventId);
+  /**
+   * `onCommit`, when given, runs INSIDE the same better-sqlite3 transaction as
+   * the status update (Task 14 — folding in Task 10's deferred item: these
+   * used to be two separate statements, and a crash between them dropped one
+   * event from the confirmed till-state snapshot). `pos-main.ts` passes the
+   * snapshot's own store write (`setState(TILL_STATE_KEY, ...)`) as
+   * `onCommit`, so "this event is synced" and "the snapshot advanced past it"
+   * now land together or not at all — and if `onCommit` throws, the status
+   * update rolls back with it, leaving the event pending for the next flush
+   * rather than silently synced-but-unabsorbed.
+   */
+  markEventSynced(eventId: string, response: unknown, onCommit?: () => void): void {
+    const run = this.db.transaction(() => {
+      this.db
+        .prepare(`UPDATE local_events SET status = 'synced', server_response = ? WHERE event_id = ?`)
+        .run(JSON.stringify(response), eventId);
+      onCommit?.();
+    });
+    run();
   }
 
   markEventFailed(eventId: string, error: string): void {
@@ -221,13 +248,30 @@ export class Store {
       .run(JSON.stringify({ error }), eventId);
   }
 
+  /** Boot-time retention (Task 14): a synced event has nothing left to replay
+   *  — the confirmed snapshot has already absorbed it — and nothing reads
+   *  `local_events` for history (sales history is a server query), so a row
+   *  synced for 30+ days is dead weight `pendingEvents`/`unsyncedEvents` scan
+   *  past forever. Only ever touches `status = 'synced'`: pending and failed
+   *  rows are live state (a failed one holds the sticky halt) and must never
+   *  age out from under it. `now` is injectable so a test can control the
+   *  cutoff without waiting on wall time. Returns the row count deleted. */
+  pruneSyncedEvents(now: Date = new Date()): number {
+    const cutoff = new Date(now.getTime() - RETENTION_MS).toISOString();
+    return this.db
+      .prepare(`DELETE FROM local_events WHERE status = 'synced' AND occurred_at < ?`)
+      .run(cutoff).changes;
+  }
+
   // ---- auth roster cache (Task 8) ----
 
   /** Replace-all: the roster is a point-in-time mirror of the server's, so a
    *  user removed/deactivated server-side must disappear from the cache too
    *  — an additive upsert would leave departed users able to sign in
    *  offline forever. Runs in one transaction so a reader never observes an
-   *  empty roster mid-swap. */
+   *  empty roster mid-swap. `passwordHash` is encrypted at rest (Task 14) —
+   *  the roster otherwise carries every POS-capable user's credential hash on
+   *  a device that leaves the building. */
   saveAuthRoster(users: AuthUser[], syncedAt: string): void {
     const replace = this.db.transaction((rows: AuthUser[]) => {
       this.db.prepare("DELETE FROM auth_cache").run();
@@ -236,7 +280,7 @@ export class Store {
          VALUES (?, ?, ?, ?, ?, ?)`,
       );
       for (const u of rows) {
-        insert.run(u.userId, u.name, u.email, u.passwordHash, JSON.stringify(u.permissions), syncedAt);
+        insert.run(u.userId, u.name, u.email, encryptAtRest(this.cipher, u.passwordHash), JSON.stringify(u.permissions), syncedAt);
       }
     });
     replace(users);
@@ -251,7 +295,7 @@ export class Store {
       userId: row.user_id,
       name: row.name,
       email: row.email,
-      passwordHash: row.password_hash,
+      passwordHash: decryptAtRest(this.cipher, row.password_hash),
       permissions: JSON.parse(row.permissions) as string[],
     };
   }

@@ -1,5 +1,49 @@
 import Database from "better-sqlite3";
 
+/**
+ * At-rest encryption seam (Task 14). Electron's `safeStorage` cannot be
+ * imported here: this file is pulled into a bare vitest process by every
+ * `_offline` test (no Electron runtime to provide it), the same reason
+ * `PosApiClient` and the realtime transport are injected rather than
+ * constructed (Tasks 8-11). `pos-main.ts` builds the real implementation over
+ * `safeStorage` and hands it to `Store`; every test gets `noCipher` by default.
+ */
+export interface AtRestCipher {
+  isAvailable(): boolean;
+  encryptString(plaintext: string): Buffer;
+  decryptString(ciphertext: Buffer): string;
+}
+
+/** What every test — and a `safeStorage.isEncryptionAvailable() === false`
+ *  platform (headless Linux CI, no secret store) — gets: writes land as
+ *  plaintext, exactly like disabled safeStorage. */
+export const noCipher: AtRestCipher = {
+  isAvailable: () => false,
+  encryptString: (s) => Buffer.from(s, "utf8"),
+  decryptString: (b) => b.toString("utf8"),
+};
+
+/** Tags an encrypted value so `decryptAtRest` can tell it apart from a
+ *  plaintext row written before encryption existed, or by a cipher that was
+ *  unavailable at write time — both must keep reading correctly forever,
+ *  since there is no migration pass over `auth_cache`/`catalog_cache` (Task
+ *  14: encryption applies going forward, on the next write of a row, not
+ *  retroactively). */
+const ENC_PREFIX = "enc:v1:";
+
+export function encryptAtRest(cipher: AtRestCipher, plaintext: string): string {
+  if (!cipher.isAvailable()) return plaintext;
+  return ENC_PREFIX + cipher.encryptString(plaintext).toString("base64");
+}
+
+/** Untagged input (no `enc:v1:` prefix) is read back as-is — a pre-encryption
+ *  row, or one written while `isAvailable()` was false. Never throws on a
+ *  plaintext row just because a cipher is now available. */
+export function decryptAtRest(cipher: AtRestCipher, stored: string): string {
+  if (!stored.startsWith(ENC_PREFIX)) return stored;
+  return cipher.decryptString(Buffer.from(stored.slice(ENC_PREFIX.length), "base64"));
+}
+
 /** Columns SQLite has no `ADD COLUMN IF NOT EXISTS` for — guarded by reading
  *  the table's own schema first, so re-opening an already-migrated DB is a
  *  no-op instead of an "duplicate column" error. */
