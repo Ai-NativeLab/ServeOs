@@ -318,13 +318,13 @@ export async function closeShift(
   // Grants are single-use, so resolve at most once and reuse the answer: a close
   // that is BOTH cross-user and flagged must not spend the token twice.
   let authorizer: string | null = null;
-  const authorize = (): string => {
-    if (authorizer === null) authorizer = resolveAuthorizer(ctx, "reconciliation:manage", grantToken);
+  const authorize = async (): Promise<string> => {
+    if (authorizer === null) authorizer = await resolveAuthorizer(ctx, "reconciliation:manage", grantToken);
     return authorizer;
   };
   // A grant is a manager standing at the till: validate it up front so one token
   // governs the cross-user close, the variance approval, and the blind reveal.
-  if (!holdsPermission && grantToken) authorize();
+  if (!holdsPermission && grantToken) await authorize();
   const canManage = holdsPermission || authorizer !== null;
 
   return withTenant(ctx.tenantId, async (tx) => {
@@ -343,7 +343,7 @@ export async function closeShift(
     if (shift.status === "closed") throw new ShiftClosedError();
 
     // Throws PosForbiddenError unless the permission is held or granted.
-    if (shift.openedByUserId !== ctx.cashierUserId) authorize();
+    if (shift.openedByUserId !== ctx.cashierUserId) await authorize();
 
     const { core, expected } = await gatherShift(tx, shift);
     const counted = round2(input.count.countedTotal);
@@ -351,7 +351,7 @@ export async function closeShift(
     const flagged = isVarianceFlagged(variance, policy.varianceThreshold);
     // Who settled the discrepancy. Durable reconciliation state is Spec 7; this
     // is the approval as recorded on the count and in the audit chain.
-    const approvedByUserId = flagged && canManage ? authorize() : null;
+    const approvedByUserId = flagged && canManage ? await authorize() : null;
 
     const [count] = await tx
       .insert(cashCounts)

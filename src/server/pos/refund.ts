@@ -96,7 +96,7 @@ export async function issueRefund(
   // Authorize BEFORE the transaction. resolveAuthorizer throws PosForbiddenError
   // when the actor lacks pos:refund and has no (valid) grant. RefundActor is
   // structurally a PosAuthorizerContext — no cast needed.
-  const authorizer = resolveAuthorizer(
+  const authorizer = await resolveAuthorizer(
     {
       tenantId: actor.tenantId,
       cashierUserId: actor.actorUserId,

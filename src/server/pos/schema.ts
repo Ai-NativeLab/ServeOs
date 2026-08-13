@@ -3,6 +3,7 @@ import { tenants } from "@/server/tenancy/schema";
 import { branches } from "@/server/branches/schema";
 import { users } from "@/server/auth/schema";
 import { orders } from "@/server/ordering/schema";
+import type { Permission } from "@/server/rbac/permissions";
 
 export const posDevices = pgTable("pos_devices", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -46,12 +47,24 @@ export const posCashierSessions = pgTable("pos_cashier_sessions", {
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
-  permissions: jsonb("permissions").$type<string[]>().notNull(),
+  permissions: jsonb("permissions").$type<Permission[]>().notNull(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("pos_cashier_sessions_expires").on(t.expiresAt)]);
+
+/** Manager grants. Same control-plane shape as pos_cashier_sessions: no RLS,
+ *  keyed by the SHA-256 of the bearer token. Single-use is enforced by
+ *  consumeGrant's DELETE ... RETURNING, not by a column here. */
+export const posGrants = pgTable("pos_grants", {
+  tokenHash: text("token_hash").primaryKey(),   // sha256 hex, same helper as sessions
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  permission: text("permission").notNull(),
+  authorizedByUserId: uuid("authorized_by_user_id").notNull().references(() => users.id),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+});
 
 export type PosDevice = typeof posDevices.$inferSelect;
 export type PosPairingCode = typeof posPairingCodes.$inferSelect;
 export type PosOrderReceipt = typeof posOrderReceipts.$inferSelect;
 export type PosCashierSession = typeof posCashierSessions.$inferSelect;
+export type PosGrant = typeof posGrants.$inferSelect;

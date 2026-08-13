@@ -17,6 +17,7 @@ export const AUDITED_SERVICE_FILES = [
   "src/server/pos/record-sale.ts",
   "src/server/pos/refund.ts",
   "src/server/pos/cashier.ts",
+  "src/server/pos/grants.ts",
   "src/server/pos/held-tickets.ts",
   "src/server/pos/service.ts",
   "src/server/pos/shifts.ts",
@@ -144,6 +145,15 @@ export const AUDIT_ALLOWLIST: Record<string, string> = {
   // inventory.count.commit and carries the variance-line count with it.
   "service.addCountLines": "inventory.count.commit emitted by commitCount; lines alone move no stock",
   "service.openCount": "inventory.count.commit emitted by commitCount; an open count moves no stock until committed",
+  // POS control-plane token tables (cashier sessions, manager grants). These rows
+  // are credentials, not domain state: signInCashier emits auth.cashier_signed_in
+  // / auth.login_failed, the authorize route emits authz.manager_granted beside
+  // issueGrant, and a consumed grant is recorded by the gated action's own event
+  // through authorizedByUserId. The expiry deletes are garbage collection of rows
+  // that were already inert — a swept token authorizes nothing either way.
+  "cashier.resolveCashier": "expiry sweep of an already-inert row; auth.cashier_signed_in emitted by signInCashier",
+  "grants.issueGrant": "authz.manager_granted emitted by the authorize route beside this call",
+  "grants.consumeGrant": "the gated action's own audit event carries authorizedByUserId",
   // Forward references — land with later specs; the guardrail enforces they emit then.
   "forward:refund.*": "Spec 3 refunds must emit refund.* via recordAuditEvent",
   "forward:purchase-order.*": "Spec 9 PO lifecycle must emit po.*",

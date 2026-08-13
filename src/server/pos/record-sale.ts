@@ -92,7 +92,7 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
   const hasLineDiscount = input.lines.some((l) => (l.discountAmount ?? 0) > 0);
   const hasOrderDiscount = (input.orderDiscountAmount ?? 0) > 0;
   const discountAuthorizer = hasLineDiscount || hasOrderDiscount
-    ? resolveAuthorizer(ctx, "pos:discount", grantFor("pos:discount"))
+    ? await resolveAuthorizer(ctx, "pos:discount", grantFor("pos:discount"))
     : null;
 
   // Validate tenders before touching the DB.

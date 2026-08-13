@@ -116,7 +116,7 @@ describe("recordSale", () => {
 
   it("records the manager as authorizer when staff spends a grant", async () => {
     const { ctx, productId, managerId, tenantId } = await seedPosContext("staff");
-    const grant = issueGrant(tenantId, "pos:discount", managerId);
+    const grant = await issueGrant(tenantId, "pos:discount", managerId);
     // Derive the discounted total from the shared money math so the assertion
     // does not drift with the tenant's VAT/service-charge defaults.
     const pricing = await getCheckoutPricing(tenantId);

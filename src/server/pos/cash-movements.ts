@@ -54,7 +54,7 @@ export async function recordCashMovement(
   let authorizedByUserId: string | null = null;
   if (input.type === "pay_out" && policy.payoutThreshold > 0 && magnitude > policy.payoutThreshold) {
     const grant = input.grants?.find((g) => g.permission === "reconciliation:manage")?.token;
-    authorizedByUserId = resolveAuthorizer(ctx, "reconciliation:manage", grant);
+    authorizedByUserId = await resolveAuthorizer(ctx, "reconciliation:manage", grant);
   }
 
   return withTenant(ctx.tenantId, async (tx) => {

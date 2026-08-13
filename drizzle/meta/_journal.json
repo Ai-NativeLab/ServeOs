@@ -274,6 +274,13 @@
       "when": 1786633158947,
       "tag": "0038_tense_ultimo",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1786638118828,
+      "tag": "0039_hard_spectrum",
+      "breakpoints": true
     }
   ]
 }
