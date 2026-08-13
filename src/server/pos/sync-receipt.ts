@@ -54,3 +54,29 @@ export function reviveDates<T extends Record<string, unknown>>(row: T, keys: (ke
   }
   return out;
 }
+
+/** Every unique constraint a replayable service's own natural key or receipt
+ *  insert can legitimately collide on under a genuine concurrent replay —
+ *  not a real failure, just the loser of a race that its own advisory lock
+ *  should normally have serialized. Kept in one place so nothing has to
+ *  hardcode a single constraint name (`pos_sync_event_receipts_key`) and miss
+ *  the natural-key ones each service also owns. */
+const REPLAY_UNIQUE_CONSTRAINTS = new Set([
+  "pos_sync_event_receipts_key",
+  "pos_shifts_device_client",
+  "pos_held_tickets_device_client",
+]);
+
+/**
+ * True for a Postgres unique-violation (23505) on one of the constraints
+ * above — the one honest place to ask "was this just a concurrent duplicate
+ * of a sync event?" instead of treating it as a hard failure. `.cause` is
+ * checked too: a driver/ORM layer sometimes wraps the original pg error.
+ */
+export function isReplayUniqueViolation(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { code?: unknown; constraint?: unknown; cause?: { code?: unknown; constraint?: unknown } };
+  const code = e.code ?? e.cause?.code;
+  const constraint = e.constraint ?? e.cause?.constraint;
+  return code === "23505" && typeof constraint === "string" && REPLAY_UNIQUE_CONSTRAINTS.has(constraint);
+}

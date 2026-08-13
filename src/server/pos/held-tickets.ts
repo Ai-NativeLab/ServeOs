@@ -1,10 +1,20 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { recordAuditEvent } from "@/server/audit/service";
 import { posHeldTickets } from "./tender-schema";
 import { posSyncEventReceipts } from "./schema";
 import { findSyncReceipt, type SyncReceipt } from "./sync-receipt";
 import type { PosCashierContext } from "./require-cashier";
+
+type Tx = Parameters<Parameters<typeof withTenant>[1]>[0];
+
+/** One advisory-lock key per (device, clientTicketId) — same discipline as
+ *  openShift's device lock: taken before the idempotency check, so two
+ *  concurrent replays of the same ticket event can't both pass "not found"
+ *  and race each other into `pos_held_tickets_device_client`. */
+async function lockTicketIdentity(tx: Tx, deviceId: string, clientTicketId: string): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`${deviceId}:${clientTicketId}`})::bigint)`);
+}
 
 export type HeldTicketSyncOptions = {
   /** The id the device minted while holding this ticket offline (Task 4's
@@ -14,6 +24,13 @@ export type HeldTicketSyncOptions = {
   clientTicketId?: string;
   /** The device-claimed time; defaults to now(). */
   occurredAt?: Date;
+  syncReceipt?: SyncReceipt;
+};
+
+/** Discard deletes a row — there is no createdAt to backdate, so unlike
+ *  HeldTicketSyncOptions this carries no occurredAt. */
+export type HeldTicketDiscardOptions = {
+  clientTicketId?: string;
   syncReceipt?: SyncReceipt;
 };
 
@@ -28,6 +45,8 @@ export async function holdTicket(
     // Natural idempotency key, the same shape as openShift's clientShiftId
     // check: a replayed hold answers from here, never from the receipt.
     if (opts.clientTicketId) {
+      await lockTicketIdentity(tx, ctx.deviceId, opts.clientTicketId);
+
       const [existing] = await tx
         .select({ id: posHeldTickets.id })
         .from(posHeldTickets)
@@ -89,11 +108,24 @@ export async function listHeldTickets(ctx: PosCashierContext) {
 export async function discardHeldTicket(
   ctx: PosCashierContext,
   id: string | null,
-  opts: HeldTicketSyncOptions = {},
+  opts: HeldTicketDiscardOptions = {},
 ): Promise<void> {
+  // Neither identifier given is a caller bug, not a domain state to report:
+  // left unguarded, `eq(posHeldTickets.id, null)` matches nothing and this
+  // would silently no-op while still emitting a "ticket.discarded" audit
+  // event and receipt for an id of null.
+  if (id === null && !opts.clientTicketId) {
+    throw new Error("discardHeldTicket needs an id or opts.clientTicketId");
+  }
+
   await withTenant(ctx.tenantId, async (tx) => {
+    if (opts.clientTicketId) await lockTicketIdentity(tx, ctx.deviceId, opts.clientTicketId);
+
     // No natural key on this table for a discard event itself — the receipt
-    // is what makes a replay of "delete this row" exactly-once.
+    // is what makes a replay of "delete this row" exactly-once. Checked after
+    // the lock above (when there is one) for the same reason every other
+    // service checks inside its lock: two concurrent replays of the same
+    // event must not both pass this and both write a receipt.
     if (opts.syncReceipt) {
       const stored = await findSyncReceipt(opts.syncReceipt, tx);
       if (stored) return;
@@ -127,9 +159,11 @@ export async function discardHeldTicket(
 export async function recallHeldTicket(
   ctx: PosCashierContext,
   clientTicketId: string,
-  opts: { occurredAt?: Date; syncReceipt?: SyncReceipt } = {},
+  opts: { syncReceipt?: SyncReceipt } = {},
 ): Promise<void> {
   await withTenant(ctx.tenantId, async (tx) => {
+    await lockTicketIdentity(tx, ctx.deviceId, clientTicketId);
+
     if (opts.syncReceipt) {
       const stored = await findSyncReceipt(opts.syncReceipt, tx);
       if (stored) return;

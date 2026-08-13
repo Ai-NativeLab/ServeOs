@@ -3,7 +3,7 @@ import { money } from "@/server/ordering/service";
 import { recordAuditEvent } from "@/server/audit/service";
 import { getShiftPolicy } from "@/server/tenancy/settings";
 import type { Permission } from "@/server/rbac/permissions";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { cashMovements, posShifts, type CashMovement, type CashMovementType } from "./shift-schema";
 import { posSyncEventReceipts } from "./schema";
 import { findSyncReceipt, reviveDates, type SyncReceipt } from "./sync-receipt";
@@ -47,6 +47,16 @@ export async function recordCashMovement(
   }
   const signed = input.type === "pay_in" ? magnitude : input.type === "no_sale" ? 0 : -magnitude;
 
+  // Cheap pre-check, mirroring closeShift's: a plain retry answers here
+  // before the "no open shift" check below — which must not run at all for a
+  // replay whose shift has since closed, or it throws NoOpenShiftError for a
+  // movement that already applied. The authoritative recheck, inside the
+  // advisory lock, is what actually closes the concurrent-replay race.
+  if (input.syncReceipt) {
+    const stored = await findSyncReceipt(input.syncReceipt);
+    if (stored) return reviveDates(stored.resultJson as CashMovement, ["createdAt"]);
+  }
+
   // Cheap pre-check so "there is no drawer" is reported before a manager's
   // single-use grant would be spent. The authoritative read is inside the
   // transaction below.
@@ -63,6 +73,18 @@ export async function recordCashMovement(
   }
 
   return withTenant(ctx.tenantId, async (tx) => {
+    // A movement has no natural idempotency key (unlike a sale's clientOrderId
+    // or a shift's clientShiftId) — the receipt is what gives it one. Locked
+    // on the event itself, not the shift row below: that row only exists to
+    // lock while the shift is open, so a replay arriving after the shift has
+    // since closed would otherwise have nothing serializing this check against
+    // a concurrent replay of the same event.
+    if (input.syncReceipt) {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${input.syncReceipt.eventId})::bigint)`);
+      const stored = await findSyncReceipt(input.syncReceipt, tx);
+      if (stored) return reviveDates(stored.resultJson as CashMovement, ["createdAt"]);
+    }
+
     // Re-resolve the drawer on THIS transaction and lock the row. This is the
     // ONLY thing serializing a movement against a close or a mid-shift count —
     // neither of those takes it via this path, they take the same row with
@@ -81,15 +103,6 @@ export async function recordCashMovement(
       .limit(1)
       .for("update");
     if (!shift) throw new NoOpenShiftError();
-
-    // A movement has no natural idempotency key (unlike a sale's clientOrderId
-    // or a shift's clientShiftId) — the receipt is what gives it one. The row
-    // lock just taken above is what makes this check race-safe against a
-    // concurrent replay of the same event.
-    if (input.syncReceipt) {
-      const stored = await findSyncReceipt(input.syncReceipt, tx);
-      if (stored) return reviveDates(stored.resultJson as CashMovement, ["createdAt"]);
-    }
 
     const [row] = await tx
       .insert(cashMovements)

@@ -13,7 +13,7 @@ import { posShifts, cashCounts, cashMovements } from "./shift-schema";
 import { posHeldTickets, orderPayments } from "./tender-schema";
 import { ShiftClosedError } from "./errors";
 import { seedPosContext } from "./test-helpers";
-import type { SyncReceipt } from "./sync-receipt";
+import { isReplayUniqueViolation, type SyncReceipt } from "./sync-receipt";
 import type { PosCashierContext } from "./require-cashier";
 import type { Permission } from "@/server/rbac/permissions";
 
@@ -148,6 +148,29 @@ describe("closeShift replay", () => {
 });
 
 describe("recordCashMovement replay", () => {
+  it("a replay arriving after the shift has since closed returns the stored result, not NoOpenShiftError", async () => {
+    const { ctx } = await seedPosContext("owner");
+    const shift = await openShift(ctx, { openingFloat: 100 });
+    const EVT = crypto.randomUUID();
+    const input = {
+      type: "pay_in" as const, amount: 30, reasonCode: "float_top_up",
+      syncReceipt: receiptFor(ctx, EVT, "cash.movement"),
+    };
+
+    const first = await recordCashMovement(ctx, input);
+    await closeShift(ctx, shift.id, { count: { countedTotal: 130 } });
+
+    // Same event, replayed after the drawer it belongs to has since closed.
+    // Both the pre-tx bail-out and the in-tx checks must answer from the
+    // receipt — neither the outer findOpenShift precheck nor the inner
+    // status='open' row lookup may run first and throw.
+    const again = await recordCashMovement(ctx, input);
+    expect(again.id).toBe(first.id);
+
+    const rows = await withTenant(ctx.tenantId, (tx) => tx.select().from(cashMovements));
+    expect(rows).toHaveLength(1); // no double apply
+  });
+
   it("applies a movement with the same syncReceipt eventId exactly once", async () => {
     const { ctx } = await seedPosContext("owner");
     const shift = await openShift(ctx, { openingFloat: 100 });
@@ -254,6 +277,62 @@ describe("held tickets replay", () => {
     const events = await withTenant(ctx.tenantId, (tx) =>
       tx.select().from(auditEvents).where(eq(auditEvents.action, "ticket.recalled")));
     expect(events).toHaveLength(1);
+  });
+
+  it("discardHeldTicket requires an id or a clientTicketId", async () => {
+    const { ctx } = await seedPosContext("owner");
+    // Left unguarded, `id: null` with no clientTicketId matches zero rows
+    // silently — a caller bug that would otherwise still emit a "successful"
+    // discard audit event and receipt for nothing.
+    await expect(discardHeldTicket(ctx, null)).rejects.toThrow(/id or/i);
+  });
+
+  // Every other replayable service takes a lock before its idempotency check;
+  // without one here, the loser of a genuine race gets a raw unhandled 23505
+  // on pos_held_tickets_device_client instead of a graceful idempotent return.
+  it("two concurrent holdTicket calls with the same clientTicketId: exactly one inserts, both resolve idempotently", async () => {
+    const { ctx } = await seedPosContext("owner");
+    const CTID = crypto.randomUUID();
+
+    const settled = await Promise.allSettled([
+      holdTicket(ctx, "Table 1", { lines: [] }, { clientTicketId: CTID }),
+      holdTicket(ctx, "Table 1", { lines: [] }, { clientTicketId: CTID }),
+    ]);
+
+    expect(settled.filter((r) => r.status === "fulfilled")).toHaveLength(2);
+    const ids = (settled as PromiseFulfilledResult<{ id: string }>[]).map((r) => r.value.id);
+    expect(ids[0]).toBe(ids[1]); // both callers see the same row, not a thrown constraint error
+
+    const rows = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(posHeldTickets).where(eq(posHeldTickets.clientTicketId, CTID)));
+    expect(rows).toHaveLength(1); // exactly one row was actually inserted
+  });
+});
+
+describe("isReplayUniqueViolation", () => {
+  it("recognizes a genuine unique violation on a replay constraint", async () => {
+    const { ctx } = await seedPosContext("owner");
+    const row = {
+      deviceId: ctx.deviceId, eventId: crypto.randomUUID(), type: "x",
+      resultJson: {}, occurredAt: new Date(),
+    };
+    await db.insert(posSyncEventReceipts).values(row);
+
+    let caught: unknown;
+    try {
+      await db.insert(posSyncEventReceipts).values(row); // same (deviceId, eventId) again
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeDefined();
+    expect(isReplayUniqueViolation(caught)).toBe(true);
+  });
+
+  it("is false for an unrelated error or an unrelated constraint", () => {
+    expect(isReplayUniqueViolation(new Error("boom"))).toBe(false);
+    expect(isReplayUniqueViolation({ code: "23505", constraint: "some_other_table_pkey" })).toBe(false);
+    expect(isReplayUniqueViolation(null)).toBe(false);
   });
 });
 
