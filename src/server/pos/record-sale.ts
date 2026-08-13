@@ -6,7 +6,7 @@ import { orders } from "@/server/ordering/schema";
 import type { Permission } from "@/server/rbac/permissions";
 import { posOrderReceipts } from "./schema";
 import { orderPayments, posAdjustmentEvents } from "./tender-schema";
-import { posShifts } from "./shift-schema";
+import { posShifts, type PosShift } from "./shift-schema";
 import { findOpenShift } from "./shifts";
 import { resolveAuthorizer } from "./grants";
 import { NoOpenShiftError, PosSaleError } from "./errors";
@@ -37,6 +37,14 @@ export type RecordSaleInput = {
   payments: TenderInput[];
   grants?: { permission: Permission; token: string }[];
   notes?: string;
+  /** Replay-only shift resolution: the id the device minted while opening the
+   *  drawer offline. When set, the drawer is resolved by (deviceId,
+   *  clientShiftId) instead of "whichever shift is open" — see
+   *  resolveReplayShift. Ignored (findOpenShift governs) when absent. */
+  clientShiftId?: string;
+  /** Replay-only: the server shiftId, for a sale replaying against a shift
+   *  that was opened online (so it never had a clientShiftId). */
+  shiftId?: string;
 };
 
 export type SaleReceipt = {
@@ -50,6 +58,35 @@ export type SaleReceipt = {
 };
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/**
+ * Resolves the drawer a replayed sale stamps its tenders against: by the
+ * client-minted shift id if the shift was opened offline, or by the server
+ * id if it was opened online. Unlike findOpenShift, this does not filter on
+ * status = 'open' — a shift the device closed before this event's turn to
+ * replay is still the right drawer, just closed (see shiftClosedAtReplay).
+ */
+async function resolveReplayShift(
+  tenantId: string,
+  deviceId: string,
+  ref: { clientShiftId?: string; shiftId?: string },
+): Promise<PosShift | null> {
+  return withTenant(tenantId, async (tx) => {
+    if (ref.clientShiftId) {
+      const [s] = await tx.select().from(posShifts)
+        .where(and(eq(posShifts.deviceId, deviceId), eq(posShifts.clientShiftId, ref.clientShiftId)))
+        .limit(1);
+      if (s) return s;
+    }
+    if (ref.shiftId) {
+      const [s] = await tx.select().from(posShifts)
+        .where(and(eq(posShifts.deviceId, deviceId), eq(posShifts.id, ref.shiftId)))
+        .limit(1);
+      if (s) return s;
+    }
+    return null;
+  });
+}
 
 export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput): Promise<SaleReceipt> {
   // Idempotency: a retried submit returns the original sale rather than
@@ -83,8 +120,21 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
   // Cash must land in an accounted drawer. Resolve the device's shift once,
   // before placeOrder, so a refusal leaves no orphan order behind. Card/other
   // tenders are allowed with no shift and simply carry a null shiftId.
-  const shift = await findOpenShift(ctx.tenantId, ctx.deviceId);
+  //
+  // A replayed sale names its own drawer (clientShiftId, or shiftId if that
+  // drawer was opened online) instead of asking "whichever shift is open" —
+  // by the time the queue drains, the device may have opened a new one, or
+  // this one may have since closed. Live sales are unaffected: neither field
+  // is ever set outside the replay path.
+  const isReplay = Boolean(input.clientShiftId || input.shiftId);
+  const shift = isReplay
+    ? await resolveReplayShift(ctx.tenantId, ctx.deviceId, input)
+    : await findOpenShift(ctx.tenantId, ctx.deviceId);
   if (!shift && input.payments.some((p) => p.method === "cash")) throw new NoOpenShiftError();
+  // Tolerated, not refused: the drawer this sale belongs to may have closed
+  // before its turn to replay. The tender still lands against it; the flag
+  // below tells the audit trail (and Spec 7 reconciliation) it arrived late.
+  const shiftClosedAtReplay = isReplay && shift?.status === "closed";
 
   // Authorize every discount BEFORE writing anything. resolveAuthorizer throws
   // PosForbiddenError when the cashier lacks the permission and has no grant.
@@ -216,6 +266,7 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
         metadata: {
           orderNumber: String(placed.orderNumber), total: money(placed.total), paymentStatus,
           tenders: input.payments.map((p) => ({ method: p.method, amount: money(p.amount) })),
+          ...(shiftClosedAtReplay ? { shiftClosedAtReplay: true } : {}),
         }, actorType: "user",
       }, tx);
 

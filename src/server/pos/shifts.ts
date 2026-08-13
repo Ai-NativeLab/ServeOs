@@ -10,6 +10,8 @@ import {
   type PosShift, type CashCount, type CashMovementType,
 } from "./shift-schema";
 import { orderPayments, posAdjustmentEvents, type OrderPayment } from "./tender-schema";
+import { posSyncEventReceipts } from "./schema";
+import { findSyncReceipt, reviveDates, type SyncReceipt } from "./sync-receipt";
 import { resolveAuthorizer } from "./grants";
 import {
   CashCountMismatchError, NoOpenShiftError, ShiftAlreadyOpenError, ShiftClosedError,
@@ -24,11 +26,22 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export type OpenShiftInput = {
   openingFloat: number;
   denominations?: Record<string, number>;
+  /** The id the device minted while opening offline. openShift's own replay
+   *  key — checked before the insert, inside the same advisory lock — via
+   *  `pos_shifts_device_client` (Task 4). Null/absent for an online open. */
+  clientShiftId?: string;
+  /** The device-claimed open time; defaults to now(). Honoured on replay so a
+   *  shift opened offline keeps the till's own clock, not the ingest time. */
+  occurredAt?: Date;
+  syncReceipt?: SyncReceipt;
 };
 
 export type CloseShiftInput = {
   count: { countedTotal: number; denominations?: Record<string, number> };
   grants?: { permission: Permission; token: string }[];
+  /** The device-claimed close time; defaults to now(). */
+  occurredAt?: Date;
+  syncReceipt?: SyncReceipt;
 };
 
 export type TenderTotal = { method: OrderPayment["method"]; amount: number; tips: number; count: number };
@@ -65,6 +78,9 @@ export type ZReport = ShiftReportCore & {
   cash: { expected: number | null; counted: number; variance: number | null };
   flagged: boolean;
   approvedByUserId: string | null;
+  /** True when a syncReceipt resolved this call to a stored result instead of
+   *  re-closing — same precedent as SaleReceipt.idempotent. */
+  idempotent: boolean;
 };
 
 /** One AuditContext shape for every shift-domain emission (open, close, movements, counts). */
@@ -96,6 +112,18 @@ export async function openShift(ctx: PosCashierContext, input: OpenShiftInput): 
   return withTenant(ctx.tenantId, async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${ctx.deviceId})::bigint)`);
 
+    // Replay idempotency: a shift-open event carries its own natural key (the
+    // partial unique index on (deviceId, clientShiftId)), so a retry answers
+    // from this SELECT and never touches pos_sync_event_receipts.
+    if (input.clientShiftId) {
+      const [existing] = await tx
+        .select()
+        .from(posShifts)
+        .where(and(eq(posShifts.deviceId, ctx.deviceId), eq(posShifts.clientShiftId, input.clientShiftId)))
+        .limit(1);
+      if (existing) return existing;
+    }
+
     const [alreadyOpen] = await tx
       .select()
       .from(posShifts)
@@ -104,6 +132,7 @@ export async function openShift(ctx: PosCashierContext, input: OpenShiftInput): 
     if (alreadyOpen) throw new ShiftAlreadyOpenError();
 
     const openingFloat = money(input.openingFloat);
+    const openedAt = input.occurredAt ?? new Date();
     const [shift] = await tx
       .insert(posShifts)
       .values({
@@ -113,6 +142,8 @@ export async function openShift(ctx: PosCashierContext, input: OpenShiftInput): 
         openedByUserId: ctx.cashierUserId,
         status: "open",
         openingFloat,
+        openedAt,
+        clientShiftId: input.clientShiftId ?? null,
       })
       .returning();
 
@@ -139,6 +170,10 @@ export async function openShift(ctx: PosCashierContext, input: OpenShiftInput): 
       metadata: { deviceId: ctx.deviceId, openingFloat, countId: count.id },
       actorType: "user",
     }, tx);
+
+    if (input.syncReceipt) {
+      await tx.insert(posSyncEventReceipts).values({ ...input.syncReceipt, resultJson: shift });
+    }
 
     return shift;
   });
@@ -240,7 +275,12 @@ export async function buildXReport(tenantId: string, shift: PosShift): Promise<X
 export async function recordMidShiftCount(
   ctx: PosCashierContext,
   shiftId: string,
-  count: { countedTotal: number; denominations?: Record<string, number> },
+  count: {
+    countedTotal: number;
+    denominations?: Record<string, number>;
+    occurredAt?: Date;
+    syncReceipt?: SyncReceipt;
+  },
 ): Promise<CashCount> {
   if (count.denominations && sumDenominations(count.denominations) !== round2(count.countedTotal)) {
     throw new CashCountMismatchError();
@@ -250,6 +290,14 @@ export async function recordMidShiftCount(
     // Same drawer lock as the close, so a count either lands before the close
     // or sees the closed drawer — never straddles it.
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${shiftId})::bigint)`);
+
+    // A mid-shift count has no natural idempotency key — the receipt is it.
+    // Checked inside the lock just taken, so two concurrent replays of the
+    // same event can't both insert.
+    if (count.syncReceipt) {
+      const stored = await findSyncReceipt(count.syncReceipt, tx);
+      if (stored) return reviveDates(stored.resultJson as CashCount, ["createdAt"]);
+    }
 
     // FOR UPDATE for the same reason the close takes it: the advisory lock does
     // not hold off recordCashMovement, so without the row a movement can commit
@@ -273,6 +321,7 @@ export async function recordMidShiftCount(
         variance: money(variance),
         denominations: count.denominations ?? null,
         byUserId: ctx.cashierUserId,
+        createdAt: count.occurredAt ?? new Date(),
       })
       .returning();
 
@@ -289,6 +338,10 @@ export async function recordMidShiftCount(
       },
       actorType: "user",
     }, tx);
+
+    if (count.syncReceipt) {
+      await tx.insert(posSyncEventReceipts).values({ ...count.syncReceipt, resultJson: row });
+    }
 
     return row;
   });
@@ -307,6 +360,16 @@ export async function closeShift(
   shiftId: string,
   input: CloseShiftInput,
 ): Promise<ZReport> {
+  // Cheap pre-check, mirroring recordSale's clientOrderId lookup: a plain
+  // retry answers here before policy is fetched or a grant token spent. The
+  // authoritative check — the one that actually closes the crash-between-
+  // effect-and-receipt window and the concurrent-replay race — is the same
+  // lookup re-run inside the advisory-lock block below.
+  if (input.syncReceipt) {
+    const stored = await findSyncReceipt(input.syncReceipt);
+    if (stored) return { ...(stored.resultJson as ZReport), idempotent: true };
+  }
+
   const policy = await getShiftPolicy(ctx.tenantId);
   if (input.count.denominations &&
       sumDenominations(input.count.denominations) !== round2(input.count.countedTotal)) {
@@ -332,6 +395,13 @@ export async function closeShift(
     // keyed on the shift because a close may name any shift, not just the one
     // open on this device.
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${shiftId})::bigint)`);
+
+    // Re-checked here, inside the lock: two concurrent replays of the same
+    // event must not both pass the pre-check above and both close the drawer.
+    if (input.syncReceipt) {
+      const stored = await findSyncReceipt(input.syncReceipt, tx);
+      if (stored) return { ...(stored.resultJson as ZReport), idempotent: true };
+    }
 
     // FOR UPDATE, and before gatherShift: the advisory lock only serializes us
     // against other closes and counts. recordCashMovement never takes it — it
@@ -367,7 +437,7 @@ export async function closeShift(
       })
       .returning();
 
-    const closedAt = new Date();
+    const closedAt = input.occurredAt ?? new Date();
     // The `status = 'open'` guard is the real serialization point: a writer that
     // closed this drawer first leaves no matching row, so this close rolls back
     // whole — no second closing count, no second shift.close event, no rival
@@ -404,11 +474,17 @@ export async function closeShift(
       cash: { expected, counted, variance },
       flagged,
       approvedByUserId,
+      idempotent: false,
     };
     // Blind close: the cashier counts without being told the target.
-    if (policy.blindClose && !canManage) {
-      return { ...z, cash: { ...z.cash, expected: null, variance: null } };
+    const result: ZReport = policy.blindClose && !canManage
+      ? { ...z, cash: { ...z.cash, expected: null, variance: null } }
+      : z;
+
+    if (input.syncReceipt) {
+      await tx.insert(posSyncEventReceipts).values({ ...input.syncReceipt, resultJson: result });
     }
-    return z;
+
+    return result;
   });
 }

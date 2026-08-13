@@ -5,6 +5,8 @@ import { getShiftPolicy } from "@/server/tenancy/settings";
 import type { Permission } from "@/server/rbac/permissions";
 import { and, eq } from "drizzle-orm";
 import { cashMovements, posShifts, type CashMovement, type CashMovementType } from "./shift-schema";
+import { posSyncEventReceipts } from "./schema";
+import { findSyncReceipt, reviveDates, type SyncReceipt } from "./sync-receipt";
 import { CashMovementError, NoOpenShiftError } from "./errors";
 import { resolveAuthorizer } from "./grants";
 import { findOpenShift, shiftAuditCtx } from "./shifts";
@@ -20,6 +22,9 @@ export type CashMovementInput = {
   reasonCode: string;
   reasonText?: string;
   grants?: { permission: Permission; token: string }[];
+  /** The device-claimed time; defaults to now(). */
+  occurredAt?: Date;
+  syncReceipt?: SyncReceipt;
 };
 
 /**
@@ -77,6 +82,15 @@ export async function recordCashMovement(
       .for("update");
     if (!shift) throw new NoOpenShiftError();
 
+    // A movement has no natural idempotency key (unlike a sale's clientOrderId
+    // or a shift's clientShiftId) — the receipt is what gives it one. The row
+    // lock just taken above is what makes this check race-safe against a
+    // concurrent replay of the same event.
+    if (input.syncReceipt) {
+      const stored = await findSyncReceipt(input.syncReceipt, tx);
+      if (stored) return reviveDates(stored.resultJson as CashMovement, ["createdAt"]);
+    }
+
     const [row] = await tx
       .insert(cashMovements)
       .values({
@@ -88,6 +102,7 @@ export async function recordCashMovement(
         reasonText: input.reasonText ?? null,
         byUserId: ctx.cashierUserId,
         authorizedByUserId,
+        createdAt: input.occurredAt ?? new Date(),
       })
       .returning();
 
@@ -105,6 +120,10 @@ export async function recordCashMovement(
       },
       actorType: "user",
     }, tx);
+
+    if (input.syncReceipt) {
+      await tx.insert(posSyncEventReceipts).values({ ...input.syncReceipt, resultJson: row });
+    }
 
     return row;
   });
