@@ -28,7 +28,22 @@
  */
 import { config } from "dotenv";
 
-config({ path: process.env.ENV_FILE ?? ".env.local", override: true, quiet: true });
+/**
+ * True only when this file is the process entry point, i.e. someone ran
+ * `tsx scripts/backfill-inventory.ts`. False when a test imports
+ * backfillTenant from it.
+ */
+const RUN_DIRECTLY = process.argv[1]?.includes("backfill-inventory") ?? false;
+
+// GUARDED, and it has to be. This call carries `override: true`, so on import
+// it would replace a DATABASE_URL that vitest's setup had already pointed at
+// .env.test with the one from .env.local — the developer's own database. The
+// suite truncates every table before each test, so importing this script from
+// a test wiped local data and left stray `bf-…` tenants behind. main() below
+// was already guarded for the same reason; the env load was missed.
+if (RUN_DIRECTLY) {
+  config({ path: process.env.ENV_FILE ?? ".env.local", override: true, quiet: true });
+}
 
 import { asc, eq, isNotNull, and } from "drizzle-orm";
 import { db } from "@/db/client";
@@ -158,6 +173,6 @@ async function main(): Promise<void> {
 }
 
 // Only run when invoked directly, so the test suite can import backfillTenant.
-if (process.argv[1]?.includes("backfill-inventory")) {
+if (RUN_DIRECTLY) {
   main().then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1); });
 }
