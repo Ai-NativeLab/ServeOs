@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { resolvePurchasingContext, resolvePurchasingActor } from "@/app/dashboard/purchasing-permission";
 import { getPurchaseOrder, updateDraftPo } from "@/server/purchasing/service";
 import { PoNotFoundError, InvalidPoTransitionError } from "@/server/purchasing/errors";
-import { parseLines } from "../route";
+import { parseLines } from "../validation";
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { ctx, denied } = await resolvePurchasingContext("purchasing:manage");

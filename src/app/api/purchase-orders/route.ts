@@ -1,30 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolvePurchasingContext, resolvePurchasingActor } from "@/app/dashboard/purchasing-permission";
 import { createDraftPo, listPurchaseOrders } from "@/server/purchasing/service";
-
-export function parseLines(raw: unknown): Parameters<typeof createDraftPo>[1]["lines"] | { error: string } {
-  if (!Array.isArray(raw) || raw.length === 0) {
-    return { error: "lines must be a non-empty array" };
-  }
-  const lines: Parameters<typeof createDraftPo>[1]["lines"] = [];
-  for (const l of raw) {
-    const row = (l ?? {}) as Record<string, unknown>;
-    if (typeof row.itemId !== "string" || !row.itemId) return { error: "each line needs a string itemId" };
-    const qtyOrdered = Number(row.qtyOrdered);
-    const unitCost = Number(row.unitCost);
-    if (!Number.isFinite(qtyOrdered) || qtyOrdered <= 0) return { error: "each line needs a positive qtyOrdered" };
-    if (!Number.isFinite(unitCost) || unitCost < 0) return { error: "each line needs a non-negative unitCost" };
-    if (typeof row.uom !== "string" || !row.uom) return { error: "each line needs a uom" };
-    lines.push({
-      itemId: row.itemId,
-      qtyOrdered,
-      uom: row.uom as never,
-      unitCost,
-      taxRate: row.taxRate !== undefined ? Number(row.taxRate) : undefined,
-    });
-  }
-  return lines;
-}
+import { parseLines } from "./validation";
 
 export async function GET(req: NextRequest) {
   const { ctx, denied } = await resolvePurchasingContext("purchasing:manage");
