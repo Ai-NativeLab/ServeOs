@@ -410,25 +410,20 @@ async function handleTicketRecalled(
   ctx: PosCashierContext, e: SyncEvent, receipt: SyncReceipt,
 ): Promise<AppliedEvent> {
   const clientTicketId = asClientTicketId(e.payload, "ticket.recalled");
-  await recallHeldTicket(ctx, clientTicketId, { syncReceipt: receipt });
-  // recallHeldTicket returns void — its own internal receipt stores exactly
-  // this shape, so this is what a fresh apply and a later duplicate agree on.
-  // idempotent is hardcoded false: recallHeldTicket has no idempotent signal
-  // to report (unlike openShift/recordCashMovement/recordMidShiftCount/
-  // holdTicket), so a concurrent duplicate of THIS type still mislabels the
-  // way D1 originally described — same latent gap as ticket.discarded below,
-  // out of this fix's scope (no failing test exercises it).
-  return { result: { clientTicketId }, idempotent: false };
+  // The service reports whether it absorbed this as a replay; its own internal
+  // receipt stores exactly this shape, so a fresh apply and a later duplicate
+  // agree on the result either way.
+  const { idempotent } = await recallHeldTicket(ctx, clientTicketId, { syncReceipt: receipt });
+  return { result: { clientTicketId }, idempotent };
 }
 
 async function handleTicketDiscarded(
   ctx: PosCashierContext, e: SyncEvent, receipt: SyncReceipt,
 ): Promise<AppliedEvent> {
   const clientTicketId = asClientTicketId(e.payload, "ticket.discarded");
-  await discardHeldTicket(ctx, null, { clientTicketId, syncReceipt: receipt });
   // Matches discardHeldTicket's own internal resultJson ({ id: entityId }).
-  // idempotent hardcoded false — see handleTicketRecalled's comment.
-  return { result: { id: clientTicketId }, idempotent: false };
+  const { idempotent } = await discardHeldTicket(ctx, null, { clientTicketId, syncReceipt: receipt });
+  return { result: { id: clientTicketId }, idempotent };
 }
 
 type GrantIssuedPayload = { permission: Permission };

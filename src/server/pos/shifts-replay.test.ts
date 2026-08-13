@@ -253,8 +253,9 @@ describe("held tickets replay", () => {
     const EVT = crypto.randomUUID();
     const opts = { clientTicketId: CTID, syncReceipt: receiptFor(ctx, EVT, "ticket.discarded") };
 
-    await discardHeldTicket(ctx, null, opts);
-    await expect(discardHeldTicket(ctx, null, opts)).resolves.toBeUndefined();
+    await expect(discardHeldTicket(ctx, null, opts)).resolves.toEqual({ idempotent: false });
+    // The absorb is reported, not silent — ingest labels the event a duplicate from this.
+    await expect(discardHeldTicket(ctx, null, opts)).resolves.toEqual({ idempotent: true });
 
     const events = await withTenant(ctx.tenantId, (tx) =>
       tx.select().from(auditEvents).where(eq(auditEvents.action, "ticket.discarded")));
@@ -273,7 +274,7 @@ describe("held tickets replay", () => {
       tx.select().from(posHeldTickets).where(eq(posHeldTickets.clientTicketId, CTID)));
     expect(rows).toHaveLength(0);
 
-    await expect(recallHeldTicket(ctx, CTID, opts)).resolves.toBeUndefined();
+    await expect(recallHeldTicket(ctx, CTID, opts)).resolves.toEqual({ idempotent: true });
     const events = await withTenant(ctx.tenantId, (tx) =>
       tx.select().from(auditEvents).where(eq(auditEvents.action, "ticket.recalled")));
     expect(events).toHaveLength(1);
