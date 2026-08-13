@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { users } from "@/server/auth/schema";
@@ -9,7 +9,7 @@ import { verifyChain } from "@/server/audit/verifier";
 import { auditEvents } from "@/server/audit/schema";
 import { notifications } from "@/server/notifications/schema";
 import { getLowStock } from "@/server/analytics/service";
-import { purchaseOrders } from "./schema";
+import { purchaseOrders, purchaseOrderLines } from "./schema";
 import type { PurchasingActor } from "./suppliers";
 import { createSupplier, upsertSupplierItem } from "./suppliers";
 import { reorderRules } from "./reorder-schema";
@@ -139,5 +139,81 @@ describe("reorder rules", () => {
       itemId: itemAtPoint, locationId, reorderPoint: 20, reorderQty: 50,
       preferredSupplierId: other.supplierId,
     })).rejects.toThrow(InvalidPoInputError);
+  });
+
+  it("merges a different low item into the supplier's open draft instead of dropping it", async () => {
+    const { tenantId, actor, supplierId, itemAtPoint, itemNoLots, locationId } = await seedReorderContext();
+    await stock(tenantId, itemAtPoint, locationId, 5);
+    await stock(tenantId, itemNoLots, locationId, 5);
+    await upsertSupplierItem(actor, { supplierId, itemId: itemAtPoint, lastUnitCost: 2 });
+    await upsertSupplierItem(actor, { supplierId, itemId: itemNoLots, lastUnitCost: 3 });
+    for (const itemId of [itemAtPoint, itemNoLots]) {
+      await upsertReorderRule(actor, {
+        itemId, locationId, reorderPoint: 20, reorderQty: 10, preferredSupplierId: supplierId,
+      });
+    }
+
+    // Run 1: both items below point → one draft with BOTH lines.
+    const run1 = await checkReorder(actor);
+    expect(run1.draftsCreated).toBe(1);
+    let [po] = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders));
+    let poLines = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrderLines)
+      .where(eq(purchaseOrderLines.poId, po!.id)));
+    expect(poLines).toHaveLength(2);
+
+    // Clear the debounce clock so a second run re-evaluates, then back the rule
+    // out of existence for itemAtPoint (deleted item cascades the rule) and add
+    // a NEW item for the same supplier. Run 2 must MERGE the new item into the
+    // open draft, not create a duplicate draft nor drop the new item.
+    await withTenant(tenantId, (tx) => tx.update(reorderRules).set({ lastAlertedAt: null }));
+    const newItem = await seedItem(tenantId, { nameEn: "New Low", baseUom: "g" });
+    await stock(tenantId, newItem, locationId, 1);
+    await upsertSupplierItem(actor, { supplierId, itemId: newItem, lastUnitCost: 4 });
+    await upsertReorderRule(actor, {
+      itemId: newItem, locationId, reorderPoint: 20, reorderQty: 10, preferredSupplierId: supplierId,
+    });
+
+    const run2 = await checkReorder(actor);
+    expect(run2.draftsCreated).toBe(0); // merged, not a new draft
+
+    const pos = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders));
+    expect(pos).toHaveLength(1); // still one PO
+    po = pos[0]!;
+    poLines = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrderLines)
+      .where(eq(purchaseOrderLines.poId, po.id)));
+    const lineItems = poLines.map((l) => l.itemId).sort();
+    expect(lineItems).toContain(itemAtPoint); // existing line untouched
+    expect(lineItems).toContain(newItem); // new item MERGED, not dropped
+    expect(lineItems).toHaveLength(3);
+    // Total = 10×2 + 10×3 + 10×4 = 90.
+    expect(po.total).toBe("90.00");
+  });
+
+  it("audit-attributes reorder drafts by the actor: system for the cron, user for a manager", async () => {
+    const { tenantId, actor, supplierId, itemAtPoint, locationId } = await seedReorderContext();
+    await stock(tenantId, itemAtPoint, locationId, 5);
+    await upsertSupplierItem(actor, { supplierId, itemId: itemAtPoint, lastUnitCost: 2 });
+    await upsertReorderRule(actor, {
+      itemId: itemAtPoint, locationId, reorderPoint: 20, reorderQty: 10, preferredSupplierId: supplierId,
+    });
+
+    // A manager-driven sweep (route) is a real user → actorType "user".
+    await checkReorder(actor);
+    let events = await withTenant(tenantId, (tx) => tx.select().from(auditEvents)
+      .where(and(eq(auditEvents.action, "po.created"), eq(auditEvents.actorType, "user"))));
+    expect(events).toHaveLength(1);
+
+    // Clear the debounce and drop the first draft so the system run creates a
+    // fresh PO atomically attributed as a machine write.
+    await withTenant(tenantId, (tx) => tx.update(reorderRules).set({ lastAlertedAt: null }));
+    await withTenant(tenantId, async (tx) => {
+      const [first] = await tx.select({ id: purchaseOrders.id }).from(purchaseOrders).limit(1);
+      if (first) await tx.delete(purchaseOrders).where(eq(purchaseOrders.id, first.id));
+    });
+    await checkReorder({ ...actor, actorType: "system" });
+    events = await withTenant(tenantId, (tx) => tx.select().from(auditEvents)
+      .where(and(eq(auditEvents.action, "po.created"), eq(auditEvents.actorType, "system"))));
+    expect(events).toHaveLength(1);
+    expect((await verifyChain(tenantId)).ok).toBe(true);
   });
 });

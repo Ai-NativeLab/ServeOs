@@ -56,6 +56,9 @@ export async function checkTenantReorder(tenantId: string): Promise<ReorderCheck
       branchId: branch.id,
       actorUserId: owner.userId,
       vertical: (t?.vertical ?? "restaurant") as VerticalId,
+      // Machine write — the audit chain must attribute the drafted PO to the
+      // system, not to the owner user whose row backs the created_by FK.
+      actorType: "system",
     };
     const run = await checkReorder(actor);
     return { tenantId, ...run };

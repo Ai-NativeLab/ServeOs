@@ -11,11 +11,16 @@ import { inventoryItems } from "@/server/inventory/schema";
 import { suppliers, supplierItems } from "./schema";
 import type { Supplier } from "./schema";
 import { InvalidPoInputError } from "./errors";
+import type { AuditActorType } from "@/server/audit/canonical";
 export type PurchasingActor = {
   tenantId: string;
   branchId: string;
   actorUserId: string;
   vertical: VerticalId;
+  /** Machine writes (the cron sweep) must be audit-attributed as `system`; an
+   *  interactive request is a real user. The shared services that draft POs
+   *  (checkReorder) use this instead of deciding for themselves. */
+  actorType?: AuditActorType;
 };
 
 function auditCtx(actor: PurchasingActor) {

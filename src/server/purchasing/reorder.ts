@@ -33,6 +33,14 @@ export type ReorderRuleInput = {
 export async function upsertReorderRule(actor: PurchasingActor, input: ReorderRuleInput): Promise<void> {
   requireCapability(actor.vertical, "inventory");
   return withTenant(actor.tenantId, async (tx) => {
+    // Same per-tenant serialization as checkReorder: the advisory lock is the
+    // FIRST statement every tenant writer takes. checkReorder holds it while it
+    // reads-then-writes reorder_rules; acquiring it here at the start (instead
+    // of letting recordAuditEvent grab it at the end) keeps both paths locking
+    // in the same order — otherwise two writers of the same rule rows deadlock
+    // (40P01). Re-acquiring in recordAuditEvent later is a re-entrant no-op.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${actor.tenantId})::bigint)`);
+
     // Body-supplied ids must resolve under our RLS or the rule could reference
     // another tenant's item/location/supplier (FK checks bypass row security).
     const [item] = await tx.select().from(inventoryItems).where(eq(inventoryItems.id, input.itemId));
@@ -92,7 +100,9 @@ export type ReorderRun = { triggered: number; draftsCreated: number };
  *    commits, then re-reads rules and lastAlertedAt, so it cannot double-notify
  *    or double-draft. A supplier with an already-open draft PO is skipped, so a
  *    chronically-low item cannot spawn a fresh draft every day forever.
- *  - Machine-written draft POs are audit-attributed via actorType: "system".
+ *  - Machine-written draft POs are audit-attributed by the caller: the cron
+ *    passes an actor with actorType "system", an interactive check keeps the
+ *    real user — the shared service never decides which it was.
  */
 export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> {
   requireCapability(actor.vertical, "inventory");
@@ -161,64 +171,103 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
       const [supplier] = await tx.select().from(suppliers).where(eq(suppliers.id, supplierId));
       if (!supplier) continue;
 
-      // Skip a supplier that already has an open draft PO (same supplier and
-      // branch): merging a chronically-low item's reorder into it beats stacking
-      // a fresh draft every cron run, forever.
-      const [open] = await tx.select({ id: purchaseOrders.id })
+      // An open draft for this supplier+branch, if any. A chronically-low item
+      // merges into it rather than stacking a fresh draft every cron run —
+      // which means the merge must NOT silently drop a DIFFERENT low item that
+      // triggered this run. Only items already lined on that draft are skipped;
+      // every other triggered item is appended to it (or starts a fresh draft).
+      const [open] = await tx.select({ id: purchaseOrders.id, total: purchaseOrders.total, poNumber: purchaseOrders.poNumber })
         .from(purchaseOrders)
         .where(and(
           eq(purchaseOrders.supplierId, supplierId),
           eq(purchaseOrders.branchId, actor.branchId),
           eq(purchaseOrders.status, "draft"),
         )).limit(1);
-      if (open) continue;
 
-      const [{ max }] = await tx.select({ max: sql<number>`COALESCE(MAX(${purchaseOrders.poNumber}), 0)` }).from(purchaseOrders);
-      const poNumber = Number(max) + 1;
+      // Items already covered by the open draft — the ones being merged — must
+      // not be re-lined. The rest is what this run actually adds.
+      const coveredItemIds = new Set<string>();
+      if (open) {
+        const covered = await tx.select({ itemId: purchaseOrderLines.itemId })
+          .from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, open.id));
+        for (const c of covered) coveredItemIds.add(c.itemId);
+      }
+      const pending = group.filter((r) => !coveredItemIds.has(r.itemId));
+      if (pending.length === 0) continue;
 
-      const groupItemIds = group.map((r) => r.itemId);
+      const groupItemIds = pending.map((r) => r.itemId);
       const priceRows = await tx.select().from(supplierItems)
         .where(and(inArray(supplierItems.itemId, groupItemIds), eq(supplierItems.supplierId, supplierId)));
       const costByItem = new Map(priceRows.map((s) => [s.itemId, Number(s.lastUnitCost ?? 0)]));
 
-      let total = 0;
-      const lines = group.map((r) => {
+      let added = 0;
+      const lines = pending.map((r) => {
         const cost = costByItem.get(r.itemId) ?? 0;
-        total += Number(r.reorderQty) * cost;
+        added += Number(r.reorderQty) * cost;
         return { itemId: r.itemId, qtyOrdered: Number(r.reorderQty), uom: itemById.get(r.itemId)?.baseUom ?? "each", unitCost: cost };
       });
 
-      const [po] = await tx.insert(purchaseOrders).values({
-        tenantId: actor.tenantId,
-        branchId: actor.branchId,
-        supplierId,
-        poNumber,
-        status: "draft",
-        total: money(total),
-        createdByUserId: actor.actorUserId,
-      }).returning({ id: purchaseOrders.id, poNumber: purchaseOrders.poNumber });
+      if (open) {
+        // Merge: append the missing lines to the existing draft and bump its total.
+        const newTotal = Number(open.total ?? 0) + added;
+        await tx.update(purchaseOrders)
+          .set({ total: money(newTotal) })
+          .where(eq(purchaseOrders.id, open.id));
+        for (const l of lines) {
+          await tx.insert(purchaseOrderLines).values({
+            tenantId: actor.tenantId,
+            poId: open.id,
+            itemId: l.itemId,
+            qtyOrdered: qty(l.qtyOrdered),
+            uom: l.uom,
+            unitCost: money(l.unitCost),
+            qtyReceived: "0",
+          });
+        }
+        await recordAuditEvent(auditCtx(actor), {
+          action: "po.updated",
+          entityType: "purchase_order",
+          entityId: open.id,
+          summary: `PO #${open.poNumber} reorder lines merged`,
+          metadata: { supplierId, addedLineCount: lines.length, addedTotal: money(added) },
+          actorType: actor.actorType,
+        }, tx);
+      } else {
+        const [{ max }] = await tx.select({ max: sql<number>`COALESCE(MAX(${purchaseOrders.poNumber}), 0)` }).from(purchaseOrders);
+        const poNumber = Number(max) + 1;
 
-      for (const l of lines) {
-        await tx.insert(purchaseOrderLines).values({
+        const [po] = await tx.insert(purchaseOrders).values({
           tenantId: actor.tenantId,
-          poId: po.id,
-          itemId: l.itemId,
-          qtyOrdered: qty(l.qtyOrdered),
-          uom: l.uom,
-          unitCost: money(l.unitCost),
-          qtyReceived: "0",
-        });
-      }
+          branchId: actor.branchId,
+          supplierId,
+          poNumber,
+          status: "draft",
+          total: money(added),
+          createdByUserId: actor.actorUserId,
+        }).returning({ id: purchaseOrders.id, poNumber: purchaseOrders.poNumber });
 
-      await recordAuditEvent(auditCtx(actor), {
-        action: "po.created",
-        entityType: "purchase_order",
-        entityId: po.id,
-        summary: `PO #${po.poNumber} drafted from reorder`,
-        metadata: { supplierId, lineCount: lines.length },
-        actorType: "system",
-      }, tx);
-      draftsCreated++;
+        for (const l of lines) {
+          await tx.insert(purchaseOrderLines).values({
+            tenantId: actor.tenantId,
+            poId: po.id,
+            itemId: l.itemId,
+            qtyOrdered: qty(l.qtyOrdered),
+            uom: l.uom,
+            unitCost: money(l.unitCost),
+            qtyReceived: "0",
+          });
+        }
+
+        await recordAuditEvent(auditCtx(actor), {
+          action: "po.created",
+          entityType: "purchase_order",
+          entityId: po.id,
+          summary: `PO #${po.poNumber} drafted from reorder`,
+          metadata: { supplierId, lineCount: lines.length },
+          actorType: actor.actorType,
+        }, tx);
+        draftsCreated++;
+      }
     }
 
     return { triggered: triggered.length, draftsCreated };

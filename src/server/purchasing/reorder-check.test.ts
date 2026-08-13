@@ -4,6 +4,7 @@ import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { tenants } from "@/server/tenancy/schema";
 import { users, roles, userRoles } from "@/server/auth/schema";
+import { auditChainHeads } from "@/server/audit/schema";
 import { seedInventoryTenant, seedItem, seedLocation } from "@/server/inventory/test-helpers";
 import { inventoryLots } from "@/server/inventory/schema";
 import { checkTenantReorder, sweepAllTenants } from "../../../scripts/reorder-check";
@@ -61,25 +62,37 @@ describe("reorder cron sweep", () => {
   });
 
   it("sweepAllTenants processes every tenant and one failure does not abort the rest", async () => {
-    // Seed an active tenant that triggers, and one with no owner (so
-    // checkTenantReorder returns zeros rather than throwing) — the sweep must
-    // process both and count neither as a failure.
+    // Seed an active tenant that triggers, plus a tenant that actually THROWS.
+    // requireCapability can't throw here (every vertical has the inventory
+    // capability), so corrupt the audit chain instead: drop the head back to
+    // seq=1 so the sweep's po.created computes seq=2, which ALREADY exists from
+    // seedLowTenant's upsertReorderRule → unique (tenant, seq) violation. The
+    // sweep must count the failure and still process the later tenants.
     const { tenantId } = await seedLowTenant();
-    const blank = await seedInventoryTenant();
-    await db.update(tenants).set({ status: "active" }).where(eq(tenants.id, blank.tenantId));
+    const throwing = await seedLowTenant();
+    await withTenant(throwing.tenantId, (tx) =>
+      tx.update(auditChainHeads).set({ seq: 1 }).where(eq(auditChainHeads.tenantId, throwing.tenantId)));
 
     const report = await sweepAllTenants();
-    expect(report.failed).toBe(0);
+    expect(report.failed).toBeGreaterThanOrEqual(1);
     expect(report.processed).toBeGreaterThanOrEqual(2);
 
+    // The throwing tenant's OWN draft must not exist (its po.created rolled back).
+    const throwPos = await withTenant(throwing.tenantId, (tx) => tx.select().from(purchaseOrders));
+    expect(throwPos).toHaveLength(0);
+
+    // The earlier good tenant still got its draft despite the sibling failure.
     const pos = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders));
     expect(pos).toHaveLength(1);
+
+    const blank = await seedInventoryTenant();
+    await db.update(tenants).set({ status: "active" }).where(eq(tenants.id, blank.tenantId));
     const blankPos = await withTenant(blank.tenantId, (tx) => tx.select().from(purchaseOrders));
     expect(blankPos).toHaveLength(0);
 
     // A second sweep is debounced: the triggered tenant drafts no duplicate PO.
     const second = await sweepAllTenants();
-    expect(second.failed).toBe(0);
+    expect(second.failed).toBeGreaterThanOrEqual(1);
     const pos2 = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders));
     expect(pos2).toHaveLength(1);
   });
