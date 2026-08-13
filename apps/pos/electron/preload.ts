@@ -19,6 +19,7 @@ import type {
   RefundSaleResult,
   ReprintReceipt,
   SyncStatus,
+  PosRealtimeMessage,
 } from "./pos-main";
 
 export type OrderSummary = {
@@ -47,6 +48,7 @@ export type {
   RefundSaleResult,
   ReprintReceipt,
   SyncStatus,
+  PosRealtimeMessage,
 } from "./pos-main";
 
 export interface PosBridge {
@@ -80,6 +82,10 @@ export interface PosBridge {
   syncState(): Promise<SyncStatus>;
   /** Pushes on every change (Task 11's badge). Returns the unsubscribe. */
   onSyncState(cb: (status: SyncStatus) => void): () => void;
+  /** Main's tenant subscription, forwarded: an ids-only signal that something
+   *  changed, plus whether the channel is joined at all. Never a payload to
+   *  render — the queue refetches. Returns the unsubscribe. */
+  onRealtimeEvent(cb: (message: PosRealtimeMessage) => void): () => void;
   /** Clears a sticky halt: the refused event goes back to pending and the
    *  queue resumes from its seq. */
   retryFailedSync(): Promise<SyncStatus>;
@@ -124,6 +130,11 @@ contextBridge.exposeInMainWorld("pos", {
     const listener = (_e: unknown, status: SyncStatus) => cb(status);
     ipcRenderer.on("pos:syncState", listener);
     return () => ipcRenderer.removeListener("pos:syncState", listener);
+  },
+  onRealtimeEvent: (cb: (message: PosRealtimeMessage) => void) => {
+    const listener = (_e: unknown, message: PosRealtimeMessage) => cb(message);
+    ipcRenderer.on("pos:realtimeEvent", listener);
+    return () => ipcRenderer.removeListener("pos:realtimeEvent", listener);
   },
   retryFailedSync: () => ipcRenderer.invoke("pos:retryFailedSync"),
 } satisfies PosBridge);

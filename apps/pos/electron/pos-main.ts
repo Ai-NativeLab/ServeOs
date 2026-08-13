@@ -9,14 +9,30 @@ import {
   type OfflineGrantVault,
 } from "./_offline/offline-auth";
 import { EMPTY_TILL_STATE, reduce, type TillState } from "./_offline/reducer";
-import { createApiClient } from "./_offline/api";
+import { createApiClient, type PosApi } from "./_offline/api";
 import { SyncEngine, type SyncStatus } from "./_offline/sync";
+import { TenantSignal, type RealtimeEvent, type TenantEventType } from "./_offline/realtime";
+import { createRealtimeTransport } from "./_offline/realtime-transport";
 import {
   money, payoutNeedsManager, round2, shortCode, snapshotLine, sumDenominations, tillReport,
   type CachedMenu, type ShiftPolicy,
 } from "./_offline/till";
 
 export type { SyncStatus } from "./_offline/sync";
+export type { RealtimeEvent } from "./_offline/realtime";
+
+/**
+ * What main pushes to the renderer on `pos:realtimeEvent`. The status half is
+ * what lets the queue relax its poll only while a channel is genuinely joined
+ * — with realtime off, unreachable, or unauthorized, it never arrives and the
+ * queue keeps polling exactly as it does today.
+ */
+export type PosRealtimeMessage =
+  | { kind: "status"; live: boolean }
+  | { kind: "event"; event: RealtimeEvent };
+
+/** The till only cares about work arriving in its queue. */
+const REALTIME_EVENTS: TenantEventType[] = ["orders.changed", "sync.applied"];
 
 // In dev (vite serving), default to the local backend; otherwise the
 // configured/placeholder production host. POS_API_URL always wins.
@@ -338,7 +354,14 @@ export class PosMain {
   private readonly store = new Store(openDb(path.join(app.getPath("userData"), "pos.db")));
   /** Single-use manager grants (Task 9) — device-local, never persisted. */
   private readonly grantVault: OfflineGrantVault = createGrantVault();
+  private readonly api: PosApi = createApiClient(this.baseUrl, {
+    deviceToken: () => this.device?.token ?? null,
+    cashierToken: () => this.cashier?.token ?? null,
+  });
   private readonly engine: SyncEngine;
+  /** Hears the tenant's broadcasts so a web order reaches the queue in
+   *  seconds. Purely an accelerant — the queue's own poll is the guarantee. */
+  private readonly realtime: TenantSignal;
   /** The reduction of every CONFIRMED event; durable in local_state. */
   private snapshot: TillState;
   /** What the till believes right now: the snapshot plus every event the
@@ -358,7 +381,10 @@ export class PosMain {
    *  screen. Keyed by eventId; empty at rest. */
   private readonly awaitingResult = new Map<string, (result: Record<string, unknown>) => void>();
 
-  constructor(onSyncState?: (status: SyncStatus) => void) {
+  constructor(
+    onSyncState?: (status: SyncStatus) => void,
+    onRealtime?: (message: PosRealtimeMessage) => void,
+  ) {
     this.load();
     this.snapshot = this.store.getState<TillState>(TILL_STATE_KEY) ?? EMPTY_TILL_STATE;
     // Crash-safe boot: the durable snapshot plus the tail of the log IS the
@@ -366,13 +392,24 @@ export class PosMain {
     this.till = reduce(this.snapshot, this.store.unsyncedEvents());
     this.engine = new SyncEngine(
       this.store,
-      createApiClient(this.baseUrl, {
-        deviceToken: () => this.device?.token ?? null,
-        cashierToken: () => this.cashier?.token ?? null,
-      }),
+      this.api,
       { onApplied: (row, result) => this.onEventApplied(row, result) },
     );
     if (onSyncState) this.engine.onState(onSyncState);
+    this.realtime = new TenantSignal({
+      loadConfig: () => this.api.getRealtimeConfig(),
+      transport: createRealtimeTransport(),
+      types: REALTIME_EVENTS,
+      onEvent: (event) => onRealtime?.({ kind: "event", event }),
+      onLive: (live) => onRealtime?.({ kind: "status", live }),
+    });
+    // No timer of its own: the engine's heartbeat already knows when the till
+    // has a network, and reconnecting is what an idempotent ensureConnected is
+    // for. Offline drops the channel — it would die with the network anyway.
+    this.engine.onState((status) => {
+      if (!this.device || status.state === "offline") this.realtime.disconnect();
+      else void this.realtime.ensureConnected();
+    });
   }
 
   /** Started by main.ts once the window exists, so the first state push has
@@ -383,6 +420,7 @@ export class PosMain {
 
   stop(): void {
     this.engine.stop();
+    this.realtime.disconnect();
   }
 
   syncState(): SyncStatus {

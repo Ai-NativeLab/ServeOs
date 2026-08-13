@@ -1,5 +1,6 @@
 import type { AuthUser } from "./store";
 import type { CatalogSnapshot, PosApiClient, SyncEvent, SyncResult } from "./sync";
+import type { TenantRealtimeConfig } from "./realtime";
 
 /**
  * The engine treats `isNetwork` as "try again later, nobody needs to be told"
@@ -25,7 +26,16 @@ export type TokenSource = {
   cashierToken(): string | null;
 };
 
-export function createApiClient(baseUrl: string, tokens: TokenSource): PosApiClient {
+/**
+ * Everything the till asks of the server. Wider than `PosApiClient`, which is
+ * only what the sync engine needs — the realtime ticket is fetched beside the
+ * engine, not by it.
+ */
+export type PosApi = PosApiClient & {
+  getRealtimeConfig(): Promise<TenantRealtimeConfig | null>;
+};
+
+export function createApiClient(baseUrl: string, tokens: TokenSource): PosApi {
   const base = baseUrl.replace(/\/$/, "");
 
   async function request(path: string, init: RequestInit & { cashier?: boolean } = {}): Promise<unknown> {
@@ -74,6 +84,13 @@ export function createApiClient(baseUrl: string, tokens: TokenSource): PosApiCli
         body: JSON.stringify({ events }),
       })) as { results: SyncResult[] };
       return data.results;
+    },
+
+    async getRealtimeConfig(): Promise<TenantRealtimeConfig | null> {
+      const data = (await request("/api/pos/v1/realtime")) as
+        | { enabled: true; config: TenantRealtimeConfig }
+        | { enabled: false };
+      return data.enabled ? data.config : null;
     },
   };
 }

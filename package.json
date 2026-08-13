@@ -30,6 +30,7 @@
     "pos:demo:code": "ENV_FILE=.env.test tsx scripts/pos-demo-seed.ts"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.112.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.2",

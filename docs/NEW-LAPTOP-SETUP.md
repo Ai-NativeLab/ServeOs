@@ -114,6 +114,20 @@ DATABASE_URL=postgresql://serveos_app:serveos@127.0.0.1:5433/serveos_test
 ROOT_DOMAIN=serveos.localhost
 ```
 
+**Optional — live propagation (Supabase Realtime).** Leave these out and
+everything still works: the dashboard, storefront and POS keep the polling
+they have today. Add all five to `.env.local` to develop against the real
+thing — the Supabase project also needs a one-time SQL policy, see
+[references/realtime.md](references/realtime.md):
+
+```
+SUPABASE_URL=https://<ref>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=<service role key>
+SUPABASE_JWT_SECRET=<project JWT secret>
+NEXT_PUBLIC_SUPABASE_URL=https://<ref>.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon key>
+```
+
 ### 6. Run migrations (both databases)
 
 ```bash

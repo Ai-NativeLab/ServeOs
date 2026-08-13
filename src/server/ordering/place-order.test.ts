@@ -860,6 +860,20 @@ describe("placeOrder realtime propagation", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("broadcasts a customer's own cancel — staff must not wait out the relaxed poll for it", async () => {
+    const { t, branch, pizza } = await setup("rt4");
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+
+    const seen = captureBroadcasts(t.id);
+    const { cancelOrderByToken } = await import("./service");
+    await cancelOrderByToken(t.id, res.statusToken);
+
+    expect(seen).toEqual([{ event: "orders.changed", entityIds: [res.orderId], committed: true }]);
+  });
+
   it("broadcasts on a status transition and on a payment confirmation", async () => {
     const { t, branch, pizza, user } = await setup("rt3");
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");

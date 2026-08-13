@@ -24,9 +24,16 @@ function createWindow() {
 app.whenReady().then(() => {
   // The engine pushes state changes; the window may not exist yet on the very
   // first one, and a destroyed one must never be sent to.
-  posMain = new PosMain((status) => {
-    if (win && !win.isDestroyed()) win.webContents.send("pos:syncState", status);
-  });
+  posMain = new PosMain(
+    (status) => {
+      if (win && !win.isDestroyed()) win.webContents.send("pos:syncState", status);
+    },
+    // Main owns the tenant subscription; the renderer receives the signal
+    // only — never the Supabase url, key or token.
+    (message) => {
+      if (win && !win.isDestroyed()) win.webContents.send("pos:realtimeEvent", message);
+    },
+  );
 
   ipcMain.handle("pos:isPaired", () => posMain?.isPaired() ?? false);
   ipcMain.handle("pos:branchName", () => posMain?.branchName() ?? "");

@@ -16,6 +16,12 @@ const STATUS_LABEL: Record<string, string> = {
   rejected: "Rejected", cancelled: "Cancelled",
 };
 
+/** What the queue costs the server on its own, and what it costs once the
+ *  subscription is carrying the news. Still a real interval either way — the
+ *  net under a channel that died without saying so. */
+const POLL_MS = 8000;
+const RELAXED_POLL_MS = 60_000;
+
 /** Web (online-placed) orders live only on the server — there is no local
  *  copy to fall back on, so an outage means the queue has nothing to show
  *  rather than a stale one (pos-main's getOrders already answers `[]` while
@@ -23,19 +29,30 @@ const STATUS_LABEL: Record<string, string> = {
 export function OrdersQueue({ offline }: { offline: boolean }) {
   const [orders, setOrders] = useState<OrderSummary[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
+  /** Only true while main's channel is actually joined. Realtime off, blocked
+   *  by the café's network, or unauthorized → this stays false and the queue
+   *  polls exactly as it did before. */
+  const [live, setLive] = useState(false);
 
   const refresh = useCallback(async () => {
     setOrders(await window.pos.getOrders());
   }, []);
+
+  // The signal says only that something moved; the orders themselves still
+  // come from the same server call the poll makes.
+  useEffect(() => window.pos.onRealtimeEvent((message) => {
+    if (message.kind === "status") setLive(message.live);
+    else void refresh();
+  }), [refresh]);
 
   useEffect(() => {
     if (offline) return;
     // Fetch on mount + poll; setState happens after an async fetch, not synchronously.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh();
-    const id = setInterval(() => void refresh(), 8000);
+    const id = setInterval(() => void refresh(), live ? RELAXED_POLL_MS : POLL_MS);
     return () => clearInterval(id);
-  }, [refresh, offline]);
+  }, [refresh, offline, live]);
 
   async function advance(o: OrderSummary) {
     const next = NEXT[o.status];

@@ -662,7 +662,7 @@ export async function restockRefundedLines(
 export async function cancelOrderByToken(tenantId: string, token: string, audit?: { fingerprint: AuditFingerprint }): Promise<Order> {
   const tenant = await getTenantById(tenantId);
   const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalId);
-  return withTenant(tenantId, async (tx) => {
+  const cancelled = await withTenant(tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.statusToken, token)).limit(1);
     if (!order) throw new OrderNotFoundError();
     if (order.status !== "pending" || !canTransition(order.status, "cancelled", order.fulfillmentType)) {
@@ -690,6 +690,11 @@ export async function cancelOrderByToken(tenantId: string, token: string, audit?
     );
     return updated;
   });
+  // Post-commit (see placeOrder). A customer walking away must reach the
+  // kitchen as fast as any other status change — the relaxed poll is not
+  // where staff should learn about it.
+  await publishTenantEvent(tenantId, { type: "orders.changed", entityIds: [cancelled.id] });
+  return cancelled;
 }
 
 export async function getOrder(tenantId: string, orderId: string): Promise<OrderDetail> {
@@ -794,7 +799,7 @@ export async function transitionStatus(tenantId: string, orderId: string, to: Or
 }
 
 export async function markPaid(tenantId: string, orderId: string, userId: string, audit?: { fingerprint: AuditFingerprint }): Promise<Order> {
-  return withTenant(tenantId, async (tx) => {
+  const paid = await withTenant(tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
     if (!order) throw new OrderNotFoundError();
     // A rejected/cancelled order can't be paid — guard the terminal-failure states.
@@ -819,6 +824,9 @@ export async function markPaid(tenantId: string, orderId: string, userId: string
     );
     return updated;
   });
+  // Post-commit (see placeOrder).
+  await publishTenantEvent(tenantId, { type: "orders.changed", entityIds: [orderId] });
+  return paid;
 }
 
 /** Merchant confirms an offline payment: pending_verification → paid. Guarded + idempotent.

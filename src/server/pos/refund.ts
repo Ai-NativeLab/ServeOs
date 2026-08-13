@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { recordAuditEvent } from "@/server/audit/service";
+import { publishTenantEvent } from "@/server/realtime/publish";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { money, restockRefundedLines } from "@/server/ordering/service";
 import { orders, orderItems, type Order } from "@/server/ordering/schema";
@@ -108,7 +109,7 @@ export async function issueRefund(
   const authorizedByUserId =
     authorizer === actor.actorUserId ? null : authorizer;
 
-  return withTenant(actor.tenantId, async (tx) => {
+  const result = await withTenant(actor.tenantId, async (tx) => {
     // 1. SERIALIZE refunds per order. The net-paid ceiling is a read-then-write
     //    under READ COMMITTED; without a row lock two concurrent refunds on the
     //    same order (e.g. a dashboard manager and a POS cashier at the same
@@ -329,4 +330,13 @@ export async function issueRefund(
       idempotent: false,
     };
   });
+
+  // Post-commit, and only for a refund that actually happened: the sale's row
+  // and the stock it put back both moved, and neither screen should wait out a
+  // poll to hear it.
+  if (!result.idempotent) {
+    await publishTenantEvent(actor.tenantId, { type: "orders.changed", entityIds: [input.orderId] });
+    await publishTenantEvent(actor.tenantId, { type: "stock.changed", entityIds: [input.orderId] });
+  }
+  return result;
 }
