@@ -2,6 +2,9 @@ import { app, safeStorage } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
+import { openDb } from "./_offline/db";
+import { Store } from "./_offline/store";
+import { offlineSignIn, offlineGrant, createGrantVault, type OfflineGrantVault } from "./_offline/offline-auth";
 
 // In dev (vite serving), default to the local backend; otherwise the
 // configured/placeholder production host. POS_API_URL always wins.
@@ -29,7 +32,11 @@ export type CheckoutPricing = {
   pricesIncludeVat: boolean;
   serviceChargeRate: number;
 };
-export type Cashier = { token: string; name: string; permissions: string[] };
+// `userId` is the server user id — every offline event's `actorUserId` (Task
+// 9's client wire contract) is attributed by it, not by name/email. `token`
+// is optional because an offline-signed-in cashier has no live server
+// session: there was no round trip to mint one.
+export type Cashier = { token?: string; userId: string; name: string; permissions: string[] };
 export type TenderInput = {
   clientPaymentId: string;
   method: "cash" | "card" | "other";
@@ -284,9 +291,11 @@ export type CashMovementInput = {
 };
 
 /**
- * Online-first POS glue: talks straight to the cloud backend. No local
- * database — the offline store/sync engine lives (parked) in electron/_offline
- * and can be reintroduced later behind this same surface.
+ * Online-first POS glue: talks straight to the cloud backend. The event
+ * log/sync engine still lives (parked) in electron/_offline and is wired in
+ * fully by Task 10 — `store` here is scoped to Task 9's offline auth only
+ * (auth_cache reads, session.signed_in/grant.issued audit appends), not yet
+ * a target for any other write.
  */
 export class PosMain {
   private baseUrl = process.env.POS_API_URL || DEFAULT_BASE_URL;
@@ -294,6 +303,9 @@ export class PosMain {
   /** In memory only: closing the app signs the cashier out but leaves the device paired. */
   private cashier: Cashier | null = null;
   private readonly file = path.join(app.getPath("userData"), "pos-device.json");
+  private readonly store = new Store(openDb(path.join(app.getPath("userData"), "pos.db")));
+  /** Single-use offline manager grants (Task 9) — device-local, never persisted. */
+  private readonly grantVault: OfflineGrantVault = createGrantVault();
 
   constructor() {
     this.load();
@@ -323,7 +335,7 @@ export class PosMain {
       "Content-Type": "application/json",
       Authorization: `Bearer ${this.device?.token ?? ""}`,
     };
-    if (this.cashier) h["X-POS-Cashier"] = this.cashier.token;
+    if (this.cashier?.token) h["X-POS-Cashier"] = this.cashier.token;
     return h;
   }
 
@@ -398,9 +410,23 @@ export class PosMain {
       const err = (await res.json().catch(() => ({}))) as { error?: string };
       throw new Error(err.error ?? `Sign-in failed (${res.status})`);
     }
-    const d = (await res.json()) as { cashierToken: string; name: string; permissions: string[] };
-    this.cashier = { token: d.cashierToken, name: d.name, permissions: d.permissions };
+    const d = (await res.json()) as { cashierToken: string; userId: string; name: string; permissions: string[] };
+    this.cashier = { token: d.cashierToken, userId: d.userId, name: d.name, permissions: d.permissions };
     return { name: d.name, permissions: d.permissions };
+  }
+
+  /**
+   * Offline counterpart of signInCashier: checks the synced roster
+   * (auth_cache) instead of calling the server, and appends its own
+   * session.signed_in event either way (Task 9's offline-auth.ts). Deciding
+   * WHEN to call this instead of the online path is the sync engine's job
+   * (Task 10) — this only exposes the capability.
+   */
+  offlineSignInCashier(email: string, password: string): { name: string; permissions: string[] } {
+    const session = offlineSignIn(this.store, email, password);
+    if (!session) throw new Error("Sign-in failed");
+    this.cashier = { userId: session.userId, name: session.name, permissions: session.permissions };
+    return { name: session.name, permissions: session.permissions };
   }
 
   currentCashier(): { name: string; permissions: string[] } | null {
@@ -422,6 +448,21 @@ export class PosMain {
       throw new Error(err.error ?? `Authorization failed (${res.status})`);
     }
     return (await res.json()) as { grant: string; authorizedBy: string };
+  }
+
+  /**
+   * Offline counterpart of authorize: verifies the authorizer against the
+   * synced roster instead of the live /authorize route, and appends
+   * grant.issued locally (Task 9's offline-auth.ts). Same return shape as
+   * the online path (`grant`/`authorizedBy`) so a caller can use either
+   * interchangeably — the gated event downstream carries `authorizedBy` as
+   * its own `authorizedByUserId`; `grant.issued` itself gates nothing.
+   */
+  offlineAuthorize(email: string, password: string, permission: string): { grant: string; authorizedBy: string } {
+    if (!this.cashier) throw new Error("No cashier signed in");
+    const grant = offlineGrant(this.store, this.grantVault, this.cashier.userId, email, password, permission);
+    if (!grant) throw new Error("Authorization failed");
+    return { grant: grant.token, authorizedBy: grant.authorizedByUserId };
   }
 
   async recordSale(input: RecordSaleInput): Promise<SaleReceipt> {
