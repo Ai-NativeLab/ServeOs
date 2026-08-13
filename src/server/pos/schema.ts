@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, uniqueIndex, index, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, uniqueIndex, index, jsonb, boolean } from "drizzle-orm/pg-core";
 import { tenants } from "@/server/tenancy/schema";
 import { branches } from "@/server/branches/schema";
 import { users } from "@/server/auth/schema";
@@ -63,8 +63,25 @@ export const posGrants = pgTable("pos_grants", {
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
 });
 
+/** Mirror of pos_order_receipts, for non-sale sync events (shift/cash/ticket
+ *  lifecycle — Task 5): each replayable service inserts its row as the LAST
+ *  statement of its OWN tenant transaction, which is why this table carries
+ *  no RLS — same reasoning as pos_order_receipts. resultJson is the response
+ *  a retry of (deviceId, eventId) replays verbatim instead of re-running the
+ *  effect. No `id` column: the (deviceId, eventId) pair IS the row identity. */
+export const posSyncEventReceipts = pgTable("pos_sync_event_receipts", {
+  deviceId: uuid("device_id").notNull().references(() => posDevices.id, { onDelete: "cascade" }),
+  eventId: uuid("event_id").notNull(),
+  type: text("type").notNull(),
+  resultJson: jsonb("result_json").$type<Record<string, unknown>>().notNull(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+  receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+  clockSkewFlagged: boolean("clock_skew_flagged").notNull().default(false),
+}, (t) => [uniqueIndex("pos_sync_event_receipts_key").on(t.deviceId, t.eventId)]);
+
 export type PosDevice = typeof posDevices.$inferSelect;
 export type PosPairingCode = typeof posPairingCodes.$inferSelect;
 export type PosOrderReceipt = typeof posOrderReceipts.$inferSelect;
 export type PosCashierSession = typeof posCashierSessions.$inferSelect;
 export type PosGrant = typeof posGrants.$inferSelect;
+export type PosSyncEventReceipt = typeof posSyncEventReceipts.$inferSelect;

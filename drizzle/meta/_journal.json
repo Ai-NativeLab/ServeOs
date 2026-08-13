@@ -281,6 +281,13 @@
       "when": 1786638118828,
       "tag": "0039_hard_spectrum",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1786642185045,
+      "tag": "0040_brief_bloodstrike",
+      "breakpoints": true
     }
   ]
 }

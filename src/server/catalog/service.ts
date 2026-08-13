@@ -27,6 +27,7 @@ import {
 } from "./errors";
 import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
+import { bumpCatalogVersion } from "./version";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -67,6 +68,7 @@ export async function createCategory(tenantId: string, input: CreateCategoryInpu
       action: "catalog.category.created", entityType: "category", entityId: row.id,
       summary: `Category "${row.nameEn}" created`, metadata: auditMeta(audit), actorType: audit?.actorType,
     }, tx);
+    await bumpCatalogVersion(tenantId, tx);
     return row;
   });
 }
@@ -82,6 +84,7 @@ export async function updateCategory(tenantId: string, categoryId: string, input
       action: "catalog.category.updated", entityType: "category", entityId: row.id,
       summary: `Category "${row.nameEn}" updated`, metadata: auditMeta(audit), actorType: audit?.actorType,
     }, tx);
+    await bumpCatalogVersion(tenantId, tx);
     return row;
   });
 }
@@ -97,6 +100,7 @@ export async function deleteCategory(tenantId: string, categoryId: string, audit
       action: "catalog.category.deleted", entityType: "category", entityId: categoryId,
       summary: `Category deleted`, metadata: auditMeta(audit), actorType: audit?.actorType,
     }, tx);
+    await bumpCatalogVersion(tenantId, tx);
   });
 }
 
@@ -150,6 +154,7 @@ export async function createProduct(tenantId: string, input: CreateProductInput,
       summary: `Product "${row.nameEn}" created`,
       metadata: auditMeta(audit, { basePrice: row.basePrice }), actorType: audit?.actorType,
     }, tx);
+    await bumpCatalogVersion(tenantId, tx);
     return row;
   });
 }
@@ -175,6 +180,7 @@ export async function updateProduct(tenantId: string, productId: string, input: 
         metadata: auditMeta(audit, { before: before.basePrice, after: row.basePrice }), actorType: audit?.actorType,
       }, tx);
     }
+    await bumpCatalogVersion(tenantId, tx);
     return row;
   });
 }
@@ -187,6 +193,7 @@ export async function deleteProduct(tenantId: string, productId: string, audit?:
       action: "catalog.product.deleted", entityType: "product", entityId: productId,
       summary: `Product deleted`, metadata: auditMeta(audit), actorType: audit?.actorType,
     }, tx);
+    await bumpCatalogVersion(tenantId, tx);
   });
 }
 
@@ -224,6 +231,7 @@ export async function upsertModifierGroup(tenantId: string, productId: string, i
       action: "catalog.modifier_group.upserted", entityType: "modifier_group", entityId: row.id,
       summary: `Modifier group "${row.nameEn}" saved`, metadata: auditMeta(audit, { productId }), actorType: audit?.actorType,
     }, tx);
+    await bumpCatalogVersion(tenantId, tx);
     return row;
   });
 }
@@ -235,6 +243,7 @@ export async function deleteModifierGroup(tenantId: string, groupId: string, aud
       action: "catalog.modifier_group.deleted", entityType: "modifier_group", entityId: groupId,
       summary: `Modifier group deleted`, metadata: auditMeta(audit), actorType: audit?.actorType,
     }, tx);
+    await bumpCatalogVersion(tenantId, tx);
   });
 }
 
@@ -265,6 +274,7 @@ export async function upsertModifierOption(tenantId: string, groupId: string, in
       action: "catalog.modifier_option.upserted", entityType: "modifier_option", entityId: row.id,
       summary: `Modifier option "${row.nameEn}" saved`, metadata: auditMeta(audit, { modifierGroupId: groupId }), actorType: audit?.actorType,
     }, tx);
+    await bumpCatalogVersion(tenantId, tx);
     return row;
   });
 }
@@ -276,6 +286,7 @@ export async function deleteModifierOption(tenantId: string, optionId: string, a
       action: "catalog.modifier_option.deleted", entityType: "modifier_option", entityId: optionId,
       summary: `Modifier option deleted`, metadata: auditMeta(audit), actorType: audit?.actorType,
     }, tx);
+    await bumpCatalogVersion(tenantId, tx);
   });
 }
 
@@ -310,6 +321,7 @@ export async function setBranchAvailability(
       summary: `Availability at branch ${available ? "enabled" : "disabled"}`,
       metadata: auditMeta(audit, { branchId, available, priceOverride: priceOverride ?? null }), actorType: audit?.actorType,
     }, tx);
+    await bumpCatalogVersion(tenantId, tx);
   });
 }
 
