@@ -39,8 +39,14 @@ export async function getBranch(tenantId: string, branchId: string): Promise<Bra
 }
 
 export async function createBranch(tenantId: string, input: CreateBranchInput, audit?: AuditActorInput): Promise<Branch> {
+  // Counts THIS tenant's branches. Explicitly, because a quota that silently
+  // counts the whole table is a denial of service for everyone: run under a
+  // connection whose role bypasses RLS, this counted every branch in the
+  // database and refused to create the first branch of a new tenant
+  // ("Quota exceeded for branches (7/1)").
   const current = await withTenant(tenantId, (tx) =>
-    tx.select().from(branches).where(eq(branches.isActive, true)),
+    tx.select().from(branches)
+      .where(and(eq(branches.tenantId, tenantId), eq(branches.isActive, true))),
   );
   await checkQuota(tenantId, "branches", current.length);
   return withTenant(tenantId, async (tx) => {
