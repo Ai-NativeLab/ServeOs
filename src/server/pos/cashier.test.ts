@@ -64,16 +64,36 @@ describe("signInCashier", () => {
     expect(await resolveCashier("nope")).toBeNull();
   });
 
-  it("survives a process restart: session resolves from the DB, not memory", async () => {
+  it("stores the session keyed by token hash, not the raw token", async () => {
     const { tenantId, email } = await seedUser("owner");
     const { cashierToken } = await signInCashier(tenantId, email, "pw123456");
 
-    // sign in, then resolve — must come from the DB row, stored hashed
     const resolved = await resolveCashier(cashierToken);
     expect(resolved?.tenantId).toBe(tenantId);
     const [row] = await db.select().from(posCashierSessions)
       .where(eq(posCashierSessions.tokenHash, tokenHash(cashierToken)));
     expect(row).toBeDefined();
+  });
+
+  it("sign-in sweeps expired sessions before inserting its own", async () => {
+    const { tenantId, userId, email } = await seedUser("owner");
+    // Plant an aged row directly — no signInCashier of its own, just a session
+    // that should have been reaped by the time another cashier signs in.
+    const agedHash = tokenHash("aged-token");
+    await db.insert(posCashierSessions).values({
+      tokenHash: agedHash,
+      userId,
+      tenantId,
+      name: "Stale Cashier",
+      permissions: ["pos:sell"],
+      expiresAt: new Date(Date.now() - 1000),
+    });
+
+    await signInCashier(tenantId, email, "pw123456");
+
+    const [row] = await db.select().from(posCashierSessions)
+      .where(eq(posCashierSessions.tokenHash, agedHash));
+    expect(row).toBeUndefined();
   });
 
   it("expired sessions resolve to null and are deleted", async () => {

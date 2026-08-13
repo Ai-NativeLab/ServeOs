@@ -105,7 +105,7 @@ export async function resolveCashier(token: string): Promise<CashierSession | nu
   }
   return {
     userId: s.userId, tenantId: s.tenantId, name: s.name,
-    permissions: s.permissions as Permission[], expiresAt: s.expiresAt.getTime(),
+    permissions: s.permissions, expiresAt: s.expiresAt.getTime(),
   };
 }
 
