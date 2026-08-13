@@ -80,7 +80,13 @@ export function RetailProductSheet({
           <SheetHeader>
             {product.brand && <span className="eyebrow text-muted-foreground">{product.brand}</span>}
             <SheetTitle className="text-xl sm:text-2xl">{product.nameEn}</SheetTitle>
+            {product.nameAr && (
+              <span dir="rtl" className="block text-sm text-muted-foreground">{product.nameAr}</span>
+            )}
             {product.descriptionEn && <SheetDescription>{product.descriptionEn}</SheetDescription>}
+            {product.descriptionAr && (
+              <SheetDescription dir="rtl">{product.descriptionAr}</SheetDescription>
+            )}
           </SheetHeader>
 
           {isDimensional && (

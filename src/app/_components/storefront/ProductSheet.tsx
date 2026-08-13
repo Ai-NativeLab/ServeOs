@@ -64,7 +64,16 @@ export function ProductSheet({
         <div className="min-h-0 flex-1 overflow-y-auto">
           <SheetHeader>
             <SheetTitle className="text-xl sm:text-2xl">{product.nameEn}</SheetTitle>
+            {/* The Arabic name comes along too. The grid card already shows both
+                names, so a detail sheet that drops to English-only — and then
+                carries an Arabic description under it — reads like a bug. */}
+            {product.nameAr && (
+              <span dir="rtl" className="block text-sm text-muted-foreground">{product.nameAr}</span>
+            )}
             {product.descriptionEn && <SheetDescription>{product.descriptionEn}</SheetDescription>}
+            {product.descriptionAr && (
+              <SheetDescription dir="rtl">{product.descriptionAr}</SheetDescription>
+            )}
           </SheetHeader>
 
           {product.modifierGroups.map((g) => {
