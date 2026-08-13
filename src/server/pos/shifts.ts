@@ -12,7 +12,7 @@ import {
 import { orderPayments, posAdjustmentEvents, type OrderPayment } from "./tender-schema";
 import { posSyncEventReceipts } from "./schema";
 import { findSyncReceipt, reviveDates, type SyncReceipt } from "./sync-receipt";
-import { resolveAuthorizer } from "./grants";
+import { resolveAuthorizer, resolveOfflineAuthorizer } from "./grants";
 import {
   CashCountMismatchError, NoOpenShiftError, ShiftAlreadyOpenError, ShiftClosedError,
 } from "./errors";
@@ -42,6 +42,11 @@ export type CloseShiftInput = {
   /** The device-claimed close time; defaults to now(). */
   occurredAt?: Date;
   syncReceipt?: SyncReceipt;
+  /** Replay-only substitute for a live grant token, for the cross-user close
+   *  and the flagged-variance approval — see resolveOfflineAuthorizer.
+   *  Honored only when `syncReceipt` is set (a synced offline event); a live
+   *  close route never reads this field off its request body. */
+  authorizedByUserId?: string;
 };
 
 export type TenderTotal = { method: OrderPayment["method"]; amount: number; tips: number; count: number };
@@ -378,16 +383,31 @@ export async function closeShift(
 
   const grantToken = input.grants?.find((g) => g.permission === "reconciliation:manage")?.token;
   const holdsPermission = ctx.permissions.includes("reconciliation:manage");
+  // A synced offline close names its manager directly (no live grant token can
+  // survive the outage) — see resolveOfflineAuthorizer. Only trusted when this
+  // IS a synced event: syncReceipt is what the ingest dispatcher always sets
+  // and a live route never does, so a live body can't forge this field.
+  const offline = Boolean(input.syncReceipt && input.authorizedByUserId);
   // Grants are single-use, so resolve at most once and reuse the answer: a close
   // that is BOTH cross-user and flagged must not spend the token twice.
   let authorizer: string | null = null;
+  let authorizerDeactivated = false;
   const authorize = async (): Promise<string> => {
-    if (authorizer === null) authorizer = await resolveAuthorizer(ctx, "reconciliation:manage", grantToken);
+    if (authorizer === null) {
+      if (offline) {
+        const off = await resolveOfflineAuthorizer(ctx.tenantId, input.authorizedByUserId!, "reconciliation:manage");
+        authorizer = off.userId;
+        authorizerDeactivated = off.deactivated;
+      } else {
+        authorizer = await resolveAuthorizer(ctx, "reconciliation:manage", grantToken);
+      }
+    }
     return authorizer;
   };
-  // A grant is a manager standing at the till: validate it up front so one token
-  // governs the cross-user close, the variance approval, and the blind reveal.
-  if (!holdsPermission && grantToken) await authorize();
+  // A grant (or its offline substitute) is a manager standing at the till:
+  // validate it up front so one authorizer governs the cross-user close, the
+  // variance approval, and the blind reveal.
+  if (!holdsPermission && (grantToken || offline)) await authorize();
   const canManage = holdsPermission || authorizer !== null;
 
   return withTenant(ctx.tenantId, async (tx) => {
@@ -462,6 +482,7 @@ export async function closeShift(
         flagged,
         approvedByUserId,
         closedByUserId: ctx.cashierUserId,
+        ...(authorizerDeactivated ? { authorizerDeactivated: true } : {}),
       },
       actorType: "user",
     }, tx);

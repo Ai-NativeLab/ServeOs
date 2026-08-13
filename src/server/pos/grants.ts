@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { eq, lt } from "drizzle-orm";
+import { and, eq, lt } from "drizzle-orm";
 import { db } from "@/db/client";
+import { users } from "@/server/auth/schema";
 import type { Permission } from "@/server/rbac/permissions";
 import { PosForbiddenError } from "./errors";
 import { posGrants } from "./schema";
@@ -57,4 +58,29 @@ export async function resolveAuthorizer(
   if (ctx.permissions.includes(permission)) return ctx.cashierUserId;
   if (!grantToken) throw new PosForbiddenError(permission);
   return consumeGrant(ctx.tenantId, grantToken, permission);
+}
+
+/**
+ * Offline substitute for resolveAuthorizer's live-grant path (the sync
+ * ingestion design doc's decision #2): a live grant token cannot exist after
+ * the outage that produced the event, so a synced gated action names its
+ * manager directly via `authorizedByUserId`. Only checked in-tenant — the
+ * permission itself was already enforced live at the till when this
+ * happened, so a caller who has since lost it is flagged, not re-checked;
+ * `deactivated` is that flag for the audit trail, mirroring record-sale.ts's
+ * discountAuthorizerDeactivated. Throws PosForbiddenError, like the live
+ * path, when authorizedByUserId names no one in this tenant.
+ */
+export async function resolveOfflineAuthorizer(
+  tenantId: string,
+  authorizedByUserId: string,
+  permission: Permission,
+): Promise<{ userId: string; deactivated: boolean }> {
+  const [user] = await db
+    .select({ id: users.id, status: users.status })
+    .from(users)
+    .where(and(eq(users.id, authorizedByUserId), eq(users.tenantId, tenantId)))
+    .limit(1);
+  if (!user) throw new PosForbiddenError(permission);
+  return { userId: user.id, deactivated: user.status !== "active" };
 }

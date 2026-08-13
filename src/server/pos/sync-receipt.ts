@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { posSyncEventReceipts, type PosSyncEventReceipt } from "./schema";
 
@@ -19,6 +19,9 @@ export type SyncReceipt = {
   type: string;
   occurredAt: Date;
   clockSkewFlagged: boolean;
+  /** Optional, not threaded through Task 5's services — see schema.ts's `seq`
+   *  column comment. sync-ingest.ts (Task 6b) always sets it. */
+  seq?: number;
 };
 
 /**
@@ -39,6 +42,20 @@ export async function findSyncReceipt(
     .where(and(eq(posSyncEventReceipts.deviceId, ref.deviceId), eq(posSyncEventReceipts.eventId, ref.eventId)))
     .limit(1);
   return row ?? null;
+}
+
+/**
+ * The device's own ordering position: the highest `seq` this device has ever
+ * committed a receipt for, or 0 if it has none yet. Rows with no seq (see
+ * schema.ts) are simply invisible to MAX() — only sync-ingest's own prior
+ * writes can move this, which is exactly what ordering-gap detection needs.
+ */
+export async function lastReceiptSeq(deviceId: string): Promise<number> {
+  const [row] = await db
+    .select({ maxSeq: sql<number | null>`max(${posSyncEventReceipts.seq})` })
+    .from(posSyncEventReceipts)
+    .where(eq(posSyncEventReceipts.deviceId, deviceId));
+  return row?.maxSeq ?? 0;
 }
 
 /**
@@ -65,6 +82,10 @@ const REPLAY_UNIQUE_CONSTRAINTS = new Set([
   "pos_sync_event_receipts_key",
   "pos_shifts_device_client",
   "pos_held_tickets_device_client",
+  // recordSale's own natural key (Task 6b wires it into the sync dispatcher
+  // too): a concurrent duplicate sale.recorded ingest races here before it
+  // ever reaches pos_sync_event_receipts.
+  "pos_order_receipts_device_client",
 ]);
 
 /**

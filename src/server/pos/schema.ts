@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, uniqueIndex, index, jsonb, boolean } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, uniqueIndex, index, jsonb, boolean, integer } from "drizzle-orm/pg-core";
 import { tenants } from "@/server/tenancy/schema";
 import { branches } from "@/server/branches/schema";
 import { users } from "@/server/auth/schema";
@@ -73,11 +73,22 @@ export const posSyncEventReceipts = pgTable("pos_sync_event_receipts", {
   deviceId: uuid("device_id").notNull().references(() => posDevices.id, { onDelete: "cascade" }),
   eventId: uuid("event_id").notNull(),
   type: text("type").notNull(),
+  /** The device's own ordering position for this event (Task 6b's ingestion
+   *  dispatcher). Nullable, not required: every syncReceipt-accepting service
+   *  (Task 5) just spreads the SyncReceipt descriptor into this insert, and
+   *  most of those call sites have no seq to offer (tests construct receipts
+   *  directly; live services other than the sync dispatcher never will).
+   *  sync-ingest.ts is the only writer that populates it and the only reader
+   *  (lastReceiptSeq: MAX(seq) per device, nulls ignored). */
+  seq: integer("seq"),
   resultJson: jsonb("result_json").$type<Record<string, unknown>>().notNull(),
   occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
   receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
   clockSkewFlagged: boolean("clock_skew_flagged").notNull().default(false),
-}, (t) => [uniqueIndex("pos_sync_event_receipts_key").on(t.deviceId, t.eventId)]);
+}, (t) => [
+  uniqueIndex("pos_sync_event_receipts_key").on(t.deviceId, t.eventId),
+  index("pos_sync_event_receipts_device_seq").on(t.deviceId, t.seq),
+]);
 
 export type PosDevice = typeof posDevices.$inferSelect;
 export type PosPairingCode = typeof posPairingCodes.$inferSelect;

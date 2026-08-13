@@ -8,7 +8,7 @@ import { cashMovements, posShifts, type CashMovement, type CashMovementType } fr
 import { posSyncEventReceipts } from "./schema";
 import { findSyncReceipt, reviveDates, type SyncReceipt } from "./sync-receipt";
 import { CashMovementError, NoOpenShiftError } from "./errors";
-import { resolveAuthorizer } from "./grants";
+import { resolveAuthorizer, resolveOfflineAuthorizer } from "./grants";
 import { findOpenShift, shiftAuditCtx } from "./shifts";
 import { round2 } from "./shift-math";
 import type { PosCashierContext } from "./require-cashier";
@@ -25,6 +25,10 @@ export type CashMovementInput = {
   /** The device-claimed time; defaults to now(). */
   occurredAt?: Date;
   syncReceipt?: SyncReceipt;
+  /** Replay-only substitute for a live grant token on an over-threshold
+   *  pay-out — see shifts.ts's CloseShiftInput.authorizedByUserId for the
+   *  same shape and the same "honored only alongside syncReceipt" rule. */
+  authorizedByUserId?: string;
 };
 
 /**
@@ -64,12 +68,22 @@ export async function recordCashMovement(
 
   // Routine pay-outs are the cashier's own call; a large one is a manager's.
   // resolveAuthorizer returns the cashier when they hold reconciliation:manage,
-  // the grant's manager otherwise, and throws PosForbiddenError if neither.
+  // the grant's manager otherwise, and throws PosForbiddenError if neither. A
+  // synced offline pay-out names its manager directly (input.authorizedByUserId)
+  // instead of a live grant token — only trusted alongside syncReceipt, which
+  // only the sync ingest dispatcher ever sets.
   const policy = await getShiftPolicy(ctx.tenantId);
   let authorizedByUserId: string | null = null;
+  let authorizerDeactivated = false;
   if (input.type === "pay_out" && policy.payoutThreshold > 0 && magnitude > policy.payoutThreshold) {
-    const grant = input.grants?.find((g) => g.permission === "reconciliation:manage")?.token;
-    authorizedByUserId = await resolveAuthorizer(ctx, "reconciliation:manage", grant);
+    if (input.syncReceipt && input.authorizedByUserId) {
+      const off = await resolveOfflineAuthorizer(ctx.tenantId, input.authorizedByUserId, "reconciliation:manage");
+      authorizedByUserId = off.userId;
+      authorizerDeactivated = off.deactivated;
+    } else {
+      const grant = input.grants?.find((g) => g.permission === "reconciliation:manage")?.token;
+      authorizedByUserId = await resolveAuthorizer(ctx, "reconciliation:manage", grant);
+    }
   }
 
   return withTenant(ctx.tenantId, async (tx) => {
@@ -130,6 +144,7 @@ export async function recordCashMovement(
         amount: money(signed),
         reasonCode: input.reasonCode,
         authorizedByUserId,
+        ...(authorizerDeactivated ? { authorizerDeactivated: true } : {}),
       },
       actorType: "user",
     }, tx);

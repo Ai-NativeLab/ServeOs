@@ -5,11 +5,12 @@ import { placeOrder, money, type PlaceOrderLine, type LineSnapshot } from "@/ser
 import { orders } from "@/server/ordering/schema";
 import { users } from "@/server/auth/schema";
 import type { Permission } from "@/server/rbac/permissions";
-import { posOrderReceipts } from "./schema";
+import { posOrderReceipts, posSyncEventReceipts } from "./schema";
 import { orderPayments, posAdjustmentEvents } from "./tender-schema";
 import { posShifts, type PosShift } from "./shift-schema";
 import { findOpenShift } from "./shifts";
 import { resolveAuthorizer } from "./grants";
+import type { SyncReceipt } from "./sync-receipt";
 import { NoOpenShiftError, PosForbiddenError, PosSaleError } from "./errors";
 import type { PosCashierContext } from "./require-cashier";
 import { recordAuditEvent } from "@/server/audit/service";
@@ -59,6 +60,12 @@ export type RecordSaleInput = {
    * to forge an authorizer.
    */
   authorizedByUserId?: string;
+  /** Sync-ingest bookkeeping only (Task 6b) — recordSale's own idempotency is
+   *  clientOrderId (below), never this. Written atomically with the sale so
+   *  (a) a concurrent duplicate ingest has something to race on beyond
+   *  pos_order_receipts_device_client, and (b) lastReceiptSeq's ordering-gap
+   *  watermark advances for sale events the same as every other synced type. */
+  syncReceipt?: SyncReceipt;
 };
 
 export type SaleReceipt = {
@@ -211,6 +218,7 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
   const paymentStatusFor = (total: number): "paid" | "partially_paid" =>
     paidAmount >= total - 0.001 ? "paid" : "partially_paid";
 
+  let committedReceipt: SaleReceipt | null = null;
   const placed = await placeOrder(ctx.tenantId, {
     branchId: ctx.branchId,
     fulfillmentType: "pickup",
@@ -317,18 +325,28 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
         orderId: placed.orderId,
         orderNumber: String(placed.orderNumber),
       });
+
+      // Built once, here, so the row sync-ingest reads back on a duplicate
+      // ingest is byte-identical to what a fresh apply returns below — no
+      // separate recomputation to drift out of sync with it.
+      committedReceipt = {
+        orderId: placed.orderId,
+        orderNumber: String(placed.orderNumber),
+        total: placed.total,
+        paidAmount,
+        changeAmount,
+        paymentStatus,
+        idempotent: false,
+      };
+      if (input.syncReceipt) {
+        await tx.insert(posSyncEventReceipts).values({ ...input.syncReceipt, resultJson: committedReceipt });
+      }
     },
   });
 
-  return {
-    orderId: placed.orderId,
-    orderNumber: String(placed.orderNumber),
-    total: placed.total,
-    paidAmount,
-    changeAmount,
-    paymentStatus: paymentStatusFor(placed.total),
-    idempotent: false,
-  };
+  // onPlaced always runs to completion before placeOrder resolves — see its
+  // doc comment — so committedReceipt is set whenever we reach here.
+  return committedReceipt!;
 }
 
 /** Adds a tender to an existing (typically partially_paid) sale. Idempotent on clientPaymentId. */
