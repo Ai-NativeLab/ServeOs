@@ -88,8 +88,8 @@ export async function postReceipt(
       if (!Number.isFinite(l.receivedQty) || l.receivedQty <= 0) {
         throw new InvalidPoInputError(`receivedQty must be a positive finite number (got ${l.receivedQty})`);
       }
-      if (!Number.isFinite(l.unitCost)) {
-        throw new InvalidPoInputError(`unitCost must be a finite number (got ${l.unitCost})`);
+      if (!Number.isFinite(l.unitCost) || l.unitCost < 0) {
+        throw new InvalidPoInputError(`unitCost must be a finite non-negative number (got ${l.unitCost})`);
       }
 
       const poLine = poLines.find((x) => x.id === l.poLineId);
@@ -118,11 +118,27 @@ export async function postReceipt(
         expiryAt: l.expiryAt ?? null,
       }).returning({ id: poReceiptLines.id });
 
-      const baseQty = toBase(l.receivedQty, uom, { ...item, baseUom }, "purchase");
+      // The purchase factor only ever applies when the receipt's unit IS the
+      // item's declared purchase unit (a 24-can case, counted in kg but held in
+      // g). Receiving in any other unit converts dimensionally instead — an
+      // order placed in the wrong unit must not silently re-scale against a
+      // factor meant for the purchase unit (500 g × 1000 = 500000, the
+      // over-credit this guard exists to stop).
+      const factorKind: "purchase" | undefined = uom === item.purchaseUom ? "purchase" : undefined;
+      const baseQty = toBase(l.receivedQty, uom, { ...item, baseUom }, factorKind);
+      if (!(baseQty > 0)) {
+        throw new InvalidPoInputError(
+          `receivedQty ${l.receivedQty} ${uom} converts to zero base units (${baseUom})`,
+        );
+      }
       // The lot's unit cost is per BASE unit: 2 cases @ 50.00 against a factor
-      // of 24 is 100.00 ÷ 48 = 2.08 per can, not 50.00. totalCost ÷ baseQty is
-      // the exact per-base-unit cost, immune to which unit the receipt used.
-      const baseUnitCost = money((l.unitCost * l.receivedQty) / baseQty);
+      // of 24 is 100.00 ÷ 48 per can, not 50.00. totalCost ÷ baseQty is the
+      // exact per-base-unit cost, immune to which unit the receipt used. It is
+      // NOT a 2dp currency amount, and `money` would round it to one — a
+      // permanent wedge between the lot's value (2.08 × 48 = 99.84) and what
+      // was actually paid (100.00). `inventory_lots.unit_cost` is unbounded
+      // numeric, so the exact quotient is stored as-is.
+      const baseUnitCost = String((l.unitCost * l.receivedQty) / baseQty);
       await receiveStock(tx, {
         tenantId: actor.tenantId,
         itemId: poLine.itemId,

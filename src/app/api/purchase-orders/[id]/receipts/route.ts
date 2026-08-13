@@ -16,24 +16,26 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!Array.isArray(body.lines) || body.lines.length === 0) {
     return NextResponse.json({ error: "lines must be a non-empty array" }, { status: 400 });
   }
-  const lines = (body.lines as unknown[]).map((l) => {
-    const row = (l ?? {}) as Record<string, unknown>;
-    if (!Number.isFinite(row.receivedQty) || Number(row.receivedQty) <= 0) {
-      throw new InvalidPoInputError("each line needs a positive finite receivedQty");
-    }
-    if (!Number.isFinite(row.unitCost)) {
-      throw new InvalidPoInputError("each line needs a finite unitCost");
-    }
-    return {
-      poLineId: String(row.poLineId ?? ""),
-      receivedQty: Number(row.receivedQty),
-      uom: String(row.uom ?? "") as never,
-      unitCost: Number(row.unitCost),
-      lotCode: typeof row.lotCode === "string" ? row.lotCode : undefined,
-      expiryAt: typeof row.expiryAt === "string" ? new Date(row.expiryAt) : undefined,
-    };
-  });
   try {
+    const lines = (body.lines as unknown[]).map((l) => {
+      const row = (l ?? {}) as Record<string, unknown>;
+      const receivedQty = Number(row.receivedQty);
+      const unitCost = Number(row.unitCost);
+      if (!Number.isFinite(receivedQty) || receivedQty <= 0) {
+        throw new InvalidPoInputError("each line needs a positive finite receivedQty");
+      }
+      if (!Number.isFinite(unitCost)) {
+        throw new InvalidPoInputError("each line needs a finite unitCost");
+      }
+      return {
+        poLineId: String(row.poLineId ?? ""),
+        receivedQty,
+        uom: String(row.uom ?? "") as never,
+        unitCost,
+        lotCode: typeof row.lotCode === "string" ? row.lotCode : undefined,
+        expiryAt: typeof row.expiryAt === "string" ? new Date(row.expiryAt) : undefined,
+      };
+    });
     const actor = await resolvePurchasingActor(ctx);
     const { receiptId, status } = await postReceipt(actor, id, {
       supplierDeliveryNote: typeof body.supplierDeliveryNote === "string" ? body.supplierDeliveryNote : undefined,

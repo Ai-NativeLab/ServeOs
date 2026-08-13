@@ -24,12 +24,12 @@ async function seedActor(tenantId: string, branchId: string): Promise<Purchasing
 }
 
 /** A supplier + one item, and a `sent` PO for 10 of it at 5.00. */
-async function seedSentPo(opts: { purchaseToBase?: string; baseUom?: Uom; orderUom?: Uom } = {}) {
-  const { purchaseToBase = "1", baseUom = "each", orderUom = baseUom } = opts;
+async function seedSentPo(opts: { purchaseToBase?: string; baseUom?: Uom; purchaseUom?: Uom; orderUom?: Uom } = {}) {
+  const { purchaseToBase = "1", baseUom = "each", purchaseUom = baseUom, orderUom = baseUom } = opts;
   const { tenantId, branchId } = await seedInventoryTenant();
   const actor = await seedActor(tenantId, branchId);
   const supplierId = await createSupplier(actor, { name: "Sup", email: "sup@x.com" });
-  const itemId = await seedItem(tenantId, { baseUom });
+  const itemId = await seedItem(tenantId, { baseUom, purchaseUom });
   if (purchaseToBase !== "1") {
     await withTenant(tenantId, (tx) =>
       tx.update(inventoryItems).set({ purchaseToBase }).where(eq(inventoryItems.id, itemId)));
@@ -103,8 +103,12 @@ describe("receiving", () => {
       tx.select().from(inventoryLots).where(eq(inventoryLots.itemId, seeded.itemId)));
     expect(lots).toHaveLength(1);
     expect(lots[0]?.qtyRemaining).toBe("48.000");
-    // C1: the unit cost must be per BASE unit, not per receipt unit (50.00 / 24 = 2.08).
-    expect(lots[0]?.unitCost).toBe("2.08");
+    // C1: the unit cost must be per BASE unit, not per receipt unit. It must
+    // also be EXACT, not a 2dp money() rounding: 2 cases @ 50.00 = 100.00
+    // across 48 cans is 2.0833… per can — rounding to 2.08 would make the lot
+    // value 99.84 against the 100.00 actually paid, wedging this report from
+    // getPoVariance's sum.
+    expect(Number(lots[0]?.unitCost)).toBeCloseTo(2.0833333333333335, 12);
   });
 
   it("rejects a receipt line whose uom differs from the PO line's uom", async () => {
@@ -119,6 +123,54 @@ describe("receiving", () => {
     const lots = await withTenant(seeded.tenantId, (tx) =>
       tx.select().from(inventoryLots).where(eq(inventoryLots.itemId, seeded.itemId)));
     expect(lots).toHaveLength(0);
+  });
+
+  it("never applies purchaseToBase to a unit other than the item's purchaseUom (over-credit)", async () => {
+    // Base g, purchaseUom kg, factor 1000 — but the order AND receipt are both
+    // in g. Both fields agree with each other, so the UoM-mismatch guard passes;
+    // the purchase factor is still wrong to apply here (500 g × 1000 = 500000
+    // instead of 500). The factor only ever applies to the declared purchase
+    // unit; anything else converts dimensionally.
+    const seeded = await seedSentPo({
+      purchaseToBase: "1000", baseUom: "g", purchaseUom: "kg", orderUom: "g",
+    });
+
+    const { status } = await postReceipt(seeded.actor, seeded.poId, {
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 500, uom: "g", unitCost: 5 }],
+    });
+    expect(status).toBe("received");
+
+    const lots = await withTenant(seeded.tenantId, (tx) =>
+      tx.select().from(inventoryLots).where(eq(inventoryLots.itemId, seeded.itemId)));
+    expect(lots).toHaveLength(1);
+    // Dimensionally: 500 g → 500 base g, NOT 500 × 1000.
+    expect(lots[0]?.qtyRemaining).toBe("500.000");
+
+    const [line] = await withTenant(seeded.tenantId, (tx) =>
+      tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.id, seeded.poLineId)));
+    expect(line?.qtyReceived).toBe("500.000");
+  });
+
+  it("rejects a receipt that converts to zero base units (ledger-poisoning denominator)", async () => {
+    // Sub-milli quantities clear the receivedQty > 0 guard but round to a zero
+    // baseQty, which would make the per-base-unit cost Infinity → "Infinity" in
+    // numeric → NaN in every SUM. That is the exact ledger poison the NaN guard
+    // was written to remove.
+    const seeded = await seedSentPo({ baseUom: "g", purchaseUom: "g" });
+    await expect(postReceipt(seeded.actor, seeded.poId, {
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 0.0004, uom: "g", unitCost: 5 }],
+    })).rejects.toThrow(InvalidPoInputError);
+
+    const lots = await withTenant(seeded.tenantId, (tx) =>
+      tx.select().from(inventoryLots).where(eq(inventoryLots.itemId, seeded.itemId)));
+    expect(lots).toHaveLength(0);
+  });
+
+  it("rejects a negative unitCost", async () => {
+    const seeded = await seedSentPo();
+    await expect(postReceipt(seeded.actor, seeded.poId, {
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 4, uom: "each", unitCost: -100 }],
+    })).rejects.toThrow(InvalidPoInputError);
   });
 
   it("two receipt lines for the same poLineId accumulate, not last-write-wins", async () => {
