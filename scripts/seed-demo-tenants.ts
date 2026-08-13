@@ -21,7 +21,7 @@ import { DEMO_IMAGES } from "../src/server/demo/images";
 
 const {
   restaurant: { GRILL_PLATTER, MEZZE_SPREAD, RICE_SIDES, DRINKS_TRAY, LEMONADE, DESSERTS, RESTAURANT_COVER, RESTAURANT_LOGO },
-  retail: { GLOVED_HANDS, SOFT_DRINKS, DAIRY_EGGS, HOUSEHOLD_CLEANING },
+  retail: { POTATO_CHIPS, CHOCOLATE, BISCUITS, PEANUTS, GLOVED_HANDS, SOFT_DRINKS, DAIRY_EGGS, HOUSEHOLD_CLEANING },
   pharmacy: { MEDICINES, PERSONAL_CARE, BABY_CARE, SUPPLEMENTS, PHARMACY_COVER, PHARMACY_LOGO },
   timber: { SHEET_GOODS, PLANED_TIMBER, MOULDINGS, FIXINGS, HINGES, HANDLES, TIMBER_COVER, TIMBER_LOGO },
 } = DEMO_IMAGES;
@@ -274,11 +274,11 @@ const RETAIL: TenantSeedConfig = {
   catalog: [
     // NOTE: this aisle used to point every product at a photo of a computer
     // screen. See the photography block at the top of this file.
-    { nameEn: "Snacks", nameAr: "سناكس", img: GLOVED_HANDS, products: [
+    { nameEn: "Snacks", nameAr: "سناكس", img: POTATO_CHIPS, products: [
       { nameEn: "Potato Chips Family Pack", nameAr: "شيبسي عبوة كبيرة",
         descEn: "Sharing bag, 165g. Salted or chilli — pick below.",
         descAr: "كيس عائلي ١٦٥ جم. مملح أو شطة — اختر من الأسفل.",
-        price: "45", img: GLOVED_HANDS, featured: true,
+        price: "45", img: POTATO_CHIPS, featured: true,
         variants: [
           { nameEn: "Salted", nameAr: "مملح", price: "45", stock: 60 },
           { nameEn: "Chilli", nameAr: "شطة", price: "45", stock: 45 },
@@ -286,15 +286,15 @@ const RETAIL: TenantSeedConfig = {
       { nameEn: "Chocolate Bar", nameAr: "شيكولاتة",
         descEn: "Milk chocolate bar, 80g.",
         descAr: "لوح شيكولاتة بالحليب، ٨٠ جم.",
-        price: "25", img: GLOVED_HANDS },
+        price: "25", img: CHOCOLATE },
       { nameEn: "Biscuits Pack", nameAr: "بسكويت",
         descEn: "Tea biscuits, twin-wrapped roll.",
         descAr: "بسكويت شاي، لفة مزدوجة.",
-        price: "20", img: GLOVED_HANDS },
+        price: "20", img: BISCUITS },
       { nameEn: "Salted Peanuts", nameAr: "فول سوداني مملح",
         descEn: "Roasted and salted, 200g bag.",
         descAr: "محمّص ومملح، كيس ٢٠٠ جم.",
-        price: "30", img: GLOVED_HANDS, trackStock: true, stockQuantity: 0 },
+        price: "30", img: PEANUTS, trackStock: true, stockQuantity: 0 },
     ] },
     { nameEn: "Beverages", nameAr: "مشروبات", img: SOFT_DRINKS, products: [
       { nameEn: "Bottled Water 6-pack", nameAr: "مياه معدنية ٦ عبوات",
