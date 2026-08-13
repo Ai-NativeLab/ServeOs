@@ -29,6 +29,9 @@ describe("renderPurchaseOrderHtml", () => {
     expect(html).toContain("110.00");
     expect(html).toContain("Downtown");
     expect(html).toContain("EGP");
+    // C8: the line Total cell must be qty × unit cost, not the unit cost again.
+    expect(html).toContain("50.00"); // 10 × 5.00
+    expect(html).toContain("60.00"); // 2 × 30.00
   });
 
   it("HTML-escapes interpolated text", () => {

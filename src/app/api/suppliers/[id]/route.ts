@@ -37,8 +37,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     return NextResponse.json({ error: "no fields to update" }, { status: 400 });
   }
   try {
-    await updateSupplier(await resolvePurchasingActor(ctx), id, input);
-    return NextResponse.json({ ok: true });
+    const supplier = await updateSupplier(await resolvePurchasingActor(ctx), id, input);
+    if (!supplier) return NextResponse.json({ error: "Supplier not found" }, { status: 404 });
+    return NextResponse.json({ supplier });
   } catch (e) {
     console.error("updateSupplier failed", { tenantId: ctx.tenantId, supplierId: id, error: e });
     return NextResponse.json({ error: "Something went wrong" }, { status: 500 });

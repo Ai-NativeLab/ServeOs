@@ -14,6 +14,7 @@ import type { PurchasingActor } from "./suppliers";
 import { createSupplier, upsertSupplierItem } from "./suppliers";
 import { reorderRules } from "./reorder-schema";
 import { upsertReorderRule, listReorderRules, checkReorder } from "./reorder";
+import { InvalidPoInputError } from "./errors";
 
 async function seedActor(tenantId: string, branchId: string): Promise<PurchasingActor> {
   const [user] = await db.insert(users).values({
@@ -129,5 +130,14 @@ describe("reorder rules", () => {
     expect(pos[0]?.supplierId).toBe(supplierId);
     expect(pos[0]?.branchId).toBe(branchId);
     expect(pos[0]?.status).toBe("draft");
+  });
+
+  it("rejects a preferredSupplierId from another tenant (I13)", async () => {
+    const { actor, itemAtPoint, locationId } = await seedReorderContext();
+    const other = await seedReorderContext();
+    await expect(upsertReorderRule(actor, {
+      itemId: itemAtPoint, locationId, reorderPoint: 20, reorderQty: 50,
+      preferredSupplierId: other.supplierId,
+    })).rejects.toThrow(InvalidPoInputError);
   });
 });

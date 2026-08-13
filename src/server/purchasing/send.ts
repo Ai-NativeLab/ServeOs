@@ -34,7 +34,7 @@ function auditCtx(actor: PurchasingActor) {
 export async function sendPurchaseOrder(actor: PurchasingActor, poId: string): Promise<void> {
   requireCapability(actor.vertical, "inventory");
   return withTenant(actor.tenantId, async (tx) => {
-    const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId));
+    const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId)).for("update").limit(1);
     if (!po) throw new PoNotFoundError();
     if (po.status !== "sent") assertTransition(po.status as PoStatus, "sent");
 

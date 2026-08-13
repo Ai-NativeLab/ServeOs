@@ -6,8 +6,9 @@ import { requireCapability } from "@/server/verticals/registry";
 import { money } from "@/server/ordering/service";
 import { purchaseOrders, purchaseOrderLines } from "./schema";
 import type { PurchasingActor } from "./suppliers";
-import { PoNotFoundError } from "./errors";
+import { InvalidPoInputError, InvalidPoTransitionError, PoNotFoundError } from "./errors";
 import { assertTransition } from "./status";
+import type { PoStatus } from "./status";
 
 function auditCtx(actor: PurchasingActor) {
   return {
@@ -60,12 +61,21 @@ export async function getPoVariance(tenantId: string, poId: string): Promise<PoV
 }
 
 /** Records the supplier's actual invoice figure on the PO header (one number,
- *  never per-line — see the analytics-stub alignment in Task 5). */
+ *  never per-line — see the analytics-stub alignment in Task 5). Only POs that
+ *  are at least `sent` can be invoiced: a draft has no commercial life and a
+ *  terminal PO is already closed, so auditing a `po.invoiced` for either would
+ *  be noise. */
 export async function enterInvoiceTotal(actor: PurchasingActor, poId: string, invoiceTotal: number): Promise<void> {
   requireCapability(actor.vertical, "inventory");
+  if (!Number.isFinite(invoiceTotal) || invoiceTotal < 0) {
+    throw new InvalidPoInputError(`invoiceTotal must be a non-negative finite number (got ${invoiceTotal})`);
+  }
   return withTenant(actor.tenantId, async (tx) => {
-    const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId));
+    const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId)).for("update").limit(1);
     if (!po) throw new PoNotFoundError();
+    if (po.status !== "sent" && po.status !== "partially_received" && po.status !== "received") {
+      throw new InvalidPoTransitionError(po.status as PoStatus, "received");
+    }
 
     await tx.update(purchaseOrders)
       .set({ invoiceTotal: money(invoiceTotal) })
@@ -86,7 +96,7 @@ export async function enterInvoiceTotal(actor: PurchasingActor, poId: string, in
 export async function closePurchaseOrder(actor: PurchasingActor, poId: string): Promise<void> {
   requireCapability(actor.vertical, "inventory");
   return withTenant(actor.tenantId, async (tx) => {
-    const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId));
+    const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId)).for("update").limit(1);
     if (!po) throw new PoNotFoundError();
     assertTransition(po.status, "closed");
 

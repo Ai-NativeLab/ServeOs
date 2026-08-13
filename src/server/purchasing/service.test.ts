@@ -1,6 +1,6 @@
 ﻿import { describe, it, expect } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { db } from "@/db/client";
+import { db, pool } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { users } from "@/server/auth/schema";
 import { seedInventoryTenant, seedItem } from "@/server/inventory/test-helpers";
@@ -14,7 +14,7 @@ import { createDraftPo, updateDraftPo, cancelPurchaseOrder, getPurchaseOrder, ty
 import { postReceipt } from "./receiving";
 import { sendPurchaseOrder } from "./send";
 import { enterInvoiceTotal, getPoVariance, closePurchaseOrder } from "./variance";
-import { InvalidPoTransitionError } from "./errors";
+import { InvalidPoInputError, InvalidPoTransitionError } from "./errors";
 
 async function seedActor(tenantId: string, branchId: string) {
   const [user] = await db.insert(users).values({
@@ -147,6 +147,28 @@ describe("purchase order drafting", () => {
     await expect(cancelPurchaseOrder(actor, poId)).rejects.toThrow(InvalidPoTransitionError);
   });
 
+  it("rejects a body-supplied branchId/supplierId from another tenant (I13)", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const actor = await seedActor(tenantId, branchId);
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+    const supplierId = await seedSupplier(tenantId, branchId);
+
+    // Another tenant's branch + supplier, both invisible under tenant A's RLS.
+    const other = await seedInventoryTenant();
+    const otherActor = await seedActor(other.tenantId, other.branchId);
+    const otherSupplierId = await seedSupplier(other.tenantId, other.branchId);
+
+    await expect(createDraftPo(actor, { supplierId, branchId: other.branchId, lines: [line(itemId)] }))
+      .rejects.toThrow(InvalidPoInputError);
+    await expect(createDraftPo(actor, { supplierId: otherSupplierId, branchId, lines: [line(itemId)] }))
+      .rejects.toThrow(InvalidPoInputError);
+    // Same guards on the update path.
+    const { poId } = await createDraftPo(actor, { supplierId, branchId, lines: [line(itemId)] });
+    await expect(updateDraftPo(actor, poId, { supplierId: otherSupplierId, branchId, lines: [line(itemId)] }))
+      .rejects.toThrow(InvalidPoInputError);
+    void otherActor;
+  });
+
   it("a po.created audit event exists after drafting, and the chain stays verifiable", async () => {
     const { tenantId, branchId } = await seedInventoryTenant();
     const actor = await seedActor(tenantId, branchId);
@@ -235,5 +257,70 @@ describe("purchase order drafting", () => {
     expect(actions).toContain("po.invoiced");
     expect(actions).toContain("po.closed");
     expect((await verifyChain(tenantId)).ok).toBe(true);
+  });
+
+  it("serializes a draft edit against a concurrent send — the edit fails, not the send (FOR UPDATE on loadPo)", async () => {
+    // PO is drafted. A rival commits status=sent while our edit is in flight.
+    // Under READ COMMITTED a plain loadPo read would see draft, and the edit
+    // would land after the email went out (the review's C1 probe: status sent,
+    // total 98901.00, qtyOrdered 999). loadPo's FOR UPDATE is the serialization
+    // point: our edit blocks until the rival commits, then re-reads sent and
+    // throws InvalidPoTransitionError. Same forcing pattern as receiving.test.ts.
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const actor = await seedActor(tenantId, branchId);
+    const supplierId = await seedSupplier(tenantId, branchId);
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+    const { poId } = await createDraftPo(actor, {
+      supplierId, branchId,
+      lines: [line(itemId)],
+    });
+
+    const rival = await pool.connect();
+    try {
+      await rival.query("BEGIN");
+      await rival.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+      // A competing send flips the header to sent but has not committed yet.
+      // The UPDATE holds the row with FOR NO KEY UPDATE, which conflicts with
+      // the FOR UPDATE our edit takes on loadPo — that lock is the serialization
+      // point (a stray FOR SHARE would not conflict with a plain read, masking
+      // the very race this test exists to prove).
+      await rival.query(
+        "UPDATE purchase_orders SET status = 'sent' WHERE id = $1",
+        [poId],
+      );
+
+      const ours = updateDraftPo(actor, poId, {
+        supplierId, branchId,
+        lines: [line(itemId, { qtyOrdered: 999, unitCost: 99 })],
+      });
+
+      // Wait until our edit is genuinely blocked on the rival's row lock.
+      const { rows: rivalXidRows } = await rival.query<{ xid: string }>("SELECT pg_current_xact_id()::text AS xid");
+      const rivalXid = rivalXidRows[0].xid;
+      let blocked = false;
+      for (let i = 0; i < 200 && !blocked; i++) {
+        const { rows } = await rival.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_locks
+           WHERE NOT granted AND locktype = 'transactionid' AND transactionid::text = $1`,
+          [rivalXid],
+        );
+        blocked = rows[0].n > 0;
+        if (!blocked) await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(blocked).toBe(true);
+
+      await rival.query("COMMIT");
+      await expect(ours).rejects.toThrow(InvalidPoTransitionError);
+    } finally {
+      rival.release();
+    }
+
+    // The edit never landed: total stayed at the draft's 50.00, qtyOrdered 10.
+    const [po] = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId)));
+    expect(po?.status).toBe("sent");
+    expect(po?.total).toBe("50.00");
+    const [poLine] = await withTenant(tenantId, (tx) =>
+      tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId)));
+    expect(poLine?.qtyOrdered).toBe("10.000");
   });
 });

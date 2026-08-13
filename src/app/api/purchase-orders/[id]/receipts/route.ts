@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolvePurchasingContext, resolvePurchasingActor } from "@/app/dashboard/purchasing-permission";
 import { postReceipt } from "@/server/purchasing/receiving";
-import { PoNotFoundError, InvalidPoTransitionError } from "@/server/purchasing/errors";
+import { InvalidPoInputError, PoNotFoundError, InvalidPoTransitionError, ReceiptUomMismatchError } from "@/server/purchasing/errors";
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { ctx, denied } = await resolvePurchasingContext("purchasing:manage");
@@ -18,6 +18,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   const lines = (body.lines as unknown[]).map((l) => {
     const row = (l ?? {}) as Record<string, unknown>;
+    if (!Number.isFinite(row.receivedQty) || Number(row.receivedQty) <= 0) {
+      throw new InvalidPoInputError("each line needs a positive finite receivedQty");
+    }
+    if (!Number.isFinite(row.unitCost)) {
+      throw new InvalidPoInputError("each line needs a finite unitCost");
+    }
     return {
       poLineId: String(row.poLineId ?? ""),
       receivedQty: Number(row.receivedQty),
@@ -38,6 +44,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   } catch (e) {
     if (e instanceof PoNotFoundError) return NextResponse.json({ error: e.message }, { status: 404 });
     if (e instanceof InvalidPoTransitionError) return NextResponse.json({ error: e.message }, { status: 409 });
+    if (e instanceof InvalidPoInputError || e instanceof ReceiptUomMismatchError) {
+      return NextResponse.json({ error: e.message }, { status: 400 });
+    }
     throw e;
   }
 }

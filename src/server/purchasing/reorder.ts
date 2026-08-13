@@ -1,4 +1,4 @@
-import { sql, eq, inArray } from "drizzle-orm";
+import { sql, eq, inArray, and } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { recordAuditEvent } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
@@ -7,9 +7,11 @@ import { qty } from "@/server/inventory/uom";
 import { money } from "@/server/ordering/service";
 import { notify } from "@/server/notifications/service";
 import { inventoryItems } from "@/server/inventory/schema";
-import { purchaseOrders, purchaseOrderLines, supplierItems } from "./schema";
+import { storageLocations } from "@/server/inventory/schema";
+import { purchaseOrders, purchaseOrderLines, supplierItems, suppliers } from "./schema";
 import { reorderRules } from "./reorder-schema";
 import type { PurchasingActor } from "./suppliers";
+import { InvalidPoInputError } from "./errors";
 
 function auditCtx(actor: PurchasingActor) {
   return {
@@ -31,6 +33,17 @@ export type ReorderRuleInput = {
 export async function upsertReorderRule(actor: PurchasingActor, input: ReorderRuleInput): Promise<void> {
   requireCapability(actor.vertical, "inventory");
   return withTenant(actor.tenantId, async (tx) => {
+    // Body-supplied ids must resolve under our RLS or the rule could reference
+    // another tenant's item/location/supplier (FK checks bypass row security).
+    const [item] = await tx.select().from(inventoryItems).where(eq(inventoryItems.id, input.itemId));
+    if (!item) throw new InvalidPoInputError(`itemId ${input.itemId} is not an item of this tenant`);
+    const [loc] = await tx.select().from(storageLocations).where(eq(storageLocations.id, input.locationId));
+    if (!loc) throw new InvalidPoInputError(`locationId ${input.locationId} is not a location of this tenant`);
+    if (input.preferredSupplierId) {
+      const [supplier] = await tx.select().from(suppliers).where(eq(suppliers.id, input.preferredSupplierId));
+      if (!supplier) throw new InvalidPoInputError(`preferredSupplierId ${input.preferredSupplierId} is not a supplier of this tenant`);
+    }
+
     await tx.insert(reorderRules).values({
       tenantId: actor.tenantId,
       itemId: input.itemId,
@@ -74,10 +87,21 @@ export type ReorderRun = { triggered: number; draftsCreated: number };
  *  - Debounced by lastAlertedAt: a rule alerted in the last 24h is skipped.
  *  - Rules with a preferred supplier pre-fill one draft PO per supplier (never
  *    sent) at reorderQty × lastUnitCost (0 when the supplier has no price for it).
+ *  - The sweep is serialized per tenant by the advisory lock taken as its FIRST
+ *    statement: an overlapping run (or a cron re-fire) blocks until this one
+ *    commits, then re-reads rules and lastAlertedAt, so it cannot double-notify
+ *    or double-draft. A supplier with an already-open draft PO is skipped, so a
+ *    chronically-low item cannot spawn a fresh draft every day forever.
+ *  - Machine-written draft POs are audit-attributed via actorType: "system".
  */
 export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> {
   requireCapability(actor.vertical, "inventory");
   return withTenant(actor.tenantId, async (tx) => {
+    // Serialize the whole sweep per tenant. Advisory locks are re-entrant, so
+    // recordAuditEvent re-acquiring the same key later is a no-op; the sweep's
+    // read-then-write steps (rules → debounce → notify → draft) are now atomic.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${actor.tenantId})::bigint)`);
+
     const rules = await tx.select().from(reorderRules).where(eq(reorderRules.isActive, true));
     if (rules.length === 0) return { triggered: 0, draftsCreated: 0 };
 
@@ -132,12 +156,29 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
 
     let draftsCreated = 0;
     for (const [supplierId, group] of bySupplier) {
-      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${actor.tenantId})::bigint)`);
+      // The supplier id came from a reorder rule — verify it still resolves
+      // under our RLS before drafting a PO against it (FK checks bypass RLS).
+      const [supplier] = await tx.select().from(suppliers).where(eq(suppliers.id, supplierId));
+      if (!supplier) continue;
+
+      // Skip a supplier that already has an open draft PO (same supplier and
+      // branch): merging a chronically-low item's reorder into it beats stacking
+      // a fresh draft every cron run, forever.
+      const [open] = await tx.select({ id: purchaseOrders.id })
+        .from(purchaseOrders)
+        .where(and(
+          eq(purchaseOrders.supplierId, supplierId),
+          eq(purchaseOrders.branchId, actor.branchId),
+          eq(purchaseOrders.status, "draft"),
+        )).limit(1);
+      if (open) continue;
+
       const [{ max }] = await tx.select({ max: sql<number>`COALESCE(MAX(${purchaseOrders.poNumber}), 0)` }).from(purchaseOrders);
       const poNumber = Number(max) + 1;
 
       const groupItemIds = group.map((r) => r.itemId);
-      const priceRows = await tx.select().from(supplierItems).where(inArray(supplierItems.itemId, groupItemIds));
+      const priceRows = await tx.select().from(supplierItems)
+        .where(and(inArray(supplierItems.itemId, groupItemIds), eq(supplierItems.supplierId, supplierId)));
       const costByItem = new Map(priceRows.map((s) => [s.itemId, Number(s.lastUnitCost ?? 0)]));
 
       let total = 0;
@@ -175,6 +216,7 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
         entityId: po.id,
         summary: `PO #${po.poNumber} drafted from reorder`,
         metadata: { supplierId, lineCount: lines.length },
+        actorType: "system",
       }, tx);
       draftsCreated++;
     }

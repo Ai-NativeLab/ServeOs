@@ -1,0 +1,101 @@
+# Finds stock below reorder points and pre-fills draft POs + low_stock alerts on
+# a schedule. checkReorder takes a per-tenant advisory lock as its first
+# statement and skips suppliers that already have an open draft, so a re-run or
+# an overlapping schedule cannot double-notify or double-draft. Drives the same
+# function as POST /api/inventory/reorder/check, with a per-tenant system actor.
+name: reorder-check
+
+on:
+  # After a deploy is verified live, sweep the environment that deployed.
+  workflow_run:
+    workflows: ["Deploy Watch"]
+    types: [completed]
+  # The daily sweep. Offset from db-backup's 03:00 and inventory-backfill's
+  # 04:00 so the three never contend.
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  targets:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - name: Pick the environments to sweep
+        id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          PROD='{"env_name":"prod","url_secret":"PROD_DATABASE_URL"}'
+          QA='{"env_name":"qa","url_secret":"QA_DATABASE_URL"}'
+          if [ "$EVENT" = "workflow_run" ]; then
+            case "$HEAD_BRANCH" in
+              main) M="[$PROD]" ;;
+              qa)   M="[$QA]" ;;
+              *)    M="[]" ;;
+            esac
+          else
+            M="[$PROD,$QA]"
+          fi
+          echo "targets: $M"
+          echo "matrix=$M" >> "$GITHUB_OUTPUT"
+
+  reorder:
+    needs: targets
+    if: needs.targets.outputs.matrix != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.targets.outputs.matrix) }}
+    concurrency:
+      group: reorder-check-${{ matrix.target.env_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Reorder sweep ${{ matrix.target.env_name }}
+        env:
+          DATABASE_URL: ${{ secrets[matrix.target.url_secret] }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::error::secret ${{ matrix.target.url_secret }} is not set"
+            exit 1
+          fi
+          npx tsx scripts/reorder-check.ts 2>&1 | tee reorder.log
+
+      - name: Publish the run summary
+        if: always()
+        run: |
+          {
+            echo "### Reorder check — ${{ matrix.target.env_name }}"
+            echo ""
+            echo '```'
+            cat reorder.log 2>/dev/null || echo "(the sweep produced no output)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Zero-tenant canary
+        # Same failure db-backup/inventory-backfill guard against: a role that
+        # connects fine but sees no rows would make an empty no-op look clean.
+        run: |
+          set -euo pipefail
+          if grep -qF "across 0 active tenant(s)" reorder.log; then
+            echo "::error::reorder sweep saw 0 active tenants in ${{ matrix.target.env_name }} — the role cannot read public.tenants (RLS/grants) or the database is empty. Refusing to report success."
+            exit 1
+          fi

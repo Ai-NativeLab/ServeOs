@@ -17,3 +17,17 @@ export class SupplierEmailMissingError extends Error {
 export class PoNotFoundError extends Error {
   constructor() { super("Purchase order not found"); this.name = "PoNotFoundError"; }
 }
+
+export class InvalidPoInputError extends Error {
+  constructor(detail: string) {
+    super(`Invalid purchase input: ${detail}`);
+    this.name = "InvalidPoInputError";
+  }
+}
+
+export class ReceiptUomMismatchError extends Error {
+  constructor(poLineId: string, ordered: string, got: string) {
+    super(`Receipt line for PO line ${poLineId} is in ${got}, but the order line was in ${ordered}`);
+    this.name = "ReceiptUomMismatchError";
+  }
+}

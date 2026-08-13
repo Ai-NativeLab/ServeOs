@@ -1,4 +1,4 @@
-import { pgTable, uuid, numeric, boolean, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, uuid, numeric, boolean, timestamp, uniqueIndex, index } from "drizzle-orm/pg-core";
 import { tenants } from "@/server/tenancy/schema";
 import { inventoryItems, storageLocations } from "@/server/inventory/schema";
 import { suppliers } from "./schema";
@@ -20,6 +20,9 @@ export const reorderRules = pgTable("reorder_rules", {
   lastAlertedAt: timestamp("last_alerted_at", { withTimezone: true }), // debounce clock
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [uniqueIndex("reorder_rules_item_location").on(t.itemId, t.locationId)]);
+}, (t) => [
+  uniqueIndex("reorder_rules_item_location").on(t.itemId, t.locationId),
+  index("reorder_rules_tenant_active").on(t.tenantId, t.isActive),
+]);
 
 export type ReorderRule = typeof reorderRules.$inferSelect;

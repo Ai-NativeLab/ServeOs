@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { recordAuditEvent } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
@@ -10,7 +10,7 @@ import { inventoryItems } from "@/server/inventory/schema";
 import { money } from "@/server/ordering/service";
 import { purchaseOrders, purchaseOrderLines, poReceipts, poReceiptLines } from "./schema";
 import type { PurchasingActor } from "./suppliers";
-import { InvalidPoTransitionError, PoNotFoundError } from "./errors";
+import { InvalidPoInputError, InvalidPoTransitionError, PoNotFoundError, ReceiptUomMismatchError } from "./errors";
 import { assertTransition, receiptStatus } from "./status";
 import type { PoStatus } from "./status";
 
@@ -83,6 +83,15 @@ export async function postReceipt(
     const poLines = await tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId));
 
     for (const l of input.lines) {
+      // 4. Input guardrail first: NaN / non-positive quantities and non-finite
+      //    unit costs would otherwise reach `money`/`qty` and store junk ledger.
+      if (!Number.isFinite(l.receivedQty) || l.receivedQty <= 0) {
+        throw new InvalidPoInputError(`receivedQty must be a positive finite number (got ${l.receivedQty})`);
+      }
+      if (!Number.isFinite(l.unitCost)) {
+        throw new InvalidPoInputError(`unitCost must be a finite number (got ${l.unitCost})`);
+      }
+
       const poLine = poLines.find((x) => x.id === l.poLineId);
       if (!poLine) throw new PoNotFoundError();
 
@@ -90,6 +99,12 @@ export async function postReceipt(
       if (!item) throw new PoNotFoundError();
 
       const uom = assertInventoryUom(l.uom);
+      // Receipts must be stated in the same unit the line was ordered in:
+      // otherwise qty_received is not comparable to qty_ordered and the item
+      // factor gets applied against a foreign magnitude (500 g vs an order of
+      // 5 kg became 500 × 1000 = 500000 base units).
+      if (uom !== poLine.uom) throw new ReceiptUomMismatchError(l.poLineId, poLine.uom, uom);
+
       const baseUom = assertInventoryUom(item.baseUom);
       const [receiptLine] = await tx.insert(poReceiptLines).values({
         tenantId: actor.tenantId,
@@ -104,13 +119,17 @@ export async function postReceipt(
       }).returning({ id: poReceiptLines.id });
 
       const baseQty = toBase(l.receivedQty, uom, { ...item, baseUom }, "purchase");
+      // The lot's unit cost is per BASE unit: 2 cases @ 50.00 against a factor
+      // of 24 is 100.00 ÷ 48 = 2.08 per can, not 50.00. totalCost ÷ baseQty is
+      // the exact per-base-unit cost, immune to which unit the receipt used.
+      const baseUnitCost = money((l.unitCost * l.receivedQty) / baseQty);
       await receiveStock(tx, {
         tenantId: actor.tenantId,
         itemId: poLine.itemId,
         locationId: location.id,
         baseQty,
         uom: baseUom,
-        unitCost: money(l.unitCost),
+        unitCost: baseUnitCost,
         lotCode: l.lotCode ?? null,
         supplierId: po.supplierId,
         poReceiptLineId: receiptLine.id,
@@ -119,8 +138,12 @@ export async function postReceipt(
         byUserId: actor.actorUserId,
       });
 
+      // SQL-side increment: two lines in one receipt may share a poLineId, and
+      // each must add to whatever the loop already wrote (read-then-write with a
+      // stale value would leave last-write-wins — 6 not 4+6). Under the PO-row
+      // lock above this is also safe across concurrent receipts.
       await tx.update(purchaseOrderLines)
-        .set({ qtyReceived: qty(Number(poLine.qtyReceived) + l.receivedQty) })
+        .set({ qtyReceived: sql`${purchaseOrderLines.qtyReceived} + ${qty(l.receivedQty)}` })
         .where(eq(purchaseOrderLines.id, l.poLineId));
     }
 

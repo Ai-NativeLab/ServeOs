@@ -3,12 +3,13 @@ import { withTenant } from "@/db/with-tenant";
 import { recordAuditEvent } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { requireCapability } from "@/server/verticals/registry";
+import { branches } from "@/server/branches/schema";
 import type { UnitOfMeasure } from "@/server/catalog/uom";
 import { assertInventoryUom, qty } from "@/server/inventory/uom";
 import { money } from "@/server/ordering/service";
-import { purchaseOrders, purchaseOrderLines } from "./schema";
+import { purchaseOrders, purchaseOrderLines, suppliers } from "./schema";
 import type { PurchasingActor } from "./suppliers";
-import { InvalidPoTransitionError, PoNotFoundError } from "./errors";
+import { InvalidPoInputError, InvalidPoTransitionError, PoNotFoundError } from "./errors";
 import { assertTransition } from "./status";
 import type { PoStatus } from "./status";
 
@@ -43,6 +44,16 @@ export async function createDraftPo(actor: PurchasingActor, input: DraftPoInput)
     // spans only the read-max-then-insert window, and FORCE RLS scopes the MAX
     // to this tenant via app.tenant_id.
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${actor.tenantId})::bigint)`);
+
+    // RLS doesn't cover FK referential-integrity checks (Postgres runs those
+    // with row security bypassed), so a body-supplied branch/supplier id could
+    // point at another tenant's row. A SELECT under our RLS is itself the tenant
+    // check: absent here means "not this tenant's" and the PO must not exist.
+    const [branch] = await tx.select().from(branches).where(eq(branches.id, input.branchId));
+    if (!branch) throw new InvalidPoInputError(`branchId ${input.branchId} is not a branch of this tenant`);
+    const [supplier] = await tx.select().from(suppliers).where(eq(suppliers.id, input.supplierId));
+    if (!supplier) throw new InvalidPoInputError(`supplierId ${input.supplierId} is not a supplier of this tenant`);
+
     const [{ max }] = await tx.select({ max: sql<number>`COALESCE(MAX(${purchaseOrders.poNumber}), 0)` }).from(purchaseOrders);
     const poNumber = Number(max) + 1;
 
@@ -102,8 +113,13 @@ export async function listPurchaseOrders(tenantId: string, opts: { status?: PoSt
   });
 }
 
+/** Locks the PO header with FOR UPDATE so the read-check-write guard in every
+ *  mutation is total: postReceipt already locks this row, and now every other
+ *  writer (updateDraftPo, cancelPurchaseOrder, sendPurchaseOrder,
+ *  enterInvoiceTotal, closePurchaseOrder) takes the same lock, so a concurrent
+ *  send/receive/cancel serializes instead of walking straight past a stale read. */
 async function loadPo(tx: Parameters<typeof withTenant>[1] extends (tx: infer T) => unknown ? T : never, poId: string) {
-  const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId));
+  const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId)).for("update").limit(1);
   if (!po) throw new PoNotFoundError();
   return po;
 }
@@ -113,6 +129,13 @@ export async function updateDraftPo(actor: PurchasingActor, poId: string, input:
   return withTenant(actor.tenantId, async (tx) => {
     const po = await loadPo(tx, poId);
     if (po.status !== "draft") throw new InvalidPoTransitionError(po.status as PoStatus, "draft");
+
+    // Same tenant-ownership guard as createDraftPo: the body's branch/supplier
+    // must resolve under our RLS or the draft would reference another tenant.
+    const [branch] = await tx.select().from(branches).where(eq(branches.id, input.branchId));
+    if (!branch) throw new InvalidPoInputError(`branchId ${input.branchId} is not a branch of this tenant`);
+    const [supplier] = await tx.select().from(suppliers).where(eq(suppliers.id, input.supplierId));
+    if (!supplier) throw new InvalidPoInputError(`supplierId ${input.supplierId} is not a supplier of this tenant`);
 
     const total = money(input.lines.reduce((s, l) => s + l.qtyOrdered * l.unitCost, 0));
 

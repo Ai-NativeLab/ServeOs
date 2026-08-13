@@ -6,6 +6,9 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+/** Two-decimal money formatting, matching `money()` so PO line totals agree with totals. */
+function money(n: number): string { return (Math.round(n * 100) / 100).toFixed(2); }
+
 /**
  * Renders a PO to a self-contained HTML document (no external asset URLs).
  * Pure: takes the loaded rows, returns a string. Every interpolation is
@@ -21,11 +24,12 @@ export function renderPurchaseOrderHtml(
 ): string {
   const rows = lines.map((l) => {
     const name = itemNames.get(l.itemId) ?? l.itemId;
+    const lineTotal = money(Number(l.qtyOrdered) * Number(l.unitCost));
     return `<tr>
       <td style="padding:8px 16px 8px 0;color:#1A0F0A;">${escapeHtml(name)}</td>
       <td style="padding:8px 16px;color:#1A0F0A;text-align:right;">${escapeHtml(l.qtyOrdered)} ${escapeHtml(l.uom)}</td>
       <td style="padding:8px 16px;color:#1A0F0A;text-align:right;">${escapeHtml(l.unitCost)}</td>
-      <td style="padding:8px 0;color:#1A0F0A;text-align:right;">${escapeHtml(l.unitCost)}</td>
+      <td style="padding:8px 0;color:#1A0F0A;text-align:right;">${escapeHtml(lineTotal)}</td>
     </tr>`;
   }).join("");
 

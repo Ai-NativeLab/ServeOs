@@ -281,6 +281,13 @@
       "when": 1786376416086,
       "tag": "0039_nice_cargill",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1786615333476,
+      "tag": "0040_chubby_karma",
+      "breakpoints": true
     }
   ]
 }

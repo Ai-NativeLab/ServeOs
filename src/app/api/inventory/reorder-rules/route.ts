@@ -1,17 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resolveInventoryContext } from "@/app/dashboard/inventory-permission";
-import { resolvePurchasingActor } from "@/app/dashboard/purchasing-permission";
+import { resolvePurchasingContext, resolvePurchasingActor } from "@/app/dashboard/purchasing-permission";
 import { listReorderRules, upsertReorderRule } from "@/server/purchasing/reorder";
 
 export async function GET() {
-  const { ctx, denied } = await resolveInventoryContext("inventory:manage");
+  const { ctx, denied } = await resolvePurchasingContext("purchasing:manage");
   if (denied) return denied;
   const rows = await listReorderRules(ctx.tenantId);
   return NextResponse.json({ rules: rows });
 }
 
 export async function PUT(req: NextRequest) {
-  const { ctx, denied } = await resolveInventoryContext("inventory:manage");
+  const { ctx, denied } = await resolvePurchasingContext("purchasing:manage");
   if (denied) return denied;
   let body: Record<string, unknown>;
   try {

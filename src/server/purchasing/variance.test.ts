@@ -11,7 +11,7 @@ import { createSupplier } from "./suppliers";
 import { createDraftPo } from "./service";
 import { postReceipt } from "./receiving";
 import { getPoVariance, enterInvoiceTotal, closePurchaseOrder } from "./variance";
-import { InvalidPoTransitionError } from "./errors";
+import { InvalidPoInputError, InvalidPoTransitionError } from "./errors";
 import type { PurchasingActor } from "./suppliers";
 
 async function seedActor(tenantId: string, branchId: string): Promise<PurchasingActor> {
@@ -63,6 +63,24 @@ describe("purchase order variance", () => {
     expect(v.overReceived).toBe(true);
     expect(v.invoiceTotal).toBeNull();
     expect(v.invoiceVsReceived).toBeNull();
+  });
+
+  it("enterInvoiceTotal rejects a draft PO (status guard)", async () => {
+    const { tenantId, actor, supplierId, branchId, itemId } = await seedSentPo();
+    const { poId } = await createDraftPo(actor, {
+      supplierId, branchId,
+      lines: [{ itemId, qtyOrdered: 10, uom: "each", unitCost: 5 }],
+    });
+    await expect(enterInvoiceTotal(actor, poId, 55)).rejects.toThrow(InvalidPoTransitionError);
+    const [po] = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId)));
+    expect(po?.invoiceTotal).toBeNull();
+  });
+
+  it("enterInvoiceTotal rejects a negative total at the service boundary", async () => {
+    const { tenantId, actor, poId } = await seedSentPo();
+    await expect(enterInvoiceTotal(actor, poId, -5)).rejects.toThrow(InvalidPoInputError);
+    const [po] = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId)));
+    expect(po?.invoiceTotal).toBeNull();
   });
 
   it("enterInvoiceTotal audits po.invoiced once and keeps the chain verifiable", async () => {

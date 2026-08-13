@@ -6,6 +6,7 @@ import { users } from "@/server/auth/schema";
 import { seedInventoryTenant, seedItem } from "@/server/inventory/test-helpers";
 import { inventoryItems, inventoryLots, stockLedger } from "@/server/inventory/schema";
 import { DimensionalUomError } from "@/server/inventory/errors";
+import type { Uom } from "@/server/inventory/uom";
 import { verifyChain } from "@/server/audit/verifier";
 import { auditEvents } from "@/server/audit/schema";
 import { purchaseOrders, purchaseOrderLines, poReceipts, poReceiptLines } from "./schema";
@@ -13,7 +14,7 @@ import type { PurchasingActor } from "./suppliers";
 import { createSupplier } from "./suppliers";
 import { createDraftPo } from "./service";
 import { postReceipt } from "./receiving";
-import { InvalidPoTransitionError, PoNotFoundError } from "./errors";
+import { InvalidPoInputError, InvalidPoTransitionError, PoNotFoundError, ReceiptUomMismatchError } from "./errors";
 
 async function seedActor(tenantId: string, branchId: string): Promise<PurchasingActor> {
   const [user] = await db.insert(users).values({
@@ -23,18 +24,19 @@ async function seedActor(tenantId: string, branchId: string): Promise<Purchasing
 }
 
 /** A supplier + one item, and a `sent` PO for 10 of it at 5.00. */
-async function seedSentPo(purchaseToBase = "1") {
+async function seedSentPo(opts: { purchaseToBase?: string; baseUom?: Uom; orderUom?: Uom } = {}) {
+  const { purchaseToBase = "1", baseUom = "each", orderUom = baseUom } = opts;
   const { tenantId, branchId } = await seedInventoryTenant();
   const actor = await seedActor(tenantId, branchId);
   const supplierId = await createSupplier(actor, { name: "Sup", email: "sup@x.com" });
-  const itemId = await seedItem(tenantId, { baseUom: "each" });
+  const itemId = await seedItem(tenantId, { baseUom });
   if (purchaseToBase !== "1") {
     await withTenant(tenantId, (tx) =>
       tx.update(inventoryItems).set({ purchaseToBase }).where(eq(inventoryItems.id, itemId)));
   }
   const { poId } = await createDraftPo(actor, {
     supplierId, branchId,
-    lines: [{ itemId, qtyOrdered: 10, uom: "each", unitCost: 5 }],
+    lines: [{ itemId, qtyOrdered: 10, uom: orderUom, unitCost: 5 }],
   });
   await withTenant(tenantId, (tx) =>
     tx.update(purchaseOrders).set({ status: "sent" }).where(eq(purchaseOrders.id, poId)));
@@ -92,7 +94,7 @@ describe("receiving", () => {
   });
 
   it("converts via the item's purchaseToBase factor (2 cases x 24 = 48 base units)", async () => {
-    const seeded = await seedSentPo("24");
+    const seeded = await seedSentPo({ purchaseToBase: "24" });
     await postReceipt(seeded.actor, seeded.poId, {
       lines: [{ poLineId: seeded.poLineId, receivedQty: 2, uom: "each", unitCost: 50 }],
     });
@@ -101,6 +103,56 @@ describe("receiving", () => {
       tx.select().from(inventoryLots).where(eq(inventoryLots.itemId, seeded.itemId)));
     expect(lots).toHaveLength(1);
     expect(lots[0]?.qtyRemaining).toBe("48.000");
+    // C1: the unit cost must be per BASE unit, not per receipt unit (50.00 / 24 = 2.08).
+    expect(lots[0]?.unitCost).toBe("2.08");
+  });
+
+  it("rejects a receipt line whose uom differs from the PO line's uom", async () => {
+    // Base g, ordered in kg. Posting a receipt in g would silently re-scale by
+    // purchaseToBase again (500 g × 1000 = 500000) instead of matching the order.
+    const seeded = await seedSentPo({ purchaseToBase: "1000", baseUom: "g", orderUom: "kg" });
+
+    await expect(postReceipt(seeded.actor, seeded.poId, {
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 500, uom: "g", unitCost: 5 }],
+    })).rejects.toThrow(ReceiptUomMismatchError);
+
+    const lots = await withTenant(seeded.tenantId, (tx) =>
+      tx.select().from(inventoryLots).where(eq(inventoryLots.itemId, seeded.itemId)));
+    expect(lots).toHaveLength(0);
+  });
+
+  it("two receipt lines for the same poLineId accumulate, not last-write-wins", async () => {
+    const { tenantId, actor, poId, poLineId } = await seedSentPo();
+    await postReceipt(actor, poId, {
+      lines: [receiptLine(poLineId), receiptLine(poLineId, { receivedQty: 6 })],
+    });
+
+    const [line] = await withTenant(tenantId, (tx) =>
+      tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.id, poLineId)));
+    expect(line?.qtyReceived).toBe("10.000");
+
+    const [po] = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId)));
+    expect(po?.status).toBe("received");
+
+    const [receipt] = await withTenant(tenantId, (tx) =>
+      tx.select().from(poReceipts).where(eq(poReceipts.purchaseOrderId, poId)));
+    const lines = await withTenant(tenantId, (tx) =>
+      tx.select().from(poReceiptLines).where(eq(poReceiptLines.poReceiptId, receipt!.id)));
+    expect(lines).toHaveLength(2);
+  });
+
+  it("rejects non-finite / non-positive quantities and non-finite unit costs", async () => {
+    const { actor, poId, poLineId } = await seedSentPo();
+    await expect(postReceipt(actor, poId, { lines: [receiptLine(poLineId, { receivedQty: Number.NaN })] }))
+      .rejects.toThrow(InvalidPoInputError);
+    await expect(postReceipt(actor, poId, { lines: [receiptLine(poLineId, { receivedQty: 0 })] }))
+      .rejects.toThrow(InvalidPoInputError);
+    await expect(postReceipt(actor, poId, { lines: [receiptLine(poLineId, { receivedQty: -1 })] }))
+      .rejects.toThrow(InvalidPoInputError);
+    await expect(postReceipt(actor, poId, { lines: [receiptLine(poLineId, { unitCost: Number.POSITIVE_INFINITY })] }))
+      .rejects.toThrow(InvalidPoInputError);
+    await expect(postReceipt(actor, poId, { lines: [receiptLine(poLineId, { unitCost: Number.NaN })] }))
+      .rejects.toThrow(InvalidPoInputError);
   });
 
   it("allows over-receipt beyond the ordered qty", async () => {

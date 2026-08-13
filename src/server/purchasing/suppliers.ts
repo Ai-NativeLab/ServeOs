@@ -7,7 +7,10 @@ import type { VerticalId } from "@/server/verticals/types";
 import type { UnitOfMeasure } from "@/server/catalog/uom";
 import { assertInventoryUom } from "@/server/inventory/uom";
 import { money } from "@/server/ordering/service";
+import { inventoryItems } from "@/server/inventory/schema";
 import { suppliers, supplierItems } from "./schema";
+import type { Supplier } from "./schema";
+import { InvalidPoInputError } from "./errors";
 export type PurchasingActor = {
   tenantId: string;
   branchId: string;
@@ -58,27 +61,33 @@ export async function createSupplier(actor: PurchasingActor, input: CreateSuppli
   });
 }
 
-export async function updateSupplier(actor: PurchasingActor, supplierId: string, input: UpdateSupplierInput): Promise<void> {
+export async function updateSupplier(
+  actor: PurchasingActor, supplierId: string, input: UpdateSupplierInput,
+): Promise<Supplier | null> {
   requireCapability(actor.vertical, "inventory");
   return withTenant(actor.tenantId, async (tx) => {
-    await tx.update(suppliers)
-      .set({
-        name: input.name,
-        contactName: input.contactName ?? null,
-        email: input.email ?? null,
-        phone: input.phone ?? null,
-        paymentTerms: input.paymentTerms ?? null,
-        notes: input.notes ?? null,
-        isActive: input.isActive,
-      })
-      .where(eq(suppliers.id, supplierId));
+    // Partial PATCH must not clobber unspecified nullable fields: only copy the
+    // keys the caller actually set (`!== undefined`), so `contactName ?? null`
+    // never erases a field merely because the payload omitted it.
+    const patch: { [K in keyof UpdateSupplierInput]?: unknown } = {};
+    for (const key of ["name", "contactName", "email", "phone", "paymentTerms", "notes", "isActive"] as const) {
+      if (input[key] !== undefined) patch[key] = input[key];
+    }
+    if (Object.keys(patch).length === 0) return null;
+
+    const [row] = await tx.update(suppliers)
+      .set(patch as never)
+      .where(eq(suppliers.id, supplierId))
+      .returning();
+    if (!row) return null;
     await recordAuditEvent(auditCtx(actor), {
       action: "supplier.updated",
       entityType: "supplier",
-      entityId: supplierId,
-      summary: `Supplier ${input.name ? `"${input.name}" ` : ""}updated`,
+      entityId: row.id,
+      summary: `Supplier ${row.name ? `"${row.name}" ` : ""}updated`,
       metadata: input,
     }, tx);
+    return row;
   });
 }
 
@@ -94,6 +103,13 @@ export async function upsertSupplierItem(actor: PurchasingActor, input: UpsertSu
   requireCapability(actor.vertical, "inventory");
   const packUom = input.packUom ? assertInventoryUom(input.packUom) : null;
   return withTenant(actor.tenantId, async (tx) => {
+    // RLS covers the write, not the FK: a body-supplied supplierId/itemId could
+    // reference another tenant's row. Resolving both under our RLS is the check.
+    const [supplier] = await tx.select().from(suppliers).where(eq(suppliers.id, input.supplierId));
+    if (!supplier) throw new InvalidPoInputError(`supplierId ${input.supplierId} is not a supplier of this tenant`);
+    const [item] = await tx.select().from(inventoryItems).where(eq(inventoryItems.id, input.itemId));
+    if (!item) throw new InvalidPoInputError(`itemId ${input.itemId} is not an item of this tenant`);
+
     await tx.insert(supplierItems).values({
       tenantId: actor.tenantId,
       supplierId: input.supplierId,
@@ -104,9 +120,11 @@ export async function upsertSupplierItem(actor: PurchasingActor, input: UpsertSu
     }).onConflictDoUpdate({
       target: [supplierItems.supplierId, supplierItems.itemId],
       set: {
-        supplierSku: input.supplierSku ?? null,
+        // Only touch keys the caller provided so a partial upsert doesn't erase
+        // the stored supplierSku/packUom/lastUnitCost (drizzle skips `undefined`).
+        supplierSku: input.supplierSku !== undefined ? input.supplierSku : undefined,
         lastUnitCost: input.lastUnitCost !== undefined ? money(input.lastUnitCost) : undefined,
-        packUom,
+        packUom: input.packUom !== undefined ? assertInventoryUom(input.packUom) : undefined,
       },
     });
     await recordAuditEvent(auditCtx(actor), {

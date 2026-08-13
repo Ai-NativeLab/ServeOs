@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
-import { resolveInventoryContext } from "@/app/dashboard/inventory-permission";
-import { resolvePurchasingActor } from "@/app/dashboard/purchasing-permission";
+import { resolvePurchasingContext, resolvePurchasingActor } from "@/app/dashboard/purchasing-permission";
 import { checkReorder } from "@/server/purchasing/reorder";
 
 export async function POST() {
-  const { ctx, denied } = await resolveInventoryContext("inventory:manage");
+  const { ctx, denied } = await resolvePurchasingContext("purchasing:manage");
   if (denied) return denied;
   try {
     const run = await checkReorder(await resolvePurchasingActor(ctx));

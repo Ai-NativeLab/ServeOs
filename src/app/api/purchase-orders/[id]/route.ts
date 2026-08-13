@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { resolvePurchasingContext, resolvePurchasingActor } from "@/app/dashboard/purchasing-permission";
 import { getPurchaseOrder, updateDraftPo } from "@/server/purchasing/service";
 import { PoNotFoundError, InvalidPoTransitionError } from "@/server/purchasing/errors";
+import { parseLines } from "../route";
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { ctx, denied } = await resolvePurchasingContext("purchasing:manage");
@@ -31,16 +32,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (!Array.isArray(body.lines) || body.lines.length === 0) {
     return NextResponse.json({ error: "lines must be a non-empty array" }, { status: 400 });
   }
-  const lines = (body.lines as unknown[]).map((l) => {
-    const row = (l ?? {}) as Record<string, unknown>;
-    return {
-      itemId: String(row.itemId ?? ""),
-      qtyOrdered: Number(row.qtyOrdered),
-      uom: String(row.uom ?? "") as never,
-      unitCost: Number(row.unitCost),
-      taxRate: row.taxRate !== undefined ? Number(row.taxRate) : undefined,
-    };
-  });
+  const lines = parseLines(body.lines);
+  if ("error" in lines) return NextResponse.json({ error: lines.error }, { status: 400 });
   try {
     await updateDraftPo(await resolvePurchasingActor(ctx), id, {
       supplierId: body.supplierId,

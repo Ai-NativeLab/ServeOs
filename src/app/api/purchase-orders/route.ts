@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { resolvePurchasingContext, resolvePurchasingActor } from "@/app/dashboard/purchasing-permission";
 import { createDraftPo, listPurchaseOrders } from "@/server/purchasing/service";
 
-function parseLines(raw: unknown): Parameters<typeof createDraftPo>[1]["lines"] | { error: string } {
+export function parseLines(raw: unknown): Parameters<typeof createDraftPo>[1]["lines"] | { error: string } {
   if (!Array.isArray(raw) || raw.length === 0) {
     return { error: "lines must be a non-empty array" };
   }

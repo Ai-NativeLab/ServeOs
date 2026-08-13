@@ -62,22 +62,41 @@ export async function checkTenantReorder(tenantId: string): Promise<ReorderCheck
   });
 }
 
-async function main(): Promise<void> {
+/**
+ * Runs the sweep for every active tenant. One tenant's failure must not abort
+ * the rest (it would skip the SAME later tenants on every run, since the list
+ * is ordered by slug) — each tenant is caught individually, failures are
+ * collected, and the process exits non-zero when anything failed so cron sees
+ * it. Exported so the test suite can drive a multi-tenant sweep.
+ */
+export async function sweepAllTenants(): Promise<{ processed: number; failed: number }> {
   const active = await db.select({ id: tenants.id, slug: tenants.slug })
     .from(tenants).where(eq(tenants.status, "active")).orderBy(asc(tenants.slug));
 
   let alerts = 0;
   let drafts = 0;
+  let failed = 0;
   for (const t of active) {
-    const r = await checkTenantReorder(t.id);
-    alerts += r.triggered;
-    drafts += r.draftsCreated;
-    console.log(`${t.slug}: ${r.triggered} triggered, ${r.draftsCreated} draft PO(s)`);
+    try {
+      const r = await checkTenantReorder(t.id);
+      alerts += r.triggered;
+      drafts += r.draftsCreated;
+      console.log(`${t.slug}: ${r.triggered} triggered, ${r.draftsCreated} draft PO(s)`);
+    } catch (e) {
+      failed++;
+      console.error(`${t.slug}: reorder sweep failed — ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
-  console.log(`\nreorder check complete — ${alerts} item(s) below reorder point, ${drafts} draft PO(s) across ${active.length} active tenant(s)`);
+  console.log(`\nreorder check complete — ${alerts} item(s) below reorder point, ${drafts} draft PO(s) across ${active.length} active tenant(s), ${failed} tenant(s) failed`);
+  return { processed: active.length, failed };
 }
 
-// Only run when invoked directly, so the test suite can import checkTenantReorder.
+async function main(): Promise<void> {
+  const { failed } = await sweepAllTenants();
+  if (failed > 0) process.exit(1);
+}
+
+// Only run when invoked directly, so the test suite can import checkTenantReorder / sweepAllTenants.
 if (process.argv[1]?.includes("reorder-check")) {
   main().then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1); });
 }
