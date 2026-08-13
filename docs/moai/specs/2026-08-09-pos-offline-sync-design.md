@@ -55,9 +55,9 @@ whether the device is online.
 |--------|---------|
 | `event_id` | UUID minted when the event is created. This is the idempotency key end-to-end. |
 | `seq` | Local monotonic integer. Defines replay order. |
-| `type` | `sale.recorded`, `payment.added`, `shift.opened`, `shift.closed`, `cash.movement`, `count.recorded`, `grant.issued`, `ticket.held`, `ticket.recalled`, `ticket.discarded` |
-| `payload` | JSON. For sales: full draft, totals, `catalogVersion` priced against, `clientShiftId`. |
-| `occurred_at` | Device wall-clock at the moment of the action. |
+| `type` | `sale.recorded`, `payment.added`, `shift.opened`, `shift.closed`, `cash.movement`, `count.recorded`, `grant.issued`, `session.signed_in`, `ticket.held`, `ticket.recalled`, `ticket.discarded` |
+| `payload` | JSON. Every event carries `actorUserId` (who did it) and, when a manager authorized it, `authorizedByUserId`. Sales carry **full line snapshots** — product/variant/modifier ids *and* names, unit prices, per-line totals — plus order totals, the `catalogVersion` priced against, and `clientShiftId`. The snapshot is what makes till-wins replayable when the live catalog no longer matches (product unpublished, option deleted). Held tickets get a `clientTicketId`. |
+| `occurred_at` | Device wall-clock at the moment of the action. Authoritative for business time on replay: the server sets `placedAt`/`closedAt`/movement timestamps from it and evaluates time-dependent checks (e.g. branch opening hours) *as of* it, never as of replay time. |
 | `status` | `pending` → `synced` \| `failed` (+ `server_response` JSON) |
 
 Every operator action writes here **first**, online or offline. Online mode means
@@ -71,6 +71,21 @@ permissions, and their **scrypt password hashes**, synced down while online. Thi
 is what makes offline cashier sign-in and offline manager authorization possible.
 Sensitive columns are encrypted with a key held in Electron `safeStorage` (the
 same mechanism protecting `pos-device.json` today).
+
+Roster lifecycle: pulled immediately after every successful **online** cashier
+sign-in and on the periodic online timer — so a password change or deactivation
+goes stale for at most one timer interval, not a full uptime. **First-boot
+limitation (accepted):** a freshly paired till that has never completed one
+online sign-in has an empty roster; offline sign-in is unavailable until the
+first online sign-in, and the UI says so.
+
+**Threat model (accepted risk, documented):** any paired device with a signed-in
+cashier can pull scrypt hashes for every POS-capable user of the branch,
+including managers/owners (required for offline overrides). A stolen till disk +
+a weak owner password = offline crack opportunity. Mitigations: scrypt cost,
+`safeStorage` encryption at rest (note: Linux may report available with the weak
+`basic_text` backend), device revocation. Recommended follow-up (out of scope):
+a separate manager PIN for till overrides, distinct from the dashboard password.
 
 **`local_state`** — materialized "now": open shift (client id, opened-at, opening
 float), X-report running totals, held tickets. Never authoritative — it is rebuilt
@@ -86,24 +101,32 @@ server-side shift row during ingest.
 
 ## Sync engine
 
-A small state machine: `online | offline | syncing`.
+A small state machine: `online | offline | syncing | halted`.
 
 - **Detection:** fetch-failure classification (the parked `api.ts` `isNetwork`
   flagging) plus a lightweight `GET /api/pos/v1/ping` heartbeat.
 - **Flush order:** strictly ascending `seq`, one event at a time. A shift's sales
   must land after its `shift.opened` and before its `shift.closed`.
+- **Single-flight:** at most one flush runs at a time (in-flight mutex); rapid
+  disconnect/reconnect cycles must not race two flushes over the same events.
 - **Transport:** `POST /api/pos/v1/sync/events` carrying an ordered batch of
-  consecutive events (batch size is a client tuning knob; one is valid). The
-  server processes strictly in order, stops at the first failure, and returns
-  per-event results; each event is idempotent on `(deviceId, eventId)` —
-  resending a synced event returns the previously recorded result.
+  consecutive events (batch size is a client tuning knob; one is valid). Each
+  event also carries its local `seq` so the server can detect per-device ordering
+  gaps (`out_of_order` rejection — defense-in-depth for an invariant otherwise
+  enforced only client-side). The server processes strictly in order, stops at
+  the first failure, and returns per-event results; each event is idempotent on
+  `(deviceId, eventId)` — resending a synced event returns the previously
+  recorded result, and a concurrent-duplicate unique-key violation is answered
+  as `duplicate` (re-read the stored receipt), never as a failure.
 - **Network failure:** stay/return to `offline`, exponential backoff, resume from
   the first unsynced `seq`.
 - **Domain rejection** (server refuses an event on business grounds): should be
-  near-impossible under till-wins. If it happens, **halt the flush** and surface a
-  blocking operator alert — skipping would orphan every later event that depends
-  on it (e.g. sales inside a rejected shift). Failed events require explicit
-  resolution, not silent drops.
+  near-impossible under till-wins. If it happens, enter **`halted`**: a blocking
+  operator alert, and — critically — **the halt is sticky**: while any event is
+  `failed`, `flush()` sends *nothing* (not even later events), because skipping
+  would orphan every event that depends on the failed one (e.g. sales inside a
+  rejected shift). Resolution is explicit: retry (failed → pending) or a
+  manager-authorized void, which is itself an audited event.
 
 ## Server-side changes
 
@@ -120,32 +143,77 @@ A small state machine: `online | offline | syncing`.
 
 ### New ingestion path
 
-`POST /api/pos/v1/sync/events` — authenticated by device token + cashier token as
-today. Each event processes in its own transaction, keyed idempotently on
+`POST /api/pos/v1/sync/events` — authenticated by **device token only**. A live
+cashier token cannot exist after an outage (offline sessions are device-local
+and the server never saw them), so requiring one would 401 the very flush that
+ends the outage. Instead every event carries its `actorUserId`; ingest validates
+the actor belongs to the device's tenant and is used for `takenByUserId`/audit
+attribution. A deactivated-since-the-outage actor is **flagged, not rejected**
+(till-wins). A batch may span multiple cashiers (A sells, signs out, B opens the
+next shift) — the context is per-event, not per-batch.
+
+Offline manager authorization replays the same way: `grant.issued` ingests as an
+audit event (`pos.grant_issued_offline` — permission, authorizer, `occurredAt`),
+and gated events (`sale.recorded` with discounts, over-threshold `cash.movement`,
+cross-user `shift.closed`) carry `authorizedByUserId`, which the replay path
+accepts **in place of** a live grant token — accepted only on device-authenticated
+ingest, never on the live POS routes — and stamps into `posAdjustmentEvents` /
+audit metadata exactly as `resolveAuthorizer` would have.
+
+Each event processes in its own transaction, keyed idempotently on
 `(deviceId, eventId)`, and translates onto the **existing domain services**
 (`placeOrder`, `openShift`, `closeShift`, cash movement/count services, held
 tickets) — the advisory locks, shift math, audit chain, and inventory deduction
-all stay exactly where they are. Shift services gain client-ID idempotency and
-accept a device-claimed `occurredAt`; the server stamps `receivedAt` separately.
-Reports group by `occurredAt`; the audit chain keeps hashing server time (with the
-claimed time in metadata).
+all stay exactly where they are. **Receipt atomicity:** each replayable service
+accepts a `syncReceipt` descriptor and inserts the `pos_sync_event_receipts` row
+as the final statement of *its own* transaction (the table has no RLS for
+exactly this reason — same pattern as `pos_order_receipts` in `recordSale`).
+There is no crash window between effect and receipt for *any* event type; this
+also gives cash movements, counts, and held tickets the idempotency key they
+otherwise lack. Shift services gain client-ID idempotency and accept a
+device-claimed `occurredAt`; the server stamps `receivedAt` separately. Business
+timestamps (`placedAt`, `closedAt`, movement times) come from `occurredAt`, so
+reports group offline work into the correct business day; the audit chain keeps
+hashing server time (with the claimed time in metadata). Sales replay resolves
+the drawer from the payload's `clientShiftId` (or server `shiftId` when the
+shift was opened online) — never from "whichever shift is open at replay time" —
+and tolerates the resolved shift having since closed, with a flag.
 
 ### Till-wins ingestion policy
 
-Events flagged as offline replays skip the `TOTAL_MISMATCH` 409: the sale is
-recorded at the till's totals together with the `catalogVersion` it priced
-against. Price drift emits an audit event and is queryable for reporting. Stock
-effects flow through the normal `deductForOrderLine` path — shortfalls become
-negative on-hand plus the existing owner/manager notification, which is the
-correct landing place for late deductions.
+Skipping the `TOTAL_MISMATCH` 409 is necessary but not sufficient — `placeOrder`
+also re-validates lines against the **live** catalog (published flags, variant
+active flags, modifier existence) and evaluates opening-hours against `now`.
+On the replay path, all of that must defer to the till:
+
+- **Line snapshots are the fallback source of truth.** When a live lookup fails
+  (product unpublished/deleted mid-outage, option removed) or snapshot and live
+  pricing disagree, the order records from the snapshot (names, unit prices,
+  totals) and a `pos.replay.price_drift` audit event captures both sides plus
+  the `catalogVersion`.
+- **Time-dependent checks evaluate as of `occurredAt`**, not replay time — a
+  till reconnecting at 8:30am replaying last night's sales must not be refused
+  because the branch "isn't open yet". `placedAt` is set from `occurredAt`.
+- Stock effects flow through the normal `deductForOrderLine` path — shortfalls
+  become negative on-hand plus the existing owner/manager notification, which is
+  the correct landing place for late deductions.
 
 ### Supporting changes
 
 - **Auth sync-down:** `GET /api/pos/v1/sync/auth` returns branch-scoped cashier
-  and manager records with scrypt hashes (never plaintext), for `auth_cache`.
-- **Catalog versioning:** the catalog response gains a monotonic `catalogVersion`.
+  and manager records with scrypt hashes (never plaintext), for `auth_cache` —
+  including `reconciliation:manage` holders, or offline overrides can't work.
+- **Catalog versioning:** a **per-tenant monotonic counter**, bumped by catalog
+  writes *and* by pricing-relevant settings writes (VAT, service charge, branch
+  price overrides) — a `MAX(updated_at)` over catalog tables would miss
+  deletions and settings changes, making drift reports cite "same catalog" when
+  pricing genuinely moved.
 - **Clock skew:** `occurredAt` is claimed, `receivedAt` is truth; events skewed
   more than 48h are flagged for review, not rejected.
+- **Offline sign-in audit:** `session.signed_in` events (including failed
+  attempts) replay into the audit chain as `auth.cashier_signed_in` /
+  `auth.login_failed` with `occurredAt` in metadata, so offline sessions don't
+  vanish from history.
 
 ## Propagation — Supabase Realtime
 
@@ -161,13 +229,28 @@ screens, POS OrdersQueue (online mode), storefront order-status page. Existing
 polling drops to a relaxed 60s fallback so a Realtime outage degrades to today's
 behavior, never worse.
 
+The POS subscribes from **Electron main** (which owns all networking) and
+forwards signals to the renderer over IPC — the Vite renderer never needs
+Supabase envs or a socket of its own. Channel hygiene: use Supabase private
+channels (topic authorization) so an anon-key holder cannot subscribe to another
+tenant's `tenant:{uuid}` topic; payloads are IDs-only either way, so the
+exposure being closed is activity timing, not data. Operational notes: every
+open dashboard tab, storefront status page, and till holds one Realtime
+connection — watch the plan's concurrent-connection cap; the server-side
+broadcast is an awaited `fetch` (~50–200ms) on order-placing requests, priced in
+deliberately (fire-and-forget loses the failure signal on serverless).
+
 ## Operator-visible behavior
 
-- Connectivity badge: `online / offline / syncing (N queued)`.
-- Everything works identically offline — sign-in, sales, receipts, held tickets,
-  manager overrides, cash movements, open/close drawer, local X/Z reports — except
-  **seeing new web orders**, which is impossible by definition and shown as a
-  degraded-queue notice.
+- Connectivity badge: `online / offline / syncing (N queued) / halted`.
+- Works identically offline: sign-in, sales, receipts, this till's held tickets,
+  manager overrides, cash movements, open/close drawer, local X/Z reports.
+- **Not available offline** (server-backed; shown as disabled with a notice, not
+  broken): new web orders in the queue, refunds, sales history/reprint of synced
+  orders, and held tickets parked on *other* tills.
+- Offline receipts print a short client code (from `clientOrderId`) instead of
+  the server order number, which doesn't exist yet — the code is searchable
+  later via `pos_order_receipts` for lookups/refunds.
 - Server reconciliation never overwrites a local Z-report; discrepancies surface
   as flagged differences.
 
@@ -180,6 +263,7 @@ behavior, never worse.
 | Multi-terminal branch | Each device has its own drawer, log, and idempotency scope — disjoint by construction. |
 | Local disk full/corrupt | Sales are blocked with an explicit error (never silently unqueued); catalog cache is rebuildable. |
 | Device retirement | Revoking the device (existing flow) after a final sync; unsynced events on a dead device are the accepted loss window, mitigated by aggressive flush-on-any-connectivity. |
+| App reinstall / data wipe | Deleting the SQLite file while unsynced events exist is the same loss window as device death — acknowledged, same mitigation (aggressive flush). `pos-device.json` surviving a reinstall does not recover the log. |
 | Retention | Synced events pruned locally after 30 days; the server is the permanent record. |
 
 ## Testing

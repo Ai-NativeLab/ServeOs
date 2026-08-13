@@ -31,10 +31,11 @@ Cashier sessions live in a process-memory `Map` (`src/server/pos/cashier.ts:28`)
 - [ ] **Step 1: Add the table to `src/server/pos/schema.ts`**
 
 ```ts
-/** Cashier sessions. Control-plane like pos_devices: no RLS, token is the key.
- *  A row outliving its expiry is inert — resolveCashier checks expiresAt. */
+/** Cashier sessions. Control-plane like pos_devices: no RLS. Keyed by the
+ *  SHA-256 of the bearer token — a read-only DB leak must not hand out live
+ *  sessions. A row outliving its expiry is inert — resolveCashier checks expiresAt. */
 export const posCashierSessions = pgTable("pos_cashier_sessions", {
-  token: text("token").primaryKey(),
+  tokenHash: text("token_hash").primaryKey(),   // sha256 hex of the raw token
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
@@ -44,7 +45,7 @@ export const posCashierSessions = pgTable("pos_cashier_sessions", {
 }, (t) => [index("pos_cashier_sessions_expires").on(t.expiresAt)]);
 ```
 
-(Add `users`/`tenants` imports if not present; export the type.)
+(Add `users`/`tenants` imports if not present; export the type. Helper, shared with Task 2: `const tokenHash = (t: string) => createHash("sha256").update(t).digest("hex");` — the raw token is returned to the client once and never stored.)
 
 - [ ] **Step 2: Generate + apply the migration**
 
@@ -61,8 +62,8 @@ it("survives a process restart: session resolves from the DB, not memory", async
   const resolved = await resolveCashier(cashierToken);
   expect(resolved?.tenantId).toBe(tenantId);
   const [row] = await db.select().from(posCashierSessions)
-    .where(eq(posCashierSessions.token, cashierToken));
-  expect(row).toBeDefined();
+    .where(eq(posCashierSessions.tokenHash, tokenHash(cashierToken)));
+  expect(row).toBeDefined(); // stored hashed, resolvable from raw
 });
 
 it("expired sessions resolve to null and are deleted", async () => {
@@ -70,7 +71,7 @@ it("expired sessions resolve to null and are deleted", async () => {
   const { cashierToken } = await signInCashier(tenantId, OWNER_EMAIL, OWNER_PASSWORD);
   await db.update(posCashierSessions)
     .set({ expiresAt: new Date(Date.now() - 1000) })
-    .where(eq(posCashierSessions.token, cashierToken));
+    .where(eq(posCashierSessions.tokenHash, tokenHash(cashierToken)));
   expect(await resolveCashier(cashierToken)).toBeNull();
 });
 ```
@@ -81,11 +82,12 @@ it("expired sessions resolve to null and are deleted", async () => {
 
 ```ts
 export async function resolveCashier(token: string): Promise<CashierSession | null> {
+  const hash = tokenHash(token);
   const [s] = await db.select().from(posCashierSessions)
-    .where(eq(posCashierSessions.token, token)).limit(1);
+    .where(eq(posCashierSessions.tokenHash, hash)).limit(1);
   if (!s) return null;
   if (s.expiresAt.getTime() <= Date.now()) {
-    await db.delete(posCashierSessions).where(eq(posCashierSessions.token, token));
+    await db.delete(posCashierSessions).where(eq(posCashierSessions.tokenHash, hash));
     return null;
   }
   return { userId: s.userId, tenantId: s.tenantId, name: s.name,
@@ -108,7 +110,7 @@ Same disease, same cure (`src/server/pos/grants.ts:10`). Single-use semantics mo
 
 ```ts
 export const posGrants = pgTable("pos_grants", {
-  token: text("token").primaryKey(),
+  tokenHash: text("token_hash").primaryKey(),   // sha256 hex, same helper as sessions
   tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
   permission: text("permission").notNull(),
   authorizedByUserId: uuid("authorized_by_user_id").notNull().references(() => users.id),
@@ -134,7 +136,7 @@ it("a grant is single-use across 'instances' (DB-backed)", async () => {
 
 ```ts
 export async function consumeGrant(tenantId: string, token: string, permission: Permission): Promise<string> {
-  const [g] = await db.delete(posGrants).where(eq(posGrants.token, token)).returning();
+  const [g] = await db.delete(posGrants).where(eq(posGrants.tokenHash, tokenHash(token))).returning();
   if (!g || g.expiresAt.getTime() <= Date.now() || g.tenantId !== tenantId || g.permission !== permission) {
     throw new PosForbiddenError(permission);
   }
@@ -152,22 +154,21 @@ export async function consumeGrant(tenantId: string, token: string, permission: 
 
 **Files:** modify `src/server/ordering/service.ts` (placeOrder gains `onPlaced?`), `src/server/pos/record-sale.ts`; test `src/server/pos/record-sale.test.ts`.
 
-- [ ] **Step 1: Failing test** — prove atomicity by making the continuation throw:
+- [ ] **Step 1: Failing test** — prove atomicity through the one check that stays *inside* `onPlaced` (paid-exceeds-total, which needs `placed.total` and therefore runs after the order is written):
 
 ```ts
-it("rolls back the order when post-placement writes fail (single transaction)", async () => {
+it("rolls back the order when the in-transaction total check fails (single transaction)", async () => {
   const ctx = await seedCashierContext(); // file's existing helper
   await expect(recordSale(ctx, {
-    ...validSaleInput(),
-    payments: [{ clientPaymentId: "p1", method: "cash", amount: -1 } as never], // validated AFTER placeOrder today
-    __failAfterPlace: true as never, // replaced below by a real injection seam if needed
-  })).rejects.toThrow();
+    ...validSaleInput(), // seeded product total is 50
+    payments: [{ clientPaymentId: "p1", method: "cash", amount: 500, tenderedAmount: 500 }], // exceeds total → throws inside onPlaced
+  })).rejects.toThrow(PosSaleError);
   const allOrders = await withTenant(ctx.tenantId, (tx) => tx.select().from(orders));
-  expect(allOrders).toHaveLength(0); // no orphan order, no stock deducted
+  expect(allOrders).toHaveLength(0); // no orphan order, no stock deducted, no receipt row
 });
 ```
 
-(Implementation note: the real seam is `onPlaced` throwing — test via a tender that fails validation *inside* the tx once moved.)
+(Today this scenario *leaves* the orphan order behind — `paidAmount > placed.total` is checked after placeOrder's transaction committed, at `record-sale.ts:122` — which is exactly the bug. The test passes only once the check and the tender writes run inside `onPlaced`.)
 
 - [ ] **Step 2: Add the seam to `placeOrder`.** In `ordering/service.ts`, after the order+items+audit writes and inventory deduction, still inside `withTenant`:
 
@@ -232,7 +233,14 @@ clientShiftId: uuid("client_shift_id"),
 ```
 with `uniqueIndex("pos_shifts_device_client").on(t.deviceId, t.clientShiftId).where(sql\`client_shift_id IS NOT NULL\`)`.
 
-- [ ] **Step 2: Catalog version.** The catalog response gains `catalogVersion`: `SELECT max(updated_at)` across products/variants/categories/modifiers for the tenant, returned as epoch millis. Add to the catalog service return and the route JSON.
+```ts
+// tender-schema.ts — add to posHeldTickets columns (offline ticket identity;
+// a later ticket.discarded event references this, not the server-minted id):
+clientTicketId: uuid("client_ticket_id"),
+```
+with `uniqueIndex("pos_held_tickets_device_client").on(t.deviceId, t.clientTicketId).where(sql\`client_ticket_id IS NOT NULL\`)` (add `deviceId` column if the table lacks it).
+
+- [ ] **Step 2: Catalog version — a per-tenant monotonic counter, NOT `max(updated_at)`.** A MAX over catalog tables misses deletions (max unchanged), `branch_product_availability.price_override` changes, and tenant pricing settings (VAT/service charge) — so drift reports would cite "same catalog" while pricing genuinely moved. Implement a `catalog_versions (tenant_id PK, version bigint)` row bumped with `UPDATE ... SET version = version + 1 RETURNING version` from: catalog service mutations, branch price-override writes, and `patchTenantSettings` when VAT/service-charge keys change. The catalog response returns it as `catalogVersion`.
 
 - [ ] **Step 3: Migration for both DBs; `db:check` clean.**
 
@@ -240,11 +248,21 @@ with `uniqueIndex("pos_shifts_device_client").on(t.deviceId, t.clientShiftId).wh
 
 - [ ] **Step 5: Commit** — `feat(pos): sync event receipts, client shift identity, catalog version`
 
-### Task 5: Idempotent, replayable shift services
+### Task 5: Idempotent, replayable shift services — every effect commits with its receipt
 
-`openShift`/`closeShift`/cash-movement/count services accept `clientShiftId` + `occurredAt` and become replay-safe. Sales replay resolves `clientShiftId → shift.id`.
+The atomicity mechanism for **all** non-sale events is the Task 3 pattern, not ingest-level wrapping (nested `withTenant` calls are independent transactions, so an outer wrapper cannot exist): each replayable service accepts an optional `syncReceipt` descriptor and inserts the `pos_sync_event_receipts` row **as the last statement of its own tenant transaction** (the table has no RLS for exactly this reason). That closes every crash-between-effect-and-receipt window and is also what gives cash movements, counts, and held tickets — which have no natural idempotency key — one.
 
-**Files:** modify `src/server/pos/shifts.ts`, `src/server/pos/cash-movements.ts`; test `src/server/pos/shifts-replay.test.ts` (new).
+```ts
+// shared type, exported from sync-ingest.ts (Task 6) and imported by the services:
+export type SyncReceipt = {
+  deviceId: string; eventId: string; type: string;
+  occurredAt: Date; clockSkewFlagged: boolean;
+};
+// each service, inside its tx, last statement:
+if (syncReceipt) await tx.insert(posSyncEventReceipts).values({ ...syncReceipt, resultJson: result });
+```
+
+**Files:** modify `src/server/pos/shifts.ts`, `src/server/pos/cash-movements.ts`, held-tickets service, `src/server/pos/record-sale.ts` (shift resolution); test `src/server/pos/shifts-replay.test.ts` (new).
 
 - [ ] **Step 1: Failing tests:**
 
@@ -254,35 +272,64 @@ it("openShift is idempotent on (deviceId, clientShiftId)", async () => {
   const b = await openShift(ctx, { openingFloat: 100, clientShiftId: CSID, occurredAt: past });
   expect(b.id).toBe(a.id);
 });
-it("closeShift replays return the recorded close, not a double-close error", async () => { /* same shape */ });
-it("openedAt honours the device-claimed occurredAt", async () => {
+it("closeShift with a syncReceipt commits receipt and close atomically; a retry returns the stored result", async () => {
+  await closeShift(ctx, { ...closeInput, occurredAt: past, syncReceipt: receiptFor(EVT) });
+  const again = await closeShift(ctx, { ...closeInput, occurredAt: past, syncReceipt: receiptFor(EVT) });
+  expect(again.idempotent).toBe(true); // receipt found → stored result, not ShiftClosedError
+});
+it("openedAt/closedAt honour the device-claimed occurredAt", async () => {
   const s = await openShift(ctx, { openingFloat: 100, clientShiftId: CSID, occurredAt: past });
-  expect(s.openedAt.getTime()).toBe(past.getTime());
+  expect(s.openedAt.getTime()).toBe(past.getTime()); // and closedAt likewise on close
+});
+it("cash movements with the same syncReceipt eventId apply exactly once", async () => { /* expected-cash math unchanged on retry */ });
+it("a replayed cash sale resolves its drawer from clientShiftId, not whichever shift is open", async () => {
+  /* open shift A (client id CSID), close it server-side, replay a sale carrying CSID
+     → tender rows reference shift A, sale ingests with a flag — no NoOpenShiftError */
 });
 ```
 
-- [ ] **Step 2: Implement.** Inside the existing advisory-lock block of `openShift`: first `SELECT` by `(deviceId, clientShiftId)`; if found, return it (idempotent). Insert sets `openedAt: occurredAt ?? now`, `clientShiftId`. `closeShift`: if the target shift is already `closed` **and** the close was recorded from this event (receipt exists — Task 6 wires that), return the stored result. Cash movements/counts gain `occurredAt` pass-through to `createdAt`.
+- [ ] **Step 2: Implement.**
+  - `openShift`: inside the existing advisory-lock block, first `SELECT` by `(deviceId, clientShiftId)`; if found, return it (idempotent). Insert sets `openedAt: occurredAt ?? now`, `clientShiftId`.
+  - `closeShift`: **check the sync receipt first** — if `syncReceipt` given and a receipt row exists for its `eventId`, return the stored result. Otherwise close normally with `closedAt: occurredAt ?? now`, writing the receipt in the same tx.
+  - Cash movements / counts / held tickets: accept `occurredAt` (→ `createdAt`) + `syncReceipt`; held tickets also accept `clientTicketId` (Task 4 column) so `ticket.discarded`/`ticket.recalled` can reference tickets created offline. Note: ticket *recall* has no server service today (recall = renderer loads draft + DELETE) — add a `recallHeldTicket` service that deletes by `clientTicketId` and records the receipt.
+  - `recordSale` (replay path): when the payload carries `clientShiftId`, resolve the drawer by `(deviceId, clientShiftId)` — or by server `shiftId` if the shift was opened online — instead of `findOpenShift`. Tolerate the resolved shift being `closed`: record the tender against it and flag in audit metadata (`shiftClosedAtReplay: true`). Live (non-replay) sales keep today's `findOpenShift` behavior.
 
-- [ ] **Step 3: `npm test -- src/server/pos` → pass. Commit** — `feat(pos): shift lifecycle is idempotent and replayable with device-claimed timestamps`
+- [ ] **Step 3: `npm test -- src/server/pos` → pass. Commit** — `feat(pos): shift lifecycle replayable with atomic sync receipts and client shift identity`
 
 ### Task 6: `POST /api/pos/v1/sync/events` — the ingestion endpoint
 
-**Files:** create `src/server/pos/sync-ingest.ts`, `src/app/api/pos/v1/sync/events/route.ts`, `src/app/api/pos/v1/ping/route.ts`; test `src/server/pos/sync-ingest.test.ts`.
+Three load-bearing decisions (from spec + review):
+1. **Device-token auth only.** A live cashier token cannot exist after an outage — offline sessions are device-local, and a pre-outage token is past TTL. Requiring one would 401 the very flush that ends the outage. Every event instead carries `actorUserId`; a batch may span multiple cashiers.
+2. **Offline authorization replays as data.** `grant.issued` has a handler (audit event), and gated events carry `authorizedByUserId`, accepted in place of a live grant token — on this ingest path only.
+3. **Till-wins needs snapshots, not just a skipped 409.** `placeOrder` re-validates lines against the live catalog and evaluates opening-hours at `now` — both must defer to the till on replay.
 
-- [ ] **Step 1: Failing tests** (the contract, straight from the spec):
+**Files:** create `src/server/pos/sync-ingest.ts`, `src/app/api/pos/v1/sync/events/route.ts`, `src/app/api/pos/v1/ping/route.ts`; modify `src/server/pos/record-sale.ts`, `src/server/ordering/service.ts` (replay inputs); test `src/server/pos/sync-ingest.test.ts`.
+
+- [ ] **Step 1: Failing tests** (the contract):
 
 ```ts
 it("processes an ordered batch and stops at the first failure", async () => { /* 3 events, 2nd malformed → results [ok, error]; 3rd untouched */ });
 it("replaying a synced batch returns identical results and writes nothing new", async () => {
-  const r1 = await ingestEvents(ctx, batch);
+  const r1 = await ingestEvents(device, batch);
   const before = await snapshotCounts(); // orders, shifts, movements, audit_events
-  const r2 = await ingestEvents(ctx, batch);
+  const r2 = await ingestEvents(device, batch);
   expect(r2).toEqual(r1);
   expect(await snapshotCounts()).toEqual(before);
 });
-it("an offline sale replays at the till's totals even after a price change (till wins)", async () => {
-  /* seed product at 50, event prices it at 50, raise price to 60, ingest → order total 50, drift audit event exists */
+it("a batch spanning two cashiers attributes each event to its own actor", async () => {
+  /* cashier A sale + cashier B shift.opened in one batch → takenByUserId/audit actor differ per event */
 });
+it("an offline sale replays at the till's totals even after a price change (till wins)", async () => {
+  /* seed product at 50, snapshot prices it at 50, raise price to 60, ingest → order total 50, drift audit event exists */
+});
+it("a sale for a product unpublished mid-outage still ingests from its snapshot", async () => { /* names/prices from snapshot; drift event */ });
+it("a batch replayed outside branch opening hours still ingests (occurredAt was inside hours)", async () => {});
+it("a discounted sale authorized offline replays with the manager stamped as authorizer", async () => {
+  /* pos:sell-only actor + authorizedByUserId of a manager → posAdjustmentEvents.authorizedByUserId = manager */
+});
+it("a deactivated-since-outage actor is flagged, not rejected", async () => {});
+it("concurrent duplicate ingest resolves as duplicate, not failure (23505 → re-read)", async () => {});
+it("an out-of-order seq is rejected with code out_of_order", async () => {});
 it("flags but accepts events with >48h clock skew", async () => { /* clockSkewFlagged true */ });
 ```
 
@@ -290,21 +337,34 @@ it("flags but accepts events with >48h clock skew", async () => { /* clockSkewFl
 
 ```ts
 export type SyncEvent = {
-  eventId: string; type: SyncEventType; occurredAt: string; payload: Record<string, unknown>;
+  eventId: string; seq: number; type: SyncEventType; occurredAt: string;
+  actorUserId: string; authorizedByUserId?: string;
+  payload: Record<string, unknown>;
 };
 export type SyncResult =
-  | { eventId: string; status: "applied" | "duplicate"; result: Record<string, unknown> }
+  | { eventId: string; status: "applied" | "duplicate"; result: Record<string, unknown>; flags?: string[] }
   | { eventId: string; status: "failed"; error: { code: string; message: string } };
 
-export async function ingestEvents(ctx: PosCashierContext, events: SyncEvent[]): Promise<SyncResult[]> {
+/** Device-authenticated: ctx is the device, NOT a cashier session. */
+export async function ingestEvents(device: PosDeviceContext, events: SyncEvent[]): Promise<SyncResult[]> {
   const results: SyncResult[] = [];
+  let lastSeq = await lastReceiptSeq(device.deviceId); // ordering gap detection
   for (const e of events) {
-    const receipt = await findReceipt(ctx.deviceId, e.eventId);      // duplicate → stored result
+    const receipt = await findReceipt(device.deviceId, e.eventId);   // duplicate → stored result
     if (receipt) { results.push({ eventId: e.eventId, status: "duplicate", result: receipt.resultJson }); continue; }
+    if (e.seq <= lastSeq) { results.push(fail(e, "out_of_order")); break; }
     try {
-      const result = await applyEvent(ctx, e);                       // dispatch by type, ONE tx per event
-      results.push({ eventId: e.eventId, status: "applied", result });
+      const actor = await resolveActor(device.tenantId, e.actorUserId); // in-tenant check; inactive → flag, not reject
+      const result = await applyEvent(device, actor, e);             // dispatch by type, ONE tx per event incl. its receipt (Task 5's syncReceipt)
+      results.push({ eventId: e.eventId, status: "applied", result, flags: actor.flags });
+      lastSeq = e.seq;
     } catch (err) {
+      if (isUniqueViolation(err, "pos_sync_event_receipts_key")) {   // concurrent duplicate: re-read, answer duplicate
+        const r = await findReceipt(device.deviceId, e.eventId);
+        results.push({ eventId: e.eventId, status: "duplicate", result: r!.resultJson });
+        lastSeq = e.seq;
+        continue;
+      }
       results.push({ eventId: e.eventId, status: "failed", error: toErrorShape(err) });
       break;                                                          // strict order: stop at first failure
     }
@@ -313,21 +373,29 @@ export async function ingestEvents(ctx: PosCashierContext, events: SyncEvent[]):
 }
 ```
 
-`applyEvent` dispatch: `sale.recorded → recordSale` (payload carries `clientOrderId`, lines, tenders, `catalogVersion`, `clientShiftId`, `offline: true`); `shift.opened → openShift`; `shift.closed → closeShift`; `cash.movement`, `count.recorded`, `ticket.*` → existing services. Each apply writes its `pos_sync_event_receipts` row **inside the same event transaction** (receipts have no RLS — same pattern as Task 3). Clock skew: `Math.abs(occurredAt - now) > 48h` → `clockSkewFlagged: true`.
+`applyEvent` dispatch — **every type has a handler** (an unknown type is a `failed`, never a crash):
+- `sale.recorded → recordSale` (payload: `clientOrderId`, **line snapshots**, tenders, `catalogVersion`, `clientShiftId`, `replay: { occurredAt, actorUserId, authorizedByUserId }`)
+- `shift.opened → openShift`, `shift.closed → closeShift` (with `syncReceipt`, `occurredAt`, `authorizedByUserId` pass-through)
+- `cash.movement`, `count.recorded` → existing services (+ `syncReceipt`; over-threshold pay-out accepts `authorizedByUserId`)
+- `ticket.held / ticket.recalled / ticket.discarded` → held-tickets services by `clientTicketId`
+- `grant.issued → recordAuditEvent("pos.grant_issued_offline", { permission, authorizedByUserId, occurredAt })` + receipt
+- `session.signed_in → recordAuditEvent("auth.cashier_signed_in" | "auth.login_failed", { occurredAt, offline: true })` + receipt
 
-Till-wins: `recordSale` gains `offline?: boolean`; when set, `expectedTotal` mismatches don't 409 — the sale records at the till's totals with a `pos.replay.price_drift` audit event carrying `{ expectedTotal, serverTotal, catalogVersion }`. (Implementation: pass `priceOverride` through `placeOrder` — add `trustClientTotals?: boolean` to `PlaceOrderInput`, applied only on the POS path.)
+Replay authorization: the services' `resolveAuthorizer(ctx, perm, grantToken)` call sites gain a replay branch — when the input carries `authorizedByUserId` **and** the caller is the ingest path, validate the user exists in-tenant (deactivated → flag) and use it directly; live routes never accept the field (strip it in route parsing).
 
-- [ ] **Step 3: Route** — device+cashier auth exactly like `sales/route.ts`; body `{ events: SyncEvent[] }` (validate array, cap at 50/batch); returns `{ results }`. `ping/route.ts` — `requirePosDevice` then `{ ok: true, serverTime }`.
+Till-wins in `placeOrder`: add `replay?: { occurredAt: Date; lineSnapshots: LineSnapshot[] }` to `PlaceOrderInput`. When present: `now = occurredAt` for the orderability check, `placedAt = occurredAt`; on any line-validation failure (unpublished product, missing variant/option) **or** price disagreement, build the line from its snapshot instead of throwing, and emit `pos.replay.price_drift` audit with `{ expectedTotal, serverTotal, catalogVersion, missingEntities }`. Skip the `TOTAL_MISMATCH` 409. Clock skew: `Math.abs(occurredAt - now) > 48h` → `clockSkewFlagged: true` on the receipt.
 
-- [ ] **Step 4: `npm test -- src/server/pos` → pass. Commit** — `feat(pos): ordered idempotent sync ingestion with till-wins replay`
+- [ ] **Step 3: Route** — **`requirePosDevice` only** (per decision 1); body `{ events: SyncEvent[] }` (validate array, cap at 50/batch); returns `{ results }`. `ping/route.ts` — `requirePosDevice` then `{ ok: true, serverTime }`.
+
+- [ ] **Step 4: `npm test -- src/server/pos` → pass. Commit** — `feat(pos): device-authenticated ordered ingestion with snapshot till-wins and offline authorization replay`
 
 ### Task 7: Auth sync-down endpoint
 
 **Files:** create `src/app/api/pos/v1/sync/auth/route.ts`, `src/server/pos/auth-sync.ts`; test `src/server/pos/auth-sync.test.ts`.
 
-- [ ] **Step 1: Failing test** — returns the branch's POS-capable users with scrypt hashes; excludes inactive users and other tenants' users; requires cashier auth.
+- [ ] **Step 1: Failing test** — returns the branch's POS-capable users with scrypt hashes **including `reconciliation:manage` holders** (offline overrides need managers in the roster); excludes inactive users and other tenants' users; requires cashier auth.
 
-- [ ] **Step 2: Implement** — `listPosUsers(tenantId)`: users whose roles grant any `pos:*` permission, projecting `{ userId, name, email, passwordHash, permissions, canAuthorize: permissions beyond pos:sell }`. Route: `requirePosCashier`, respond `{ users, syncedAt }`. Never log hashes.
+- [ ] **Step 2: Implement** — `listPosUsers(tenantId)`: users whose roles grant any `pos:*` permission **or `reconciliation:manage`**, projecting `{ userId, name, email, passwordHash, permissions }` (permissions = the same union `posPermissionsFor` computes, so offline `resolveAuthorizer`-equivalent checks match online ones). Route: `requirePosCashier`, respond `{ users, syncedAt }`. Never log hashes. Client cadence (wired in Task 10): pulled immediately after every successful **online** cashier sign-in and on the periodic online timer — first-boot-offline shows "offline sign-in unavailable until first online sign-in".
 
 - [ ] **Step 3: Commit** — `feat(pos): branch auth roster sync-down for offline sign-in`
 
@@ -360,6 +428,10 @@ CREATE TABLE IF NOT EXISTS auth_cache (
 CREATE TABLE IF NOT EXISTS local_state (
   key TEXT PRIMARY KEY, json TEXT NOT NULL
 );
+-- catalog_cache (existing table) gains what offline totals math and drift audit need:
+ALTER TABLE catalog_cache ADD COLUMN pricing_json TEXT;      -- CheckoutPricing (VAT, service charge)
+ALTER TABLE catalog_cache ADD COLUMN catalog_version INTEGER; -- server counter (Task 4)
+-- (guard the ALTERs with a pragma table_info check — SQLite has no IF NOT EXISTS for columns)
 ```
 
 `seq`: use `seq INTEGER NOT NULL` assigned as `(SELECT COALESCE(MAX(seq),0)+1 FROM local_events)` inside the same synchronous better-sqlite3 statement (single-process, no race).
@@ -369,27 +441,39 @@ CREATE TABLE IF NOT EXISTS local_state (
 ```ts
 appendEvent(type: string, payload: unknown): { eventId: string; seq: number }
 pendingEvents(): EventRow[]                      // status='pending' ORDER BY seq
+hasFailedEvents(): boolean                       // sticky-halt guard (Task 10)
+retryFailedEvent(eventId: string): void          // failed → pending (operator resolution)
 markEventSynced(eventId: string, response: unknown): void
 markEventFailed(eventId: string, error: string): void
+saveCatalog(json: string, pricingJson: string, catalogVersion: number, syncedAt: string): void
 saveAuthRoster(users: AuthUser[], syncedAt: string): void   // replace-all
 findAuthUser(email: string): AuthUser | null
 getState<T>(key: string): T | null
 setState(key: string, value: unknown): void
 ```
 
-Tests: append assigns increasing `seq`; `pendingEvents` respects order; synced events excluded; roster replace removes departed users.
+Tests: append assigns increasing `seq`; `pendingEvents` respects order; synced events excluded; `hasFailedEvents` true after a markEventFailed and false after retry; roster replace removes departed users.
+
+- [ ] **Step 2b: Promote `better-sqlite3` to a real dependency** — move it out of `optionalDependencies` in `apps/pos/package.json` (delete the explanatory `//` comment key). This is load-bearing: the package.json note exists because a failed native build used to break installs. Verify: (a) `npm ci` at repo root succeeds; (b) `npm run pos:test` runs the `_offline` tests against the real binding (electron-rebuild vs node ABI: vitest runs under Node, so the plain prebuilt binary is the one exercised — fine); (c) Vercel builds don't compile it (`vercel.json`/root build never installs POS workspace binaries — confirm the build log). If (c) fails, scope the dependency install with `ELECTRON_SKIP_BINARY_DOWNLOAD` guidance from the CI workflow.
 
 - [ ] **Step 3: Reducer** — create `apps/pos/electron/_offline/reducer.ts` + test:
 
 ```ts
 /** Rebuilds till state from the confirmed snapshot + unsynced events.
- *  Pure: (snapshot, events) → state. Boot calls this; nothing else mutates local_state. */
+ *  Pure: (snapshot, events) → state. Boot calls this; nothing else mutates local_state.
+ *  Shape is rich enough to render a local X/Z report: per-method tenders,
+ *  movements by type, and the expected-cash formula
+ *  (openingFloat + cashTenders − payOuts − safeDrops + payIns). */
 export type TillState = {
   openShift: { clientShiftId: string; openedAt: string; openingFloat: number; openedByUserId: string } | null;
-  cashSales: number; cashMovements: number;      // X-report running figures
-  heldTickets: HeldTicket[];
+  tendersByMethod: { cash: number; card: number; other: number };
+  movements: { payIn: number; payOut: number; safeDrop: number; noSaleCount: number };
+  salesCount: number;
+  discountTotal: number;
+  heldTickets: { clientTicketId: string; label: string; draftJson: string }[];
 };
 export function reduce(snapshot: TillState, events: EventRow[]): TillState { /* switch on type */ }
+export function expectedCash(s: TillState): number { /* openingFloat + cash − payOut − safeDrop + payIn */ }
 ```
 
 Tests: `shift.opened` sets openShift; sales/movements accumulate; `shift.closed` nulls it; `ticket.held/recalled` round-trips; replay of the same list is deterministic (`reduce(s, e)` twice → deep-equal).
@@ -412,7 +496,7 @@ it("verifies a cached cashier offline", () => {
 it("offline manager grant requires an authorizer with the permission", () => { /* grant.issued event appended, local token returned */ });
 ```
 
-- [ ] **Step 2: Implement** — `offlineSignIn` verifies against `auth_cache` (decrypt hash via `safeStorage`), mints a local cashier session (kept in Electron main memory — device-local is correct here); `offlineGrant(authorizerEmail, password, permission)` verifies the authorizer holds the permission, appends a `grant.issued` event, returns a local single-use token consumed by the next gated action's event payload (`authorizedByUserId` travels inside the event).
+- [ ] **Step 2: Implement** — `offlineSignIn` verifies against `auth_cache` (decrypt hash via `safeStorage`), mints a local cashier session (kept in Electron main memory — device-local is correct here) and **appends a `session.signed_in` event** (success or failed attempt — both replay into the server audit chain, so offline sessions don't vanish from history); `offlineGrant(authorizerEmail, password, permission)` verifies the authorizer holds the permission, appends a `grant.issued` event, returns a local single-use token consumed by the next gated action's event payload (`authorizedByUserId` travels inside the event).
 
 - [ ] **Step 3: Commit** — `feat(pos-app): offline cashier sign-in and manager authorization from the synced roster`
 
@@ -429,11 +513,14 @@ it("offline manager grant requires an authorizer with the permission", () => { /
 ```ts
 it("flushes strictly in seq order and resumes after a network cut mid-batch", ...);
 it("halts on a domain rejection and leaves later events pending", ...);
+it("the halt is STICKY: after a rejection, subsequent ticks send NOTHING until the failed event is resolved", ...);
+it("retryFailedEvent(failed → pending) lets the next flush resume from that seq", ...);
+it("only one flush runs at a time — overlapping triggers coalesce (single-flight)", ...);
 it("a flush after reconnect replays duplicates safely (server says duplicate → mark synced)", ...);
 it("ping failure flips state to offline; success flips back and triggers flush + pull", ...);
 ```
 
-- [ ] **Step 2: Implement.** Engine holds `state: online|offline|syncing`, exposes `onState(cb)`. Loop: every 15s (and on any API `isNetwork` error) ping; on transition offline→online run `pull()` (catalog + auth roster) then `flush()`. Flush posts `pendingEvents()` in batches of 20 to `sync/events`; per result: `applied|duplicate → markEventSynced`, `failed → markEventFailed` + **stop** + surface `haltedOn: eventId`.
+- [ ] **Step 2: Implement.** Engine holds `state: online|offline|syncing|halted`, exposes `onState(cb)`. **Single-flight:** an in-flight promise guard so overlapping triggers (timer + reconnect + write-through) coalesce into one run. Loop: every 15s (and on any API `isNetwork` error) ping; on transition offline→online run `pull()` (catalog **with pricing + version**, auth roster) then `flush()`; roster also refreshes on the periodic online tick, not just on transition. Flush: **first check `hasFailedEvents()` — if any, state = `halted` and send nothing** (skipping past a failed event would break causal order); otherwise post `pendingEvents()` in batches of 20 to `sync/events` (each event carrying its `seq` and `actorUserId`); per result: `applied|duplicate → markEventSynced`, `failed → markEventFailed` + state `halted` + surface `haltedOn: eventId`. Resolution API: `retryFailed()` (failed → pending, state re-evaluated) exposed over IPC for Task 11's alert actions.
 
 - [ ] **Step 3: Write-through PosMain.** Every operator action in `pos-main.ts` becomes: append event → if engine online, flush immediately → return the local result (for sales: local receipt data computed from cached catalog; server confirmation upgrades it silently). `recordSale`'s `clientOrderId` now comes from the appended event's payload (minted at draft time — delete the `crypto.randomUUID()` at the fetch site). Reads (`catalog`, `currentShift`) serve from cache/`local_state` first, refresh in background. Boot: rebuild `local_state` via the reducer, then start the engine — **no network call blocks the UI**.
 
@@ -443,7 +530,7 @@ it("ping failure flips state to offline; success flips back and triggers flush +
 
 **Files:** modify `apps/pos/src/App.tsx`, create `apps/pos/src/components/SyncBadge.tsx`; renderer tests per existing pattern.
 
-- [ ] **Step 1:** Badge shows `online / offline / syncing (N queued)` from the `pos:syncState` IPC subscription; OrdersQueue tab shows a "web orders unavailable offline" notice when offline; a blocking modal appears only on `halted` (domain-rejected event) with the event summary and "contact support / retry" actions.
+- [ ] **Step 1:** Badge shows `online / offline / syncing (N queued) / halted` from the `pos:syncState` IPC subscription; OrdersQueue tab shows a "web orders unavailable offline" notice when offline (refunds/history/reprint entry points likewise disable with a notice — they are server-backed); offline receipts print the short client code derived from `clientOrderId` in place of the not-yet-assigned server order number; a blocking modal appears only on `halted` with the event summary and two actions: **Retry** (`retryFailed()` over IPC) and **contact support** (the manager-void path is a follow-up; until it exists, support resolves via the server).
 - [ ] **Step 2:** Boot no longer blocks on `currentShift()` network success (it reads local state) — remove the "Checking the drawer…" network dependency.
 - [ ] **Step 3:** `npm run pos:test`, then manual smoke via `npm run pos:demo:web` + `pos:dev`: kill the network (turn off Wi-Fi or stop the dev server), sell twice, close shift, restore, watch the badge cycle and the queue drain. Commit — `feat(pos-app): connectivity badge, offline queue notice, sync-halt alert`
 
@@ -486,9 +573,10 @@ Emit **after** the owning transaction commits (call sites, not inside services' 
 
 **Files:** add `@supabase/supabase-js` dependency; create `src/lib/realtime-client.ts` (`"use client"` hook `useTenantEvents(tenantId, types, onEvent)`); modify `src/app/dashboard/orders/OrdersTable.tsx`, `src/app/order/[token]/StatusPoller.tsx`, dashboard payments + inventory pages' pollers; envs `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` (document in `docs/NEW-LAPTOP-SETUP.md`).
 
-- [ ] **Step 1:** Hook subscribes to `tenant:{tenantId}` broadcast; on matching event calls `onEvent` (pages respond by running their existing refetch). Polling intervals relax to 60s as the fallback. Missing env → hook is a no-op and polling stays at today's cadence.
-- [ ] **Step 2:** Manual verification: two browsers — place an order in one, dashboard updates in the other within ~2s without waiting for the poll.
-- [ ] **Step 3: Commit** — `feat(realtime): dashboard/storefront subscribe and refetch on tenant events`
+- [ ] **Step 1:** Hook subscribes to `tenant:{tenantId}` broadcast (use Supabase **private channels** so an anon-key holder can't subscribe to another tenant's topic; payloads are IDs-only regardless); on matching event calls `onEvent` (pages respond by running their existing refetch). Polling intervals relax to 60s as the fallback. Missing env → hook is a no-op and polling stays at today's cadence. Document the concurrent-connection budget: every dashboard tab, storefront status page, and till holds one socket — check the Supabase plan's cap before rollout.
+- [ ] **Step 2: POS queue subscription** — the Electron **main process** subscribes with `@supabase/supabase-js` (main owns all networking; the Vite renderer has no `NEXT_PUBLIC_*` envs and needs none) and forwards `orders.changed` signals over a new `pos:realtimeEvent` IPC channel; `OrdersQueue.tsx` refetches on signal and relaxes its poll to 60s. Offline → the subscription drops with the network; polling resumes on reconnect either way.
+- [ ] **Step 3:** Manual verification: two browsers — place an order in one, dashboard updates in the other within ~2s without waiting for the poll; with the POS open, the queue updates on a storefront order without waiting for its poll.
+- [ ] **Step 4: Commit** — `feat(realtime): dashboard/storefront/POS subscribe and refetch on tenant events`
 
 ---
 
@@ -505,7 +593,7 @@ Emit **after** the owning transaction commits (call sites, not inside services' 
 
 **Files:** create `src/server/pos/offline-lifecycle.test.ts` (server-side, real Postgres — the authoritative test) and `tests/e2e/pos-offline.md` (scripted manual run for the Electron shell).
 
-- [ ] Server test: build the exact event batch a till would produce for a full offline shift — `shift.opened` → 2× `sale.recorded` (one with discount + grant) → `cash.movement` (pay_out) → `count.recorded` → `shift.closed` — ingest it, then assert: shift row with claimed timestamps; orders with correct totals and tenders; inventory deducted (or negative-on-hand + notification when short); Z-report figures match the event math; audit chain verifies (`verifyChain`); replaying the whole batch changes nothing.
+- [ ] Server test: build the exact event batch a till would produce for a full offline shift — `session.signed_in` → `shift.opened` → 2× `sale.recorded` (one with discount authorized via offline `grant.issued`) → `cash.movement` (pay_out) → `count.recorded` → `shift.closed` — ingest it, then assert: shift row with claimed timestamps (`openedAt`/`closedAt` = `occurredAt`s, orders' `placedAt` in the correct business day); orders with correct totals and tenders attributed to the right actors; discount rows carry the offline authorizer; inventory deducted (or negative-on-hand + notification when short); Z-report figures match the event math; audit chain verifies (`verifyChain`); replaying the whole batch changes nothing. Then the adversarial variants: the same batch with a product unpublished after the outage began (ingests from snapshot + drift event), replayed outside opening hours (ingests), a second concurrent ingest of the same batch (all duplicates), and a batch whose 2nd event is malformed (halts at it; events 3+ untouched; a later retry after fixing resumes from seq order).
 - [ ] Manual script: the Wi-Fi-pull run from the spec, with expected screenshots/badge states listed step by step.
 - [ ] Commit — `test(pos): offline shift lifecycle is replay-complete and tamper-evident`
 
@@ -515,4 +603,14 @@ Emit **after** the owning transaction commits (call sites, not inside services' 
 
 - Spec coverage: D1–D5 all mapped (D1 → Tasks 12–13 only touch web reads; D2 → Tasks 5–11; D3 → 12–13; D4 → Task 6; D5 → no new frameworks anywhere). Prereqs → Tasks 1–3. Edge cases: crash-rebuild (Task 8 reducer), skew (4/6/14), retention (14), multi-terminal (idempotency keys are device-scoped throughout).
 - No placeholder verbs without code; every task names exact files and its test path.
-- Type consistency: `SyncEvent`/`SyncResult` (Task 6) are the wire types Task 10's engine consumes; `clientShiftId` naming is uniform; `resolveCashier`/`resolveAuthorizer` async signatures propagate to `require-cashier.ts` and `record-sale.ts` (Tasks 1–2 name the callers).
+- Type consistency: `SyncEvent`/`SyncResult` (Task 6) are the wire types Task 10's engine consumes; `clientShiftId`/`clientTicketId` naming is uniform; `resolveCashier`/`resolveAuthorizer` async signatures propagate to `require-cashier.ts` and `record-sale.ts` (Tasks 1–2 name the callers); `SyncReceipt` (Task 5) is the descriptor Task 6's dispatch passes to every service.
+
+## Review hardening (2026-08-09 code-review pass — all applied above)
+
+An adversarial review walked the six flows end-to-end and found five criticals, all fixed in place:
+1. **C1** Ingest is device-authenticated with per-event `actorUserId` — a cashier token can't exist after an outage (Task 6).
+2. **C2** Offline authorization replays as data: `grant.issued` handler + `authorizedByUserId` accepted on the ingest path only (Tasks 6, 9).
+3. **C3** Till-wins uses line snapshots, `now`/`placedAt` from `occurredAt` — unpublished products and closed-hours replays ingest instead of halting (Tasks 6, 15).
+4. **C4** The halt is sticky: `flush()` sends nothing while a failed event exists; `halted` is a first-class engine/UI state with an explicit retry (Tasks 8, 10, 11).
+5. **C5** Receipt atomicity via `syncReceipt` inside each service's own transaction — closes the double-apply window for movements/counts/tickets and the spurious-halt on `closeShift` retries (Tasks 5, 6).
+Plus: shift resolution by `clientShiftId` (Task 5), single-flight + 23505→duplicate (Tasks 6, 10), POS realtime via Electron main (Task 13), roster cadence + `session.signed_in` audit (Tasks 7, 9, 10), catalog-version counter covering settings/overrides (Task 4), `catalog_cache` pricing columns (Task 8), better-sqlite3 promotion (Task 8), hashed tokens at rest (Tasks 1–2), richer `TillState` for local X/Z (Task 8), held-ticket client ids + recall service (Tasks 4–5).
