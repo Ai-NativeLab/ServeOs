@@ -36,6 +36,22 @@ describe("grants", () => {
     await expect(consumeGrant(tenantId, token, "pos:discount")).rejects.toThrow(PosForbiddenError);
   });
 
+  // The reason the table exists: the old in-memory Map could hand the same
+  // grant to two concurrent handlers. The DELETE ... RETURNING makes Postgres
+  // row locking the arbiter, so exactly one caller can ever win the race.
+  it("two concurrent consumes of one grant: exactly one wins", async () => {
+    const { tenantId, managerId } = await seedTenantAndManager();
+    const token = await issueGrant(tenantId, "pos:discount", managerId);
+
+    const settled = await Promise.allSettled([
+      consumeGrant(tenantId, token, "pos:discount"),
+      consumeGrant(tenantId, token, "pos:discount"),
+    ]);
+
+    expect(settled.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(settled.filter((r) => r.status === "rejected")).toHaveLength(1);
+  });
+
   it("refuses to reuse a grant", async () => {
     const { tenantId, managerId } = await seedTenantAndManager();
     const token = await issueGrant(tenantId, "pos:discount", managerId);
