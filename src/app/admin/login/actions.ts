@@ -4,10 +4,17 @@ import { redirect } from "next/navigation";
 import { createSession } from "@/server/auth/session";
 import { SESSION_COOKIE } from "@/server/auth/current-user";
 import { authenticatePlatformAdmin } from "@/server/auth/admin-login";
+import { z } from "zod";
+import { emailField, loginPasswordField, parseForm } from "@/lib/validation";
+
+const adminLoginSchema = z.object({ email: emailField, password: loginPasswordField });
 
 export async function adminLoginAction(formData: FormData) {
-  const email = String(formData.get("email"));
-  const password = String(formData.get("password"));
+  // Shape only — the policy belongs where a password is chosen, and every
+  // failure funnels to the same generic error to avoid enumerating admins.
+  const parsed = parseForm(adminLoginSchema, formData);
+  if (!parsed.ok) redirect("/admin/login?error=1");
+  const { email, password } = parsed.data;
 
   // Authorization is checked here, before any session exists. Issuing a cookie
   // to someone without `super_admin` produces an account that signs in and is

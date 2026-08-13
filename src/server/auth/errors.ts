@@ -13,6 +13,18 @@ export class StaffContactTakenError extends DomainError {
   }
 }
 
+/** A password that fails the policy in @/lib/validation/fields. */
+export class WeakPasswordError extends DomainError {
+  readonly code = "weak_password";
+  constructor(public readonly reason: string) {
+    super(reason);
+    this.name = "WeakPasswordError";
+  }
+  messageFor(locale: Locale): string {
+    return locale === "ar" ? "كلمة المرور ضعيفة جدًا" : this.reason;
+  }
+}
+
 /** No valid session cookie — the visitor is signed out. */
 export class NotSignedInError extends Error {
   readonly code = "not_signed_in";

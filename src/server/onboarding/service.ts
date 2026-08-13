@@ -8,6 +8,7 @@ import { recordAuditEvent } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { onboardingApplications } from "./schema";
 import { VERTICAL_IDS, type VerticalId } from "@/server/verticals";
+import { SLUG_MAX_LENGTH, SLUG_MIN_LENGTH, SLUG_PATTERN } from "@/lib/validation/fields";
 
 export type RegisterInput = {
   restaurantName: string;
@@ -22,12 +23,17 @@ export type RegisterInput = {
 export type RegisterResult = { tenantId: string; ownerUserId: string };
 
 const TRIAL_DAYS = 14;
-const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])$/;
+
+/** The slug rule lives in @/lib/validation/fields so the registration form and
+ *  this service cannot drift apart — see SLUG_PATTERN's note on why a laxer
+ *  form rule turns a field error into a crash. */
+const slugIsValid = (slug: string) =>
+  slug.length >= SLUG_MIN_LENGTH && slug.length <= SLUG_MAX_LENGTH && SLUG_PATTERN.test(slug);
 
 export async function registerTenant(input: RegisterInput): Promise<RegisterResult> {
   if (!(VERTICAL_IDS as readonly string[]).includes(input.vertical))
     throw new Error(`Invalid vertical: ${input.vertical}`);
-  if (!SLUG_RE.test(input.slug)) throw new Error(`Invalid slug: ${input.slug}`);
+  if (!slugIsValid(input.slug)) throw new Error(`Invalid slug: ${input.slug}`);
 
   const passwordHash = await hashPassword(input.password);
 

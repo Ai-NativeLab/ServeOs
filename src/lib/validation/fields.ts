@@ -118,17 +118,29 @@ export const nameField = z
   .max(NAME_MAX_LENGTH, `Must be at most ${NAME_MAX_LENGTH} characters.`);
 
 /**
- * Mirrors SLUG_RE in src/server/onboarding/service.ts, which is the authority —
- * a slug becomes a subdomain, so anything this accepts and that rejects would
- * fail deep inside registerTenant with a raw Error instead of a field message.
+ * The tenant slug rule, and the ONLY copy of it.
+ *
+ * registerTenant used to carry its own SLUG_RE; it now imports these. Two
+ * regexes for one concept is a trap in this direction specifically — if the
+ * form's rule is even slightly laxer than the service's, the extra values pass
+ * validation and then die inside registerTenant as a raw `Error`, which the UI
+ * renders as a crash rather than as a field message.
+ *
+ * Stricter than the old SLUG_RE in one way: `a--b` is no longer allowed. A
+ * slug becomes a subdomain and doubled hyphens read as a typo. Existing slugs
+ * are never re-validated, so nothing in the database is affected.
  */
+export const SLUG_MIN_LENGTH = 3;
+export const SLUG_MAX_LENGTH = 32;
+export const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
 export const slugField = z
   .string()
   .trim()
   .toLowerCase()
-  .min(2, "Must be at least 2 characters.")
-  .max(40, "Must be at most 40 characters.")
-  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Use lowercase letters, numbers and hyphens only.");
+  .min(SLUG_MIN_LENGTH, `Must be at least ${SLUG_MIN_LENGTH} characters.`)
+  .max(SLUG_MAX_LENGTH, `Must be at most ${SLUG_MAX_LENGTH} characters.`)
+  .regex(SLUG_PATTERN, "Use lowercase letters, numbers and hyphens only.");
 
 /**
  * http(s) only. The same rule sanitizeHttpUrl enforces at write time: a stored

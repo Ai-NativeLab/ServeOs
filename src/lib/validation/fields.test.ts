@@ -12,6 +12,9 @@ import {
   phoneField,
   shortText,
   slugField,
+  SLUG_MAX_LENGTH,
+  SLUG_MIN_LENGTH,
+  SLUG_PATTERN,
 } from "./fields";
 
 /** Terse helpers: these schemas are checked by the dozen below. */
@@ -144,9 +147,31 @@ describe("slugField", () => {
     ok(slugField, "roma-pizza-2");
     bad(slugField, "roma pizza");
     bad(slugField, "roma_pizza");
-    bad(slugField, "r");
     bad(slugField, "-roma");
     bad(slugField, "roma-");
+    bad(slugField, "roma--pizza");
+  });
+
+  it("enforces the subdomain length bounds", () => {
+    bad(slugField, "ro");
+    ok(slugField, "rom");
+    ok(slugField, "r".repeat(SLUG_MAX_LENGTH));
+    bad(slugField, "r".repeat(SLUG_MAX_LENGTH + 1));
+  });
+
+  // registerTenant re-checks the slug and throws a raw Error if it disagrees,
+  // which the UI shows as a crash rather than as a field message. The two must
+  // not be able to drift, so the service imports these very constants.
+  it("agrees with the rule registerTenant enforces", () => {
+    for (const candidate of ["rom", "roma-pizza-2", "ro", "roma--pizza", "-roma", "roma-", "Roma", "r".repeat(33)]) {
+      const acceptedHere = slugField.safeParse(candidate).success;
+      const normalised = candidate.trim().toLowerCase();
+      const acceptedThere =
+        normalised.length >= SLUG_MIN_LENGTH &&
+        normalised.length <= SLUG_MAX_LENGTH &&
+        SLUG_PATTERN.test(normalised);
+      expect(acceptedHere, `disagreement on ${JSON.stringify(candidate)}`).toBe(acceptedThere);
+    }
   });
 });
 

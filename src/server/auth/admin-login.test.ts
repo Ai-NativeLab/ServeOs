@@ -5,6 +5,7 @@ import { users, roles, userRoles } from "./schema";
 import { tenants } from "@/server/tenancy/schema";
 import { hashPassword } from "./password";
 import { authenticatePlatformAdmin, setPlatformAdminPassword } from "./admin-login";
+import { WeakPasswordError } from "./errors";
 
 async function platformUser(email: string, password = "pw1234") {
   const [u] = await db
@@ -114,5 +115,29 @@ describe("setPlatformAdminPassword", () => {
       .values({ tenantId: t.id, name: "Owner", email: "scoped@serveos.com", passwordHash: "x" });
 
     await expect(setPlatformAdminPassword("scoped@serveos.com", "whatever")).rejects.toThrow(/no platform user/i);
+  });
+
+  // The super-admin credential is the most consequential secret in the system,
+  // and until this guard existed a one-character password was accepted.
+  it("refuses a password that fails the policy", async () => {
+    const u = await platformUser("weak@serveos.com", "oldpassword");
+    await grantSuperAdmin(u.id);
+
+    await expect(setPlatformAdminPassword("weak@serveos.com", "short")).rejects.toBeInstanceOf(WeakPasswordError);
+    await expect(setPlatformAdminPassword("weak@serveos.com", "password")).rejects.toBeInstanceOf(WeakPasswordError);
+
+    // Rejected before the UPDATE, not after — the old password still works.
+    expect(await authenticatePlatformAdmin("weak@serveos.com", "oldpassword")).toMatchObject({ ok: true });
+  });
+});
+
+describe("authenticatePlatformAdmin email matching", () => {
+  // Rows written before emailField lowercased on the way in still hold
+  // capitals; an exact match would strand exactly those admins.
+  it("matches a stored address regardless of case", async () => {
+    const u = await platformUser("Mixed.Case@ServeOS.com", "oldpassword");
+    await grantSuperAdmin(u.id);
+
+    expect(await authenticatePlatformAdmin("mixed.case@serveos.com", "oldpassword")).toMatchObject({ ok: true });
   });
 });

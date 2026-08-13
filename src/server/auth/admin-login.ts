@@ -1,8 +1,10 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/db/client";
+import { passwordField } from "@/lib/validation/fields";
 import { users, type User } from "./schema";
 import { hashPassword, verifyPassword } from "./password";
 import { loadUserRoleKeys } from "./current-user";
+import { WeakPasswordError } from "./errors";
 
 export type PlatformAdminAuthResult =
   | { ok: true; user: User }
@@ -23,10 +25,13 @@ export async function authenticatePlatformAdmin(
   email: string,
   password: string,
 ): Promise<PlatformAdminAuthResult> {
+  // Case-insensitive, like the tenant sign-in: what a user types is
+  // lowercased before it gets here, but rows written before that was true may
+  // hold capitals, and an exact match would strand exactly those accounts.
   const [user] = await db
     .select()
     .from(users)
-    .where(and(eq(users.email, email), isNull(users.tenantId)))
+    .where(and(sql`lower(${users.email}) = lower(${email})`, isNull(users.tenantId)))
     .limit(1);
 
   if (!user?.passwordHash || !(await verifyPassword(password, user.passwordHash))) {
@@ -47,6 +52,12 @@ export async function authenticatePlatformAdmin(
  * account would be worse than not rotating at all.
  */
 export async function setPlatformAdminPassword(email: string, password: string): Promise<void> {
+  // Enforced here rather than at a caller: this is the only way a platform
+  // admin's password is ever set, and a super-admin credential is the single
+  // most consequential secret in the system. Before this, `a` was accepted.
+  const check = passwordField.safeParse(password);
+  if (!check.success) throw new WeakPasswordError(check.error.issues[0].message);
+
   const [updated] = await db
     .update(users)
     .set({ passwordHash: await hashPassword(password) })

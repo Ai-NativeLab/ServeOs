@@ -10,6 +10,33 @@ import { CUSTOMER_COOKIE, currentCustomer } from "@/server/customers/require-cus
 import { withTenant } from "@/db/with-tenant";
 import { customers } from "@/server/customers/schema";
 import { eq, and } from "drizzle-orm";
+import { z } from "zod";
+import {
+  emailField,
+  loginPasswordField,
+  nameField,
+  optionalPhoneField,
+  parseForm,
+  passwordField,
+  shortText,
+} from "@/lib/validation";
+
+const customerRegisterSchema = z.object({
+  name: nameField,
+  email: emailField,
+  password: passwordField,
+  phone: optionalPhoneField,
+});
+
+/** Shape only — see loginPasswordField on why the policy never runs at sign-in. */
+const customerLoginSchema = z.object({ email: emailField, password: loginPasswordField });
+
+const customerProfileSchema = z.object({
+  name: nameField,
+  phone: optionalPhoneField,
+  // A delivery address, not an essay. Uncapped before this.
+  defaultAddressText: shortText(500),
+});
 
 /** Tenant always resolves from the storefront host — never from a form field. */
 async function storefrontTenantId(): Promise<string | null> {
@@ -34,15 +61,12 @@ export async function customerRegisterAction(
 ): Promise<{ error?: string }> {
   const tenantId = await storefrontTenantId();
   if (!tenantId) return { error: "This page only works on a shop's own site." };
-  const name = String(formData.get("name") ?? "").trim();
-  const email = String(formData.get("email") ?? "").trim();
-  const password = String(formData.get("password") ?? "");
-  const phone = String(formData.get("phone") ?? "").trim();
-  if (!name || !email) return { error: "Name and email are required." };
-  if (password.length < 8) return { error: "Password must be at least 8 characters." };
+  const parsed = parseForm(customerRegisterSchema, formData);
+  if (!parsed.ok) return { error: parsed.error };
+  const { name, email, password, phone } = parsed.data;
 
   try {
-    const customer = await registerCustomer(tenantId, { name, email, password, phone: phone || undefined });
+    const customer = await registerCustomer(tenantId, { name, email, password, phone });
     const h = await headers();
     await setSessionCookie(await createCustomerSession(tenantId, customer.id, h.get("user-agent") ?? undefined));
   } catch (e) {
@@ -58,8 +82,9 @@ export async function customerLoginAction(
 ): Promise<{ error?: string }> {
   const tenantId = await storefrontTenantId();
   if (!tenantId) return { error: "This page only works on a shop's own site." };
-  const email = String(formData.get("email") ?? "").trim();
-  const password = String(formData.get("password") ?? "");
+  const parsed = parseForm(customerLoginSchema, formData);
+  if (!parsed.ok) return { error: "Invalid email or password." };
+  const { email, password } = parsed.data;
 
   try {
     const customer = await authenticateCustomer(tenantId, email, password);
@@ -91,13 +116,12 @@ export async function customerUpdateProfileAction(
   const me = await currentCustomer(tenantId);
   if (!me) return { error: "Please sign in first." };
 
-  const name = String(formData.get("name") ?? "").trim();
-  const phone = String(formData.get("phone") ?? "").trim();
-  const defaultAddressText = String(formData.get("defaultAddressText") ?? "").trim();
-  if (!name) return { error: "Name is required." };
+  const parsed = parseForm(customerProfileSchema, formData);
+  if (!parsed.ok) return { error: parsed.error };
+  const { name, phone, defaultAddressText } = parsed.data;
 
   await withTenant(tenantId, (tx) => tx.update(customers)
-    .set({ name, phone: phone || null, defaultAddressText: defaultAddressText || null })
+    .set({ name, phone: phone ?? null, defaultAddressText: defaultAddressText || null })
     .where(and(eq(customers.id, me.id), eq(customers.tenantId, tenantId))));
   revalidatePath("/account");
   return { saved: true };
