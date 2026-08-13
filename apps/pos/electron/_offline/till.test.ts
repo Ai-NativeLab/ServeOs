@@ -2,7 +2,10 @@ import { describe, it, expect } from "vitest";
 import { openDb } from "./db";
 import { Store } from "./store";
 import { EMPTY_TILL_STATE, reduce } from "./reducer";
-import { money, shortCode, snapshotLine, sumDenominations, tillReport, type CachedMenu } from "./till";
+import {
+  money, payoutNeedsManager, shortCode, snapshotLine, sumDenominations, tillReport,
+  type CachedMenu, type ShiftPolicy,
+} from "./till";
 
 const MENU: CachedMenu = {
   categories: [
@@ -123,5 +126,32 @@ describe("counting helpers", () => {
   it("derives a stable, readable receipt code from the clientOrderId", () => {
     const id = "0f4a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b";
     expect(shortCode(id)).toBe("T-0F1A2B");
+  });
+});
+
+describe("payoutNeedsManager (mirrors src/server/pos/cash-movements.ts's gate)", () => {
+  const noThreshold: ShiftPolicy = { blindClose: false, payoutThreshold: 0, varianceThreshold: 0 };
+  const withThreshold: ShiftPolicy = { blindClose: false, payoutThreshold: 500, varianceThreshold: 0 };
+
+  it("never gates a type other than pay_out, threshold or not", () => {
+    expect(payoutNeedsManager(withThreshold, "pay_in", 10_000)).toBe(false);
+    expect(payoutNeedsManager(null, "safe_drop", 10_000)).toBe(false);
+    expect(payoutNeedsManager(null, "no_sale", 0)).toBe(false);
+  });
+
+  it("a zero (default) threshold never requires a manager, matching the server's default", () => {
+    expect(payoutNeedsManager(noThreshold, "pay_out", 1)).toBe(false);
+    expect(payoutNeedsManager(noThreshold, "pay_out", 1_000_000)).toBe(false);
+  });
+
+  it("gates only a pay-out that exceeds a configured threshold", () => {
+    expect(payoutNeedsManager(withThreshold, "pay_out", 500)).toBe(false); // equal, not over
+    expect(payoutNeedsManager(withThreshold, "pay_out", 500.01)).toBe(true);
+    expect(payoutNeedsManager(withThreshold, "pay_out", 100)).toBe(false);
+  });
+
+  it("an unsynced policy (null) always requires a manager for a pay-out — the safe fallback", () => {
+    expect(payoutNeedsManager(null, "pay_out", 1)).toBe(true);
+    expect(payoutNeedsManager(null, "pay_out", 1_000_000)).toBe(true);
   });
 });

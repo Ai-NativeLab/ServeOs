@@ -48,19 +48,25 @@ describe("Store — device pairing (pre-existing)", () => {
 describe("Store — catalog cache (gains pricing + version, Task 8)", () => {
   it("round-trips json, pricing, and catalog version", () => {
     const s = makeStore();
-    s.saveCatalog('{"categories":[]}', '{"vatEnabled":true}', 7, "2026-08-13T00:00:00Z");
+    s.saveCatalog('{"categories":[]}', '{"vatEnabled":true}', '{"payoutThreshold":0}', 7, "2026-08-13T00:00:00Z");
     const cached = s.getCatalog();
     expect(cached?.json).toContain("categories");
     expect(cached?.pricingJson).toContain("vatEnabled");
+    expect(cached?.shiftPolicyJson).toContain("payoutThreshold");
     expect(cached?.catalogVersion).toBe(7);
     expect(cached?.syncedAt).toBe("2026-08-13T00:00:00Z");
   });
 
   it("a second save overwrites the single row, not appends", () => {
     const s = makeStore();
-    s.saveCatalog("a", "p1", 1, "t1");
-    s.saveCatalog("b", "p2", 2, "t2");
-    expect(s.getCatalog()).toMatchObject({ json: "b", pricingJson: "p2", catalogVersion: 2, syncedAt: "t2" });
+    s.saveCatalog("a", "p1", "sp1", 1, "t1");
+    s.saveCatalog("b", "p2", "sp2", 2, "t2");
+    expect(s.getCatalog()).toMatchObject({ json: "b", pricingJson: "p2", shiftPolicyJson: "sp2", catalogVersion: 2, syncedAt: "t2" });
+  });
+
+  it("shiftPolicyJson is null until the first catalog pull writes it (Part B fold-in)", () => {
+    const s = makeStore();
+    expect(s.getCatalog()).toBeNull();
   });
 });
 

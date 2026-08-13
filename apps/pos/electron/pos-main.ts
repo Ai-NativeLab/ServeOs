@@ -12,8 +12,8 @@ import { EMPTY_TILL_STATE, reduce, type TillState } from "./_offline/reducer";
 import { createApiClient } from "./_offline/api";
 import { SyncEngine, type SyncStatus } from "./_offline/sync";
 import {
-  money, round2, shortCode, snapshotLine, sumDenominations, tillReport,
-  type CachedMenu,
+  money, payoutNeedsManager, round2, shortCode, snapshotLine, sumDenominations, tillReport,
+  type CachedMenu, type ShiftPolicy,
 } from "./_offline/till";
 
 export type { SyncStatus } from "./_offline/sync";
@@ -990,15 +990,16 @@ export class PosMain {
 
     const authorizedByUserId = this.spendGrant(grant, "reconciliation:manage");
     // Wire contract rule 2: an over-threshold pay-out MUST name its manager or
-    // the server refuses it and the sticky halt jams the whole queue — and the
-    // threshold is a tenant setting no POS endpoint exposes, so the till cannot
-    // tell "over" from "under". It therefore asks for a manager on EVERY
-    // pay-out a cashier without reconciliation:manage makes, which is stricter
-    // than the server needs but can never produce an unfixable jam. Narrow
-    // this the moment the catalog (or a policy) endpoint carries
-    // shiftPolicy.payoutThreshold.
-    if (movement.type === "pay_out" && !authorizedByUserId
-        && !this.cashier!.permissions.includes("reconciliation:manage")) {
+    // the server refuses it and the sticky halt jams the whole queue. The
+    // catalog response now carries shiftPolicy.payoutThreshold (Part B
+    // fold-in fix), so payoutNeedsManager applies the SAME rule the server
+    // does instead of nagging for a manager on every pay-out — except when
+    // the policy hasn't synced yet (cachedCatalog's shiftPolicy is null),
+    // where it keeps requiring one: the safe fallback never relaxes toward
+    // letting an over-threshold pay-out through unchecked.
+    const policy = this.cachedCatalog()?.shiftPolicy ?? null;
+    if (!authorizedByUserId && !this.cashier!.permissions.includes("reconciliation:manage")
+        && payoutNeedsManager(policy, movement.type, amount)) {
       return { ok: false, code: "needs_manager", message: "A manager must approve a pay-out" };
     }
 
@@ -1036,14 +1037,21 @@ export class PosMain {
 
   // ---- local projections ----
 
-  /** The cached catalog, parsed. Null until the first successful pull. */
-  private cachedCatalog(): { json: string; menu: CachedMenu; pricing: CheckoutPricing; catalogVersion: number; syncedAt: string } | null {
+  /** The cached catalog, parsed. Null until the first successful pull.
+   *  `shiftPolicy` is null on an older cache row (pre-Part-B) even once
+   *  `pricingJson` exists — the safe fallback in `payoutNeedsManager` treats
+   *  that identically to "never synced". */
+  private cachedCatalog(): {
+    json: string; menu: CachedMenu; pricing: CheckoutPricing; shiftPolicy: ShiftPolicy | null;
+    catalogVersion: number; syncedAt: string;
+  } | null {
     const row = this.store.getCatalog();
     if (!row?.pricingJson) return null;
     return {
       json: row.json,
       menu: JSON.parse(row.json) as CachedMenu,
       pricing: JSON.parse(row.pricingJson) as CheckoutPricing,
+      shiftPolicy: row.shiftPolicyJson ? (JSON.parse(row.shiftPolicyJson) as ShiftPolicy) : null,
       catalogVersion: row.catalogVersion ?? 0,
       syncedAt: row.syncedAt,
     };

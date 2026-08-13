@@ -42,6 +42,10 @@ export type SyncResult =
 export type CatalogSnapshot = {
   menu: unknown;
   pricing: unknown;
+  /** src/server/tenancy/settings.ts's ShiftPolicy (till.ts's local mirror) —
+   *  rides the same response pricing does (Part B fold-in fix) since it needs
+   *  the same reconnect/periodic cadence and the client already caches it. */
+  shiftPolicy: unknown;
   catalogVersion: number;
   syncedAt: string;
 };
@@ -241,7 +245,9 @@ export class SyncEngine {
   /** Catalog (with pricing + version) and roster, in that order. */
   async pull(): Promise<void> {
     const c = await this.api.getCatalog();
-    this.store.saveCatalog(JSON.stringify(c.menu), JSON.stringify(c.pricing), c.catalogVersion, c.syncedAt);
+    this.store.saveCatalog(
+      JSON.stringify(c.menu), JSON.stringify(c.pricing), JSON.stringify(c.shiftPolicy), c.catalogVersion, c.syncedAt,
+    );
     await this.pullRoster();
   }
 

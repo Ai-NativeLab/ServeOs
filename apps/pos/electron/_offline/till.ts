@@ -2,7 +2,7 @@ import { expectedCash, type TillState } from "./reducer";
 // Type-only, so nothing from pos-main.ts (and therefore nothing from
 // `electron`) is pulled in at runtime: this module is the Electron-free half
 // of the write-through path, the half that decides money.
-import type { MovementTotal, SaleLine, ShiftReport, TenderTotal } from "../pos-main";
+import type { CashMovementType, MovementTotal, SaleLine, ShiftReport, TenderTotal } from "../pos-main";
 
 export const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
@@ -22,6 +22,32 @@ export function sumDenominations(denominations: Record<string, number>): number 
  *  support can find the sale once it syncs. */
 export function shortCode(clientOrderId: string): string {
   return `T-${clientOrderId.replace(/-/g, "").slice(-6).toUpperCase()}`;
+}
+
+/** Mirrors src/server/tenancy/settings.ts's ShiftPolicy — declared here
+ *  rather than imported, for the same reason LineSnapshot is: nothing under
+ *  src/server may enter the Electron main bundle. Synced onto the till
+ *  alongside catalog/pricing (the catalog route now returns it) so a
+ *  pay-out's manager gate can match the server's rule instead of guessing. */
+export type ShiftPolicy = { blindClose: boolean; payoutThreshold: number; varianceThreshold: number };
+
+/**
+ * Mirrors src/server/pos/cash-movements.ts's gate exactly: a pay-out needs a
+ * manager only when a threshold is configured AND this pay-out exceeds it.
+ * Zero (or absent) means "no threshold" on both sides, so the common case —
+ * no policy configured — never nags for a manager, matching the online till.
+ *
+ * `policy === null` means this device has never synced one (fresh pair, or a
+ * catalog pull that hasn't landed yet). That must resolve to "needs a
+ * manager", never the opposite: an unsynced till has no way to tell an
+ * over-threshold pay-out from an under-threshold one, and guessing "under"
+ * could let a pay-out through that the server would have refused, jamming
+ * the sync queue behind a `forbidden` rejection it can never locally repair.
+ */
+export function payoutNeedsManager(policy: ShiftPolicy | null, type: CashMovementType, amount: number): boolean {
+  if (type !== "pay_out") return false;
+  if (policy === null) return true;
+  return policy.payoutThreshold > 0 && amount > policy.payoutThreshold;
 }
 
 /** Mirrors src/server/ordering/service.ts's LineSnapshot: the till's own

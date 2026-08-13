@@ -79,6 +79,10 @@ export function openDb(path: string): Database.Database {
   // version counter alongside the menu JSON it already stores.
   addColumnIfMissing(db, "catalog_cache", "pricing_json", "pricing_json TEXT");
   addColumnIfMissing(db, "catalog_cache", "catalog_version", "catalog_version INTEGER");
+  // The branch's cash-movement policy (payoutThreshold, blindClose) — synced
+  // alongside pricing so pos-main's cashMovement gate can match the server's
+  // exactly instead of always requiring a manager (Part B fold-in fix).
+  addColumnIfMissing(db, "catalog_cache", "shift_policy_json", "shift_policy_json TEXT");
 
   return db;
 }

@@ -10,6 +10,7 @@ import { startTrial } from "@/server/subscription/service";
 import { createCategory, createProduct, updateProduct } from "@/server/catalog/service";
 import { getCatalogVersion } from "@/server/catalog/version";
 import { setWhatsappNumber, setVatRate } from "@/server/tenancy/settings";
+import { tenantSettings } from "@/server/tenancy/schema";
 import { GET as getCatalog } from "@/app/api/pos/v1/catalog/route";
 import { posDevices, posSyncEventReceipts } from "./schema";
 
@@ -76,5 +77,31 @@ describe("catalog version", () => {
     await setVatRate(tenant.id, 15);
 
     expect(await getCatalogVersion(tenant.id)).toBe(before + 1);
+  });
+});
+
+// Part B fold-in: the till has no other way to learn the branch's cash-
+// movement policy, so it rides the catalog response the sync engine already
+// pulls on reconnect and on every online tick (Task 10).
+describe("catalog route — shift policy", () => {
+  it("defaults to no payout threshold and an open close, same as getShiftPolicy", async () => {
+    const { token } = await seedDeviceTenant("catalog-shift-policy-default");
+    const req = new NextRequest("http://localhost/api/pos/v1/catalog", { headers: { authorization: `Bearer ${token}` } });
+    const body = await (await getCatalog(req)).json();
+    expect(body.shiftPolicy).toEqual({ blindClose: false, payoutThreshold: 0, varianceThreshold: 0 });
+  });
+
+  it("reflects a configured payout threshold and blind close", async () => {
+    const { tenant, token } = await seedDeviceTenant("catalog-shift-policy-set");
+    await withTenant(tenant.id, (tx) =>
+      tx.insert(tenantSettings).values({
+        tenantId: tenant.id,
+        data: { shiftPolicy: { blindClose: true, payoutThreshold: 500, varianceThreshold: 20 } },
+      }),
+    );
+
+    const req = new NextRequest("http://localhost/api/pos/v1/catalog", { headers: { authorization: `Bearer ${token}` } });
+    const body = await (await getCatalog(req)).json();
+    expect(body.shiftPolicy).toEqual({ blindClose: true, payoutThreshold: 500, varianceThreshold: 20 });
   });
 });

@@ -59,26 +59,32 @@ export class Store {
 
   // ---- catalog (existing table; gains pricing + version, Task 8) ----
 
-  saveCatalog(json: string, pricingJson: string, catalogVersion: number, syncedAt: string): void {
+  saveCatalog(json: string, pricingJson: string, shiftPolicyJson: string, catalogVersion: number, syncedAt: string): void {
     this.db
       .prepare(
-        `INSERT INTO catalog_cache (id, json, pricing_json, catalog_version, synced_at) VALUES (1, ?, ?, ?, ?)
+        `INSERT INTO catalog_cache (id, json, pricing_json, shift_policy_json, catalog_version, synced_at) VALUES (1, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            json = excluded.json,
            pricing_json = excluded.pricing_json,
+           shift_policy_json = excluded.shift_policy_json,
            catalog_version = excluded.catalog_version,
            synced_at = excluded.synced_at`,
       )
-      .run(json, pricingJson, catalogVersion, syncedAt);
+      .run(json, pricingJson, shiftPolicyJson, catalogVersion, syncedAt);
   }
 
-  getCatalog(): { json: string; pricingJson: string | null; catalogVersion: number | null; syncedAt: string } | null {
+  getCatalog(): {
+    json: string; pricingJson: string | null; shiftPolicyJson: string | null; catalogVersion: number | null; syncedAt: string;
+  } | null {
     const row = this.db
       .prepare(
-        `SELECT json, pricing_json AS pricingJson, catalog_version AS catalogVersion, synced_at AS syncedAt
+        `SELECT json, pricing_json AS pricingJson, shift_policy_json AS shiftPolicyJson,
+                catalog_version AS catalogVersion, synced_at AS syncedAt
          FROM catalog_cache WHERE id = 1`,
       )
-      .get() as { json: string; pricingJson: string | null; catalogVersion: number | null; syncedAt: string } | undefined;
+      .get() as
+      | { json: string; pricingJson: string | null; shiftPolicyJson: string | null; catalogVersion: number | null; syncedAt: string }
+      | undefined;
     return row ?? null;
   }
 

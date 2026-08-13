@@ -46,7 +46,13 @@ class FakeApi implements PosApiClient {
   async getCatalog() {
     this.catalogPulls += 1;
     if (!this.reachable) throw networkError();
-    return { menu: { categories: [] }, pricing: { vatEnabled: true, vatRate: 14 }, catalogVersion: 7, syncedAt: "2026-08-14T00:00:00.000Z" };
+    return {
+      menu: { categories: [] },
+      pricing: { vatEnabled: true, vatRate: 14 },
+      shiftPolicy: { blindClose: false, payoutThreshold: 500, varianceThreshold: 0 },
+      catalogVersion: 7,
+      syncedAt: "2026-08-14T00:00:00.000Z",
+    };
   }
 
   async getAuthRoster() {
@@ -303,6 +309,9 @@ describe("SyncEngine.tick", () => {
     expect(api.catalogPulls).toBe(1);
     expect(store.getCatalog()).toMatchObject({ catalogVersion: 7 });
     expect(JSON.parse(store.getCatalog()!.pricingJson!)).toMatchObject({ vatRate: 14 });
+    // Part B fold-in: shiftPolicy rides the same pull, so a reconnect is what
+    // teaches the till its payout threshold.
+    expect(JSON.parse(store.getCatalog()!.shiftPolicyJson!)).toMatchObject({ payoutThreshold: 500 });
     expect(store.findAuthUser("c@x.com")).toMatchObject({ userId: "u1" });
     expect(api.batches).toHaveLength(1);
     expect(engine.status().state).toBe("online");
