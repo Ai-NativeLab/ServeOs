@@ -835,7 +835,7 @@ describe("attachPaymentProof", () => {
   it("refuses a javascript: URL rather than storing it for a merchant to click", async () => {
     const { t, res } = await pendingOrder("pp3");
     const { attachPaymentProof, getOrder } = await import("./service");
-    const { InvalidProofError } = await import("./errors");
+    const { InvalidProofError } = await import("@/server/payments/offline");
 
     await expect(attachPaymentProof(t.id, res.statusToken, "javascript:alert(1)"))
       .rejects.toThrow(InvalidProofError);
