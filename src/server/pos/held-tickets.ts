@@ -39,9 +39,9 @@ export async function holdTicket(
   label: string,
   draft: unknown,
   opts: HeldTicketSyncOptions = {},
-): Promise<{ id: string }> {
+): Promise<{ id: string; idempotent: boolean }> {
   const cleanLabel = label.trim() || "Ticket";
-  const id = await withTenant(ctx.tenantId, async (tx) => {
+  const { id, idempotent } = await withTenant(ctx.tenantId, async (tx) => {
     // Natural idempotency key, the same shape as openShift's clientShiftId
     // check: a replayed hold answers from here, never from the receipt.
     if (opts.clientTicketId) {
@@ -52,7 +52,9 @@ export async function holdTicket(
         .from(posHeldTickets)
         .where(and(eq(posHeldTickets.deviceId, ctx.deviceId), eq(posHeldTickets.clientTicketId, opts.clientTicketId)))
         .limit(1);
-      if (existing) return existing.id;
+      // The loser of a concurrent hold of the SAME clientTicketId lands here —
+      // same shape as openShift's absorb, so it needs the same signal.
+      if (existing) return { id: existing.id, idempotent: true };
     }
 
     const occurredAt = opts.occurredAt ?? new Date();
@@ -78,9 +80,9 @@ export async function holdTicket(
       await tx.insert(posSyncEventReceipts).values({ ...opts.syncReceipt, resultJson: { id: row.id } });
     }
 
-    return row.id;
+    return { id: row.id, idempotent: false };
   });
-  return { id };
+  return { id, idempotent };
 }
 
 /** Branch-scoped, not device-scoped: a ticket parked at till 1 is recallable at till 2. */

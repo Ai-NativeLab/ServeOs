@@ -107,7 +107,9 @@ export function shiftAuditCtx(ctx: PosCashierContext): AuditContext {
  * tenant), and the unique partial index `(device_id) WHERE status = 'open'`
  * catches anything that bypasses this function.
  */
-export async function openShift(ctx: PosCashierContext, input: OpenShiftInput): Promise<PosShift> {
+export async function openShift(
+  ctx: PosCashierContext, input: OpenShiftInput,
+): Promise<PosShift & { idempotent: boolean }> {
   // Guard the count before opening a transaction — a float that disagrees with
   // the notes in the drawer is a counting error, not a shift.
   if (input.denominations && sumDenominations(input.denominations) !== round2(input.openingFloat)) {
@@ -126,7 +128,11 @@ export async function openShift(ctx: PosCashierContext, input: OpenShiftInput): 
         .from(posShifts)
         .where(and(eq(posShifts.deviceId, ctx.deviceId), eq(posShifts.clientShiftId, input.clientShiftId)))
         .limit(1);
-      if (existing) return existing;
+      // The loser of a concurrent open of the SAME clientShiftId lands here
+      // instead of the insert below — idempotent: true is the only way a
+      // caller (sync-ingest's replay dispatcher) can tell this apart from a
+      // fresh open, since both return a normal PosShift with no exception.
+      if (existing) return { ...existing, idempotent: true };
     }
 
     const [alreadyOpen] = await tx
@@ -180,7 +186,7 @@ export async function openShift(ctx: PosCashierContext, input: OpenShiftInput): 
       await tx.insert(posSyncEventReceipts).values({ ...input.syncReceipt, resultJson: shift });
     }
 
-    return shift;
+    return { ...shift, idempotent: false };
   });
 }
 
@@ -286,7 +292,7 @@ export async function recordMidShiftCount(
     occurredAt?: Date;
     syncReceipt?: SyncReceipt;
   },
-): Promise<CashCount> {
+): Promise<CashCount & { idempotent: boolean }> {
   if (count.denominations && sumDenominations(count.denominations) !== round2(count.countedTotal)) {
     throw new CashCountMismatchError();
   }
@@ -301,7 +307,9 @@ export async function recordMidShiftCount(
     // same event can't both insert.
     if (count.syncReceipt) {
       const stored = await findSyncReceipt(count.syncReceipt, tx);
-      if (stored) return reviveDates(stored.resultJson as CashCount, ["createdAt"]);
+      // The loser of a concurrent replay of this SAME event lands here — it
+      // never reaches the insert below, so it needs its own idempotent signal.
+      if (stored) return { ...reviveDates(stored.resultJson as CashCount, ["createdAt"]), idempotent: true };
     }
 
     // FOR UPDATE for the same reason the close takes it: the advisory lock does
@@ -348,7 +356,7 @@ export async function recordMidShiftCount(
       await tx.insert(posSyncEventReceipts).values({ ...count.syncReceipt, resultJson: row });
     }
 
-    return row;
+    return { ...row, idempotent: false };
   });
 }
 
@@ -443,6 +451,11 @@ export async function closeShift(
     // is the approval as recorded on the count and in the audit chain.
     const approvedByUserId = flagged && canManage ? await authorize() : null;
 
+    // Computed once and reused below for both the closing count and the shift
+    // row: recordMidShiftCount already honours the claimed close time here,
+    // the mid-shift path always has — omitting it on the closing count left
+    // the two counts of one offline shift landing on different business days.
+    const closedAt = input.occurredAt ?? new Date();
     const [count] = await tx
       .insert(cashCounts)
       .values({
@@ -454,10 +467,10 @@ export async function closeShift(
         variance: money(variance),
         denominations: input.count.denominations ?? null,
         byUserId: ctx.cashierUserId,
+        createdAt: closedAt,
       })
       .returning();
 
-    const closedAt = input.occurredAt ?? new Date();
     // The `status = 'open'` guard is the real serialization point: a writer that
     // closed this drawer first leaves no matching row, so this close rolls back
     // whole — no second closing count, no second shift.close event, no rival

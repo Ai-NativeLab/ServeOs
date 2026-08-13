@@ -42,7 +42,7 @@ export type CashMovementInput = {
 export async function recordCashMovement(
   ctx: PosCashierContext,
   input: CashMovementInput,
-): Promise<CashMovement> {
+): Promise<CashMovement & { idempotent: boolean }> {
   const magnitude = round2(input.amount);
   if (input.type === "no_sale") {
     if (magnitude !== 0) throw new CashMovementError("A no_sale records no cash");
@@ -58,7 +58,7 @@ export async function recordCashMovement(
   // advisory lock, is what actually closes the concurrent-replay race.
   if (input.syncReceipt) {
     const stored = await findSyncReceipt(input.syncReceipt);
-    if (stored) return reviveDates(stored.resultJson as CashMovement, ["createdAt"]);
+    if (stored) return { ...reviveDates(stored.resultJson as CashMovement, ["createdAt"]), idempotent: true };
   }
 
   // Cheap pre-check so "there is no drawer" is reported before a manager's
@@ -96,7 +96,9 @@ export async function recordCashMovement(
     if (input.syncReceipt) {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${input.syncReceipt.eventId})::bigint)`);
       const stored = await findSyncReceipt(input.syncReceipt, tx);
-      if (stored) return reviveDates(stored.resultJson as CashMovement, ["createdAt"]);
+      // The loser of a concurrent replay of this SAME event lands here — it
+      // never reaches the insert below, so it needs its own idempotent signal.
+      if (stored) return { ...reviveDates(stored.resultJson as CashMovement, ["createdAt"]), idempotent: true };
     }
 
     // Re-resolve the drawer on THIS transaction and lock the row. This is the
@@ -153,6 +155,6 @@ export async function recordCashMovement(
       await tx.insert(posSyncEventReceipts).values({ ...input.syncReceipt, resultJson: row });
     }
 
-    return row;
+    return { ...row, idempotent: false };
   });
 }

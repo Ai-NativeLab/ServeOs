@@ -473,25 +473,16 @@ describe("offline shift lifecycle — adversarial variants", () => {
   });
 
   /**
-   * DEFECT (reporting only — no double-apply; the test above proves the rows
-   * are right). The plan claims a second concurrent ingest answers `duplicate`
-   * for every event. It does not: the loser of the race reports `applied` for
-   * `shift.opened`, `cash.movement`, `count.recorded` and `shift.closed`.
-   *
-   * ingestEvents (sync-ingest.ts:587) can only call an event a duplicate when
-   * its OWN pre-apply findSyncReceipt hits. Under a race that check misses, and
-   * the four services below then absorb the replay internally and return a
-   * plain value the dispatcher cannot tell apart from a fresh apply:
-   *   shifts.ts:129            openShift → existing row, clientShiftId path
-   *   cash-movements.ts:99     recordCashMovement → stored resultJson
-   *   shifts.ts:304            recordMidShiftCount → stored resultJson
-   *   shifts.ts:423            closeShift → stored resultJson (idempotent: true,
-   *                            which sync-ingest.ts:601 discards)
-   * Fix: have applyEvent report idempotency — closeShift and recordSale already
-   * compute it, the other three need to say so — and label the result from that
-   * rather than from the pre-check alone. `.fails` so a fix turns this red.
+   * Reporting-only race (the test above proves the rows are right regardless):
+   * openShift, recordCashMovement, recordMidShiftCount and closeShift each
+   * absorb a concurrent replay internally (their own natural-key or receipt
+   * check, inside a lock) and return normally — a plain return value the
+   * dispatcher couldn't tell apart from a fresh apply. Fixed by having each
+   * report `idempotent` on its return (closeShift and recordSale already did)
+   * and having applyEvent/ingestEvents derive `status` from that instead of
+   * from the pre-apply findSyncReceipt check alone.
    */
-  it.fails("a second concurrent ingest of the same batch is reported as all duplicates", async () => {
+  it("a second concurrent ingest of the same batch is reported as all duplicates", async () => {
     const seed = await seedLifecycle();
     const batch = buildBatch(seed, new Date(Date.now() - OUTAGE_START_MS));
 
@@ -549,18 +540,12 @@ describe("offline shift lifecycle — adversarial variants", () => {
   });
 
   /**
-   * DEFECT (claimed-time gap). recordMidShiftCount stamps cash_counts.createdAt
-   * with the device-claimed occurredAt (shifts.ts:329); closeShift's closing
-   * count omits createdAt entirely (shifts.ts:446) and takes defaultNow(), so
-   * an offline shift's two counts land on different business days — the
-   * mid-shift one on the day it was taken, the closing one on the day the queue
-   * drained. pos_shifts.closedAt and the Z-report are unaffected (both honour
-   * occurredAt), so this only bites a reader that buckets cash_counts by
-   * createdAt. Fix: pass `createdAt: input.occurredAt ?? new Date()` on the
-   * closing-count insert, as the mid-shift path already does. `.fails` so a fix
-   * turns this red.
+   * closeShift's closing count now stamps createdAt from the same claimed
+   * occurredAt it already uses for pos_shifts.closedAt (shifts.ts), matching
+   * the mid-shift count — so an offline shift's counts land on the business
+   * day the till claims, not the day each one happened to commit.
    */
-  it.fails("stamps the closing count with the claimed close time, as the mid-shift count is", async () => {
+  it("stamps the closing count with the claimed close time, as the mid-shift count is", async () => {
     const seed = await seedLifecycle();
     const batch = buildBatch(seed, new Date(Date.now() - OUTAGE_START_MS));
     const [, open, , , , , , close] = batch.events;

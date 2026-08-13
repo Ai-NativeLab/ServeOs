@@ -155,6 +155,25 @@ describe("ingestEvents", () => {
     expect(rows).toHaveLength(1); // the loser's whole transaction rolled back
   });
 
+  // Unlike grant.issued's unique-violation race above, holdTicket's loser
+  // never throws — it absorbs the replay via its own clientTicketId lock and
+  // returns the existing row (held-tickets.ts), the same shape openShift's
+  // clientShiftId path uses. This is the honest-status guarantee for that path.
+  it("concurrent duplicate ticket.held ingest resolves as duplicate, not two applied", async () => {
+    const { ctx } = await seedPosContext("owner");
+    const device = toDevice(ctx);
+    const e = ticketHeld(ctx.cashierUserId, 1);
+
+    const settled = await Promise.allSettled([
+      ingestEvents(device, [e]),
+      ingestEvents(device, [e]),
+    ]);
+
+    expect(settled.every((r) => r.status === "fulfilled")).toBe(true);
+    const statuses = (settled as PromiseFulfilledResult<SyncResult[]>[]).map((r) => r.value[0].status).sort();
+    expect(statuses).toEqual(["applied", "duplicate"]);
+  });
+
   it("an out-of-order seq is rejected with code out_of_order", async () => {
     const { ctx } = await seedPosContext("owner");
     const device = toDevice(ctx);

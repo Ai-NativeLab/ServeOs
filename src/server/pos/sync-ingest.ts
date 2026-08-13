@@ -69,6 +69,15 @@ export type SyncResult =
   | { eventId: string; status: "applied" | "duplicate"; result: Record<string, unknown>; flags?: string[] }
   | { eventId: string; status: "failed"; error: { code: string; message: string } };
 
+/**
+ * A handler's own answer to "did this call actually apply, or did it absorb a
+ * replay that beat findSyncReceipt's pre-apply check?" (see ingestEvents).
+ * `result` is the wire payload for SyncResult; `idempotent` never appears in
+ * it — it is consumed by ingestEvents to pick "applied" vs "duplicate" and
+ * discarded, exactly like `flags`.
+ */
+type AppliedEvent = { result: Record<string, unknown>; idempotent: boolean };
+
 /** Malformed envelope or payload — a data problem the device sent us, never a
  *  domain refusal. Kept distinct from the domain error classes below so
  *  toErrorShape can give it its own stable code. */
@@ -237,7 +246,7 @@ function asSaleRecordedPayload(payload: Record<string, unknown>): SaleRecordedPa
 
 async function handleSaleRecorded(
   ctx: PosCashierContext, e: SyncEvent, receipt: SyncReceipt,
-): Promise<Record<string, unknown>> {
+): Promise<AppliedEvent> {
   const p = asSaleRecordedPayload(e.payload);
   const result = await recordSale(ctx, {
     clientOrderId: p.clientOrderId,
@@ -253,7 +262,7 @@ async function handleSaleRecorded(
     authorizedByUserId: e.authorizedByUserId,
     syncReceipt: receipt,
   });
-  return toJsonSafe(result);
+  return { result: toJsonSafe(result), idempotent: result.idempotent };
 }
 
 type ShiftOpenedPayload = { openingFloat: number; denominations?: Record<string, number>; clientShiftId?: string };
@@ -266,16 +275,16 @@ function asShiftOpenedPayload(payload: Record<string, unknown>): ShiftOpenedPayl
 
 async function handleShiftOpened(
   ctx: PosCashierContext, e: SyncEvent, receipt: SyncReceipt,
-): Promise<Record<string, unknown>> {
+): Promise<AppliedEvent> {
   const p = asShiftOpenedPayload(e.payload);
-  const shift = await openShift(ctx, {
+  const { idempotent, ...shift } = await openShift(ctx, {
     openingFloat: p.openingFloat,
     denominations: p.denominations,
     clientShiftId: p.clientShiftId,
     occurredAt: receipt.occurredAt,
     syncReceipt: receipt,
   });
-  return toJsonSafe(shift);
+  return { result: toJsonSafe(shift), idempotent };
 }
 
 type ShiftClosedPayload = {
@@ -294,7 +303,7 @@ function asShiftClosedPayload(payload: Record<string, unknown>): ShiftClosedPayl
 
 async function handleShiftClosed(
   ctx: PosCashierContext, e: SyncEvent, receipt: SyncReceipt,
-): Promise<Record<string, unknown>> {
+): Promise<AppliedEvent> {
   const p = asShiftClosedPayload(e.payload);
   const shiftId = await resolveShiftId(ctx.tenantId, ctx.deviceId, p);
   const report = await closeShift(ctx, shiftId, {
@@ -303,7 +312,7 @@ async function handleShiftClosed(
     syncReceipt: receipt,
     authorizedByUserId: e.authorizedByUserId,
   });
-  return toJsonSafe(report);
+  return { result: toJsonSafe(report), idempotent: report.idempotent };
 }
 
 const CASH_MOVEMENT_TYPES = new Set<CashMovementType>(["pay_in", "pay_out", "safe_drop", "no_sale"]);
@@ -324,9 +333,9 @@ function asCashMovementPayload(payload: Record<string, unknown>): CashMovementPa
 
 async function handleCashMovement(
   ctx: PosCashierContext, e: SyncEvent, receipt: SyncReceipt,
-): Promise<Record<string, unknown>> {
+): Promise<AppliedEvent> {
   const p = asCashMovementPayload(e.payload);
-  const row = await recordCashMovement(ctx, {
+  const { idempotent, ...row } = await recordCashMovement(ctx, {
     type: p.type,
     amount: p.amount,
     reasonCode: p.reasonCode,
@@ -335,7 +344,7 @@ async function handleCashMovement(
     syncReceipt: receipt,
     authorizedByUserId: e.authorizedByUserId,
   });
-  return toJsonSafe(row);
+  return { result: toJsonSafe(row), idempotent };
 }
 
 type CountRecordedPayload = {
@@ -354,16 +363,16 @@ function asCountRecordedPayload(payload: Record<string, unknown>): CountRecorded
 
 async function handleCountRecorded(
   ctx: PosCashierContext, e: SyncEvent, receipt: SyncReceipt,
-): Promise<Record<string, unknown>> {
+): Promise<AppliedEvent> {
   const p = asCountRecordedPayload(e.payload);
   const shiftId = await resolveShiftId(ctx.tenantId, ctx.deviceId, p);
-  const count = await recordMidShiftCount(ctx, shiftId, {
+  const { idempotent, ...count } = await recordMidShiftCount(ctx, shiftId, {
     countedTotal: p.countedTotal,
     denominations: p.denominations,
     occurredAt: receipt.occurredAt,
     syncReceipt: receipt,
   });
-  return toJsonSafe(count);
+  return { result: toJsonSafe(count), idempotent };
 }
 
 type TicketHeldPayload = { clientTicketId: string; label: string; draft?: unknown };
@@ -379,14 +388,14 @@ function asTicketHeldPayload(payload: Record<string, unknown>): TicketHeldPayloa
 
 async function handleTicketHeld(
   ctx: PosCashierContext, e: SyncEvent, receipt: SyncReceipt,
-): Promise<Record<string, unknown>> {
+): Promise<AppliedEvent> {
   const p = asTicketHeldPayload(e.payload);
-  const result = await holdTicket(ctx, p.label, p.draft ?? {}, {
+  const { id, idempotent } = await holdTicket(ctx, p.label, p.draft ?? {}, {
     clientTicketId: p.clientTicketId,
     occurredAt: receipt.occurredAt,
     syncReceipt: receipt,
   });
-  return toJsonSafe(result);
+  return { result: toJsonSafe({ id }), idempotent };
 }
 
 function asClientTicketId(payload: Record<string, unknown>, type: string): string {
@@ -399,21 +408,27 @@ function asClientTicketId(payload: Record<string, unknown>, type: string): strin
 
 async function handleTicketRecalled(
   ctx: PosCashierContext, e: SyncEvent, receipt: SyncReceipt,
-): Promise<Record<string, unknown>> {
+): Promise<AppliedEvent> {
   const clientTicketId = asClientTicketId(e.payload, "ticket.recalled");
   await recallHeldTicket(ctx, clientTicketId, { syncReceipt: receipt });
   // recallHeldTicket returns void — its own internal receipt stores exactly
   // this shape, so this is what a fresh apply and a later duplicate agree on.
-  return { clientTicketId };
+  // idempotent is hardcoded false: recallHeldTicket has no idempotent signal
+  // to report (unlike openShift/recordCashMovement/recordMidShiftCount/
+  // holdTicket), so a concurrent duplicate of THIS type still mislabels the
+  // way D1 originally described — same latent gap as ticket.discarded below,
+  // out of this fix's scope (no failing test exercises it).
+  return { result: { clientTicketId }, idempotent: false };
 }
 
 async function handleTicketDiscarded(
   ctx: PosCashierContext, e: SyncEvent, receipt: SyncReceipt,
-): Promise<Record<string, unknown>> {
+): Promise<AppliedEvent> {
   const clientTicketId = asClientTicketId(e.payload, "ticket.discarded");
   await discardHeldTicket(ctx, null, { clientTicketId, syncReceipt: receipt });
   // Matches discardHeldTicket's own internal resultJson ({ id: entityId }).
-  return { id: clientTicketId };
+  // idempotent hardcoded false — see handleTicketRecalled's comment.
+  return { result: { id: clientTicketId }, idempotent: false };
 }
 
 type GrantIssuedPayload = { permission: Permission };
@@ -438,7 +453,7 @@ function asGrantIssuedPayload(payload: Record<string, unknown>): GrantIssuedPayl
  */
 async function handleGrantIssued(
   device: PosDeviceContext, actor: ResolvedActor, e: SyncEvent, receipt: SyncReceipt,
-): Promise<Record<string, unknown>> {
+): Promise<AppliedEvent> {
   if (!e.authorizedByUserId) throw new SyncEventValidationError("grant.issued requires authorizedByUserId");
   const { permission } = asGrantIssuedPayload(e.payload);
   const authorizer = await resolveOfflineAuthorizer(device.tenantId, e.authorizedByUserId, permission);
@@ -461,9 +476,13 @@ async function handleGrantIssued(
       },
       tx,
     );
+    // No absorb-and-return-early path here (unlike openShift et al.): a
+    // concurrent duplicate always races on this insert's own unique index and
+    // throws, caught by ingestEvents via isReplayUniqueViolation — so a fresh
+    // apply is the only way this function returns, and idempotent is always false.
     await tx.insert(posSyncEventReceipts).values({ ...receipt, resultJson: result });
   });
-  return result;
+  return { result, idempotent: false };
 }
 
 type SessionSignedInPayload = { outcome?: "success" | "failed" };
@@ -482,7 +501,7 @@ function asSessionSignedInPayload(payload: Record<string, unknown>): SessionSign
  *  cashier, not by typed email), unlike the live auth.login_failed path. */
 async function handleSessionSignedIn(
   device: PosDeviceContext, actor: ResolvedActor, e: SyncEvent, receipt: SyncReceipt,
-): Promise<Record<string, unknown>> {
+): Promise<AppliedEvent> {
   const { outcome = "success" } = asSessionSignedInPayload(e.payload);
   const action = outcome === "failed" ? "auth.login_failed" : "auth.cashier_signed_in";
   const result: Record<string, unknown> = { actorUserId: actor.userId, outcome };
@@ -500,14 +519,16 @@ async function handleSessionSignedIn(
       },
       tx,
     );
+    // Same reasoning as handleGrantIssued: no internal absorb path, so a
+    // concurrent duplicate throws on this insert rather than returning here.
     await tx.insert(posSyncEventReceipts).values({ ...receipt, resultJson: result });
   });
-  return result;
+  return { result, idempotent: false };
 }
 
 /** Every event type dispatches somewhere — an unrecognized `type` is the
  *  only way out of this switch, and it fails just that one event. */
-async function applyEvent(device: PosDeviceContext, actor: ResolvedActor, e: SyncEvent): Promise<Record<string, unknown>> {
+async function applyEvent(device: PosDeviceContext, actor: ResolvedActor, e: SyncEvent): Promise<AppliedEvent> {
   const receipt: SyncReceipt = {
     deviceId: device.deviceId,
     eventId: e.eventId,
@@ -598,10 +619,18 @@ export async function ingestEvents(device: PosDeviceContext, events: SyncEvent[]
     try {
       validateEnvelope(e);
       const actor = await resolveActor(device.tenantId, e.actorUserId);
-      const result = await applyEvent(device, actor, e);
+      // Two ways a concurrent duplicate of this SAME event surfaces here
+      // rather than at the pre-check above: some services (sale.recorded,
+      // grant.issued, session.signed_in) race on a unique constraint and
+      // throw, caught below via isReplayUniqueViolation; others (openShift,
+      // recordCashMovement, recordMidShiftCount, closeShift, holdTicket)
+      // absorb the replay internally and return normally — `idempotent` is
+      // how those report it, since a thrown exception never distinguishes
+      // them from a fresh apply.
+      const { result, idempotent } = await applyEvent(device, actor, e);
       results.push({
         eventId: e.eventId,
-        status: "applied",
+        status: idempotent ? "duplicate" : "applied",
         result,
         ...(actor.flags?.length ? { flags: actor.flags } : {}),
       });
