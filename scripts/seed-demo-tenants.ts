@@ -20,13 +20,116 @@ import { and, eq, isNull } from "drizzle-orm";
 
 const IMG = (id: string) => `https://images.unsplash.com/photo-${id}?w=800&q=80&auto=format&fit=crop`;
 
+/**
+ * Photography, named by what each shot actually DEPICTS rather than by where
+ * it happens to be used.
+ *
+ * Every id below has been checked to return 200 from images.unsplash.com. That
+ * matters because a guessed id 404s and next/image is not involved here — the
+ * storefront renders product photos with a plain <img>, so a dead id is a
+ * broken image on a customer's screen with nothing to catch it.
+ *
+ * Naming them is the point. These used to be inline `IMG("1584949...")` calls
+ * repeated per product, which is how retail's entire Snacks aisle — chips,
+ * chocolate, biscuits, peanuts — ended up sharing one photo of a computer
+ * screen: nothing in the code said what the id showed, so nobody noticed.
+ *
+ * KNOWN GAP: the pool is one photo per CATEGORY, inherited from Roma's Italian
+ * seed plus these demo tenants. There is no honest per-dish photography for an
+ * Egyptian grill house, an Egyptian pharmacy or a timber yard in it, so within
+ * a category products still share a shot. Fixing that needs real assets, not
+ * more code — see the handover note.
+ */
+const GRILL_PLATTER = IMG("1544025162-d76694265947");
+const MEZZE_SPREAD = IMG("1512621776951-a57141f2eefd");
+const RICE_SIDES = IMG("1587854692152-cbe660dbde88");
+const DRINKS_TRAY = IMG("1621905251189-08b45d6a269e");
+const LEMONADE = IMG("1621263764928-df1444c5e859");
+const DESSERTS = IMG("1551024601-bec78aea704b");
+
+const GROCERY_SHELF = IMG("1585421514738-01798e348b17");
+const SOFT_DRINKS = IMG("1607619056574-7b8d3ee536b2");
+const DAIRY_EGGS = IMG("1560343090-f0409e92791a");
+const HOUSEHOLD_CLEANING = IMG("1590212151175-e58edd96185b");
+
+const MEDICINES = IMG("1587293852726-70cdb56c2866");
+const PERSONAL_CARE = IMG("1583258292688-d0213dc5a3a8");
+const BABY_CARE = IMG("1512909006721-3d6018887383");
+const SUPPLEMENTS = IMG("1567620905732-2d1ec7ab7445");
+
+const SHEET_GOODS = IMG("1600585154340-be6161a56a0c");
+const PLANED_TIMBER = IMG("1583947215259-38e31be8751f");
+const MOULDINGS = IMG("1584308666744-24d5c474f2ae");
+const FIXINGS = IMG("1600891964092-4316c288032e");
+const HINGES = IMG("1530124566582-a618bc2615dc");
+const HANDLES = IMG("1556228453-efd6c1ff04f6");
+
+/**
+ * Restaurant modifier groups, shared by reference across the grills.
+ *
+ * These exist so the demo exercises the modifier path at all: the POS
+ * take-order screen branches on `p.modifierGroups.length` and opens a
+ * selection sheet, and until now every demo product had zero groups, so that
+ * sheet could not be reached from any seeded tenant.
+ *
+ * The rules must satisfy upsertModifierGroup's validation — min <= max, and
+ * `required` implies min >= 1 — or seeding throws.
+ */
+const SPICE_LEVEL: SeedModifierGroup = {
+  nameEn: "Spice level", nameAr: "درجة الحرارة", required: true, minSelections: 1, maxSelections: 1,
+  options: [
+    { nameEn: "Mild", nameAr: "خفيف", isDefault: true },
+    { nameEn: "Medium", nameAr: "وسط" },
+    { nameEn: "Hot", nameAr: "حار" },
+  ],
+};
+
+const GRILL_SIDES: SeedModifierGroup = {
+  nameEn: "Choose a side", nameAr: "اختر طبقًا جانبيًا", required: false, minSelections: 0, maxSelections: 1,
+  options: [
+    { nameEn: "Rice with vermicelli", nameAr: "أرز بالشعيرية", isDefault: true },
+    { nameEn: "Freekeh", nameAr: "فريكة", priceDelta: "10" },
+    { nameEn: "Grilled vegetables", nameAr: "خضار مشوية", priceDelta: "15" },
+  ],
+};
+
+const GRILL_EXTRAS: SeedModifierGroup = {
+  nameEn: "Extras", nameAr: "إضافات", required: false, minSelections: 0, maxSelections: 3,
+  options: [
+    { nameEn: "Extra tahina", nameAr: "طحينة إضافية", priceDelta: "10" },
+    { nameEn: "Extra baladi bread", nameAr: "عيش بلدي إضافي", priceDelta: "5" },
+    { nameEn: "Grilled onions", nameAr: "بصل مشوي", priceDelta: "10" },
+  ],
+};
+
 type Trade = "restaurant" | "retail" | "pharmacy" | "timber";
 
 type SeedVariant = { nameEn: string; nameAr: string; price: string; stock: number | null };
+
+/**
+ * Restaurant-only. `modifiers` capability is true for restaurant and false for
+ * every other vertical (src/server/verticals/registry.ts), and
+ * upsertModifierGroup enforces that — so attaching one to a retail product
+ * throws rather than silently no-oping.
+ */
+type SeedModifierGroup = {
+  nameEn: string;
+  nameAr: string;
+  required: boolean;
+  minSelections: number;
+  maxSelections: number;
+  options: { nameEn: string; nameAr: string; priceDelta?: string; isDefault?: boolean }[];
+};
+
 type SeedProduct = {
   nameEn: string;
   nameAr: string;
-  descEn?: string;
+  /** Both descriptions are REQUIRED, not optional. They used to be optional and
+   *  only 20 of 89 products carried one, so most product sheets rendered with a
+   *  name and a price and nothing else. Making them mandatory means the
+   *  compiler, not a reviewer, catches the next product added without copy. */
+  descEn: string;
+  descAr: string;
   price: string;
   img: string;
   featured?: boolean;
@@ -35,7 +138,10 @@ type SeedProduct = {
   requiresPrescription?: boolean;
   /** P4 dimensional pricing (timber): basePrice above is reinterpreted as price-per-unit-of-measure. */
   uom?: "m" | "m2";
+  /** Retail, pharmacy and timber — the verticals whose `variants` capability is true. */
   variants?: SeedVariant[];
+  /** Restaurant only, see SeedModifierGroup. */
+  modifiers?: SeedModifierGroup[];
 };
 type SeedCategory = { nameEn: string; nameAr: string; img: string; products: SeedProduct[] };
 
@@ -78,31 +184,110 @@ const RESTAURANT: TenantSeedConfig = {
     { nameEn: "Mohandessin", nameAr: "المهندسين", fee: "30", minOrder: "100", eta: 40 },
   ],
   catalog: [
-    { nameEn: "Grills", nameAr: "مشويات", img: IMG("1544025162-d76694265947"), products: [
-      { nameEn: "Grilled Chicken Half", nameAr: "نصف فرخة مشوية", descEn: "Charcoal-grilled, lemon-garlic marinade.", price: "120", img: IMG("1544025162-d76694265947"), featured: true },
-      { nameEn: "Kofta Skewer", nameAr: "كفتة مشوية", descEn: "Hand-minced beef, parsley, onion, grilled over charcoal.", price: "110", img: IMG("1544025162-d76694265947"), featured: true },
-      { nameEn: "Lamb Chops", nameAr: "ريش ضاني", descEn: "Marinated lamb chops, grilled to order.", price: "220", img: IMG("1544025162-d76694265947") },
-      { nameEn: "Mixed Grill Platter", nameAr: "مشويات مشكلة", descEn: "Kofta, kebab, chicken — a table for two.", price: "260", img: IMG("1544025162-d76694265947") },
+    { nameEn: "Grills", nameAr: "مشويات", img: GRILL_PLATTER, products: [
+      { nameEn: "Grilled Chicken Half", nameAr: "نصف فرخة مشوية",
+        descEn: "Charcoal-grilled over open flame, lemon-garlic marinade, served with tahina and baladi bread.",
+        descAr: "مشوية على الفحم، متبّلة بالليمون والثوم، وتُقدَّم مع الطحينة والعيش البلدي.",
+        price: "120", img: GRILL_PLATTER, featured: true,
+        modifiers: [SPICE_LEVEL, GRILL_SIDES, GRILL_EXTRAS] },
+      { nameEn: "Kofta Skewer", nameAr: "كفتة مشوية",
+        descEn: "Hand-minced beef with parsley and onion, pressed onto skewers and grilled over charcoal.",
+        descAr: "لحم بقري مفروم يدويًا بالبقدونس والبصل، يُشكَّل على أسياخ ويُشوى على الفحم.",
+        price: "110", img: GRILL_PLATTER, featured: true,
+        modifiers: [SPICE_LEVEL, GRILL_SIDES, GRILL_EXTRAS] },
+      { nameEn: "Lamb Chops", nameAr: "ريش ضاني",
+        descEn: "Four marinated lamb chops, grilled to order and finished with sea salt.",
+        descAr: "أربع قطع ريش ضاني متبّلة، تُشوى عند الطلب وتُرش بملح البحر.",
+        price: "220", img: GRILL_PLATTER,
+        modifiers: [SPICE_LEVEL, GRILL_SIDES] },
+      { nameEn: "Mixed Grill Platter", nameAr: "مشويات مشكلة",
+        descEn: "Kofta, shish tawook and lamb kebab on one board — enough for two.",
+        descAr: "كفتة وشيش طاووق وكباب ضاني على صينية واحدة — تكفي شخصين.",
+        price: "260", img: GRILL_PLATTER,
+        modifiers: [SPICE_LEVEL, GRILL_SIDES, GRILL_EXTRAS] },
+      // Eight grills, not four: the POS take-order grid is four tiles wide, so
+      // a four-item category renders as one row with a third of the till left
+      // as bare panel — and that screenshot is what the marketing tour shows.
+      // A demo catalog thin enough to look empty makes the product look empty.
+      { nameEn: "Shish Tawook", nameAr: "شيش طاووق",
+        descEn: "Chicken breast marinated overnight in yoghurt, garlic and lemon, then skewered.",
+        descAr: "صدور دجاج منقوعة ليلة كاملة في الزبادي والثوم والليمون، ثم تُشوى على أسياخ.",
+        price: "95", img: GRILL_PLATTER,
+        modifiers: [SPICE_LEVEL, GRILL_SIDES, GRILL_EXTRAS] },
+      { nameEn: "Kebab Halabi", nameAr: "كباب حلبي",
+        descEn: "Minced lamb with Aleppo pepper and pine nuts, chargrilled on flat skewers.",
+        descAr: "لحم ضاني مفروم بالفلفل الحلبي والصنوبر، مشوي على أسياخ عريضة.",
+        price: "200", img: GRILL_PLATTER,
+        modifiers: [SPICE_LEVEL, GRILL_SIDES] },
+      { nameEn: "Grilled Quail", nameAr: "سمان مشوي",
+        descEn: "Two whole quail, butterflied and grilled with cumin and lemon.",
+        descAr: "سمانتان مفتوحتان ومشويتان بالكمون والليمون.",
+        price: "180", img: GRILL_PLATTER,
+        modifiers: [SPICE_LEVEL, GRILL_SIDES] },
+      { nameEn: "Chicken Wings", nameAr: "أجنحة دجاج",
+        descEn: "Six wings in garlic and lemon, grilled crisp at the edges.",
+        descAr: "ستة أجنحة بالثوم والليمون، مشوية حتى تصبح مقرمشة الأطراف.",
+        price: "85", img: GRILL_PLATTER,
+        modifiers: [SPICE_LEVEL, GRILL_EXTRAS] },
     ] },
-    { nameEn: "Mezze & Salads", nameAr: "مقبلات وسلطات", img: IMG("1512621776951-a57141f2eefd"), products: [
-      { nameEn: "Hummus", nameAr: "حمص", descEn: "Chickpea, tahini, lemon, olive oil.", price: "45", img: IMG("1512621776951-a57141f2eefd"), featured: true },
-      { nameEn: "Baba Ghanoush", nameAr: "بابا غنوج", descEn: "Smoked eggplant, tahini, garlic.", price: "45", img: IMG("1512621776951-a57141f2eefd") },
-      { nameEn: "Fattoush Salad", nameAr: "سلطة فتوش", descEn: "Crisp vegetables, toasted bread, sumac dressing.", price: "55", img: IMG("1512621776951-a57141f2eefd") },
-      { nameEn: "Baladi Salad", nameAr: "سلطة بلدي", descEn: "Tomato, cucumber, onion, parsley.", price: "35", img: IMG("1512621776951-a57141f2eefd") },
+    { nameEn: "Mezze & Salads", nameAr: "مقبلات وسلطات", img: MEZZE_SPREAD, products: [
+      { nameEn: "Hummus", nameAr: "حمص",
+        descEn: "Chickpeas blended with tahina and lemon, finished with olive oil and cumin.",
+        descAr: "حمص مخلوط بالطحينة والليمون، مع زيت زيتون وكمون.",
+        price: "45", img: MEZZE_SPREAD, featured: true },
+      { nameEn: "Baba Ghanoush", nameAr: "بابا غنوج",
+        descEn: "Eggplant smoked over flame, mashed with tahina, garlic and lemon.",
+        descAr: "باذنجان مدخّن على النار، مهروس بالطحينة والثوم والليمون.",
+        price: "45", img: MEZZE_SPREAD },
+      { nameEn: "Fattoush Salad", nameAr: "سلطة فتوش",
+        descEn: "Crisp vegetables and toasted bread in a sumac and pomegranate dressing.",
+        descAr: "خضار طازجة وخبز محمّص مع صلصة السماق ودبس الرمان.",
+        price: "55", img: MEZZE_SPREAD },
+      { nameEn: "Baladi Salad", nameAr: "سلطة بلدي",
+        descEn: "Tomato, cucumber, onion and parsley, chopped fine and dressed simply.",
+        descAr: "طماطم وخيار وبصل وبقدونس، مفرومة ناعمة بتتبيلة بسيطة.",
+        price: "35", img: MEZZE_SPREAD },
     ] },
-    { nameEn: "Rice & Sides", nameAr: "أرز وأطباق جانبية", img: IMG("1587854692152-cbe660dbde88"), products: [
-      { nameEn: "Rice with Vermicelli", nameAr: "أرز بالشعيرية", price: "30", img: IMG("1587854692152-cbe660dbde88") },
-      { nameEn: "Freekeh", nameAr: "فريكة", price: "40", img: IMG("1587854692152-cbe660dbde88") },
-      { nameEn: "Grilled Vegetables", nameAr: "خضار مشكلة مشوية", price: "45", img: IMG("1587854692152-cbe660dbde88") },
+    { nameEn: "Rice & Sides", nameAr: "أرز وأطباق جانبية", img: RICE_SIDES, products: [
+      { nameEn: "Rice with Vermicelli", nameAr: "أرز بالشعيرية",
+        descEn: "Egyptian everyday rice, toasted vermicelli stirred through.",
+        descAr: "أرز مصري يومي مع شعيرية محمّصة.",
+        price: "30", img: RICE_SIDES },
+      { nameEn: "Freekeh", nameAr: "فريكة",
+        descEn: "Green wheat simmered in chicken stock with whole spices.",
+        descAr: "قمح أخضر مطبوخ في مرقة الدجاج مع البهارات الكاملة.",
+        price: "40", img: RICE_SIDES },
+      { nameEn: "Grilled Vegetables", nameAr: "خضار مشكلة مشوية",
+        descEn: "Peppers, courgette, onion and tomato from the same charcoal grill.",
+        descAr: "فلفل وكوسة وبصل وطماطم من نفس شواية الفحم.",
+        price: "45", img: RICE_SIDES },
     ] },
-    { nameEn: "Drinks", nameAr: "مشروبات", img: IMG("1621905251189-08b45d6a269e"), products: [
-      { nameEn: "Hibiscus Tea", nameAr: "كركديه", price: "25", img: IMG("1621905251189-08b45d6a269e") },
-      { nameEn: "Fresh Lemon & Mint", nameAr: "ليمون بالنعناع", price: "30", img: IMG("1621905251189-08b45d6a269e") },
-      { nameEn: "Soft Drink", nameAr: "مياه غازية", price: "20", img: IMG("1621905251189-08b45d6a269e") },
+    { nameEn: "Drinks", nameAr: "مشروبات", img: DRINKS_TRAY, products: [
+      { nameEn: "Hibiscus Tea", nameAr: "كركديه",
+        descEn: "Cold-steeped hibiscus, lightly sweetened. Served chilled.",
+        descAr: "كركديه منقوع على البارد، محلّى قليلًا ويُقدَّم مثلجًا.",
+        price: "25", img: DRINKS_TRAY },
+      { nameEn: "Fresh Lemon & Mint", nameAr: "ليمون بالنعناع",
+        descEn: "Lemons pressed to order and blended with fresh mint.",
+        descAr: "ليمون يُعصر عند الطلب ويُخلط بالنعناع الطازج.",
+        price: "30", img: LEMONADE },
+      { nameEn: "Soft Drink", nameAr: "مياه غازية",
+        descEn: "Chilled canned soft drink — ask for the day's selection.",
+        descAr: "مشروب غازي مثلج — اسأل عن المتوفر اليوم.",
+        price: "20", img: DRINKS_TRAY },
     ] },
-    { nameEn: "Desserts", nameAr: "حلويات", img: IMG("1551024601-bec78aea704b"), products: [
-      { nameEn: "Om Ali", nameAr: "أم علي", descEn: "Baked bread pudding, cream, nuts.", price: "55", img: IMG("1551024601-bec78aea704b"), featured: true },
-      { nameEn: "Kunafa", nameAr: "كنافة", price: "60", img: IMG("1551024601-bec78aea704b") },
+    { nameEn: "Desserts", nameAr: "حلويات", img: DESSERTS, products: [
+      { nameEn: "Om Ali", nameAr: "أم علي",
+        descEn: "Baked pastry pudding with milk, cream and toasted nuts. Served hot.",
+        descAr: "حلوى مخبوزة باللبن والقشطة والمكسرات المحمّصة، تُقدَّم ساخنة.",
+        price: "55", img: DESSERTS, featured: true },
+      { nameEn: "Kunafa", nameAr: "كنافة",
+        descEn: "Shredded pastry over sweet cheese, baked and soaked in syrup.",
+        descAr: "كنافة ناعمة فوق جبن حلو، تُخبز وتُسقى بالشربات.",
+        // Shares Om Ali's photo deliberately. The verified pool's other dessert
+        // shots are Italian (panna cotta, cannoli, tiramisù) and putting one of
+        // those on kunafa would be a worse lie than a repeated photo.
+        price: "60", img: DESSERTS },
     ] },
   ],
   orderableNames: ["Grilled Chicken Half", "Kofta Skewer", "Hummus", "Rice with Vermicelli", "Om Ali"],
@@ -125,35 +310,96 @@ const RETAIL: TenantSeedConfig = {
     { nameEn: "Heliopolis", nameAr: "مصر الجديدة", fee: "15", minOrder: "50", eta: 25 },
   ],
   catalog: [
-    { nameEn: "Snacks", nameAr: "سناكس", img: IMG("1584949091598-c31daaaa4aa9"), products: [
-      { nameEn: "Potato Chips Family Pack", nameAr: "شيبسي عبوة كبيرة", price: "45", img: IMG("1584949091598-c31daaaa4aa9"), featured: true },
-      { nameEn: "Chocolate Bar", nameAr: "شيكولاتة", price: "25", img: IMG("1584949091598-c31daaaa4aa9") },
-      { nameEn: "Biscuits Pack", nameAr: "بسكويت", price: "20", img: IMG("1584949091598-c31daaaa4aa9") },
-      { nameEn: "Salted Peanuts", nameAr: "فول سوداني مملح", price: "30", img: IMG("1584949091598-c31daaaa4aa9"), trackStock: true, stockQuantity: 0 },
+    // NOTE: this aisle used to point every product at a photo of a computer
+    // screen. See the photography block at the top of this file.
+    { nameEn: "Snacks", nameAr: "سناكس", img: GROCERY_SHELF, products: [
+      { nameEn: "Potato Chips Family Pack", nameAr: "شيبسي عبوة كبيرة",
+        descEn: "Sharing bag, 165g. Salted or chilli — pick below.",
+        descAr: "كيس عائلي ١٦٥ جم. مملح أو شطة — اختر من الأسفل.",
+        price: "45", img: GROCERY_SHELF, featured: true,
+        variants: [
+          { nameEn: "Salted", nameAr: "مملح", price: "45", stock: 60 },
+          { nameEn: "Chilli", nameAr: "شطة", price: "45", stock: 45 },
+        ] },
+      { nameEn: "Chocolate Bar", nameAr: "شيكولاتة",
+        descEn: "Milk chocolate bar, 80g.",
+        descAr: "لوح شيكولاتة بالحليب، ٨٠ جم.",
+        price: "25", img: GROCERY_SHELF },
+      { nameEn: "Biscuits Pack", nameAr: "بسكويت",
+        descEn: "Tea biscuits, twin-wrapped roll.",
+        descAr: "بسكويت شاي، لفة مزدوجة.",
+        price: "20", img: GROCERY_SHELF },
+      { nameEn: "Salted Peanuts", nameAr: "فول سوداني مملح",
+        descEn: "Roasted and salted, 200g bag.",
+        descAr: "محمّص ومملح، كيس ٢٠٠ جم.",
+        price: "30", img: GROCERY_SHELF, trackStock: true, stockQuantity: 0 },
     ] },
-    { nameEn: "Beverages", nameAr: "مشروبات", img: IMG("1607619056574-7b8d3ee536b2"), products: [
-      { nameEn: "Bottled Water 6-pack", nameAr: "مياه معدنية ٦ عبوات", price: "30", img: IMG("1607619056574-7b8d3ee536b2"), featured: true },
-      { nameEn: "Soft Drink 1.5L", nameAr: "مشروب غازي ١.٥ لتر", price: "25", img: IMG("1607619056574-7b8d3ee536b2") },
-      { nameEn: "Juice Carton", nameAr: "عصير", price: "22", img: IMG("1607619056574-7b8d3ee536b2") },
+    { nameEn: "Beverages", nameAr: "مشروبات", img: SOFT_DRINKS, products: [
+      { nameEn: "Bottled Water 6-pack", nameAr: "مياه معدنية ٦ عبوات",
+        descEn: "Six 1.5L bottles, shrink-wrapped.",
+        descAr: "ست زجاجات ١.٥ لتر بغلاف واحد.",
+        price: "30", img: SOFT_DRINKS, featured: true },
+      { nameEn: "Soft Drink 1.5L", nameAr: "مشروب غازي ١.٥ لتر",
+        descEn: "Large bottle, chilled in store.",
+        descAr: "زجاجة كبيرة، مبرّدة في المحل.",
+        price: "25", img: SOFT_DRINKS,
+        variants: [
+          { nameEn: "Cola", nameAr: "كولا", price: "25", stock: 50 },
+          { nameEn: "Orange", nameAr: "برتقال", price: "25", stock: 30 },
+          { nameEn: "Lemon", nameAr: "ليمون", price: "25", stock: 20 },
+        ] },
+      { nameEn: "Juice Carton", nameAr: "عصير",
+        descEn: "One litre, no added sugar.",
+        descAr: "لتر واحد، بدون سكر مضاف.",
+        price: "22", img: SOFT_DRINKS,
+        variants: [
+          { nameEn: "Mango", nameAr: "مانجو", price: "22", stock: 24 },
+          { nameEn: "Guava", nameAr: "جوافة", price: "22", stock: 18 },
+        ] },
     ] },
-    { nameEn: "Dairy & Eggs", nameAr: "ألبان وبيض", img: IMG("1560343090-f0409e92791a"), products: [
-      { nameEn: "Milk 1L", nameAr: "لبن ١ لتر", price: "35", img: IMG("1560343090-f0409e92791a"),
+    { nameEn: "Dairy & Eggs", nameAr: "ألبان وبيض", img: DAIRY_EGGS, products: [
+      { nameEn: "Milk 1L", nameAr: "لبن ١ لتر",
+        descEn: "Pasteurised, delivered daily. Keep refrigerated.",
+        descAr: "مبستر ويصل يوميًا. يُحفظ في الثلاجة.",
+        price: "35", img: DAIRY_EGGS,
         variants: [
           { nameEn: "Full Fat", nameAr: "كامل الدسم", price: "35", stock: 40 },
           { nameEn: "Low Fat", nameAr: "قليل الدسم", price: "35", stock: 25 },
         ] },
-      { nameEn: "Eggs Tray 30pc", nameAr: "كرتونة بيض ٣٠ بيضة", price: "110", img: IMG("1560343090-f0409e92791a"), featured: true },
-      { nameEn: "White Cheese 500g", nameAr: "جبنة بيضاء ٥٠٠ جم", price: "90", img: IMG("1560343090-f0409e92791a") },
+      { nameEn: "Eggs Tray 30pc", nameAr: "كرتونة بيض ٣٠ بيضة",
+        descEn: "Thirty eggs, farm-packed this week.",
+        descAr: "ثلاثون بيضة، معبّأة من المزرعة هذا الأسبوع.",
+        price: "110", img: DAIRY_EGGS, featured: true },
+      { nameEn: "White Cheese 500g", nameAr: "جبنة بيضاء ٥٠٠ جم",
+        descEn: "Brined white cheese, sold by the tub.",
+        descAr: "جبنة بيضاء في محلول ملحي، تُباع بالعبوة.",
+        price: "90", img: DAIRY_EGGS,
+        variants: [
+          { nameEn: "Low salt", nameAr: "قليلة الملح", price: "90", stock: 15 },
+          { nameEn: "Full salt", nameAr: "كاملة الملح", price: "90", stock: 22 },
+        ] },
     ] },
-    { nameEn: "Household", nameAr: "منزلية", img: IMG("1590212151175-e58edd96185b"), products: [
-      { nameEn: "Dish Soap", nameAr: "سائل غسيل الأطباق", price: "40", img: IMG("1590212151175-e58edd96185b") },
-      { nameEn: "Tissue Box", nameAr: "مناديل ورقية", price: "25", img: IMG("1590212151175-e58edd96185b") },
-      { nameEn: "Laundry Detergent", nameAr: "مسحوق غسيل", price: "150", img: IMG("1590212151175-e58edd96185b"),
+    { nameEn: "Household", nameAr: "منزلية", img: HOUSEHOLD_CLEANING, products: [
+      { nameEn: "Dish Soap", nameAr: "سائل غسيل الأطباق",
+        descEn: "Concentrated, 750ml bottle.",
+        descAr: "مركّز، زجاجة ٧٥٠ مل.",
+        price: "40", img: HOUSEHOLD_CLEANING },
+      { nameEn: "Tissue Box", nameAr: "مناديل ورقية",
+        descEn: "Two-ply facial tissues, 150 sheets.",
+        descAr: "مناديل وجه بطبقتين، ١٥٠ منديلًا.",
+        price: "25", img: HOUSEHOLD_CLEANING },
+      { nameEn: "Laundry Detergent", nameAr: "مسحوق غسيل",
+        descEn: "Automatic washing powder. Price shown is for the 3kg box.",
+        descAr: "مسحوق غسيل أوتوماتيك. السعر المعروض لعبوة ٣ كجم.",
+        price: "150", img: HOUSEHOLD_CLEANING,
         variants: [
           { nameEn: "1kg", nameAr: "١ كجم", price: "60", stock: 30 },
           { nameEn: "3kg", nameAr: "٣ كجم", price: "150", stock: 10 },
         ] },
-      { nameEn: "Toothpaste", nameAr: "معجون أسنان", price: "35", img: IMG("1590212151175-e58edd96185b") },
+      { nameEn: "Toothpaste", nameAr: "معجون أسنان",
+        descEn: "Fluoride toothpaste, 100ml tube.",
+        descAr: "معجون أسنان بالفلورايد، أنبوبة ١٠٠ مل.",
+        price: "35", img: HOUSEHOLD_CLEANING },
     ] },
   ],
   orderableNames: ["Chocolate Bar", "Biscuits Pack", "Bottled Water 6-pack", "Juice Carton", "Tissue Box", "Toothpaste"],
@@ -176,28 +422,94 @@ const PHARMACY: TenantSeedConfig = {
     { nameEn: "Nasr City", nameAr: "مدينة نصر", fee: "15", minOrder: "60", eta: 25 },
   ],
   catalog: [
-    { nameEn: "Medicines", nameAr: "أدوية", img: IMG("1587293852726-70cdb56c2866"), products: [
-      { nameEn: "Panadol Extra 24 Tabs", nameAr: "بانادول إكسترا ٢٤ قرص", price: "25", img: IMG("1587293852726-70cdb56c2866"), featured: true },
-      { nameEn: "Augmentin 1g", nameAr: "أوجمنتين ١ جرام", price: "85", img: IMG("1587293852726-70cdb56c2866"), requiresPrescription: true },
-      { nameEn: "Vitamin C 1000mg", nameAr: "فيتامين سي ١٠٠٠ مجم", price: "60", img: IMG("1587293852726-70cdb56c2866") },
-      { nameEn: "Antacid Syrup", nameAr: "شراب مضاد للحموضة", price: "35", img: IMG("1587293852726-70cdb56c2866") },
-      { nameEn: "Cough Syrup", nameAr: "شراب للسعال", price: "40", img: IMG("1587293852726-70cdb56c2866") },
+    { nameEn: "Medicines", nameAr: "أدوية", img: MEDICINES, products: [
+      { nameEn: "Panadol Extra 24 Tabs", nameAr: "بانادول إكسترا ٢٤ قرص",
+        descEn: "Paracetamol 500mg with caffeine. For headache and period pain. Read the leaflet before use.",
+        descAr: "باراسيتامول ٥٠٠ مجم مع كافيين. لصداع وآلام الدورة. اقرأ النشرة قبل الاستخدام.",
+        price: "25", img: MEDICINES, featured: true,
+        variants: [
+          { nameEn: "24 tablets", nameAr: "٢٤ قرص", price: "25", stock: 60 },
+          { nameEn: "48 tablets", nameAr: "٤٨ قرص", price: "45", stock: 25 },
+        ] },
+      { nameEn: "Augmentin 1g", nameAr: "أوجمنتين ١ جرام",
+        descEn: "Amoxicillin and clavulanic acid. Prescription required — upload it at checkout and our pharmacist will review.",
+        descAr: "أموكسيسيلين وحمض كلافولانيك. يتطلب روشتة — ارفعها عند إتمام الطلب ليراجعها الصيدلي.",
+        price: "85", img: MEDICINES, requiresPrescription: true },
+      { nameEn: "Vitamin C 1000mg", nameAr: "فيتامين سي ١٠٠٠ مجم",
+        descEn: "Effervescent tablets, orange flavour. One daily in water.",
+        descAr: "أقراص فوارة بنكهة البرتقال. قرص واحد يوميًا في الماء.",
+        price: "60", img: MEDICINES,
+        variants: [
+          { nameEn: "10 tablets", nameAr: "١٠ أقراص", price: "60", stock: 40 },
+          { nameEn: "20 tablets", nameAr: "٢٠ قرص", price: "105", stock: 18 },
+        ] },
+      { nameEn: "Antacid Syrup", nameAr: "شراب مضاد للحموضة",
+        descEn: "Relieves heartburn and indigestion. 120ml bottle with dosing cup.",
+        descAr: "يخفف الحموضة وعسر الهضم. زجاجة ١٢٠ مل مع كوب القياس.",
+        price: "35", img: MEDICINES },
+      { nameEn: "Cough Syrup", nameAr: "شراب للسعال",
+        descEn: "Soothes dry cough. Not for children under six.",
+        descAr: "يهدئ الكحة الجافة. غير مناسب للأطفال أقل من ست سنوات.",
+        price: "40", img: MEDICINES },
     ] },
-    { nameEn: "Personal Care", nameAr: "العناية الشخصية", img: IMG("1583258292688-d0213dc5a3a8"), products: [
-      { nameEn: "Hand Sanitizer 500ml", nameAr: "معقم يدين ٥٠٠ مل", price: "45", img: IMG("1583258292688-d0213dc5a3a8"), featured: true },
-      { nameEn: "Sunscreen SPF50", nameAr: "واقي شمس ٥٠", price: "180", img: IMG("1583258292688-d0213dc5a3a8") },
-      { nameEn: "Anti-Dandruff Shampoo", nameAr: "شامبو ضد القشرة", price: "95", img: IMG("1583258292688-d0213dc5a3a8") },
-      { nameEn: "Sensitive Toothpaste", nameAr: "معجون أسنان للأسنان الحساسة", price: "55", img: IMG("1583258292688-d0213dc5a3a8") },
+    { nameEn: "Personal Care", nameAr: "العناية الشخصية", img: PERSONAL_CARE, products: [
+      { nameEn: "Hand Sanitizer 500ml", nameAr: "معقم يدين ٥٠٠ مل",
+        descEn: "70% alcohol gel with pump top.",
+        descAr: "جل بنسبة كحول ٧٠٪ مع مضخة.",
+        price: "45", img: PERSONAL_CARE, featured: true },
+      { nameEn: "Sunscreen SPF50", nameAr: "واقي شمس ٥٠",
+        descEn: "Broad-spectrum, water-resistant. Reapply every two hours.",
+        descAr: "حماية واسعة المدى ومقاوم للماء. يُعاد وضعه كل ساعتين.",
+        price: "180", img: PERSONAL_CARE },
+      { nameEn: "Anti-Dandruff Shampoo", nameAr: "شامبو ضد القشرة",
+        descEn: "Ketoconazole shampoo. Twice weekly for four weeks.",
+        descAr: "شامبو بالكيتوكونازول. مرتين أسبوعيًا لمدة أربعة أسابيع.",
+        price: "95", img: PERSONAL_CARE,
+        variants: [
+          { nameEn: "200ml", nameAr: "٢٠٠ مل", price: "95", stock: 20 },
+          { nameEn: "400ml", nameAr: "٤٠٠ مل", price: "165", stock: 12 },
+        ] },
+      { nameEn: "Sensitive Toothpaste", nameAr: "معجون أسنان للأسنان الحساسة",
+        descEn: "For sensitive teeth. Use twice daily.",
+        descAr: "للأسنان الحساسة. يُستخدم مرتين يوميًا.",
+        price: "55", img: PERSONAL_CARE },
     ] },
-    { nameEn: "Baby Care", nameAr: "عناية الطفل", img: IMG("1512909006721-3d6018887383"), products: [
-      { nameEn: "Diapers Size 4", nameAr: "حفاضات مقاس ٤", price: "210", img: IMG("1512909006721-3d6018887383"), featured: true },
-      { nameEn: "Baby Formula 400g", nameAr: "حليب أطفال ٤٠٠ جم", price: "260", img: IMG("1512909006721-3d6018887383") },
-      { nameEn: "Baby Wipes", nameAr: "مناديل مبللة للأطفال", price: "45", img: IMG("1512909006721-3d6018887383") },
-      { nameEn: "Baby Lotion", nameAr: "لوشن للأطفال", price: "70", img: IMG("1512909006721-3d6018887383") },
+    { nameEn: "Baby Care", nameAr: "عناية الطفل", img: BABY_CARE, products: [
+      { nameEn: "Diapers Size 4", nameAr: "حفاضات مقاس ٤",
+        descEn: "For 9–14kg. Mega box of 68.",
+        descAr: "لوزن ٩–١٤ كجم. عبوة كبيرة ٦٨ حفاضة.",
+        price: "210", img: BABY_CARE, featured: true,
+        variants: [
+          { nameEn: "Size 3 (6–10kg)", nameAr: "مقاس ٣ (٦–١٠ كجم)", price: "195", stock: 14 },
+          { nameEn: "Size 4 (9–14kg)", nameAr: "مقاس ٤ (٩–١٤ كجم)", price: "210", stock: 20 },
+          { nameEn: "Size 5 (11–25kg)", nameAr: "مقاس ٥ (١١–٢٥ كجم)", price: "225", stock: 9 },
+        ] },
+      { nameEn: "Baby Formula 400g", nameAr: "حليب أطفال ٤٠٠ جم",
+        descEn: "Stage 1, from birth to six months. Follow the tin's preparation instructions.",
+        descAr: "المرحلة الأولى، من الولادة حتى ستة أشهر. اتبع تعليمات التحضير على العبوة.",
+        price: "260", img: BABY_CARE },
+      { nameEn: "Baby Wipes", nameAr: "مناديل مبللة للأطفال",
+        descEn: "Fragrance-free, 72 wipes with a resealable lid.",
+        descAr: "بدون عطر، ٧٢ منديلًا بغطاء قابل لإعادة الإغلاق.",
+        price: "45", img: BABY_CARE },
+      { nameEn: "Baby Lotion", nameAr: "لوشن للأطفال",
+        descEn: "Light moisturiser for daily use after bathing.",
+        descAr: "مرطب خفيف للاستخدام اليومي بعد الاستحمام.",
+        price: "70", img: BABY_CARE },
     ] },
-    { nameEn: "Vitamins & Supplements", nameAr: "فيتامينات ومكملات", img: IMG("1567620905732-2d1ec7ab7445"), products: [
-      { nameEn: "Multivitamin Adult", nameAr: "فيتامينات متعددة للبالغين", price: "150", img: IMG("1567620905732-2d1ec7ab7445") },
-      { nameEn: "Omega-3 Capsules", nameAr: "أوميجا ٣", price: "220", img: IMG("1567620905732-2d1ec7ab7445"), trackStock: true, stockQuantity: 0 },
+    { nameEn: "Vitamins & Supplements", nameAr: "فيتامينات ومكملات", img: SUPPLEMENTS, products: [
+      { nameEn: "Multivitamin Adult", nameAr: "فيتامينات متعددة للبالغين",
+        descEn: "One-a-day tablets, 30-day pack.",
+        descAr: "قرص واحد يوميًا، عبوة تكفي ٣٠ يومًا.",
+        price: "150", img: SUPPLEMENTS,
+        variants: [
+          { nameEn: "30 tablets", nameAr: "٣٠ قرص", price: "150", stock: 25 },
+          { nameEn: "60 tablets", nameAr: "٦٠ قرص", price: "270", stock: 10 },
+        ] },
+      { nameEn: "Omega-3 Capsules", nameAr: "أوميجا ٣",
+        descEn: "Fish oil, 1000mg per capsule. Take with food.",
+        descAr: "زيت سمك، ١٠٠٠ مجم لكل كبسولة. يُؤخذ مع الطعام.",
+        price: "220", img: SUPPLEMENTS, trackStock: true, stockQuantity: 0 },
     ] },
   ],
   orderableNames: ["Panadol Extra 24 Tabs", "Vitamin C 1000mg", "Hand Sanitizer 500ml", "Baby Wipes", "Multivitamin Adult"],
@@ -220,27 +532,98 @@ const TIMBER: TenantSeedConfig = {
     { nameEn: "Sheikh Zayed", nameAr: "الشيخ زايد", fee: "50", minOrder: "300", eta: 90 },
   ],
   catalog: [
-    { nameEn: "Sheet Goods", nameAr: "الألواح", img: IMG("1600585154340-be6161a56a0c"), products: [
-      { nameEn: "MDF Board 18mm", nameAr: "لوح MDF ١٨ مم", descEn: "Priced per m² — enter length and width at checkout.", price: "220", img: IMG("1600585154340-be6161a56a0c"), featured: true, uom: "m2" },
-      { nameEn: "Plywood 12mm", nameAr: "أبلاكاش ١٢ مم", descEn: "Priced per m² — enter length and width at checkout.", price: "260", img: IMG("1600585154340-be6161a56a0c"), uom: "m2" },
-      { nameEn: "Melamine Board White 16mm", nameAr: "لوح ميلامين أبيض ١٦ مم", descEn: "Priced per m² — enter length and width at checkout.", price: "240", img: IMG("1600585154340-be6161a56a0c"), uom: "m2" },
-      { nameEn: "HDF Board 6mm", nameAr: "لوح HDF ٦ مم", descEn: "Priced per m² — enter length and width at checkout.", price: "140", img: IMG("1600585154340-be6161a56a0c"), uom: "m2" },
+    // Dimensional products carry no variants: their price comes from the cut
+    // dimensions entered at checkout (unitOfMeasure + P4 pricing), so a size
+    // variant would be a second, contradictory source of the same number.
+    { nameEn: "Sheet Goods", nameAr: "الألواح", img: SHEET_GOODS, products: [
+      { nameEn: "MDF Board 18mm", nameAr: "لوح MDF ١٨ مم",
+        descEn: "Priced per m² — enter length and width at checkout and we cut to size. Standard sheet 2440 × 1220mm.",
+        descAr: "السعر بالمتر المربع — أدخل الطول والعرض عند إتمام الطلب ونقصه بالمقاس. اللوح القياسي ٢٤٤٠ × ١٢٢٠ مم.",
+        price: "220", img: SHEET_GOODS, featured: true, uom: "m2" },
+      { nameEn: "Plywood 12mm", nameAr: "أبلاكاش ١٢ مم",
+        descEn: "Priced per m² — enter length and width at checkout. Marine-grade glue line.",
+        descAr: "السعر بالمتر المربع — أدخل الطول والعرض عند إتمام الطلب. لاصق مقاوم للرطوبة.",
+        price: "260", img: SHEET_GOODS, uom: "m2" },
+      { nameEn: "Melamine Board White 16mm", nameAr: "لوح ميلامين أبيض ١٦ مم",
+        descEn: "Priced per m² — enter length and width at checkout. Faced both sides, no edging included.",
+        descAr: "السعر بالمتر المربع — أدخل الطول والعرض عند إتمام الطلب. مغطى من الوجهين، بدون شريط حواف.",
+        price: "240", img: SHEET_GOODS, uom: "m2" },
+      { nameEn: "HDF Board 6mm", nameAr: "لوح HDF ٦ مم",
+        descEn: "Priced per m² — enter length and width at checkout. Suits cabinet backs and drawer bases.",
+        descAr: "السعر بالمتر المربع — أدخل الطول والعرض عند إتمام الطلب. مناسب لظهور الدواليب وقيعان الأدراج.",
+        price: "140", img: SHEET_GOODS, uom: "m2" },
     ] },
-    { nameEn: "Planed Timber", nameAr: "الأخشاب المنجورة", img: IMG("1583947215259-38e31be8751f"), products: [
-      { nameEn: "Pine Timber 2x4\"", nameAr: "خشب صنوبر ٢×٤ بوصة", descEn: "Priced per linear metre — enter length at checkout.", price: "45", img: IMG("1583947215259-38e31be8751f"), featured: true, uom: "m" },
-      { nameEn: "Meranti Timber 1x6\"", nameAr: "خشب ميرانتي ١×٦ بوصة", descEn: "Priced per linear metre — enter length at checkout.", price: "65", img: IMG("1583947215259-38e31be8751f"), uom: "m" },
-      { nameEn: "Beech Timber 1x2\"", nameAr: "خشب زان ١×٢ بوصة", descEn: "Priced per linear metre — enter length at checkout.", price: "38", img: IMG("1583947215259-38e31be8751f"), uom: "m" },
+    { nameEn: "Planed Timber", nameAr: "الأخشاب المنجورة", img: PLANED_TIMBER, products: [
+      { nameEn: "Pine Timber 2x4\"", nameAr: "خشب صنوبر ٢×٤ بوصة",
+        descEn: "Priced per linear metre — enter length at checkout. Kiln-dried, planed all round.",
+        descAr: "السعر بالمتر الطولي — أدخل الطول عند إتمام الطلب. مجفف بالفرن ومنجور من كل الجوانب.",
+        price: "45", img: PLANED_TIMBER, featured: true, uom: "m" },
+      { nameEn: "Meranti Timber 1x6\"", nameAr: "خشب ميرانتي ١×٦ بوصة",
+        descEn: "Priced per linear metre — enter length at checkout. Stable hardwood for doors and frames.",
+        descAr: "السعر بالمتر الطولي — أدخل الطول عند إتمام الطلب. خشب صلب ثابت للأبواب والحلوق.",
+        price: "65", img: PLANED_TIMBER, uom: "m" },
+      { nameEn: "Beech Timber 1x2\"", nameAr: "خشب زان ١×٢ بوصة",
+        descEn: "Priced per linear metre — enter length at checkout. Close grain, takes a clean finish.",
+        descAr: "السعر بالمتر الطولي — أدخل الطول عند إتمام الطلب. حبيبات ناعمة وتشطيب نظيف.",
+        price: "38", img: PLANED_TIMBER, uom: "m" },
     ] },
-    { nameEn: "Mouldings", nameAr: "الكرانيش والبراويز", img: IMG("1584308666744-24d5c474f2ae"), products: [
-      { nameEn: "Skirting Board 2.4m", nameAr: "كرنيش أرضي ٢.٤ م", price: "55", img: IMG("1584308666744-24d5c474f2ae"), featured: true },
-      { nameEn: "Cove Moulding", nameAr: "كرنيش سقف", price: "48", img: IMG("1584308666744-24d5c474f2ae") },
-      { nameEn: "Door Architrave", nameAr: "برواز باب", price: "40", img: IMG("1584308666744-24d5c474f2ae") },
+    { nameEn: "Mouldings", nameAr: "الكرانيش والبراويز", img: MOULDINGS, products: [
+      { nameEn: "Skirting Board 2.4m", nameAr: "كرنيش أرضي ٢.٤ م",
+        descEn: "Sold per 2.4m length, primed ready for paint.",
+        descAr: "يُباع بطول ٢.٤ م، مؤسَّس وجاهز للدهان.",
+        price: "55", img: MOULDINGS, featured: true,
+        variants: [
+          { nameEn: "Primed white", nameAr: "مؤسَّس أبيض", price: "55", stock: 80 },
+          { nameEn: "Raw pine", nameAr: "صنوبر خام", price: "48", stock: 40 },
+        ] },
+      { nameEn: "Cove Moulding", nameAr: "كرنيش سقف",
+        descEn: "Ceiling cove, 2.4m length.",
+        descAr: "كرنيش سقف بطول ٢.٤ م.",
+        price: "48", img: MOULDINGS },
+      { nameEn: "Door Architrave", nameAr: "برواز باب",
+        descEn: "Single door set, mitred on site.",
+        descAr: "طقم باب واحد، يُقص بزاوية في الموقع.",
+        price: "40", img: MOULDINGS },
     ] },
-    { nameEn: "Fixings", nameAr: "المستلزمات", img: IMG("1600891964092-4316c288032e"), products: [
-      { nameEn: "Wood Screws Box 500pc", nameAr: "صندوق براغي خشب ٥٠٠ حبة", price: "180", img: IMG("1600891964092-4316c288032e") },
-      { nameEn: "Wood Glue 1L", nameAr: "غراء خشب ١ لتر", price: "90", img: IMG("1600891964092-4316c288032e") },
-      { nameEn: "Hinges Pack", nameAr: "مجموعة مفصلات", price: "65", img: IMG("1600891964092-4316c288032e") },
-      { nameEn: "Sandpaper Pack", nameAr: "ورق صنفرة", price: "35", img: IMG("1600891964092-4316c288032e"), trackStock: true, stockQuantity: 0 },
+    { nameEn: "Fixings", nameAr: "المستلزمات", img: FIXINGS, products: [
+      { nameEn: "Wood Screws Box 500pc", nameAr: "صندوق براغي خشب ٥٠٠ حبة",
+        descEn: "Countersunk chipboard screws, 500 per box.",
+        descAr: "براغي خشب برأس غاطس، ٥٠٠ حبة في الصندوق.",
+        price: "180", img: FIXINGS,
+        variants: [
+          { nameEn: "4 × 30mm", nameAr: "٤ × ٣٠ مم", price: "180", stock: 30 },
+          { nameEn: "4 × 50mm", nameAr: "٤ × ٥٠ مم", price: "210", stock: 18 },
+        ] },
+      { nameEn: "Wood Glue 1L", nameAr: "غراء خشب ١ لتر",
+        descEn: "PVA wood adhesive, interior use. Clamp for 30 minutes.",
+        descAr: "غراء خشب PVA للاستخدام الداخلي. يُثبَّت بالمشبك ٣٠ دقيقة.",
+        price: "90", img: FIXINGS },
+      { nameEn: "Hinges Pack", nameAr: "مجموعة مفصلات",
+        descEn: "Concealed cabinet hinges with mounting plates, pack of four.",
+        descAr: "مفصلات دواليب مخفية مع قواعد التثبيت، عبوة أربع قطع.",
+        price: "65", img: HINGES },
+      { nameEn: "Sandpaper Pack", nameAr: "ورق صنفرة",
+        descEn: "Assorted grits, ten sheets.",
+        descAr: "خشونات متنوعة، عشر ورقات.",
+        price: "35", img: FIXINGS, trackStock: true, stockQuantity: 0 },
+    ] },
+    { nameEn: "Handles & Hardware", nameAr: "المقابض والإكسسوارات", img: HANDLES, products: [
+      { nameEn: "Cabinet Handle 128mm", nameAr: "مقبض دولاب ١٢٨ مم",
+        descEn: "Brushed aluminium bar handle, 128mm hole centres.",
+        descAr: "مقبض ألومنيوم مصنفر، المسافة بين الفتحات ١٢٨ مم.",
+        price: "45", img: HANDLES, featured: true,
+        variants: [
+          { nameEn: "Brushed", nameAr: "مصنفر", price: "45", stock: 60 },
+          { nameEn: "Matt black", nameAr: "أسود مطفي", price: "52", stock: 35 },
+        ] },
+      { nameEn: "Drawer Runners 450mm", nameAr: "مجاري أدراج ٤٥٠ مم",
+        descEn: "Soft-close ball-bearing runners, pair.",
+        descAr: "مجاري بكرات بإغلاق هادئ، زوج.",
+        price: "120", img: HINGES },
+      { nameEn: "Shelf Supports Pack", nameAr: "حوامل أرفف",
+        descEn: "Push-fit shelf pins, pack of twenty.",
+        descAr: "مسامير حوامل أرفف بالضغط، عبوة عشرين قطعة.",
+        price: "30", img: FIXINGS },
     ] },
   ],
   // Each-priced (non-dimensional) products only — dimensional lines need explicit
@@ -259,7 +642,10 @@ async function seedOneTenant(cfg: TenantSeedConfig, adminId: string) {
   const { updateTenantProfile } = await import("../src/server/tenancy/service");
   const { setVatRate } = await import("../src/server/tenancy/settings");
   const { createBranch, updateBranchOrdering, listBranches, createDeliveryArea, listDeliveryAreas } = await import("../src/server/branches/service");
-  const { listCategories, createCategory, createProduct, updateProduct, listProducts } = await import("../src/server/catalog/service");
+  const {
+    listCategories, createCategory, createProduct, updateProduct, listProducts,
+    upsertModifierGroup, upsertModifierOption,
+  } = await import("../src/server/catalog/service");
   const { products: productsTable, categories: categoriesTable, productVariants: productVariantsTable } = await import("../src/server/catalog/schema");
   const { withTenant } = await import("../src/db/with-tenant");
   const { createBanner, listBanners } = await import("../src/server/banners/service");
@@ -310,7 +696,33 @@ async function seedOneTenant(cfg: TenantSeedConfig, adminId: string) {
   const existingCats = await listCategories(tenantId);
   const existingNames = new Set(existingCats.map((c) => c.nameEn));
   const expectedNames = cfg.catalog.map((c) => c.nameEn);
-  const hasFullCatalog = expectedNames.every((n) => existingNames.has(n));
+
+  // Completeness is judged on CONTENT, not just on names.
+  //
+  // Names alone are not enough: rewriting every description, adding variants
+  // and repointing photography changes no name at all, so a name-keyed check
+  // reports "already seeded" and leaves the old catalog in place. That is not
+  // hypothetical — it silently skipped three of the four tenants on the run
+  // that introduced Arabic descriptions.
+  //
+  // Comparing the fields the seed actually owns makes re-running the script
+  // the way to apply an edit, which is what anyone editing this file expects.
+  const existingProducts = new Map((await listProducts(tenantId)).map((p) => [p.nameEn, p]));
+  const expectedProducts = cfg.catalog.flatMap((c) => c.products);
+  const drifted = expectedProducts.filter((p) => {
+    const row = existingProducts.get(p.nameEn);
+    if (!row) return true;
+    return (
+      row.descriptionEn !== p.descEn ||
+      row.descriptionAr !== p.descAr ||
+      row.imageUrl !== p.img ||
+      String(row.basePrice) !== p.price
+    );
+  });
+  const hasFullCatalog = expectedNames.every((n) => existingNames.has(n)) && drifted.length === 0;
+  if (drifted.length > 0 && existingProducts.size > 0) {
+    console.log(`  catalog changed (${drifted.length} product(s)) — rebuilding`);
+  }
 
   const productByName = new Map<string, { id: string; nameEn: string }>();
 
@@ -328,8 +740,11 @@ async function seedOneTenant(cfg: TenantSeedConfig, adminId: string) {
         const prod = await createProduct(tenantId, {
           nameEn: p.nameEn,
           nameAr: p.nameAr,
-          descriptionEn: p.descEn ?? null,
-          descriptionAr: p.descEn ?? null,
+          descriptionEn: p.descEn,
+          // Was `p.descEn` — the Arabic column held English for every product in
+          // every demo tenant, which an Arabic-first storefront then rendered
+          // as the product's own description.
+          descriptionAr: p.descAr,
           basePrice: p.price,
           categoryId: c.id,
           imageUrl: p.img,
@@ -363,6 +778,31 @@ async function seedOneTenant(cfg: TenantSeedConfig, adminId: string) {
               });
             }
           });
+        }
+
+        // Modifier groups go through the service, not a raw insert, because
+        // upsertModifierGroup is what validates the selection rules
+        // (min <= max, required implies min >= 1) and the vertical capability.
+        // Nothing else in the demo data exercised this path, so the POS
+        // take-order screen never opened its modifier sheet.
+        for (const [gi, g] of (p.modifiers ?? []).entries()) {
+          const group = await upsertModifierGroup(tenantId, prod.id, {
+            nameEn: g.nameEn,
+            nameAr: g.nameAr,
+            required: g.required,
+            minSelections: g.minSelections,
+            maxSelections: g.maxSelections,
+            sortOrder: gi,
+          });
+          for (const [oi, o] of g.options.entries()) {
+            await upsertModifierOption(tenantId, group.id, {
+              nameEn: o.nameEn,
+              nameAr: o.nameAr,
+              priceDelta: o.priceDelta ?? "0",
+              isDefault: o.isDefault ?? false,
+              sortOrder: oi,
+            });
+          }
         }
 
         productByName.set(p.nameEn, prod);
