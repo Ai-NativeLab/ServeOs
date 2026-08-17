@@ -1,29 +1,35 @@
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { validateSession } from "@/server/auth/session";
 import { SESSION_COOKIE } from "@/server/auth/current-user";
 import { listPlans } from "@/server/subscription";
+import { getTenantById } from "@/server/tenancy/service";
+import { subscribeDestination } from "./destination";
+import { EnquiryForm } from "./EnquiryForm";
 
 /**
- * Where a paid plan's marketing CTA lands.
+ * Where a plan CTA lands, for every plan and every visitor.
  *
- * The pricing page used to send every plan — free and paid alike — to
- * /register, which told a visitor choosing a 1099 EGP plan that the next step
- * was creating an account and then said nothing more about paying for it.
+ * The marketing page is public and cannot know who is reading it, while the
+ * right destination differs completely:
  *
- * This route exists because the marketing page is public and cannot know
- * whether the visitor is signed in, while the destination differs entirely:
+ *   free plan       -> registration, carrying the key
+ *   real customer   -> billing, with the plan highlighted
+ *   demo visitor    -> the enquiry form
+ *   signed out      -> the enquiry form
+ *   unknown key     -> the pricing page
  *
- *   signed in   -> the billing page, with the plan they picked highlighted
- *   signed out  -> login, carrying that same billing URL as `next`
+ * The demo case is the one that used to be wrong. /api/demo/login issues a real
+ * session, so "is signed in" was never the same question as "is a customer" —
+ * and treating them as one delivered prospects into the demo tenant's billing
+ * page, showing its usage meters and a Subscribe button that would have raised
+ * an invoice against a tenant that is reset nightly.
  *
- * Putting that fork in a route rather than in PlanCard keeps the marketing
- * components free of auth concerns and gives the "I want to subscribe"
- * intent one place to live.
+ * The rules live in subscribeDestination() so they are unit-testable; this file
+ * only resolves who the visitor is and does what it says.
  *
- * NOTE: it deliberately does not create anything. Raising an invoice is an
- * explicit act the owner performs on the billing page, not a side effect of
- * following a link from a pricing table.
+ * NOTE: nothing here creates anything. Raising an invoice is an explicit act on
+ * the billing page, never a side effect of following a link.
  */
 export default async function SubscribePage({
   searchParams,
@@ -32,22 +38,25 @@ export default async function SubscribePage({
 }) {
   const { plan } = await searchParams;
 
-  // Validate against the real plan table rather than trusting the query
-  // string — an unknown key would otherwise ride through login and land on
-  // billing highlighting nothing.
   const plans = await listPlans();
-  const match = plan ? plans.find((p) => p.key === plan) : undefined;
-
-  const destination = match
-    ? `/dashboard/settings/billing?plan=${encodeURIComponent(match.key)}`
-    : "/dashboard/settings/billing";
+  const planExists = Boolean(plan && plans.some((p) => p.key === plan));
 
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
   const session = token ? await validateSession(token) : null;
 
-  if (!session || !session.user.tenantId) {
-    redirect(`/login?next=${encodeURIComponent(destination)}`);
+  let tenantSlug: string | null = null;
+  if (session?.user.tenantId) {
+    const tenant = await getTenantById(session.user.tenantId);
+    tenantSlug = tenant?.slug ?? null;
   }
 
-  redirect(destination);
+  const destination = subscribeDestination({ planKey: plan, planExists, tenantSlug });
+  if (destination.kind === "redirect") redirect(destination.href);
+
+  const locale = (await headers()).get("x-locale") === "ar" ? "ar" : "en";
+  return (
+    <main>
+      <EnquiryForm planKey={destination.planKey} locale={locale} />
+    </main>
+  );
 }
