@@ -55,3 +55,6 @@ next-env.d.ts
 
 # Embedded Claude worktrees (external repos)
 .claude/worktrees/
+
+# brainstorm visual companion sessions
+.moai/

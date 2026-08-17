@@ -1,4 +1,5 @@
 import { formatMoney } from "@/lib/money";
+import { arabicDescription } from "./bilingual";
 import type { MenuProduct } from "./ProductCard";
 
 export function FeaturedCard({ product, currency, interactive, onOpen }: {
@@ -20,7 +21,13 @@ export function FeaturedCard({ product, currency, interactive, onOpen }: {
       <div className="absolute inset-y-0 left-0 flex max-w-[75%] flex-col justify-end p-4 sm:p-5">
         <span className="sf-badge-soft mb-2 self-start">Featured</span>
         <h3 className="line-clamp-2 font-display text-xl font-bold text-white sm:text-2xl">{product.nameEn}</h3>
+        {product.nameAr && <span dir="rtl" className="text-sm text-white/85">{product.nameAr}</span>}
         {product.descriptionEn && <p className="mt-1 line-clamp-2 text-xs text-white/85 sm:text-sm">{product.descriptionEn}</p>}
+        {arabicDescription(product.descriptionEn, product.descriptionAr) && (
+          <p dir="rtl" className="mt-0.5 line-clamp-2 text-xs text-white/85 sm:text-sm">
+            {arabicDescription(product.descriptionEn, product.descriptionAr)}
+          </p>
+        )}
         <span className="mt-2 font-display text-lg font-bold text-white">{formatMoney(product.effectivePrice, currency)}</span>
       </div>
     </button>

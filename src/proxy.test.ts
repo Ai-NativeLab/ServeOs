@@ -52,3 +52,52 @@ describe("proxy() passes /api/health through unrewritten", () => {
     );
   });
 });
+
+function marketingRequest(host: string, path: string) {
+  return new NextRequest(new URL(`http://${host}${path}`), { headers: { host } });
+}
+
+describe("proxy locale handling on the marketing surface", () => {
+  it("rewrites / to /ar and stamps the Arabic locale", () => {
+    vi.stubEnv("ROOT_DOMAIN", "serveos.localhost");
+    const res = proxy(marketingRequest("serveos.localhost", "/"));
+    expect(res.headers.get("x-middleware-rewrite")).toContain("/ar");
+    expect(res.headers.get("x-middleware-request-x-locale")).toBe("ar");
+  });
+
+  it("passes /en through with the English locale", () => {
+    vi.stubEnv("ROOT_DOMAIN", "serveos.localhost");
+    const res = proxy(marketingRequest("serveos.localhost", "/en"));
+    expect(res.headers.get("x-middleware-rewrite")).toBeNull();
+    expect(res.headers.get("x-middleware-request-x-locale")).toBe("en");
+  });
+
+  it("redirects /ar to the canonical root", () => {
+    vi.stubEnv("ROOT_DOMAIN", "serveos.localhost");
+    const res = proxy(marketingRequest("serveos.localhost", "/ar"));
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("http://serveos.localhost/");
+  });
+
+  it("leaves the storefront surface untouched", () => {
+    vi.stubEnv("ROOT_DOMAIN", "serveos.localhost");
+    const res = proxy(marketingRequest("roma.serveos.localhost", "/"));
+    expect(res.headers.get("x-middleware-rewrite")).toBeNull();
+    expect(res.headers.get("x-middleware-request-x-locale")).toBeNull();
+    expect(res.headers.get("x-middleware-request-x-tenant-slug")).toBe("roma");
+  });
+
+  it("leaves /login on the marketing host untouched", () => {
+    vi.stubEnv("ROOT_DOMAIN", "serveos.localhost");
+    const res = proxy(marketingRequest("serveos.localhost", "/login"));
+    expect(res.headers.get("x-middleware-rewrite")).toBeNull();
+    expect(res.headers.get("x-middleware-request-x-locale")).toBeNull();
+  });
+
+  it("still passes /api/health through on the marketing host", () => {
+    vi.stubEnv("ROOT_DOMAIN", "serveos.localhost");
+    const res = proxy(marketingRequest("serveos.localhost", "/api/health"));
+    expect(res.headers.get("x-middleware-rewrite")).toBeNull();
+    expect(res.headers.get("x-middleware-request-x-locale")).toBeNull();
+  });
+});

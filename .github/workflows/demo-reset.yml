@@ -1,0 +1,115 @@
+# Rebuilds the public demo tenants nightly.
+#
+# The marketing page's demo cards hand visitors a real, WRITABLE dashboard for
+# demo-<trade> (src/app/api/demo/login). Visitors edit products, place orders
+# and close shifts, so without this the demo degrades into whatever the last
+# person left behind. --reset drops each demo tenant and re-seeds it, which
+# works because every table referencing tenants cascades on delete.
+#
+# Runs an hour after db-backup so a night's demo traffic is captured in that
+# day's dump before it is discarded.
+#
+# Also the way demo tenants are first created in a shared environment: run it
+# by hand (workflow_dispatch) against qa or prod.
+name: demo-reset
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Which environment to rebuild"
+        type: choice
+        options: [qa, prod, both]
+        default: qa
+      reset:
+        description: "Drop and recreate (off = reconcile in place, keeps visitor orders)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      # Never let a prod failure cancel the QA run or vice versa — they are
+      # independent environments and one being unreachable says nothing about
+      # the other.
+      fail-fast: false
+      matrix:
+        include:
+          - env_name: prod
+            url_secret: PROD_DATABASE_URL
+            root_domain: serveos.tech
+          - env_name: qa
+            url_secret: QA_DATABASE_URL
+            root_domain: qa.serveos.tech
+    steps:
+      - name: Skip environments not selected for this dispatch
+        id: gate
+        env:
+          SELECTED: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'both' }}
+          THIS_ENV: ${{ matrix.env_name }}
+        run: |
+          if [ "$SELECTED" = "both" ] || [ "$SELECTED" = "$THIS_ENV" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::skipping $THIS_ENV (dispatch selected $SELECTED)"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
+
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: npm ci
+
+      - name: Rebuild the demo tenants
+        if: steps.gate.outputs.run == 'true'
+        env:
+          # The seed reads DATABASE_URL directly; no .env file is written to
+          # the runner, so the credential never touches disk.
+          DATABASE_URL: ${{ secrets[matrix.url_secret] }}
+          ROOT_DOMAIN: ${{ matrix.root_domain }}
+          RESET: ${{ github.event_name == 'workflow_dispatch' && inputs.reset || 'true' }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::${{ matrix.url_secret }} is not set"
+            exit 1
+          fi
+          if [ "$RESET" = "true" ]; then
+            npx tsx scripts/seed-demo-tenants.ts --reset
+          else
+            npx tsx scripts/seed-demo-tenants.ts
+          fi
+
+      - name: Confirm every demo storefront answers
+        if: steps.gate.outputs.run == 'true'
+        env:
+          ROOT: ${{ matrix.root_domain }}
+        run: |
+          # Seeding "succeeded" is not the same as the doors working — DNS, the
+          # host-to-tenant proxy and tenant serveability all sit between them.
+          fail=0
+          for trade in restaurant retail pharmacy timber; do
+            url="https://demo-$trade.$ROOT/"
+            code=$(curl -s -o /tmp/body -w "%{http_code}" --max-time 30 "$url" || echo 000)
+            if [ "$code" != "200" ] || grep -q "Not found" /tmp/body; then
+              echo "::error::$url -> $code $(grep -o 'Not found' /tmp/body | head -1)"
+              fail=1
+            else
+              echo "$url -> $code"
+            fi
+          done
+          exit $fail

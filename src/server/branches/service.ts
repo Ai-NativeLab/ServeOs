@@ -17,8 +17,16 @@ function auditMeta(audit: AuditActorInput | undefined, extra: Record<string, unk
 }
 
 export async function listBranches(tenantId: string): Promise<Branch[]> {
+  // The tenant_id predicate is deliberate belt-and-braces. RLS already scopes
+  // this — but RLS is bypassed by a superuser, and the maintenance scripts
+  // connect as one. Without the predicate this returned ANOTHER tenant's
+  // branch during seeding, whose id then failed every ownership-checked write
+  // downstream ("Branch not found"). Scope in the query; let RLS be the
+  // backstop, not the only guard.
   return withTenant(tenantId, (tx) =>
-    tx.select().from(branches).where(eq(branches.isActive, true)).orderBy(branches.sortOrder),
+    tx.select().from(branches)
+      .where(and(eq(branches.tenantId, tenantId), eq(branches.isActive, true)))
+      .orderBy(branches.sortOrder),
   );
 }
 
@@ -31,8 +39,14 @@ export async function getBranch(tenantId: string, branchId: string): Promise<Bra
 }
 
 export async function createBranch(tenantId: string, input: CreateBranchInput, audit?: AuditActorInput): Promise<Branch> {
+  // Counts THIS tenant's branches. Explicitly, because a quota that silently
+  // counts the whole table is a denial of service for everyone: run under a
+  // connection whose role bypasses RLS, this counted every branch in the
+  // database and refused to create the first branch of a new tenant
+  // ("Quota exceeded for branches (7/1)").
   const current = await withTenant(tenantId, (tx) =>
-    tx.select().from(branches).where(eq(branches.isActive, true)),
+    tx.select().from(branches)
+      .where(and(eq(branches.tenantId, tenantId), eq(branches.isActive, true))),
   );
   await checkQuota(tenantId, "branches", current.length);
   return withTenant(tenantId, async (tx) => {
@@ -90,7 +104,9 @@ export type UpdateDeliveryAreaInput = Partial<CreateDeliveryAreaInput & { isActi
 
 export async function listDeliveryAreas(tenantId: string, branchId: string): Promise<DeliveryArea[]> {
   return withTenant(tenantId, (tx) =>
-    tx.select().from(deliveryAreas).where(eq(deliveryAreas.branchId, branchId)).orderBy(deliveryAreas.sortOrder),
+    tx.select().from(deliveryAreas)
+      .where(and(eq(deliveryAreas.tenantId, tenantId), eq(deliveryAreas.branchId, branchId)))
+      .orderBy(deliveryAreas.sortOrder),
   );
 }
 
@@ -98,7 +114,9 @@ export async function listDeliveryAreas(tenantId: string, branchId: string): Pro
  * N+1 when a page needs areas grouped by branch). RLS scopes rows to the tenant. */
 export async function listDeliveryAreasForTenant(tenantId: string): Promise<DeliveryArea[]> {
   return withTenant(tenantId, (tx) =>
-    tx.select().from(deliveryAreas).orderBy(deliveryAreas.branchId, deliveryAreas.sortOrder),
+    tx.select().from(deliveryAreas)
+      .where(eq(deliveryAreas.tenantId, tenantId))
+      .orderBy(deliveryAreas.branchId, deliveryAreas.sortOrder),
   );
 }
 

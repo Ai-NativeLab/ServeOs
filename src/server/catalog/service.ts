@@ -55,8 +55,11 @@ export type CreateCategoryInput = Pick<NewCategory, "nameEn" | "nameAr" | "descr
 export type UpdateCategoryInput = Partial<CreateCategoryInput & { isActive: boolean }>;
 
 export async function listCategories(tenantId: string): Promise<Category[]> {
+  // Explicitly scoped, not RLS-only — see the note on listBranches.
   return withTenant(tenantId, (tx) =>
-    tx.select().from(categories).orderBy(categories.sortOrder),
+    tx.select().from(categories)
+      .where(eq(categories.tenantId, tenantId))
+      .orderBy(categories.sortOrder),
   );
 }
 
@@ -110,7 +113,7 @@ export async function listProducts(tenantId: string, categoryId?: string): Promi
     const q = tx.select().from(products);
     return categoryId
       ? q.where(and(eq(products.tenantId, tenantId), eq(products.categoryId, categoryId))).orderBy(products.sortOrder)
-      : q.orderBy(products.sortOrder);
+      : q.where(eq(products.tenantId, tenantId)).orderBy(products.sortOrder);
   });
 }
 
@@ -139,8 +142,10 @@ export async function getProduct(tenantId: string, productId: string): Promise<P
 }
 
 export async function createProduct(tenantId: string, input: CreateProductInput, audit?: AuditActorInput): Promise<Product> {
+  // Explicitly this tenant's products — see the note in createBranch on why a
+  // quota count must not lean on RLS alone.
   const [{ value }] = await withTenant(tenantId, (tx) =>
-    tx.select({ value: count() }).from(products),
+    tx.select({ value: count() }).from(products).where(eq(products.tenantId, tenantId)),
   );
   await checkQuota(tenantId, "products", Number(value));
   return withTenant(tenantId, async (tx) => {

@@ -35,7 +35,15 @@ function UsageBar({ label, used, limit }: { label: string; used: number; limit: 
   );
 }
 
-export default async function BillingPage() {
+export default async function BillingPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ plan?: string }>;
+}) {
+  // Set when the visitor arrived from a pricing CTA via /subscribe. It only
+  // highlights and scrolls to the plan they chose — raising an invoice stays
+  // an explicit click, never a consequence of following a link.
+  const { plan: requestedPlanKey } = await searchParams;
   const { tenantId } = await requireBillingPermission();
   const [subscription, plan, branches, products, staff, ordersThisMonth, invoices, allPlans, upgradeRequest] =
     await Promise.all([
@@ -164,9 +172,19 @@ export default async function BillingPage() {
           const isHigher = Number(p.priceMonthly) > Number(plan.priceMonthly);
           const isPaid = Number(p.priceMonthly) > 0;
           const requested = upgradeRequest?.planKey === p.key;
+          const cameForThis = requestedPlanKey === p.key && !isCurrent;
           return (
-            <Card key={p.id} className={isCurrent ? "p-5 border-primary/30 bg-gradient-to-br from-card from-40% to-accent/60" : "p-5"}>
+            <Card
+              key={p.id}
+              id={`plan-${p.key}`}
+              className={[
+                "p-5 scroll-mt-24",
+                isCurrent ? "border-primary/30 bg-gradient-to-br from-card from-40% to-accent/60" : "",
+                cameForThis ? "ring-2 ring-primary" : "",
+              ].filter(Boolean).join(" ")}
+            >
               <h3 className="font-display text-lg font-bold text-ink">{p.name}</h3>
+              {cameForThis && <p className="mt-1 text-xs text-primary">The plan you chose</p>}
               <p className="font-display text-2xl font-bold mt-1">
                 {Number(p.priceMonthly).toFixed(0)} <span className="text-sm text-muted-foreground font-normal">{p.currency}/mo</span>
               </p>

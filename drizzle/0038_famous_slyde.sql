@@ -1,0 +1,1 @@
+ALTER TABLE "plans" DROP COLUMN "lemon_squeezy_variant_id";
