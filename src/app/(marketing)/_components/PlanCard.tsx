@@ -41,14 +41,15 @@ export function PlanCard({ plan, term, locale }: { plan: Plan; term: Term; local
         {rows.map((row) => <li key={row}>{row}</li>)}
       </ul>
 
-      {/* The free plan is a sign-up; a paid plan is not.
-          Sending both to /register told someone choosing a 1099 EGP plan that
-          the next step was creating an account, and then said nothing about
-          how they would ever pay for it. Paid plans now go to /subscribe,
-          which routes to the billing page — signing in first if it has to —
-          with this plan carried along. */}
+      {/* Every plan goes through /subscribe, which owns the fork: free
+          redirects to registration carrying its key, an existing customer goes
+          to billing, and anyone else — signed out, or holding a demo session
+          from the demo door on this very page — gets the enquiry form. Putting
+          the branch in one route is why it can be unit-tested; when it lived
+          here, "is signed in" was quietly treated as "is a customer" and
+          prospects landed in the demo tenant's billing page. */}
       <Link
-        href={isFree ? "/register" : `/subscribe?plan=${encodeURIComponent(plan.key)}`}
+        href={`/subscribe?plan=${encodeURIComponent(plan.key)}`}
         className="mt-6 rounded-md border border-border px-4 py-2.5 text-center text-sm font-medium hover:bg-muted"
       >
         {isFree ? t.ctaFree : t.cta}
