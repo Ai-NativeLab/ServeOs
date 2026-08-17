@@ -4,7 +4,7 @@ import { recordAuditEvent } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { requireCapability } from "@/server/verticals/registry";
 import type { UnitOfMeasure } from "@/server/catalog/uom";
-import { assertInventoryUom, qty, toBase } from "@/server/inventory/uom";
+import { assertInventoryUom, dimensionOf, qty, toBase } from "@/server/inventory/uom";
 import { receiveStock, getOrCreateDefaultLocation } from "@/server/inventory/service";
 import { inventoryItems } from "@/server/inventory/schema";
 import { money } from "@/server/ordering/service";
@@ -12,6 +12,7 @@ import { purchaseOrders, purchaseOrderLines, poReceipts, poReceiptLines } from "
 import type { PurchasingActor } from "./suppliers";
 import { InvalidPoInputError, InvalidPoTransitionError, PoNotFoundError, ReceiptUomMismatchError } from "./errors";
 import { assertTransition, receiptStatus } from "./status";
+import { lockTenant } from "./locking";
 import type { PoStatus } from "./status";
 
 function auditCtx(actor: PurchasingActor) {
@@ -43,7 +44,18 @@ export type PostReceiptInput = {
  * received qty to base UoM (the item's own `purchaseToBase` factor wins),
  * calls Spec 8's `receiveStock` (lot + positive `receive` ledger row), bumps
  * `purchase_order_lines.qty_received`, then recomputes the PO status from
- * Σ received vs Σ ordered. Over-receipt is allowed. Emits `po.received`.
+ * Σ received vs Σ ordered. Emits `po.received`.
+ *
+ * DELIBERATE, both deferred out of this spec rather than overlooked:
+ * - Over-receipt is allowed with no tolerance. Suppliers over-ship routinely
+ *   and refusing goods at the door is worse than recording them; the excess
+ *   surfaces in `getPoVariance().overReceived` for the buyer to chase. A
+ *   percentage tolerance with an override flag is the follow-up.
+ * - Receipts are NOT idempotent: a retried POST writes a second receipt, and
+ *   the PO-row lock serializes rather than collapses it. Fixing that needs a
+ *   client-supplied receipt key plus a unique index on
+ *   (tenant_id, purchase_order_id, key) — an API-contract change, so it is a
+ *   follow-up rather than something to bolt on here.
  */
 export async function postReceipt(
   actor: PurchasingActor,
@@ -52,6 +64,7 @@ export async function postReceipt(
 ): Promise<{ receiptId: string; status: PoStatus }> {
   requireCapability(actor.vertical, "inventory");
   return withTenant(actor.tenantId, async (tx) => {
+    await lockTenant(tx, actor.tenantId);
     // 1. SERIALIZE receipts per PO. The qty_received bump is a read-then-write
     //    under READ COMMITTED, and the status recompute reads the same stale
     //    snapshot: two receipts on the same PO in the same instant could both
@@ -124,6 +137,18 @@ export async function postReceipt(
       // order placed in the wrong unit must not silently re-scale against a
       // factor meant for the purchase unit (500 g × 1000 = 500000, the
       // over-credit this guard exists to stop).
+      // A purchase factor only means something when the purchase unit differs
+      // from the base unit (a 24-can case is counted in `each` and held in
+      // `each`, so `count` is the one dimension where same-unit + factor is
+      // legitimate). For mass/volume, purchaseUom === baseUom with a factor
+      // other than 1 is a contradictory item config, and applying it silently
+      // over-credits the ledger by that factor — reject it instead.
+      const factor = Number(item.purchaseToBase);
+      if (uom === item.purchaseUom && uom === baseUom && factor !== 1 && dimensionOf(uom) !== "count") {
+        throw new InvalidPoInputError(
+          `item ${poLine.itemId} declares purchaseUom ${uom} equal to its base unit but purchaseToBase ${item.purchaseToBase} — the factor cannot be applied to its own base unit`,
+        );
+      }
       const factorKind: "purchase" | undefined = uom === item.purchaseUom ? "purchase" : undefined;
       const baseQty = toBase(l.receivedQty, uom, { ...item, baseUom }, factorKind);
       if (!(baseQty > 0)) {
@@ -138,14 +163,23 @@ export async function postReceipt(
       // permanent wedge between the lot's value (2.08 × 48 = 99.84) and what
       // was actually paid (100.00). `inventory_lots.unit_cost` is unbounded
       // numeric, so the exact quotient is stored as-is.
-      const baseUnitCost = String((l.unitCost * l.receivedQty) / baseQty);
+      const baseUnitCost = (l.unitCost * l.receivedQty) / baseQty;
+      // `receivedQty` and `unitCost` are each finite, but their PRODUCT can
+      // still overflow to Infinity, and `String(Infinity)` is accepted by
+      // Postgres `numeric` — the same un-correctable ledger poison the NaN
+      // guard above exists to stop, arriving through the quotient instead.
+      if (!Number.isFinite(baseUnitCost)) {
+        throw new InvalidPoInputError(
+          `receivedQty ${l.receivedQty} x unitCost ${l.unitCost} overflows to a non-finite cost`,
+        );
+      }
       await receiveStock(tx, {
         tenantId: actor.tenantId,
         itemId: poLine.itemId,
         locationId: location.id,
         baseQty,
         uom: baseUom,
-        unitCost: baseUnitCost,
+        unitCost: String(baseUnitCost),
         lotCode: l.lotCode ?? null,
         supplierId: po.supplierId,
         poReceiptLineId: receiptLine.id,

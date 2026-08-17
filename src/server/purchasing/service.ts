@@ -1,5 +1,6 @@
 import { sql, eq } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
+import type { Tx } from "@/db/with-tenant";
 import { recordAuditEvent } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { requireCapability } from "@/server/verticals/registry";
@@ -11,6 +12,7 @@ import { purchaseOrders, purchaseOrderLines, suppliers } from "./schema";
 import type { PurchasingActor } from "./suppliers";
 import { InvalidPoInputError, InvalidPoTransitionError, PoNotFoundError } from "./errors";
 import { assertTransition } from "./status";
+import { lockTenant } from "./locking";
 import type { PoStatus } from "./status";
 
 function auditCtx(actor: PurchasingActor) {
@@ -37,13 +39,45 @@ export type DraftPoInput = {
   lines: DraftPoLineInput[];
 };
 
+/**
+ * The header total is TAX-INCLUSIVE, because `invoiceTotal` — the figure the
+ * supplier actually bills — is. Summing lines tax-exclusive made
+ * `invoiceVsReceived` report a variance on every tax-bearing PO, which buries
+ * real discrepancies in structural noise and defeats the three-way match.
+ */
+function lineTotal(lines: DraftPoLineInput[]): number {
+  return lines.reduce((s, l) => s + l.qtyOrdered * l.unitCost * (1 + (l.taxRate ?? 0)), 0);
+}
+
+/**
+ * The routes parse and validate their own bodies, but these are exported
+ * service functions — the cron, scripts and tests all reach them directly, so
+ * the numeric floor has to live here too rather than only at the HTTP edge.
+ */
+function assertLineNumbers(lines: DraftPoLineInput[]): void {
+  if (lines.length === 0) throw new InvalidPoInputError("a purchase order needs at least one line");
+  for (const l of lines) {
+    if (!l.itemId) throw new InvalidPoInputError("each line needs an itemId");
+    if (!Number.isFinite(l.qtyOrdered) || l.qtyOrdered <= 0) {
+      throw new InvalidPoInputError(`qtyOrdered must be a positive finite number (got ${l.qtyOrdered})`);
+    }
+    if (!Number.isFinite(l.unitCost) || l.unitCost < 0) {
+      throw new InvalidPoInputError(`unitCost must be a finite non-negative number (got ${l.unitCost})`);
+    }
+    if (l.taxRate !== undefined && (!Number.isFinite(l.taxRate) || l.taxRate < 0)) {
+      throw new InvalidPoInputError(`taxRate must be a finite non-negative number (got ${l.taxRate})`);
+    }
+  }
+}
+
 export async function createDraftPo(actor: PurchasingActor, input: DraftPoInput): Promise<{ poId: string; poNumber: number }> {
   requireCapability(actor.vertical, "inventory");
+  assertLineNumbers(input.lines);
   return withTenant(actor.tenantId, async (tx) => {
     // Same per-tenant serialization discipline as placeOrder: the advisory lock
     // spans only the read-max-then-insert window, and FORCE RLS scopes the MAX
     // to this tenant via app.tenant_id.
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${actor.tenantId})::bigint)`);
+    await lockTenant(tx, actor.tenantId);
 
     // RLS doesn't cover FK referential-integrity checks (Postgres runs those
     // with row security bypassed), so a body-supplied branch/supplier id could
@@ -57,7 +91,7 @@ export async function createDraftPo(actor: PurchasingActor, input: DraftPoInput)
     const [{ max }] = await tx.select({ max: sql<number>`COALESCE(MAX(${purchaseOrders.poNumber}), 0)` }).from(purchaseOrders);
     const poNumber = Number(max) + 1;
 
-    const total = money(input.lines.reduce((s, l) => s + l.qtyOrdered * l.unitCost, 0));
+    const total = money(lineTotal(input.lines));
 
     const [po] = await tx.insert(purchaseOrders).values({
       tenantId: actor.tenantId,
@@ -79,7 +113,7 @@ export async function createDraftPo(actor: PurchasingActor, input: DraftPoInput)
         qtyOrdered: qty(l.qtyOrdered),
         uom,
         unitCost: money(l.unitCost),
-        taxRate: l.taxRate !== undefined ? money(l.taxRate) : null,
+        taxRate: l.taxRate !== undefined ? String(l.taxRate) : null,
         qtyReceived: "0",
       });
     }
@@ -118,7 +152,7 @@ export async function listPurchaseOrders(tenantId: string, opts: { status?: PoSt
  *  writer (updateDraftPo, cancelPurchaseOrder, sendPurchaseOrder,
  *  enterInvoiceTotal, closePurchaseOrder) takes the same lock, so a concurrent
  *  send/receive/cancel serializes instead of walking straight past a stale read. */
-async function loadPo(tx: Parameters<typeof withTenant>[1] extends (tx: infer T) => unknown ? T : never, poId: string) {
+async function loadPo(tx: Tx, poId: string) {
   const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId)).for("update").limit(1);
   if (!po) throw new PoNotFoundError();
   return po;
@@ -126,7 +160,9 @@ async function loadPo(tx: Parameters<typeof withTenant>[1] extends (tx: infer T)
 
 export async function updateDraftPo(actor: PurchasingActor, poId: string, input: DraftPoInput): Promise<void> {
   requireCapability(actor.vertical, "inventory");
+  assertLineNumbers(input.lines);
   return withTenant(actor.tenantId, async (tx) => {
+    await lockTenant(tx, actor.tenantId);
     const po = await loadPo(tx, poId);
     if (po.status !== "draft") throw new InvalidPoTransitionError(po.status as PoStatus, "draft");
 
@@ -137,7 +173,7 @@ export async function updateDraftPo(actor: PurchasingActor, poId: string, input:
     const [supplier] = await tx.select().from(suppliers).where(eq(suppliers.id, input.supplierId));
     if (!supplier) throw new InvalidPoInputError(`supplierId ${input.supplierId} is not a supplier of this tenant`);
 
-    const total = money(input.lines.reduce((s, l) => s + l.qtyOrdered * l.unitCost, 0));
+    const total = money(lineTotal(input.lines));
 
     await tx.delete(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId));
     for (const l of input.lines) {
@@ -149,7 +185,7 @@ export async function updateDraftPo(actor: PurchasingActor, poId: string, input:
         qtyOrdered: qty(l.qtyOrdered),
         uom,
         unitCost: money(l.unitCost),
-        taxRate: l.taxRate !== undefined ? money(l.taxRate) : null,
+        taxRate: l.taxRate !== undefined ? String(l.taxRate) : null,
         qtyReceived: "0",
       });
     }
@@ -170,6 +206,7 @@ export async function updateDraftPo(actor: PurchasingActor, poId: string, input:
 export async function cancelPurchaseOrder(actor: PurchasingActor, poId: string): Promise<void> {
   requireCapability(actor.vertical, "inventory");
   return withTenant(actor.tenantId, async (tx) => {
+    await lockTenant(tx, actor.tenantId);
     const po = await loadPo(tx, poId);
     assertTransition(po.status as PoStatus, "cancelled");
     await tx.update(purchaseOrders)

@@ -49,6 +49,7 @@ export const purchaseOrders = pgTable("purchase_orders", {
 }, (t) => [
   uniqueIndex("purchase_orders_tenant_number").on(t.tenantId, t.poNumber),
   index("purchase_orders_tenant_status").on(t.tenantId, t.status),
+  index("purchase_orders_supplier").on(t.supplierId),
 ]);
 
 export const purchaseOrderLines = pgTable("purchase_order_lines", {
@@ -87,7 +88,10 @@ export const poReceiptLines = pgTable("po_receipt_lines", {
   unitCost: numeric("unit_cost").notNull(),
   lotCode: text("lot_code"),
   expiryAt: timestamp("expiry_at", { withTimezone: true }),
-}, (t) => [index("po_receipt_lines_receipt").on(t.poReceiptId)]);
+}, (t) => [
+  index("po_receipt_lines_receipt").on(t.poReceiptId),
+  index("po_receipt_lines_po_line").on(t.poLineId),
+]);
 
 export type Supplier = typeof suppliers.$inferSelect;
 export type SupplierItem = typeof supplierItems.$inferSelect;

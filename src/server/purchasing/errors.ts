@@ -25,6 +25,13 @@ export class InvalidPoInputError extends Error {
   }
 }
 
+export class NoBranchError extends Error {
+  constructor() {
+    super("This tenant has no branch — create a branch before using purchasing");
+    this.name = "NoBranchError";
+  }
+}
+
 export class ReceiptUomMismatchError extends Error {
   constructor(poLineId: string, ordered: string, got: string) {
     super(`Receipt line for PO line ${poLineId} is in ${got}, but the order line was in ${ordered}`);

@@ -5,6 +5,7 @@ import type { Permission } from "@/server/rbac/permissions";
 import { branches } from "@/server/branches/schema";
 import { tenants } from "@/server/tenancy/schema";
 import { withTenant } from "@/db/with-tenant";
+import { NoBranchError } from "@/server/purchasing/errors";
 import { eq } from "drizzle-orm";
 import type { VerticalId } from "@/server/verticals/types";
 import type { PurchasingActor } from "@/server/purchasing/suppliers";
@@ -58,7 +59,11 @@ export async function resolvePurchasingActor(ctx: DashboardContext): Promise<Pur
   const { branchId, vertical } = await withTenant(ctx.tenantId, async (tx) => {
     const [branch] = await tx.select({ id: branches.id }).from(branches).orderBy(branches.sortOrder).limit(1);
     const [t] = await tx.select({ vertical: tenants.vertical }).from(tenants).where(eq(tenants.id, ctx.tenantId)).limit(1);
-    return { branchId: branch?.id ?? "", vertical: (t?.vertical ?? "restaurant") as VerticalId };
+    // A tenant with no branch cannot own a PO (branch_id is a NOT NULL uuid FK)
+    // and cannot be audited against one. Failing here with a clear domain error
+    // beats `?? ""` reaching a uuid column as `invalid input syntax` -> 500.
+    if (!branch) throw new NoBranchError();
+    return { branchId: branch.id, vertical: (t?.vertical ?? "restaurant") as VerticalId };
   });
   return { tenantId: ctx.tenantId, branchId, actorUserId: ctx.user.id, vertical };
 }

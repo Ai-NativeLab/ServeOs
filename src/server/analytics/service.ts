@@ -515,7 +515,7 @@ export async function getSpendBySupplier(tenantId: string, days: number): Promis
   });
 }
 
-export type ReceivedVsInvoicedRow = { poId: string; poNumber: string; ordered: number; received: number; invoiced: number; variance: number };
+export type ReceivedVsInvoicedRow = { poId: string; poNumber: number; ordered: number; received: number; invoiced: number; variance: number };
 
 export async function getReceivedVsInvoiced(tenantId: string, days: number): Promise<ReceivedVsInvoicedRow[]> {
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
@@ -539,7 +539,7 @@ export async function getReceivedVsInvoiced(tenantId: string, days: number): Pro
       ORDER BY MAX(po.created_at) DESC
     `);
     return rows.map((r) => ({
-      poId: r.po_id, poNumber: r.po_number,
+      poId: r.po_id, poNumber: Number(r.po_number),
       ordered: Number(r.ordered), received: Number(r.received), invoiced: Number(r.invoiced),
       variance: Number(r.received) - Number(r.invoiced),
     }));

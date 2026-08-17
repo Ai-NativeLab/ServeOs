@@ -208,7 +208,7 @@ describe("cross-channel sales aggregations", () => {
     const supplierId = await createSupplier(actor, { name: "Main Supplier" });
     const itemId = await seedItem(tenantId, { baseUom: "each" });
 
-    // Received + invoiced: 10 of item @ 5 = 100.00 ordered (wait, 10 × 5 = 50).
+    // Received + invoiced: 20 of item @ 5 = 100.00 ordered.
     const { poId } = await createDraftPo(actor, {
       supplierId, branchId, lines: [{ itemId, qtyOrdered: 20, uom: "each", unitCost: 5 }], // total 100.00
     });

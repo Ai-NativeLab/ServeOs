@@ -141,3 +141,45 @@ describe("reorder route handlers return 403 when purchasing:manage is denied", (
     expect((await PUT(req({ itemId: "i", locationId: "l", reorderPoint: 1, reorderQty: 1 }))).status).toBe(403);
   });
 });
+
+// The 403 assertions above prove a route calls SOME gate and honors it. They do
+// not prove it asks for the RIGHT permission — swapping `purchasing:manage` for
+// something every role holds would still 403 under this mock. These assert the
+// argument, so a downgraded permission fails the suite instead of shipping.
+describe("each route asks for the permission it should", () => {
+  it("purchasing routes gate on purchasing:manage", async () => {
+    const { resolvePurchasingContext } = await import("@/app/dashboard/purchasing-permission");
+    const mock = vi.mocked(resolvePurchasingContext);
+
+    for (const [label, call] of [
+      ["POST /api/purchase-orders", async () => (await import("./route")).POST(req(okBody))],
+      ["PATCH /api/purchase-orders/[id]", async () => (await import("./[id]/route")).PATCH(req(okBody), params)],
+      ["POST /api/purchase-orders/[id]/receipts", async () => (await import("./[id]/receipts/route")).POST(req({ lines: [{}] }), params)],
+      ["POST /api/purchase-orders/[id]/send", async () => (await import("./[id]/send/route")).POST(req(), params)],
+      ["POST /api/purchase-orders/[id]/close", async () => (await import("./[id]/close/route")).POST(req(), params)],
+      // The reorder sweep CREATES purchase orders, so it belongs on the
+      // purchasing permission and not on inventory:manage.
+      ["POST /api/inventory/reorder/check", async () => (await import("../inventory/reorder/check/route")).POST()],
+      ["PUT /api/inventory/reorder-rules", async () => (await import("../inventory/reorder-rules/route")).PUT(req({ itemId: "i", locationId: "l", reorderPoint: 1, reorderQty: 1 }))],
+    ] as const) {
+      mock.mockClear();
+      await call();
+      expect(mock, label).toHaveBeenCalledWith("purchasing:manage");
+    }
+  });
+
+  it("supplier routes gate on suppliers:manage", async () => {
+    const { resolvePurchasingContext } = await import("@/app/dashboard/purchasing-permission");
+    const mock = vi.mocked(resolvePurchasingContext);
+
+    for (const [label, call] of [
+      ["POST /api/suppliers", async () => (await import("../suppliers/route")).POST(req({ name: "Sup" }))],
+      ["PATCH /api/suppliers/[id]", async () => (await import("../suppliers/[id]/route")).PATCH(req({ name: "Sup" }), params)],
+      ["POST /api/suppliers/[id]/items", async () => (await import("../suppliers/[id]/items/route")).POST(req({ itemId: "i" }), params)],
+    ] as const) {
+      mock.mockClear();
+      await call();
+      expect(mock, label).toHaveBeenCalledWith("suppliers:manage");
+    }
+  });
+});

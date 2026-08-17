@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { eq, and } from "drizzle-orm";
-import { db } from "@/db/client";
+import { db, pool } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { users } from "@/server/auth/schema";
 import { seedInventoryTenant, seedItem, seedLocation } from "@/server/inventory/test-helpers";
@@ -14,6 +14,7 @@ import type { PurchasingActor } from "./suppliers";
 import { createSupplier, upsertSupplierItem } from "./suppliers";
 import { reorderRules } from "./reorder-schema";
 import { upsertReorderRule, listReorderRules, checkReorder } from "./reorder";
+import { createDraftPo, updateDraftPo } from "./service";
 import { InvalidPoInputError } from "./errors";
 
 async function seedActor(tenantId: string, branchId: string): Promise<PurchasingActor> {
@@ -214,6 +215,86 @@ describe("reorder rules", () => {
     events = await withTenant(tenantId, (tx) => tx.select().from(auditEvents)
       .where(and(eq(auditEvents.action, "po.created"), eq(auditEvents.actorType, "system"))));
     expect(events).toHaveLength(1);
+    expect((await verifyChain(tenantId)).ok).toBe(true);
+  });
+});
+
+describe("reorder regression pins", () => {
+  it("prices an auto-draft from the PO's OWN supplier, not another supplier's row", async () => {
+    // supplier_items is unique on (supplier_id, item_id), so two suppliers may
+    // legitimately price the same item. An unscoped lookup builds its price map
+    // across ALL suppliers and can mail a competitor's rate.
+    //
+    // Deterministic by construction: the PREFERRED supplier has no price row at
+    // all, and a rival does. Scoped -> no price found -> 0.00. Unscoped -> the
+    // rival's 999 leaks in. This does not depend on which row the driver
+    // happens to return last, which an equal-and-opposite pair of prices would.
+    const { tenantId, actor, itemAtPoint, locationId } = await seedReorderContext();
+    const preferred = await createSupplier(actor, { name: "AAA (no price on file)" });
+    const rival = await createSupplier(actor, { name: "BBB" });
+    await upsertSupplierItem(actor, { supplierId: rival, itemId: itemAtPoint, lastUnitCost: 999 });
+
+    await upsertReorderRule(actor, {
+      itemId: itemAtPoint, locationId,
+      reorderPoint: 20, reorderQty: 10, preferredSupplierId: preferred,
+    });
+    await stock(tenantId, itemAtPoint, locationId, 5);
+
+    const run = await checkReorder(actor);
+    expect(run.draftsCreated).toBe(1);
+
+    const [po] = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders));
+    const [line] = await withTenant(tenantId, (tx) =>
+      tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, po.id)));
+    expect(po.supplierId).toBe(preferred);
+    expect(line.unitCost).toBe("0.00");   // the rival's 999.00 must not leak in
+    expect(po.total).toBe("0.00");
+  });
+
+  it("takes the tenant advisory lock BEFORE any PO row lock (deadlock ordering)", async () => {
+    // The cycle this prevents: checkReorder takes the per-tenant advisory key
+    // first and then UPDATEs an open draft, while a PO writer takes FOR UPDATE
+    // on that same row and only reaches the key via recordAuditEvent. Racing
+    // them deadlocked (40P01) on 12 of 12 rounds before `lockTenant` was applied
+    // to both sides.
+    //
+    // Racing real functions is timing-dependent, so this pins the ORDERING
+    // instead: hold the advisory key on a separate connection, start a PO
+    // writer, and then touch the PO row. If the writer takes the advisory key
+    // first it is parked there holding no row locks, so our UPDATE sails
+    // through. If it grabbed the row first, the two of us are a cycle and
+    // Postgres kills one with 40P01.
+    const { tenantId, branchId, actor, supplierId, itemAtPoint } = await seedReorderContext();
+    const { poId } = await createDraftPo(actor, {
+      supplierId, branchId,
+      lines: [{ itemId: itemAtPoint, qtyOrdered: 1, uom: "g", unitCost: 1 }],
+    });
+
+    const holder = await pool.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+      await holder.query("SELECT pg_advisory_xact_lock(hashtext($1)::bigint)", [tenantId]);
+
+      // Starts, then parks on the advisory key we are holding.
+      const writer = updateDraftPo(actor, poId, {
+        supplierId, branchId,
+        lines: [{ itemId: itemAtPoint, qtyOrdered: 2, uom: "g", unitCost: 1 }],
+      });
+      await new Promise((r) => setTimeout(r, 300));
+
+      // Deadlocks here if the writer locked the row before the advisory key.
+      await holder.query("UPDATE purchase_orders SET total = total WHERE id = $1", [poId]);
+      await holder.query("COMMIT");
+      await writer;
+    } finally {
+      await holder.query("ROLLBACK").catch(() => {});
+      holder.release();
+    }
+
+    const [line] = await withTenant(tenantId, (tx) =>
+      tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId)));
+    expect(line?.qtyOrdered).toBe("2.000");
     expect((await verifyChain(tenantId)).ok).toBe(true);
   });
 });

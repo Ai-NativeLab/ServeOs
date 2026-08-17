@@ -23,6 +23,9 @@ export function assertTransition(from: PoStatus, to: PoStatus): void {
 
 /** Derive the received-state from ordered vs received totals across all lines. */
 export function receiptStatus(lines: { qtyOrdered: string; qtyReceived: string }[]): "sent" | "partially_received" | "received" {
+  // `every` on an empty array is vacuously true, which would report a PO with
+  // no lines as fully `received`. A PO with nothing ordered has received nothing.
+  if (lines.length === 0) return "sent";
   const anyReceived = lines.some((l) => Number(l.qtyReceived) > 0);
   const allMet = lines.every((l) => Number(l.qtyReceived) >= Number(l.qtyOrdered));
   if (allMet) return "received";

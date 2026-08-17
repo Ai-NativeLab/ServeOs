@@ -32,3 +32,9 @@ describe("PO state machine", () => {
     expect(receiptStatus([{ qtyOrdered: "10", qtyReceived: "12" }])).toBe("received"); // over-receipt
   });
 });
+
+it("a PO with no lines has received nothing (every() on [] is vacuously true)", () => {
+  // Guard against `lines.every(...)` reporting an empty PO as fully received —
+  // which would let it walk sent -> received with nothing ever delivered.
+  expect(receiptStatus([])).toBe("sent");
+});

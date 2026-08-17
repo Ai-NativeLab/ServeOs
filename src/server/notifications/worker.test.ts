@@ -151,5 +151,26 @@ describe("drainOutbox", () => {
       expect(p.sent[0].html).toContain("PO-9");
       expect(p.sent[0].html).toContain("<table");
     });
+
+    it("ignores payload.html on any other template — the passthrough is po_sent only", async () => {
+      // The passthrough is trusted because renderPurchaseOrderHtml escaped every
+      // interpolation at build time. That reasoning holds for po_sent and
+      // nothing else, so the guard is scoped to the template rather than to the
+      // mere SHAPE of the payload — otherwise any future caller that happens to
+      // set `html` turns the outbox into an arbitrary-HTML emailer.
+      const { tenantId } = await seed("wrk-html-3");
+      const html = "<h1>injected</h1>";
+      await withTenant(tenantId, (tx) => tx.insert(notificationOutbox).values({
+        tenantId, toEmail: "u@x.com", subject: "Welcome", template: "generic", payload: { html },
+      }));
+      const p = new FakeEmailProvider();
+
+      await drainOutbox(p);
+      expect(p.sent).toHaveLength(1);
+      expect(p.sent[0].html).not.toBe(html);
+      // It must come back escaped inside the key-value shell, not rendered.
+      expect(p.sent[0].html).toContain("&lt;h1&gt;");
+      expect(p.sent[0].html).toContain("<table");
+    });
   });
 });

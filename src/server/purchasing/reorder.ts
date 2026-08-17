@@ -12,6 +12,7 @@ import { purchaseOrders, purchaseOrderLines, supplierItems, suppliers } from "./
 import { reorderRules } from "./reorder-schema";
 import type { PurchasingActor } from "./suppliers";
 import { InvalidPoInputError } from "./errors";
+import { lockTenant } from "./locking";
 
 function auditCtx(actor: PurchasingActor) {
   return {
@@ -39,7 +40,7 @@ export async function upsertReorderRule(actor: PurchasingActor, input: ReorderRu
     // of letting recordAuditEvent grab it at the end) keeps both paths locking
     // in the same order — otherwise two writers of the same rule rows deadlock
     // (40P01). Re-acquiring in recordAuditEvent later is a re-entrant no-op.
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${actor.tenantId})::bigint)`);
+    await lockTenant(tx, actor.tenantId);
 
     // Body-supplied ids must resolve under our RLS or the rule could reference
     // another tenant's item/location/supplier (FK checks bypass row security).
@@ -62,6 +63,10 @@ export async function upsertReorderRule(actor: PurchasingActor, input: ReorderRu
     }).onConflictDoUpdate({
       target: [reorderRules.itemId, reorderRules.locationId],
       set: {
+        // Changing the thresholds is an explicit "re-evaluate me": clearing the
+        // debounce stamp means lowering a reorder point alerts on the next
+        // sweep instead of waiting out the previous 24h window.
+        lastAlertedAt: null,
         reorderPoint: qty(input.reorderPoint),
         reorderQty: qty(input.reorderQty),
         preferredSupplierId: input.preferredSupplierId ?? null,
@@ -110,10 +115,13 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
     // Serialize the whole sweep per tenant. Advisory locks are re-entrant, so
     // recordAuditEvent re-acquiring the same key later is a no-op; the sweep's
     // read-then-write steps (rules → debounce → notify → draft) are now atomic.
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${actor.tenantId})::bigint)`);
+    await lockTenant(tx, actor.tenantId);
 
     const rules = await tx.select().from(reorderRules).where(eq(reorderRules.isActive, true));
     if (rules.length === 0) return { triggered: 0, draftsCreated: 0 };
+
+    const locRows = await tx.select({ id: storageLocations.id, name: storageLocations.name }).from(storageLocations);
+    const locationName = new Map(locRows.map((l) => [l.id, l.name]));
 
     const { rows } = await tx.execute<{ item_id: string; location_id: string; on_hand: string }>(sql`
       SELECT item_id, location_id, COALESCE(SUM(qty_remaining), 0) AS on_hand
@@ -144,7 +152,7 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
         type: "low_stock",
         severity: "warning",
         title: `${item?.nameEn ?? "Item"} below reorder point`,
-        body: `On hand at location ${rule.locationId} is ${onHand.get(`${rule.itemId}:${rule.locationId}`) ?? 0}, at or below the reorder point of ${Number(rule.reorderPoint)}.`,
+        body: `On hand at ${locationName.get(rule.locationId) ?? rule.locationId} is ${onHand.get(`${rule.itemId}:${rule.locationId}`) ?? 0}, at or below the reorder point of ${Number(rule.reorderPoint)}.`,
         entityType: "inventory_item",
         entityId: rule.itemId,
         targets: [{ role: "owner" }, { role: "manager" }],

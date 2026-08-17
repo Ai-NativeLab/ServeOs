@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { recordAuditEvent } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
@@ -7,6 +7,7 @@ import { tenants } from "@/server/tenancy/schema";
 import { branches } from "@/server/branches/schema";
 import { inventoryItems } from "@/server/inventory/schema";
 import { notify } from "@/server/notifications/service";
+import { lockTenant } from "./locking";
 import { notificationOutbox } from "@/server/notifications/schema";
 import { purchaseOrders, purchaseOrderLines, suppliers } from "./schema";
 import type { PurchasingActor } from "./suppliers";
@@ -34,6 +35,7 @@ function auditCtx(actor: PurchasingActor) {
 export async function sendPurchaseOrder(actor: PurchasingActor, poId: string): Promise<void> {
   requireCapability(actor.vertical, "inventory");
   return withTenant(actor.tenantId, async (tx) => {
+    await lockTenant(tx, actor.tenantId);
     const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId)).for("update").limit(1);
     if (!po) throw new PoNotFoundError();
     if (po.status !== "sent") assertTransition(po.status as PoStatus, "sent");
@@ -45,9 +47,9 @@ export async function sendPurchaseOrder(actor: PurchasingActor, poId: string): P
     const [branch] = await tx.select().from(branches).where(eq(branches.id, po.branchId));
     const [tenant] = await tx.select().from(tenants).where(eq(tenants.id, actor.tenantId));
     const lines = await tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId));
-    const itemRows = await tx.select({ id: inventoryItems.id, nameEn: inventoryItems.nameEn })
+    const itemRows = lines.length === 0 ? [] : await tx.select({ id: inventoryItems.id, nameEn: inventoryItems.nameEn })
       .from(inventoryItems)
-      .where(eq(inventoryItems.tenantId, actor.tenantId));
+      .where(inArray(inventoryItems.id, lines.map((l) => l.itemId)));
     const itemNames = new Map(itemRows.map((r) => [r.id, r.nameEn]));
 
     const html = renderPurchaseOrderHtml(po, lines, itemNames, supplier, branch!, tenant!);

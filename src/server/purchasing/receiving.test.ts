@@ -365,4 +365,41 @@ describe("receiving", () => {
     const [po] = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId)));
     expect(po?.status).toBe("received");
   });
+
+  it("rejects a receipt whose cost overflows to a non-finite number", async () => {
+    // receivedQty and unitCost are each finite, but their PRODUCT can overflow
+    // to Infinity — and String(Infinity) is accepted by Postgres numeric, so the
+    // same un-correctable ledger poison arrives through the quotient instead.
+    const seeded = await seedSentPo({ baseUom: "g", purchaseUom: "g", orderUom: "g" });
+    await expect(postReceipt(seeded.actor, seeded.poId, {
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 1e300, uom: "g", unitCost: 1e300 }],
+    })).rejects.toThrow(InvalidPoInputError);
+
+    const lots = await withTenant(seeded.tenantId, (tx) =>
+      tx.select().from(inventoryLots).where(eq(inventoryLots.itemId, seeded.itemId)));
+    expect(lots).toHaveLength(0);
+  });
+
+  it("rejects an item that declares a purchase factor against its own base unit", async () => {
+    // purchaseUom === baseUom with a factor other than 1 is contradictory for
+    // mass/volume, and applying it silently over-credits by that factor. (For
+    // `count` it is legitimate — that is how a 24-can case is expressed — so the
+    // guard is scoped to non-count dimensions.)
+    const seeded = await seedSentPo({ purchaseToBase: "1000", baseUom: "g", purchaseUom: "g", orderUom: "g" });
+    await expect(postReceipt(seeded.actor, seeded.poId, {
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 500, uom: "g", unitCost: 5 }],
+    })).rejects.toThrow(InvalidPoInputError);
+  });
+
+  it("still applies a count-dimension pack factor (24-can case)", async () => {
+    const seeded = await seedSentPo({ purchaseToBase: "24", baseUom: "each", purchaseUom: "each", orderUom: "each" });
+    await postReceipt(seeded.actor, seeded.poId, {
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 2, uom: "each", unitCost: 50 }],
+    });
+    const lots = await withTenant(seeded.tenantId, (tx) =>
+      tx.select().from(inventoryLots).where(eq(inventoryLots.itemId, seeded.itemId)));
+    expect(lots[0]?.qtyRemaining).toBe("48.000");
+    // 100.00 paid across 48 base units, stored exactly rather than rounded to 2dp.
+    expect(Number(lots[0]?.unitCost) * 48).toBeCloseTo(100, 10);
+  });
 });

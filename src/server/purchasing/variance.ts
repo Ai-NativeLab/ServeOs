@@ -8,6 +8,7 @@ import { purchaseOrders, purchaseOrderLines } from "./schema";
 import type { PurchasingActor } from "./suppliers";
 import { InvalidPoInputError, InvalidPoTransitionError, PoNotFoundError } from "./errors";
 import { assertTransition } from "./status";
+import { lockTenant } from "./locking";
 import type { PoStatus } from "./status";
 
 function auditCtx(actor: PurchasingActor) {
@@ -71,6 +72,7 @@ export async function enterInvoiceTotal(actor: PurchasingActor, poId: string, in
     throw new InvalidPoInputError(`invoiceTotal must be a non-negative finite number (got ${invoiceTotal})`);
   }
   return withTenant(actor.tenantId, async (tx) => {
+    await lockTenant(tx, actor.tenantId);
     const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId)).for("update").limit(1);
     if (!po) throw new PoNotFoundError();
     if (po.status !== "sent" && po.status !== "partially_received" && po.status !== "received") {
@@ -96,6 +98,7 @@ export async function enterInvoiceTotal(actor: PurchasingActor, poId: string, in
 export async function closePurchaseOrder(actor: PurchasingActor, poId: string): Promise<void> {
   requireCapability(actor.vertical, "inventory");
   return withTenant(actor.tenantId, async (tx) => {
+    await lockTenant(tx, actor.tenantId);
     const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId)).for("update").limit(1);
     if (!po) throw new PoNotFoundError();
     assertTransition(po.status, "closed");

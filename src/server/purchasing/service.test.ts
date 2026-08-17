@@ -324,3 +324,72 @@ describe("purchase order drafting", () => {
     expect(poLine?.qtyOrdered).toBe("10.000");
   });
 });
+
+describe("purchase order totals and input floor", () => {
+  it("folds taxRate into the header total, and stores the rate unrounded", async () => {
+    // invoiceTotal (what the supplier actually bills) is tax-inclusive, so a
+    // tax-exclusive header made invoiceVsReceived report a variance on EVERY
+    // tax-bearing PO — burying real discrepancies in structural noise.
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const actor = await seedActor(tenantId, branchId);
+    const supplierId = await seedSupplier(tenantId, branchId);
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+
+    const { poId } = await createDraftPo(actor, {
+      supplierId, branchId,
+      lines: [{ itemId, qtyOrdered: 10, uom: "each", unitCost: 5, taxRate: 0.14 }],
+    });
+
+    const po = await getPurchaseOrder(tenantId, poId);
+    expect(po?.total).toBe("57.00");           // 10 x 5 x 1.14, not 50.00
+
+    const [line] = await withTenant(tenantId, (tx) =>
+      tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId)));
+    // `money()` is a 2dp CURRENCY formatter; a rate is not currency and 12.5%
+    // must not round to 13%.
+    expect(Number(line?.taxRate)).toBe(0.14);
+  });
+
+  it("stores a fractional tax rate without rounding it to two decimals", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const actor = await seedActor(tenantId, branchId);
+    const supplierId = await seedSupplier(tenantId, branchId);
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+
+    const { poId } = await createDraftPo(actor, {
+      supplierId, branchId,
+      lines: [{ itemId, qtyOrdered: 1, uom: "each", unitCost: 100, taxRate: 0.125 }],
+    });
+    const [line] = await withTenant(tenantId, (tx) =>
+      tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId)));
+    expect(Number(line?.taxRate)).toBe(0.125);  // money() would have stored 0.13
+  });
+
+  it("rejects non-finite and non-positive line numbers at the SERVICE boundary", async () => {
+    // The routes validate too, but cron/scripts/tests call these directly.
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const actor = await seedActor(tenantId, branchId);
+    const supplierId = await seedSupplier(tenantId, branchId);
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+    const line = (over: Partial<DraftPoLineInput>): DraftPoLineInput =>
+      ({ itemId, qtyOrdered: 1, uom: "each", unitCost: 1, ...over });
+
+    for (const bad of [
+      line({ qtyOrdered: Number.NaN }),
+      line({ qtyOrdered: 0 }),
+      line({ qtyOrdered: -1 }),
+      line({ unitCost: Number.NaN }),
+      line({ unitCost: -1 }),
+      line({ taxRate: Number.NaN }),
+    ]) {
+      await expect(createDraftPo(actor, { supplierId, branchId, lines: [bad] }))
+        .rejects.toBeInstanceOf(InvalidPoInputError);
+    }
+    await expect(createDraftPo(actor, { supplierId, branchId, lines: [] }))
+      .rejects.toBeInstanceOf(InvalidPoInputError);
+
+    // Nothing was written by any of the rejected attempts.
+    const pos = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders));
+    expect(pos).toHaveLength(0);
+  });
+});
