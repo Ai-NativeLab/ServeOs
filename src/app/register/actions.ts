@@ -2,6 +2,8 @@
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { registerTenant } from "@/server/onboarding";
+import { listPlans } from "@/server/subscription";
+import { postRegisterHref } from "./plan-redirect";
 import type { VerticalId } from "@/server/verticals";
 import { createSession } from "@/server/auth/session";
 import { SESSION_COOKIE } from "@/server/auth/current-user";
@@ -24,5 +26,9 @@ export async function registerAction(formData: FormData) {
   // owner's first sign-in.
   await recordAuthEvent(result.tenantId, "auth.login", { actorUserId: result.ownerUserId, fingerprint: headersFingerprint(await headers()) });
   (await cookies()).set(SESSION_COOKIE, token, { httpOnly: true, sameSite: "lax", path: "/" });
-  redirect("/dashboard");
+  // Carried from the pricing flow, so the plan they chose is waiting for them
+  // on billing. Nothing is invoiced — that stays an explicit act there.
+  const planKey = String(formData.get("plan") || "") || undefined;
+  const planExists = planKey ? (await listPlans()).some((p) => p.key === planKey) : false;
+  redirect(postRegisterHref(planKey, planExists));
 }

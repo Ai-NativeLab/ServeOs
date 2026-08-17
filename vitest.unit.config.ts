@@ -16,6 +16,7 @@ export default defineConfig({
       "src/app/\\(marketing\\)/**/*.test.ts",
       "src/server/demo/**/*.test.ts",
       "src/app/subscribe/**/*.test.ts",
+      "src/app/register/**/*.test.ts",
     ],
     env: { NODE_ENV: "test" },
   },
