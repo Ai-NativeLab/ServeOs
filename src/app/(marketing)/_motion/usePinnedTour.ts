@@ -80,7 +80,14 @@ export function usePinnedTour(panelCount: number, dependencies: unknown[] = []) 
 
       return () => mm.revert();
     },
-    { scope, dependencies: [panelCount, ...dependencies] },
+    // revertOnUpdate is what makes the cleanup above run when `dependencies`
+    // change. Without it useGSAP defers cleanup to unmount (see its
+    // `deferCleanup` branch), so switching trade built a SECOND pinned
+    // ScrollTrigger on this section without reverting the first. Two triggers
+    // pinning one element makes ScrollTrigger drop pin spacing, which removed
+    // ~2700px from the document, and Lenis then held a scroll limit measured
+    // against the collapsed page — the reader could not scroll past the tour.
+    { scope, dependencies: [panelCount, ...dependencies], revertOnUpdate: true },
   );
 
   return scope;
