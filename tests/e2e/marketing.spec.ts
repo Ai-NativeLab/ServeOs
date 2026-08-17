@@ -43,6 +43,48 @@ test("switching trade re-copies the hero and the docket", async ({ page }) => {
   await expect(page.getByTestId("ticket")).toContainText("Oak plank");
 });
 
+/**
+ * The pinned tour is rebuilt whenever the trade changes. useGSAP defers its
+ * cleanup to unmount unless `revertOnUpdate` is set, so each switch used to add
+ * another pinned ScrollTrigger to #surfaces without reverting the last: one pin
+ * after load, four after three switches. ScrollTrigger drops pin spacing when
+ * an element is pinned twice, which took ~2700px out of the document, and Lenis
+ * kept a scroll limit measured against that collapsed page. The reader was then
+ * clamped part-way down and yanked backwards on every wheel event — everything
+ * below the tour, pricing and the footer included, was unreachable.
+ *
+ * Asserted through the wheel rather than window.scrollTo because that is the
+ * path Lenis intercepts; a programmatic scroll still reached the bottom while
+ * the bug was present, so it would not have caught this.
+ */
+async function wheelToBottom(page: import("@playwright/test").Page): Promise<boolean> {
+  const atBottom = () =>
+    window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 4;
+  for (let i = 0; i < 300; i++) {
+    if (await page.evaluate(atBottom)) return true;
+    await page.mouse.wheel(0, 240);
+    await page.waitForTimeout(40);
+  }
+  return page.evaluate(atBottom);
+}
+
+test("the page is still scrollable to the bottom after switching trade", async ({ page }) => {
+  await page.goto("/en");
+  await expect(page.getByRole("heading", { level: 1 })).toContainText("No restaurant website?");
+
+  for (const trade of ["Retail", "Pharmacy", "Timber"]) {
+    await page.getByRole("tab", { name: trade, exact: true }).click();
+    await expect(page.getByRole("tab", { name: trade, exact: true })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  }
+  await expect(page.getByRole("heading", { level: 1 })).toContainText("No timber yard website?");
+
+  expect(await wheelToBottom(page)).toBe(true);
+  await expect(page.locator("footer")).toBeInViewport();
+});
+
 test("the docket keeps one height across every trade", async ({ page }) => {
   await page.goto("/en");
   const ticket = page.getByTestId("ticket");

@@ -141,7 +141,11 @@ export function useHeroTimeline(dependencies: unknown[] = []) {
 
       return () => mm.revert();
     },
-    { scope, dependencies },
+    // Callers key this on the active trade, so the deps really do change.
+    // Without revertOnUpdate useGSAP skips this cleanup on a dep change and the
+    // headline is re-split over an already-split tree, leaking a ScrollTrigger
+    // and the pointermove listener on every switch. See usePinnedTour.
+    { scope, dependencies, revertOnUpdate: true },
   );
 
   return scope;
