@@ -153,4 +153,42 @@ describe("tax basis — all three variance figures agree", () => {
     expect(v.receivedVsOrdered).toBe("0.00");
     expect(v.invoiceVsReceived).toBe("0.00");
   });
+
+  // `po.total` was summed from the RAW caller input while `receivedTotal` summed
+  // the money()-rounded unit_cost column, so the two legs of the match were on
+  // different ROUNDING bases even once they shared a TAX basis. A unit cost
+  // needing more than 2dp then reported a discrepancy on a flawless PO. Every
+  // other money test uses a 2dp-clean cost, where the defect cannot appear.
+  it("a unit cost finer than 2dp does not invent a variance (1000 @ 0.125)", async () => {
+    const { tenantId, actor, poId, poLineId } = await seedSentPo(1000, 0.125);
+    await postReceipt(actor, poId, {
+      lines: [{ poLineId, receivedQty: 1000, uom: "each", unitCost: 0.125 }],
+    });
+    await enterInvoiceTotal(actor, poId, 125);
+
+    const v = await getPoVariance(tenantId, poId);
+    expect(v.total).toBe("125.00");
+    expect(v.receivedTotal).toBe("125.00");
+    expect(v.receivedVsOrdered).toBe("0.00");
+    expect(v.invoiceVsReceived).toBe("0.00");
+  });
+
+  // Sub-cent commodity pricing (per gram). money() collapsed this to 0.00, so
+  // the ledger recorded 3.50 of goods received — receiving.ts:164 uses the raw
+  // cost for the lot — while the variance screen reported 0.00 arrived.
+  it("a sub-cent unit cost survives storage and agrees with the lot value", async () => {
+    const { tenantId, actor, poId, poLineId } = await seedSentPo(1000, 0.0035);
+    await postReceipt(actor, poId, {
+      lines: [{ poLineId, receivedQty: 1000, uom: "each", unitCost: 0.0035 }],
+    });
+
+    const v = await getPoVariance(tenantId, poId);
+    expect(v.total).toBe("3.50");
+    expect(v.receivedTotal).toBe("3.50");
+    expect(v.receivedVsOrdered).toBe("0.00");
+
+    const [line] = await withTenant(tenantId, (tx) =>
+      tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.id, poLineId)));
+    expect(Number(line!.unitCost)).toBe(0.0035);
+  });
 });

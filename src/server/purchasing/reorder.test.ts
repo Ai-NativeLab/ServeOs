@@ -247,7 +247,9 @@ describe("reorder regression pins", () => {
     const [line] = await withTenant(tenantId, (tx) =>
       tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, po.id)));
     expect(po.supplierId).toBe(preferred);
-    expect(line.unitCost).toBe("0.00");   // the rival's 999.00 must not leak in
+    // Asserts the VALUE, not its formatting: unit_cost is a per-unit rate and
+    // is stored exactly (see ./amounts.ts), so an unpriced item is "0", not "0.00".
+    expect(Number(line.unitCost)).toBe(0);   // the rival's 999.00 must not leak in
     expect(po.total).toBe("0.00");
   });
 

@@ -8,6 +8,7 @@ import { branches } from "@/server/branches/schema";
 import type { UnitOfMeasure } from "@/server/catalog/uom";
 import { assertInventoryUom, qty } from "@/server/inventory/uom";
 import { money } from "@/server/ordering/service";
+import { unitRate } from "./amounts";
 import { purchaseOrders, purchaseOrderLines, poReceipts, suppliers } from "./schema";
 import type { PurchaseOrder, PurchaseOrderLine, PoReceipt } from "./schema";
 import { inventoryItems } from "@/server/inventory/schema";
@@ -114,7 +115,7 @@ export async function createDraftPo(actor: PurchasingActor, input: DraftPoInput)
         itemId: l.itemId,
         qtyOrdered: qty(l.qtyOrdered),
         uom,
-        unitCost: money(l.unitCost),
+        unitCost: unitRate(l.unitCost),
         taxRate: l.taxRate !== undefined ? String(l.taxRate) : null,
         qtyReceived: "0",
       });
@@ -217,7 +218,7 @@ export async function updateDraftPo(actor: PurchasingActor, poId: string, input:
         itemId: l.itemId,
         qtyOrdered: qty(l.qtyOrdered),
         uom,
-        unitCost: money(l.unitCost),
+        unitCost: unitRate(l.unitCost),
         taxRate: l.taxRate !== undefined ? String(l.taxRate) : null,
         qtyReceived: "0",
       });

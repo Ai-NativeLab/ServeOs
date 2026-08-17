@@ -8,6 +8,7 @@ import { assertInventoryUom, dimensionOf, qty, toBase } from "@/server/inventory
 import { receiveStock, getOrCreateDefaultLocation } from "@/server/inventory/service";
 import { inventoryItems } from "@/server/inventory/schema";
 import { money } from "@/server/ordering/service";
+import { unitRate } from "./amounts";
 import { purchaseOrders, purchaseOrderLines, poReceipts, poReceiptLines } from "./schema";
 import type { PurchasingActor } from "./suppliers";
 import { InvalidPoInputError, InvalidPoTransitionError, PoNotFoundError, ReceiptUomMismatchError } from "./errors";
@@ -124,7 +125,7 @@ export async function postReceipt(
         itemId: poLine.itemId,
         receivedQty: qty(l.receivedQty),
         uom,
-        unitCost: money(l.unitCost),
+        unitCost: unitRate(l.unitCost),
         lotCode: l.lotCode ?? null,
         expiryAt: l.expiryAt ?? null,
       }).returning({ id: poReceiptLines.id });

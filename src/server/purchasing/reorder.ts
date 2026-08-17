@@ -6,6 +6,7 @@ import { requireCapability } from "@/server/verticals/registry";
 import type { UnitOfMeasure } from "@/server/catalog/uom";
 import { qty } from "@/server/inventory/uom";
 import { money } from "@/server/ordering/service";
+import { unitRate } from "./amounts";
 import { notify } from "@/server/notifications/service";
 import { inventoryItems } from "@/server/inventory/schema";
 import { storageLocations } from "@/server/inventory/schema";
@@ -256,7 +257,7 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
             itemId: l.itemId,
             qtyOrdered: qty(l.qtyOrdered),
             uom: l.uom,
-            unitCost: money(l.unitCost),
+            unitCost: unitRate(l.unitCost),
             qtyReceived: "0",
           });
         }
@@ -290,7 +291,7 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
             itemId: l.itemId,
             qtyOrdered: qty(l.qtyOrdered),
             uom: l.uom,
-            unitCost: money(l.unitCost),
+            unitCost: unitRate(l.unitCost),
             qtyReceived: "0",
           });
         }

@@ -1,4 +1,5 @@
 import type { PurchaseOrder, PurchaseOrderLine, Supplier } from "./schema";
+import { formatUnitRate } from "./amounts";
 
 /** The four-entity escape, kept local so the pure renderer never depends on the
  *  worker's escaping (they must match — both guard interpolated HTML). */
@@ -37,7 +38,7 @@ export function renderPurchaseOrderHtml(
     return `<tr>
       <td style="padding:8px 16px 8px 0;color:#1A0F0A;">${escapeHtml(name)}</td>
       <td style="padding:8px 16px;color:#1A0F0A;text-align:right;">${escapeHtml(l.qtyOrdered)} ${escapeHtml(l.uom)}</td>
-      <td style="padding:8px 16px;color:#1A0F0A;text-align:right;">${escapeHtml(l.unitCost)}</td>
+      <td style="padding:8px 16px;color:#1A0F0A;text-align:right;">${escapeHtml(formatUnitRate(l.unitCost))}</td>
       <td style="padding:8px 0;color:#1A0F0A;text-align:right;">${escapeHtml(lineTotal)}</td>
     </tr>`;
   }).join("");

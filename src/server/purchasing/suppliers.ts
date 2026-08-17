@@ -7,6 +7,7 @@ import type { VerticalId } from "@/server/verticals/types";
 import type { UnitOfMeasure } from "@/server/catalog/uom";
 import { assertInventoryUom } from "@/server/inventory/uom";
 import { money } from "@/server/ordering/service";
+import { unitRate } from "./amounts";
 import { inventoryItems } from "@/server/inventory/schema";
 import { suppliers, supplierItems } from "./schema";
 import type { Supplier } from "./schema";
@@ -120,7 +121,7 @@ export async function upsertSupplierItem(actor: PurchasingActor, input: UpsertSu
       supplierId: input.supplierId,
       itemId: input.itemId,
       supplierSku: input.supplierSku ?? null,
-      lastUnitCost: input.lastUnitCost !== undefined ? money(input.lastUnitCost) : null,
+      lastUnitCost: input.lastUnitCost !== undefined ? unitRate(input.lastUnitCost) : null,
       packUom,
     }).onConflictDoUpdate({
       target: [supplierItems.supplierId, supplierItems.itemId],
@@ -128,7 +129,7 @@ export async function upsertSupplierItem(actor: PurchasingActor, input: UpsertSu
         // Only touch keys the caller provided so a partial upsert doesn't erase
         // the stored supplierSku/packUom/lastUnitCost (drizzle skips `undefined`).
         supplierSku: input.supplierSku !== undefined ? input.supplierSku : undefined,
-        lastUnitCost: input.lastUnitCost !== undefined ? money(input.lastUnitCost) : undefined,
+        lastUnitCost: input.lastUnitCost !== undefined ? unitRate(input.lastUnitCost) : undefined,
         packUom: input.packUom !== undefined ? assertInventoryUom(input.packUom) : undefined,
       },
     });
