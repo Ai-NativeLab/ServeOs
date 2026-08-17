@@ -25,6 +25,12 @@ export const AUDITED_SERVICE_FILES = [
   "src/server/catalog/variants.ts",
   "src/server/inventory/service.ts",
   "src/server/inventory/recipes.ts",
+  "src/server/purchasing/service.ts",
+  "src/server/purchasing/suppliers.ts",
+  "src/server/purchasing/receiving.ts",
+  "src/server/purchasing/send.ts",
+  "src/server/purchasing/reorder.ts",
+  "src/server/purchasing/variance.ts",
   "src/server/branches/service.ts",
   "src/server/tenancy/settings.ts",
   "src/server/tenancy/service.ts",
@@ -146,6 +152,5 @@ export const AUDIT_ALLOWLIST: Record<string, string> = {
   "service.openCount": "inventory.count.commit emitted by commitCount; an open count moves no stock until committed",
   // Forward references — land with later specs; the guardrail enforces they emit then.
   "forward:refund.*": "Spec 3 refunds must emit refund.* via recordAuditEvent",
-  "forward:purchase-order.*": "Spec 9 PO lifecycle must emit po.*",
   "forward:eta.*": "Spec 11 fiscal submissions must emit eta.*",
 };

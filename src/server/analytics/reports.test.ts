@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { eq } from "drizzle-orm";
+import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { posAdjustmentEvents } from "@/server/pos/tender-schema";
 import { placeOrder, transitionStatus } from "@/server/ordering/service";
@@ -6,6 +8,14 @@ import { getCheckoutPricing } from "@/server/tenancy/settings";
 import { computeCartTotals } from "@/lib/order-totals";
 import { recordSale } from "@/server/pos/record-sale";
 import { seedPosContext, openShiftForCtx } from "@/server/pos/test-helpers";
+import { seedInventoryTenant, seedItem } from "@/server/inventory/test-helpers";
+import { users } from "@/server/auth/schema";
+import { purchaseOrders, purchaseOrderLines } from "@/server/purchasing/schema";
+import { createSupplier } from "@/server/purchasing/suppliers";
+import { createDraftPo, cancelPurchaseOrder } from "@/server/purchasing/service";
+import { postReceipt } from "@/server/purchasing/receiving";
+import { enterInvoiceTotal, getPoVariance } from "@/server/purchasing/variance";
+import type { PurchasingActor } from "@/server/purchasing/suppliers";
 import {
   getRevenueTrend,
   getSalesByChannel,
@@ -167,9 +177,8 @@ describe("cross-channel sales aggregations", () => {
 
   // Spec 8 has migrated, so the inventory reports now execute real SQL against
   // empty tables — this asserts they return [] on no data, which also means a
-  // column-name drift between Spec 8's schema and these queries fails loudly
-  // here instead of hiding behind the old missing-table guard. Purchasing
-  // (Spec 9) and low-stock (needs Spec 9's reorder_rules) are still guarded.
+  // column-name drift between the real schema and these queries fails loudly
+  // here instead of hiding behind the old missing-table guard.
   it("every inventory + purchasing report returns [] with no inventory data", async () => {
     const { tenantId } = await seedPosContext("owner");
     const guarded: [string, () => Promise<unknown[]>][] = [
@@ -184,6 +193,93 @@ describe("cross-channel sales aggregations", () => {
     for (const [name, fn] of guarded) {
       await expect(fn(), name).resolves.toEqual([]);
     }
+  });
+
+  // Spec 9 ships the real purchasing services, so these queries now execute
+  // against real rows (the PR #116 lesson, handled in-PR this time). Seed one
+  // received+invoiced PO and one cancelled PO through the actual services and
+  // assert all three purchasing reports read them correctly.
+  it("purchasing analytics read a real received+invoiced PO; cancelled POs are excluded", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const [user] = await db.insert(users).values({
+      tenantId, name: "Buyer", email: `buy-${crypto.randomUUID().slice(0, 8)}@x.com`, status: "active",
+    }).returning({ id: users.id });
+    const actor: PurchasingActor = { tenantId, branchId, actorUserId: user.id, vertical: "restaurant" };
+    const supplierId = await createSupplier(actor, { name: "Main Supplier" });
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+
+    // Received + invoiced: 20 of item @ 5 = 100.00 ordered.
+    const { poId } = await createDraftPo(actor, {
+      supplierId, branchId, lines: [{ itemId, qtyOrdered: 20, uom: "each", unitCost: 5 }], // total 100.00
+    });
+    await withTenant(tenantId, (tx) =>
+      tx.update(purchaseOrders).set({ status: "sent" }).where(eq(purchaseOrders.id, poId)));
+    const [poLine] = await withTenant(tenantId, (tx) =>
+      tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId)));
+    await postReceipt(actor, poId, { lines: [{ poLineId: poLine!.id, receivedQty: 18, uom: "each", unitCost: 5 }] });
+    await enterInvoiceTotal(actor, poId, 95);
+
+    // Cancelled PO — must not appear in spend.
+    const dead = await createDraftPo(actor, {
+      supplierId, branchId, lines: [{ itemId, qtyOrdered: 10, uom: "each", unitCost: 100 }],
+    });
+    await cancelPurchaseOrder(actor, dead.poId);
+
+    // An untouched DRAFT is not spend either — nothing has been ordered yet.
+    // This matters because the nightly reorder sweep auto-drafts POs, so every
+    // chronically-low item would otherwise inflate the report on its own.
+    await createDraftPo(actor, {
+      supplierId, branchId, lines: [{ itemId, qtyOrdered: 7, uom: "each", unitCost: 1000 }],
+    });
+
+    const spend = await getSpendBySupplier(tenantId, 30);
+    expect(spend).toHaveLength(1);
+    expect(spend[0].name).toBe("Main Supplier");
+    expect(spend[0].poCount).toBe(1); // the cancelled and the draft are excluded
+    expect(spend[0].spend).toBeCloseTo(100, 2); // ordered total, not received
+
+    const rvi = await getReceivedVsInvoiced(tenantId, 30);
+    expect(rvi).toHaveLength(1);
+    expect(rvi[0].poNumber).toBe(1);
+    expect(rvi[0].ordered).toBeCloseTo(100, 2);
+    expect(rvi[0].received).toBeCloseTo(90, 2); // 18 × 5
+    expect(rvi[0].invoiced).toBeCloseTo(95, 2);
+    // The supplier billed 95 for 90 of goods: +5 OVERBILLED. Same name, same
+    // sign as getPoVariance's field — the report and the detail view must not
+    // describe one PO with opposite signs under the shared word "variance".
+    expect(rvi[0].invoiceVsReceived).toBeCloseTo(5, 2);
+
+    // reorder_rules exists but nothing is below a point → still empty.
+    await expect(getLowStock(tenantId)).resolves.toEqual([]);
+  });
+
+  // Pins the two surfaces against each other on a NON-ZERO delta. Both existing
+  // tax-basis tests assert a perfectly-matched PO where every delta is 0.00 —
+  // the one value a sign flip cannot change.
+  it("getReceivedVsInvoiced agrees with getPoVariance in name and sign", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const [user] = await db.insert(users).values({
+      tenantId, name: "Buyer", email: `buy-${crypto.randomUUID().slice(0, 8)}@x.com`, status: "active",
+    }).returning({ id: users.id });
+    const actor: PurchasingActor = { tenantId, branchId, actorUserId: user.id, vertical: "restaurant" };
+    const supplierId = await createSupplier(actor, { name: "S" });
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+
+    const { poId } = await createDraftPo(actor, {
+      supplierId, branchId, lines: [{ itemId, qtyOrdered: 20, uom: "each", unitCost: 5 }],
+    });
+    await withTenant(tenantId, (tx) =>
+      tx.update(purchaseOrders).set({ status: "sent" }).where(eq(purchaseOrders.id, poId)));
+    const [poLine] = await withTenant(tenantId, (tx) =>
+      tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId)));
+    await postReceipt(actor, poId, { lines: [{ poLineId: poLine!.id, receivedQty: 18, uom: "each", unitCost: 5 }] });
+    await enterInvoiceTotal(actor, poId, 95);
+
+    const detail = await getPoVariance(tenantId, poId);
+    const [report] = await getReceivedVsInvoiced(tenantId, 30);
+    expect(Number(detail.invoiceVsReceived)).toBeCloseTo(report.invoiceVsReceived, 2);
+    expect(Number(detail.receivedTotal)).toBeCloseTo(report.received, 2);
+    expect(Number(detail.total)).toBeCloseTo(report.ordered, 2);
   });
 
   it("RLS: a second tenant's orders never leak into any breakdown", async () => {
@@ -204,5 +300,41 @@ describe("cross-channel sales aggregations", () => {
     expect(byChannel.reduce((s, r) => s + r.orderCount, 0)).toBe(4);
     const byCashier = await getSalesByCashier(tenantId, 7);
     expect(byCashier.some((r) => r.cashierUserId === rival.ctx.cashierUserId)).toBe(false);
+  });
+});
+
+describe("purchasing analytics tax basis", () => {
+  it("grosses the received side up by the ordering line's tax rate", async () => {
+    // getReceivedVsInvoiced puts `ordered` (po.total, gross) next to `received`
+    // and `invoiced` (po.invoice_total, gross). If `received` stayed net, every
+    // tax-bearing PO would show a permanent variance and the report would
+    // disagree with getPoVariance, which is documented to match it.
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const [user] = await db.insert(users).values({
+      tenantId, name: "Buyer", email: `tax-${crypto.randomUUID().slice(0, 8)}@x.com`, status: "active",
+    }).returning({ id: users.id });
+    const actor: PurchasingActor = { tenantId, branchId, actorUserId: user.id, vertical: "restaurant" };
+    const supplierId = await createSupplier(actor, { name: "VAT Supplier" });
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+
+    const { poId } = await createDraftPo(actor, {
+      supplierId, branchId,
+      lines: [{ itemId, qtyOrdered: 10, uom: "each", unitCost: 5, taxRate: 0.14 }],
+    });
+    await withTenant(tenantId, (tx) =>
+      tx.update(purchaseOrders).set({ status: "sent" }).where(eq(purchaseOrders.id, poId)));
+    const [line] = await withTenant(tenantId, (tx) =>
+      tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId)));
+    await postReceipt(actor, poId, {
+      lines: [{ poLineId: line.id, receivedQty: 10, uom: "each", unitCost: 5 }],
+    });
+    await enterInvoiceTotal(actor, poId, 57);
+
+    const rvi = await getReceivedVsInvoiced(tenantId, 30);
+    const row = rvi.find((r) => r.poId === poId)!;
+    expect(row.ordered).toBeCloseTo(57, 2);
+    expect(row.received).toBeCloseTo(57, 2);   // 50 net grossed by 14%, not 50
+    expect(row.invoiced).toBeCloseTo(57, 2);
+    expect(row.invoiceVsReceived).toBeCloseTo(0, 2);
   });
 });

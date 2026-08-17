@@ -124,6 +124,11 @@ export async function drainOutbox(
 /** v1 rendering: a clean transactional shell around the payload. Spec 9 hands
  *  in fully-rendered PO documents via the payload when it arrives. */
 function renderTemplate(template: string, subject: string, payload: Record<string, unknown>): string {
+  // Spec 9: the caller pre-rendered a full document (PO HTML). It is trusted —
+  // renderPurchaseOrderHtml escaped every interpolation at build time. Scoped to
+  // the po_sent template so a future caller cannot turn the outbox into an
+  // arbitrary-HTML emailer by setting a `html` payload key by accident.
+  if (template === "po_sent" && typeof payload.html === "string") return payload.html;
   const rows = Object.entries(payload)
     .map(([k, v]) => `<tr><td style="padding:4px 12px 4px 0;color:#6E6459;">${escapeHtml(k)}</td><td style="padding:4px 0;color:#1A0F0A;">${escapeHtml(String(v))}</td></tr>`)
     .join("");

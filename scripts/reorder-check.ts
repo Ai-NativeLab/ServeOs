@@ -1,0 +1,117 @@
+/**
+ * Scheduled Spec 9 reorder sweep.
+ *
+ * Iterates every ACTIVE tenant and runs `checkReorder` for it, so low-stock
+ * rules notify the owner + manager and pre-fill draft POs on a schedule instead
+ * of only when someone hits `POST /api/inventory/reorder/check` from a browser.
+ * The manual route is the same function with an interactive actor; this script
+ * is the cron body with a per-tenant system actor.
+ *
+ * The system actor resolves the tenant's first branch (by sortOrder, exactly as
+ * `resolvePurchasingActor` does for an interactive request) and its owner user
+ * (roles.key = 'owner'), because draft POs carry `created_by_user_id` — a real,
+ * tenant-local user must back the sweep or the FK would reject the insert.
+ *
+ * `checkReorder` debounces each rule on a 24h `lastAlertedAt` window and merges
+ * into a supplier's open draft rather than stacking a new one. That makes a
+ * SEQUENTIAL re-run a no-op; it does not make two OVERLAPPING sweeps safe (the
+ * rules read takes no lock — see `checkReorder`'s docstring). The GitHub
+ * workflow's `concurrency` group is what keeps scheduled runs from overlapping.
+ *
+ * Run: ENV_FILE=.env.local npx tsx scripts/reorder-check.ts
+ */
+import { config } from "dotenv";
+
+const RUN_DIRECTLY = process.argv[1]?.includes("reorder-check") ?? false;
+
+// GUARDED, and it has to be. This call carries `override: true`, so on import it
+// would replace a DATABASE_URL that vitest's setup had already pointed at
+// .env.test with the one from .env.local — the developer's own database. The
+// suite truncates every table before each test, so importing this script from a
+// test wipes local data. backfill-inventory.ts took exactly this hit; main()
+// below was already guarded here, and the env load was the half that was missed.
+if (RUN_DIRECTLY) {
+  config({ path: process.env.ENV_FILE ?? ".env.local", override: true, quiet: true });
+}
+
+import { and, eq, asc } from "drizzle-orm";
+import { db } from "@/db/client";
+import { withTenant } from "@/db/with-tenant";
+import { tenants } from "@/server/tenancy/schema";
+import { branches } from "@/server/branches/schema";
+import { roles, userRoles } from "@/server/auth/schema";
+import { checkReorder } from "@/server/purchasing/reorder";
+import type { PurchasingActor } from "@/server/purchasing/suppliers";
+import type { VerticalId } from "@/server/verticals/types";
+
+export type ReorderCheckReport = {
+  tenantId: string;
+  triggered: number;
+  draftsCreated: number;
+};
+
+export async function checkTenantReorder(tenantId: string): Promise<ReorderCheckReport> {
+  return withTenant(tenantId, async (tx) => {
+    const [branch] = await tx.select({ id: branches.id })
+      .from(branches).where(eq(branches.tenantId, tenantId))
+      .orderBy(asc(branches.sortOrder)).limit(1);
+    const [t] = await tx.select({ vertical: tenants.vertical })
+      .from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+    const [owner] = await tx.select({ userId: userRoles.userId })
+      .from(userRoles).innerJoin(roles, eq(userRoles.roleId, roles.id))
+      .where(and(eq(roles.tenantId, tenantId), eq(roles.key, "owner"))).limit(1);
+    if (!owner || !branch) {
+      return { tenantId, triggered: 0, draftsCreated: 0 };
+    }
+    const actor: PurchasingActor = {
+      tenantId,
+      branchId: branch.id,
+      actorUserId: owner.userId,
+      vertical: (t?.vertical ?? "restaurant") as VerticalId,
+      // Machine write — the audit chain must attribute the drafted PO to the
+      // system, not to the owner user whose row backs the created_by FK.
+      actorType: "system",
+    };
+    const run = await checkReorder(actor);
+    return { tenantId, ...run };
+  });
+}
+
+/**
+ * Runs the sweep for every active tenant. One tenant's failure must not abort
+ * the rest (it would skip the SAME later tenants on every run, since the list
+ * is ordered by slug) — each tenant is caught individually, failures are
+ * collected, and the process exits non-zero when anything failed so cron sees
+ * it. Exported so the test suite can drive a multi-tenant sweep.
+ */
+export async function sweepAllTenants(): Promise<{ processed: number; failed: number }> {
+  const active = await db.select({ id: tenants.id, slug: tenants.slug })
+    .from(tenants).where(eq(tenants.status, "active")).orderBy(asc(tenants.slug));
+
+  let alerts = 0;
+  let drafts = 0;
+  let failed = 0;
+  for (const t of active) {
+    try {
+      const r = await checkTenantReorder(t.id);
+      alerts += r.triggered;
+      drafts += r.draftsCreated;
+      console.log(`${t.slug}: ${r.triggered} triggered, ${r.draftsCreated} draft PO(s)`);
+    } catch (e) {
+      failed++;
+      console.error(`${t.slug}: reorder sweep failed — ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  console.log(`\nreorder check complete — ${alerts} item(s) below reorder point, ${drafts} draft PO(s) across ${active.length} active tenant(s), ${failed} tenant(s) failed`);
+  return { processed: active.length, failed };
+}
+
+async function main(): Promise<void> {
+  const { failed } = await sweepAllTenants();
+  if (failed > 0) process.exit(1);
+}
+
+// Only run when invoked directly, so the test suite can import checkTenantReorder / sweepAllTenants.
+if (process.argv[1]?.includes("reorder-check")) {
+  main().then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1); });
+}

@@ -7,6 +7,17 @@ describe("dashboardNavItems", () => {
     // Staff reach Inventory deliberately: they hold inventory:view + inventory:count
     // so they can count shelves, but not inventory:manage.
     expect(hrefs).toEqual(["/dashboard/orders", "/dashboard/orders/history", "/dashboard/inventory"]);
+    expect(hrefs).not.toContain("/dashboard/purchase-orders");
+    expect(hrefs).not.toContain("/dashboard/suppliers");
+  });
+
+  it("shows Purchasing + Suppliers to owner and manager but never staff (purchasing:manage)", () => {
+    expect(dashboardNavItems(["owner"]).map((i) => i.label)).toContain("Purchasing");
+    expect(dashboardNavItems(["manager"]).map((i) => i.label)).toContain("Purchasing");
+    expect(dashboardNavItems(["owner"]).map((i) => i.href)).toContain("/dashboard/purchase-orders");
+    expect(dashboardNavItems(["manager"]).map((i) => i.href)).toContain("/dashboard/purchase-orders");
+    expect(dashboardNavItems(["staff"]).map((i) => i.label)).not.toContain("Purchasing");
+    expect(dashboardNavItems(["staff"]).map((i) => i.label)).not.toContain("Suppliers");
   });
 
   it("does not show staff the Payments confirmation queue (owner/manager only)", () => {
@@ -17,7 +28,7 @@ describe("dashboardNavItems", () => {
   it("shows owners the full nav including Home, Payments, Settings, Audit and Customers", () => {
     const labels = dashboardNavItems(["owner"]).map((i) => i.label);
     expect(labels).toEqual([
-      "Home", "Analytics", "Orders", "Sales history", "Payments", "Menu", "Inventory", "Branches", "Banners", "Settings", "Audit", "Customers", "Prescriptions",
+      "Home", "Analytics", "Orders", "Sales history", "Payments", "Menu", "Inventory", "Purchasing", "Suppliers", "Branches", "Banners", "Settings", "Audit", "Customers", "Prescriptions",
     ]);
   });
 

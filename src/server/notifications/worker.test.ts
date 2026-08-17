@@ -118,4 +118,59 @@ describe("drainOutbox", () => {
     const after = await drainOutbox(p);
     expect(after.sent + after.failed).toBe(0);
   });
+
+  describe("payload.html passthrough", () => {
+    const seedWithPayload = async (slug: string, payload: Record<string, unknown>) => {
+      const { tenantId } = await seed(slug);
+      await withTenant(tenantId, (tx) => tx.insert(notificationOutbox).values({
+        tenantId, toEmail: "sup@x.com", subject: "PO-9", template: "po_sent", payload,
+      }));
+      return tenantId;
+    };
+
+    it("sends a full document from payload.html verbatim, not the key-value shell", async () => {
+      const html = "<!doctype html><h1>PO-9</h1><table><tr><td>Cola</td></tr></table>";
+      const tenantId = await seedWithPayload("wrk-html-1", { html });
+      const p = new FakeEmailProvider();
+
+      const res = await drainOutbox(p);
+      expect(res.sent).toBe(1);
+      expect(p.sent[0].to).toBe("sup@x.com");
+      expect(p.sent[0].html).toBe(html);
+
+      const [row] = await withTenant(tenantId, (tx) => tx.select().from(notificationOutbox));
+      expect(row.status).toBe("sent");
+    });
+
+    it("still renders the key-value shell when payload.html is absent", async () => {
+      await seedWithPayload("wrk-html-2", { poNumber: "PO-9" });
+      const p = new FakeEmailProvider();
+
+      await drainOutbox(p);
+      expect(p.sent).toHaveLength(1);
+      expect(p.sent[0].html).toContain("PO-9");
+      expect(p.sent[0].html).toContain("<table");
+    });
+
+    it("ignores payload.html on any other template — the passthrough is po_sent only", async () => {
+      // The passthrough is trusted because renderPurchaseOrderHtml escaped every
+      // interpolation at build time. That reasoning holds for po_sent and
+      // nothing else, so the guard is scoped to the template rather than to the
+      // mere SHAPE of the payload — otherwise any future caller that happens to
+      // set `html` turns the outbox into an arbitrary-HTML emailer.
+      const { tenantId } = await seed("wrk-html-3");
+      const html = "<h1>injected</h1>";
+      await withTenant(tenantId, (tx) => tx.insert(notificationOutbox).values({
+        tenantId, toEmail: "u@x.com", subject: "Welcome", template: "generic", payload: { html },
+      }));
+      const p = new FakeEmailProvider();
+
+      await drainOutbox(p);
+      expect(p.sent).toHaveLength(1);
+      expect(p.sent[0].html).not.toBe(html);
+      // It must come back escaped inside the key-value shell, not rendered.
+      expect(p.sent[0].html).toContain("&lt;h1&gt;");
+      expect(p.sent[0].html).toContain("<table");
+    });
+  });
 });
