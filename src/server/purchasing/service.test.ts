@@ -1,4 +1,4 @@
-﻿import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { db, pool } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
@@ -10,7 +10,7 @@ import { verifyChain } from "@/server/audit/verifier";
 import { auditEvents } from "@/server/audit/schema";
 import { purchaseOrders, purchaseOrderLines } from "./schema";
 import { createSupplier } from "./suppliers";
-import { createDraftPo, updateDraftPo, cancelPurchaseOrder, getPurchaseOrder, type DraftPoLineInput } from "./service";
+import { createDraftPo, updateDraftPo, cancelPurchaseOrder, getPurchaseOrder, listPurchaseOrders, type DraftPoLineInput } from "./service";
 import { postReceipt } from "./receiving";
 import { sendPurchaseOrder } from "./send";
 import { enterInvoiceTotal, getPoVariance, closePurchaseOrder } from "./variance";
@@ -464,4 +464,17 @@ describe("purchase order totals and input floor", () => {
     const pos = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders));
     expect(pos).toHaveLength(0);
   });
+
+  it("listPurchaseOrders returns supplierName joined from suppliers", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const actor = await seedActor(tenantId, branchId);
+    const supplierId = await seedSupplier(tenantId, branchId);
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+
+    await createDraftPo(actor, { supplierId, branchId, lines: [line(itemId)] });
+    const [po] = await listPurchaseOrders(tenantId);
+
+    expect(po?.supplierName).toBe("Supplier");
+  });
 });
+
