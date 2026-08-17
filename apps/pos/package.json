@@ -2,14 +2,55 @@
   "name": "pos",
   "version": "0.1.0",
   "private": true,
+  "description": "ServeOS point-of-sale terminal",
+  "author": "ServeOS",
   "main": "dist-electron/main.js",
+  "//electron": "Pinned exactly, not a ^ range: npm workspaces hoist electron to the repo root, electron-builder only looks in apps/pos/node_modules, and its fallback of reading the declared version needs that version to be fixed (electron-builder#3984). A range here fails the packaging step with 'Cannot compute electron version'. Bump it deliberately.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -p tsconfig.node.json && vite build && electron-builder",
+    "build": "tsc -p tsconfig.node.json && vite build && electron-builder --publish never",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run"
   },
   "//": "better-sqlite3 is parked with the offline store in electron/_offline; kept optional so a failed native build never blocks `npm install`. (Note lives at top level — npm rejects a '//' comment key inside a dependencies object with EINVALIDPACKAGENAME, which breaks install/CI and Vercel deploys.)",
+  "//build": "Notes on the `build` block below — they live out here because electron-builder validates its config against a schema and rejects unknown keys, so a '//' inside it fails the build. (1) `files` ships only the two bundles: vite emits the renderer to dist/, vite-plugin-electron emits main+preload to dist-electron/, and apps/pos has no runtime dependencies — everything is bundled. (2) better-sqlite3 is excluded and npmRebuild is off because it is an optionalDependency of the parked offline store with zero live imports; letting electron-builder collect it would bundle a native binding built for Node, not Electron. Both come back when the offline engine is unparked. (3) `mac.identity: null` makes the unsigned build explicit rather than accidental — signing needs an Apple Developer cert, and without one macOS Gatekeeper requires right-click - Open on first launch. (4) `artifactName` overrides the default, which interpolates productName and would put a space in every filename — that breaks the unquoted glob the release workflow passes to `gh release create`, and turns every download URL into %20 soup.",
+  "build": {
+    "appId": "tech.serveos.pos",
+    "productName": "ServeOS POS",
+    "directories": {
+      "output": "release"
+    },
+    "artifactName": "ServeOS-POS-${version}-${arch}.${ext}",
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json",
+      "!node_modules/better-sqlite3/**"
+    ],
+    "npmRebuild": false,
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64", "x64"]
+        }
+      ],
+      "category": "public.app-category.business",
+      "identity": null
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
   "optionalDependencies": {
     "better-sqlite3": "^11.8.0"
   },
@@ -22,7 +63,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^4.3.0",
-    "electron": "^33.0.0",
+    "electron": "33.4.11",
     "electron-builder": "^25.0.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
