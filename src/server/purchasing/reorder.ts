@@ -1,8 +1,9 @@
-import { sql, eq, inArray, and } from "drizzle-orm";
+import { sql, eq, inArray, and, asc } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { recordAuditEvent } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { requireCapability } from "@/server/verticals/registry";
+import type { UnitOfMeasure } from "@/server/catalog/uom";
 import { qty } from "@/server/inventory/uom";
 import { money } from "@/server/ordering/service";
 import { notify } from "@/server/notifications/service";
@@ -170,7 +171,22 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
       bySupplier.set(rule.preferredSupplierId, list);
     }
 
-    let draftsCreated = 0;
+    // PHASE 1 — ROWS ONLY. Every row lock the sweep needs is taken here, before
+    // any statement that acquires `hashtext(tenantId)`. THE RULE (./locking.ts):
+    // never hold that key while waiting for a row lock. Doing the lock and the
+    // write together per supplier broke it on the SECOND iteration — the first
+    // supplier's closing audit event took the key, and the next supplier's
+    // `FOR UPDATE` then waited on a row while holding it, which is the exact
+    // cycle that deadlocked 24/24 against send/update/cancel/receive in review
+    // rounds 3 and 4. It is invisible to a single-supplier fixture.
+    type SupplierPlan = {
+      supplierId: string;
+      open: { id: string; total: string | null; poNumber: number } | null;
+      lines: { itemId: string; qtyOrdered: number; uom: UnitOfMeasure; unitCost: number }[];
+      added: number;
+    };
+    const plans: SupplierPlan[] = [];
+
     for (const [supplierId, group] of bySupplier) {
       // The supplier id came from a reorder rule — verify it still resolves
       // under our RLS before drafting a PO against it (FK checks bypass RLS).
@@ -184,15 +200,16 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
       // every other triggered item is appended to it (or starts a fresh draft).
       // FOR UPDATE, not an advisory key: we are about to UPDATE this row, and
       // every other PO writer (send/update/cancel/receive) also takes the row
-      // first and the tenant key last, via its closing audit event. Taking the
-      // key up front here instead is what deadlocked 24/24 — see ./locking.ts.
+      // first and the tenant key last, via its closing audit event.
       const [open] = await tx.select({ id: purchaseOrders.id, total: purchaseOrders.total, poNumber: purchaseOrders.poNumber })
         .from(purchaseOrders)
         .where(and(
           eq(purchaseOrders.supplierId, supplierId),
           eq(purchaseOrders.branchId, actor.branchId),
           eq(purchaseOrders.status, "draft"),
-        )).for("update").limit(1);
+        ))
+        .orderBy(asc(purchaseOrders.poNumber))
+        .for("update").limit(1);
 
       // Items already covered by the open draft — the ones being merged — must
       // not be re-lined. The rest is what this run actually adds.
@@ -217,11 +234,20 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
         return { itemId: r.itemId, qtyOrdered: Number(r.reorderQty), uom: itemById.get(r.itemId)?.baseUom ?? "each", unitCost: cost };
       });
 
+      plans.push({ supplierId, open: open ?? null, lines, added });
+    }
+
+    // PHASE 2 — WRITES. From here on nothing waits on a row another transaction
+    // could hold: the UPDATEs target drafts already locked in phase 1, and
+    // everything else is an INSERT of a brand-new row. That is what makes it
+    // safe for `lockPoNumbering` and `recordAuditEvent` to take the key here.
+    let draftsCreated = 0;
+    for (const plan of plans) {
+      const { supplierId, open, lines, added } = plan;
       if (open) {
         // Merge: append the missing lines to the existing draft and bump its total.
-        const newTotal = Number(open.total ?? 0) + added;
         await tx.update(purchaseOrders)
-          .set({ total: money(newTotal) })
+          .set({ total: money(Number(open.total ?? 0) + added) })
           .where(eq(purchaseOrders.id, open.id));
         for (const l of lines) {
           await tx.insert(purchaseOrderLines).values({

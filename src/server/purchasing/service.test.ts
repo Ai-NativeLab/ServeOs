@@ -203,6 +203,54 @@ describe("purchase order drafting", () => {
     expect(await getPurchaseOrder(tenantId, "00000000-0000-0000-0000-000000000000")).toBeNull();
   });
 
+  // Without this, `poLineId` is unobtainable through any service or route, so
+  // POST /purchase-orders/:id/receipts cannot be called by ANY client — the
+  // acceptance walk below has to reach into purchase_order_lines directly.
+  it("getPurchaseOrder returns the PO's lines, so a receipt can name a poLineId", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const actor = await seedActor(tenantId, branchId);
+    const supplierId = await createSupplier(actor, { name: "Supplier", email: "s@x.com" });
+    const itemId = await seedItem(tenantId, { baseUom: "each", nameEn: "Tomatoes" });
+
+    const { poId } = await createDraftPo(actor, { supplierId, branchId, lines: [line(itemId)] });
+    const po = await getPurchaseOrder(tenantId, poId);
+
+    expect(po?.lines).toHaveLength(1);
+    expect(po?.lines[0].itemId).toBe(itemId);
+    expect(po?.lines[0].itemNameEn).toBe("Tomatoes");
+    expect(po?.lines[0].qtyOrdered).toBe("10.000");
+    expect(po?.lines[0].id).toEqual(expect.any(String));
+    // A receipt posted with ONLY what the read path returned must succeed.
+    await sendPurchaseOrder(actor, poId);
+    const posted = await postReceipt(actor, poId, {
+      lines: [{ poLineId: po!.lines[0].id, receivedQty: 10, uom: "each", unitCost: 5 }],
+    });
+    expect(posted.status).toBe("received");
+  });
+
+  it("getPurchaseOrder returns receipts posted against the PO", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const actor = await seedActor(tenantId, branchId);
+    const supplierId = await createSupplier(actor, { name: "Supplier", email: "s@x.com" });
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+
+    const { poId } = await createDraftPo(actor, { supplierId, branchId, lines: [line(itemId)] });
+    await sendPurchaseOrder(actor, poId);
+    const before = await getPurchaseOrder(tenantId, poId);
+    expect(before?.receipts).toHaveLength(0);
+
+    const po = await getPurchaseOrder(tenantId, poId);
+    await postReceipt(actor, poId, {
+      lines: [{ poLineId: po!.lines[0].id, receivedQty: 4, uom: "each", unitCost: 5 }],
+      supplierDeliveryNote: "DN-7",
+    });
+
+    const after = await getPurchaseOrder(tenantId, poId);
+    expect(after?.receipts).toHaveLength(1);
+    expect(after?.receipts[0].supplierDeliveryNote).toBe("DN-7");
+    expect(after?.lines[0].qtyReceived).toBe("4.000");
+  });
+
   it("acceptance walk: draft → sent → two partial receipts (lots + ledger) → invoiced → variance → closed, with po.* audit on every step", async () => {
     const { tenantId, branchId } = await seedInventoryTenant();
     const actor = await seedActor(tenantId, branchId);
@@ -220,8 +268,10 @@ describe("purchase order drafting", () => {
     let [po] = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId)));
     expect(po?.status).toBe("sent");
 
-    // two partial receipts → two lots, one receive ledger row each
-    const [poLine] = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId)));
+    // two partial receipts → two lots, one receive ledger row each.
+    // The poLineId comes from the PUBLIC read path, not a raw table read — this
+    // walk must be reproducible by any API client, not only by the test suite.
+    const [poLine] = (await getPurchaseOrder(tenantId, poId))!.lines;
     const first = await postReceipt(actor, poId, { lines: [{ poLineId: poLine!.id, receivedQty: 4, uom: "each", unitCost: 5 }] });
     expect(first.status).toBe("partially_received");
     const second = await postReceipt(actor, poId, { lines: [{ poLineId: poLine!.id, receivedQty: 6, uom: "each", unitCost: 5 }] });

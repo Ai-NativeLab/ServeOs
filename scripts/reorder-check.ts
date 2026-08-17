@@ -12,15 +12,27 @@
  * (roles.key = 'owner'), because draft POs carry `created_by_user_id` — a real,
  * tenant-local user must back the sweep or the FK would reject the insert.
  *
- * Debounce and idempotence live inside `checkReorder` (24h lastAlertedAt skip,
- * rules with no supplier emit no PO), so a re-run or an overlapping schedule
- * cannot duplicate alerts or draft POs.
+ * `checkReorder` debounces each rule on a 24h `lastAlertedAt` window and merges
+ * into a supplier's open draft rather than stacking a new one. That makes a
+ * SEQUENTIAL re-run a no-op; it does not make two OVERLAPPING sweeps safe (the
+ * rules read takes no lock — see `checkReorder`'s docstring). The GitHub
+ * workflow's `concurrency` group is what keeps scheduled runs from overlapping.
  *
  * Run: ENV_FILE=.env.local npx tsx scripts/reorder-check.ts
  */
 import { config } from "dotenv";
 
-config({ path: process.env.ENV_FILE ?? ".env.local", override: true, quiet: true });
+const RUN_DIRECTLY = process.argv[1]?.includes("reorder-check") ?? false;
+
+// GUARDED, and it has to be. This call carries `override: true`, so on import it
+// would replace a DATABASE_URL that vitest's setup had already pointed at
+// .env.test with the one from .env.local — the developer's own database. The
+// suite truncates every table before each test, so importing this script from a
+// test wipes local data. backfill-inventory.ts took exactly this hit; main()
+// below was already guarded here, and the env load was the half that was missed.
+if (RUN_DIRECTLY) {
+  config({ path: process.env.ENV_FILE ?? ".env.local", override: true, quiet: true });
+}
 
 import { and, eq, asc } from "drizzle-orm";
 import { db } from "@/db/client";

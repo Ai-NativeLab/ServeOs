@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { eq, and } from "drizzle-orm";
-import { db } from "@/db/client";
+import { db, pool } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { users } from "@/server/auth/schema";
 import { products, categories } from "@/server/catalog/schema";
@@ -118,7 +118,110 @@ async function buildMergeState() {
   return { tenantId, branchId, actor, supplierId, poId: po.id as string, itemA: a, locationId };
 }
 
+/**
+ * TWO suppliers, each with an open draft that does NOT yet cover its low item —
+ * so the sweep merges into both, taking a row lock per supplier and reaching
+ * recordAuditEvent (which takes hashtext(tenantId)) on the first one. Every
+ * other fixture in this file uses a single supplier, so the loop body runs once
+ * and the second-iteration inversion cannot appear.
+ */
+async function buildTwoSupplierMergeState() {
+  const { tenantId, branchId } = await seedInventoryTenant();
+  const actor = await seedActor(tenantId, branchId);
+  const locationId = await seedLocation(tenantId, branchId, "kitchen");
+
+  const built: { supplierId: string; seedItem: string; lowItem: string }[] = [];
+  for (const name of ["S1", "S2"]) {
+    const supplierId = await createSupplier(actor, { name, email: `${name}@x.com` });
+    const seeded = await seedItem(tenantId, { baseUom: "g", nameEn: `${name}-seed` });
+    const low = await seedItem(tenantId, { baseUom: "g", nameEn: `${name}-low` });
+    for (const itemId of [seeded, low]) {
+      await upsertSupplierItem(actor, { supplierId, itemId, lastUnitCost: 2 });
+      await upsertReorderRule(actor, { itemId, locationId, reorderPoint: 20, reorderQty: 10, preferredSupplierId: supplierId });
+    }
+    // `seeded` is low now (drafts on the first sweep); `low` drops afterwards.
+    await withTenant(tenantId, (tx) => tx.insert(inventoryLots).values({
+      tenantId, itemId: seeded, locationId, qtyReceived: "5", qtyRemaining: "5", unitCost: "1",
+    }));
+    await withTenant(tenantId, (tx) => tx.insert(inventoryLots).values({
+      tenantId, itemId: low, locationId, qtyReceived: "999", qtyRemaining: "999", unitCost: "1",
+    }));
+    built.push({ supplierId, seedItem: seeded, lowItem: low });
+  }
+
+  await checkReorder(actor); // one open draft per supplier, each holding its seed item
+  const drafts = await withTenant(tenantId, (tx) =>
+    tx.select().from(purchaseOrders).orderBy(purchaseOrders.poNumber));
+  // Now make each supplier's OTHER item low, so the next sweep must merge.
+  for (const b of built) {
+    await withTenant(tenantId, (tx) =>
+      tx.update(inventoryLots).set({ qtyRemaining: "1" }).where(eq(inventoryLots.itemId, b.lowItem)));
+  }
+  await withTenant(tenantId, (tx) => tx.update(reorderRules).set({ lastAlertedAt: null }));
+  return { tenantId, branchId, actor, draftIds: drafts.map((d) => d.id as string) };
+}
+
+/**
+ * Directly asserts THE RULE from ./locking.ts rather than hoping a race trips
+ * over it: while the sweep is blocked waiting for a row lock, does its backend
+ * already hold `hashtext(tenantId)`? An unsynchronised Promise.allSettled race
+ * does NOT reliably reproduce this — the rival writer is short and commits
+ * before the sweep reaches its second supplier — so the window is forced open
+ * with a held FOR UPDATE, the same technique receiving.test.ts uses.
+ *
+ * Returns the number of backends that are simultaneously (a) waiting on the
+ * rival's transaction and (b) holding a granted advisory lock. Non-zero is the
+ * inversion that deadlocked 24/24 in review rounds 3 and 4.
+ */
+async function keyHeldWhileWaitingOnRow(draftIndex: 0 | 1): Promise<number> {
+  const s = await buildTwoSupplierMergeState();
+  const rival = await pool.connect();
+  try {
+    await rival.query("BEGIN");
+    await rival.query("SELECT set_config('app.tenant_id', $1, true)", [s.tenantId]);
+    await rival.query("SELECT id FROM purchase_orders WHERE id = $1 FOR UPDATE", [s.draftIds[draftIndex]]);
+    const { rows: xidRows } = await rival.query<{ xid: string }>("SELECT pg_current_xact_id()::text AS xid");
+    const rivalXid = xidRows[0].xid;
+
+    const sweep = checkReorder(s.actor);
+
+    let blocked = false;
+    let offenders = 0;
+    for (let i = 0; i < 200 && !blocked; i++) {
+      const { rows } = await rival.query<{ waiting: number; withKey: number }>(
+        `SELECT
+           count(*)::int AS waiting,
+           count(a.pid)::int AS "withKey"
+         FROM pg_locks w
+         LEFT JOIN pg_locks a
+           ON a.pid = w.pid AND a.locktype = 'advisory' AND a.granted
+         WHERE NOT w.granted AND w.locktype = 'transactionid' AND w.transactionid::text = $1`,
+        [rivalXid],
+      );
+      blocked = rows[0].waiting > 0;
+      offenders = rows[0].withKey;
+      if (!blocked) await new Promise((r) => setTimeout(r, 25));
+    }
+    // The probe is only meaningful if the sweep really did block on our row.
+    expect(blocked).toBe(true);
+
+    await rival.query("COMMIT");
+    await sweep;
+    return offenders;
+  } finally {
+    rival.release();
+  }
+}
+
 describe("lock ordering — deadlock regressions", () => {
+  it("the sweep never holds the tenant key while waiting on a row (draft visited first)", async () => {
+    expect(await keyHeldWhileWaitingOnRow(0)).toBe(0);
+  });
+
+  it("the sweep never holds the tenant key while waiting on a row (draft visited second)", async () => {
+    expect(await keyHeldWhileWaitingOnRow(1)).toBe(0);
+  });
+
   it("postReceipt || adjustStock (the pairing the last fix broke)", async () => {
     const dl = await tally(async () => {
       const { tenantId, branchId } = await seedInventoryTenant();

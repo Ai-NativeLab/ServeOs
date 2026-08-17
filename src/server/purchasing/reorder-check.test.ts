@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
@@ -12,6 +13,22 @@ import type { PurchasingActor } from "./suppliers";
 import { createSupplier } from "./suppliers";
 import { upsertReorderRule } from "./reorder";
 import { purchaseOrders } from "./schema";
+
+/**
+ * Importing this script must NOT repoint DATABASE_URL. Its dotenv load carries
+ * `override: true`, so unguarded it replaces the .env.test URL that vitest's
+ * setup already installed with .env.local's — the developer's own database —
+ * and the suite truncates every table before each test. backfill-inventory.ts
+ * hit exactly this and carries the RUN_DIRECTLY guard plus the incident note.
+ */
+describe("reorder-check script import safety", () => {
+  it("does not override the test DATABASE_URL on import", () => {
+    const fromEnvTest = readFileSync(".env.test", "utf8")
+      .split("\n").find((l) => l.startsWith("DATABASE_URL="))?.slice("DATABASE_URL=".length).trim();
+    expect(fromEnvTest).toBeTruthy();
+    expect(process.env.DATABASE_URL).toBe(fromEnvTest);
+  });
+});
 
 async function seedActor(tenantId: string, branchId: string): Promise<PurchasingActor> {
   const [user] = await db.insert(users).values({

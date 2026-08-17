@@ -1,4 +1,4 @@
-import { sql, eq } from "drizzle-orm";
+import { sql, eq, asc } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import type { Tx } from "@/db/with-tenant";
 import { recordAuditEvent } from "@/server/audit/service";
@@ -8,7 +8,9 @@ import { branches } from "@/server/branches/schema";
 import type { UnitOfMeasure } from "@/server/catalog/uom";
 import { assertInventoryUom, qty } from "@/server/inventory/uom";
 import { money } from "@/server/ordering/service";
-import { purchaseOrders, purchaseOrderLines, suppliers } from "./schema";
+import { purchaseOrders, purchaseOrderLines, poReceipts, suppliers } from "./schema";
+import type { PurchaseOrder, PurchaseOrderLine, PoReceipt } from "./schema";
+import { inventoryItems } from "@/server/inventory/schema";
 import type { PurchasingActor } from "./suppliers";
 import { InvalidPoInputError, InvalidPoTransitionError, PoNotFoundError } from "./errors";
 import { assertTransition } from "./status";
@@ -130,10 +132,42 @@ export async function createDraftPo(actor: PurchasingActor, input: DraftPoInput)
   });
 }
 
-export async function getPurchaseOrder(tenantId: string, poId: string) {
+export type PurchaseOrderLineView = PurchaseOrderLine & { itemNameEn: string | null };
+export type PurchaseOrderDetail = PurchaseOrder & {
+  lines: PurchaseOrderLineView[];
+  receipts: PoReceipt[];
+};
+
+/**
+ * The PO with its lines and receipts. Lines are NOT optional detail: `poLineId`
+ * is required by `postReceipt`, and until this returned them no client could
+ * learn one — the receipts endpoint was uncallable outside the test suite,
+ * which read `purchase_order_lines` directly. `itemNameEn` is joined here so a
+ * caller can render a line without an N+1 back to inventory.
+ */
+export async function getPurchaseOrder(tenantId: string, poId: string): Promise<PurchaseOrderDetail | null> {
   return withTenant(tenantId, async (tx) => {
     const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId));
-    return po ?? null;
+    if (!po) return null;
+
+    const lineRows = await tx
+      .select({ line: purchaseOrderLines, itemNameEn: inventoryItems.nameEn })
+      .from(purchaseOrderLines)
+      .leftJoin(inventoryItems, eq(inventoryItems.id, purchaseOrderLines.itemId))
+      .where(eq(purchaseOrderLines.poId, poId))
+      .orderBy(asc(purchaseOrderLines.id));
+
+    const receipts = await tx
+      .select()
+      .from(poReceipts)
+      .where(eq(poReceipts.purchaseOrderId, poId))
+      .orderBy(asc(poReceipts.receivedAt));
+
+    return {
+      ...po,
+      lines: lineRows.map((r) => ({ ...r.line, itemNameEn: r.itemNameEn })),
+      receipts,
+    };
   });
 }
 
