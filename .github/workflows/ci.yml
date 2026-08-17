@@ -164,21 +164,13 @@ jobs:
       - name: Apply migrations
         run: npm run db:migrate:test
 
-      # Three seeds, all required: roma (9 of 11 specs), nobio retail
-      # (shop.spec.ts, storefront-responsive.spec.ts), and the demo tenants
-      # (pricing.spec.ts).
+      # Two seeds, both required: roma (9 of 11 specs) + nobio retail
+      # (shop.spec.ts, storefront-responsive.spec.ts).
       - name: Seed roma tenant
         run: ENV_FILE=.env.test npm run db:seed
 
       - name: Seed nobio retail tenant
         run: ENV_FILE=.env.test npx tsx scripts/seed-retail-showcase.ts
-
-      # pricing.spec.ts signs in through the public demo door to prove a demo
-      # session is never treated as a customer. Without these tenants
-      # /api/demo/login answers ?demo=unavailable and that regression goes
-      # untested — which is exactly the bug it exists to catch.
-      - name: Seed demo tenants
-        run: ENV_FILE=.env.test npm run demo:seed
 
       # The seed's 10:00-23:00 window + real-clock order validation would
       # flake any run outside business hours.
