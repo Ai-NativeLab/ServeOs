@@ -347,3 +347,43 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
     return { triggered: triggered.length, draftsCreated };
   });
 }
+
+export type ReorderRuleWithDetails = {
+  id: string;
+  tenantId: string;
+  itemId: string;
+  itemNameEn: string | null;
+  locationId: string;
+  locationName: string | null;
+  reorderPoint: string;
+  reorderQty: string;
+  preferredSupplierId: string | null;
+  preferredSupplierName: string | null;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export async function listReorderRules(tenantId: string): Promise<ReorderRuleWithDetails[]> {
+  return withTenant(tenantId, async (tx) => {
+    const rows = await tx
+      .select({
+        rule: reorderRules,
+        itemNameEn: inventoryItems.nameEn,
+        locationName: storageLocations.name,
+        preferredSupplierName: suppliers.name,
+      })
+      .from(reorderRules)
+      .leftJoin(inventoryItems, eq(inventoryItems.id, reorderRules.itemId))
+      .leftJoin(storageLocations, eq(storageLocations.id, reorderRules.locationId))
+      .leftJoin(suppliers, eq(suppliers.id, reorderRules.preferredSupplierId))
+      .orderBy(asc(inventoryItems.nameEn));
+
+    return rows.map((r) => ({
+      ...r.rule,
+      itemNameEn: r.itemNameEn,
+      locationName: r.locationName,
+      preferredSupplierName: r.preferredSupplierName,
+    }));
+  });
+}
