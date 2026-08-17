@@ -302,6 +302,13 @@
       "when": 1786921494836,
       "tag": "0042_third_miek",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1786970244483,
+      "tag": "0043_woozy_rhino",
+      "breakpoints": true
     }
   ]
 }
