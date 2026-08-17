@@ -14,10 +14,24 @@ export type LocaleAction =
   | { kind: "redirect"; pathname: string }
   | { kind: "none" };
 
+/**
+ * Marketing pages that live under the [lang] segment but are reached without a
+ * locale prefix, the same way `/` is.
+ *
+ * An ALLOWLIST, deliberately — never "rewrite anything unmatched". The `none`
+ * fallthrough at the end of marketingLocaleAction is what keeps `/login`,
+ * `/register` and `/api/health` out of the marketing segment; rewriting those
+ * would break sign-in.
+ */
+const MARKETING_PATHS = new Set(["/pricing"]);
+
 export function marketingLocaleAction(pathname: string): LocaleAction {
   if (pathname === "/") return { kind: "rewrite", pathname: "/ar", locale: "ar" };
   if (pathname === "/en" || pathname.startsWith("/en/")) return { kind: "pass", locale: "en" };
   if (pathname === "/ar") return { kind: "redirect", pathname: "/" };
   if (pathname.startsWith("/ar/")) return { kind: "redirect", pathname: pathname.slice(3) };
+  if (MARKETING_PATHS.has(pathname)) {
+    return { kind: "rewrite", pathname: `/ar${pathname}`, locale: "ar" };
+  }
   return { kind: "none" };
 }
