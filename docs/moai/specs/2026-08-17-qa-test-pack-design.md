@@ -91,15 +91,19 @@ separate.
 
 ### 3.3 Roles and permissions
 
-`src/server/rbac/permissions.ts` — 5 role keys over 27 permissions. The
-`XC` file carries the full matrix; each surface file tests only the
-permissions that gate its own screens.
+`src/server/rbac/permissions.ts` — 5 role keys over **25** permissions (22
+tenant-scoped + 3 platform). The `XC` file carries the full matrix; each surface
+file tests only the permissions that gate its own screens.
 
 - `owner` — all 22 tenant permissions
-- `manager` — owner minus `tenant:manage`, `plan:change`, `billing:manage`
-- `staff` — `plan:view`, `orders:manage`, `pos:sell`, `inventory:view`, `inventory:count`
-- `pharmacist` — `plan:view`, `orders:manage`, `fulfillment:manage`, `pos:sell`, `rx:review`
-- `super_admin` — platform only: `platform:{approve_tenant,suspend_tenant,view_revenue}`
+- `manager` — 18: owner minus `tenant:manage`, `plan:change`, `billing:manage`, `rx:review`
+- `staff` — 5: `plan:view`, `orders:manage`, `pos:sell`, `inventory:view`, `inventory:count`
+- `pharmacist` — 5: `plan:view`, `orders:manage`, `fulfillment:manage`, `pos:sell`, `rx:review`
+- `super_admin` — 3, platform only: `platform:{approve_tenant,suspend_tenant,view_revenue}`
+
+`rx:review` is held by **owner and pharmacist only** — deliberately not manager,
+because the compliance trail must name a licensed reviewer rather than "a
+manager" (`permissions.ts:36`).
 
 `super_admin` holds **no** tenant permissions and `owner` holds **no** platform
 permissions — the separation is itself a P1 case.
@@ -175,7 +179,7 @@ analytics or the admin approval flow. Those files will be almost entirely
 ```
 docs/qa/
   README.md            how to run a pass · environments · seed accounts · defect template · sign-off
-  personas.md          7 personas · credentials · the 5 × 27 permission matrix
+  personas.md          9 personas · credentials · the 5 × 25 permission matrix
   01-marketing.md      MKT   5 journeys   ~20 cases
   02-storefront.md     SF   14 journeys   ~90 cases
   03-dashboard.md      DSH  24 journeys  ~115 cases
@@ -243,18 +247,31 @@ both come from `npm run db:seed`, so the accounts in `docs/references/environmen
 and the README table hold. `personas.md` maps each persona to a seeded account
 and states what still has to be created by hand.
 
-Known gaps the pack must call out rather than silently assume:
+Two seeding commands cover almost everything, which is better than this spec
+first assumed:
 
-1. The seed creates one demo tenant (`roma`, restaurant). Retail, pharmacy and
-   timber journeys need tenants created through the register → approve flow,
-   which is itself `DSH-REG` and `ADM-APPR`. The storefront file states this
-   dependency at the top.
-2. POS journeys need a paired device. Pairing is `POS-PAIR`, so the POS file is
-   ordered to be executed top to bottom.
-3. WhatsApp journeys need a Cloud API test number and a `pro`-or-above plan
-   (`whatsapp_numbers: 0` on basic). Where a real number is unavailable, the
-   file names `fake-provider.ts` as the substitute and marks the affected cases
-   as environment-blocked rather than failed.
+| Command | Creates |
+|---------|---------|
+| `npm run db:seed` | platform super admin, `roma` (restaurant) with owner/manager/staff |
+| `npm run demo:seed` | one tenant per vertical — `demo-restaurant`, `demo-retail`, `demo-pharmacy`, `demo-timber`, each with an owner and a seeded catalogue, orders and order history |
+
+So the four-vertical storefront journeys need **no** manual register → approve
+flow. `demo:seed` also supports `--reset` to drop and rebuild each demo tenant.
+
+Genuine gaps that remain:
+
+1. **No `pharmacist` user is seeded anywhere.** `rx:review` journeys need one
+   created by hand through `DSH-STAFF` (staff invite + role assignment) on
+   `demo-pharmacy`. The storefront and dashboard files state this at the top.
+2. **POS journeys need a paired device.** Pairing is `POS-PAIR`, so `05-pos.md`
+   is ordered to be executed top to bottom.
+3. **WhatsApp needs no Meta number.** `scripts/whatsapp-sandbox.ts` walks the
+   real reducer, runner, advisory lock and database writes in a terminal, with
+   only the provider substituted for one that prints instead of sends — a
+   confirmed pickup order lands on the `whatsapp` channel for real. The `WA`
+   file uses the sandbox as its primary harness, so no case is
+   environment-blocked. A `pro`-or-above plan is still required
+   (`whatsapp_numbers: 0` on basic).
 
 ## 6. Non-goals
 
