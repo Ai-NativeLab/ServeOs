@@ -8,7 +8,7 @@ import { auditEvents } from "@/server/audit/schema";
 import { FakeEmailProvider } from "@/server/email/fake-provider";
 import { notifications, notificationOutbox } from "./schema";
 import { notify } from "./service";
-import { drainOutbox, MAX_ATTEMPTS } from "./worker";
+import { drainOutbox, MAX_ATTEMPTS, defaultSender } from "./worker";
 
 async function seed(slug: string) {
   const [t] = await db.insert(tenants).values({ slug, name: "T", country: "EG", vertical: "restaurant" }).returning();
@@ -172,5 +172,31 @@ describe("drainOutbox", () => {
       expect(p.sent[0].html).toContain("&lt;h1&gt;");
       expect(p.sent[0].html).toContain("<table");
     });
+  });
+});
+
+describe("defaultSender", () => {
+  it("falls back to a sender on a domain we actually control", async () => {
+    const previous = process.env.EMAIL_FROM;
+    delete process.env.EMAIL_FROM;
+    try {
+      // mail.serveos.com is not ours — the mail domain is serveos.tech. A
+      // fallback nobody can verify means a missing EMAIL_FROM breaks every
+      // send silently.
+      expect(defaultSender()).toBe("no-reply@serveos.tech");
+    } finally {
+      if (previous !== undefined) process.env.EMAIL_FROM = previous;
+    }
+  });
+
+  it("prefers EMAIL_FROM when it is set", () => {
+    const previous = process.env.EMAIL_FROM;
+    process.env.EMAIL_FROM = "hello@serveos.tech";
+    try {
+      expect(defaultSender()).toBe("hello@serveos.tech");
+    } finally {
+      if (previous === undefined) delete process.env.EMAIL_FROM;
+      else process.env.EMAIL_FROM = previous;
+    }
   });
 });

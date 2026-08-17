@@ -10,6 +10,19 @@ import { notify } from "./service";
 import { eq } from "drizzle-orm";
 
 export const MAX_ATTEMPTS = 5;
+
+/**
+ * The sender for every outbound email.
+ *
+ * The fallback must be a domain the provider can verify. It was previously
+ * `no-reply@mail.serveos.com`, which is not ours — the mail domain is
+ * serveos.tech, and serveos.com is only a redirect. An unverifiable fallback
+ * means a missing EMAIL_FROM turns every send into a provider rejection rather
+ * than anything that looks like a configuration error.
+ */
+export function defaultSender(): string {
+  return process.env.EMAIL_FROM ?? "no-reply@serveos.tech";
+}
 /** A claimed row that neither flipped nor failed within this window is
  *  considered stalled (worker crash) and becomes reclaimable. */
 const STALL_RECLAIM_MS = 5 * 60 * 1000;
@@ -63,7 +76,7 @@ export async function drainOutbox(
         // Crash-window recovery: the provider already accepted this one.
         const providerMessageId = row.providerMessageId
           ?? (await provider.send({
-            from: process.env.EMAIL_FROM ?? "no-reply@mail.serveos.com",
+            from: defaultSender(),
             replyTo: row.replyTo ?? undefined,
             to: row.toEmail,
             subject: row.subject,
