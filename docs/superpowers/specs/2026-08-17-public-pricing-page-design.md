@@ -23,7 +23,7 @@ Three distinct defects sit behind the one symptom:
 | # | Defect | Who hits it |
 |---|---|---|
 | 1 | A demo session counts as "a customer", so prospects land in a throwaway tenant's billing page | anyone who opened the demo first |
-| 2 | A signed-out prospect is sent to `/login`, not `/register` — the wrong door for someone with no account, while the *free* plan correctly goes to `/register` | every new visitor |
+| 2 | A signed-out prospect is sent to `/login`, not `/register` — the wrong door for someone with no account | every new visitor |
 | 3 | There is no public pricing page at all; pricing exists only as a section on the marketing home page, so "send me your pricing" has no link to send | everyone |
 
 `?plan=enterprise` rendering as "Professional" is *not* a defect: `enterprise` is
@@ -34,15 +34,16 @@ reads as a mismatch in the URL.
 
 - A public, linkable, indexable pricing page in both locales.
 - A paid CTA that never delivers a prospect into a tenant dashboard.
+- Paid-plan interest reaches a ServeOS inbox as a lead, within seconds.
 - One source of truth for prices, so the page and the home section cannot disagree.
 
 ## Non-goals
 
-- Card checkout. Subscribing raises an invoice; the owner uploads proof and an
-  admin verifies it (`dashboard/settings/billing/actions.ts`). That flow is
-  unchanged here.
-- Automatically raising an invoice on signup. Being charged stays an explicit act
-  on the billing page — the principle already written into `subscribe/page.tsx`.
+- Card checkout, or any on-site payment. Paid plans are sales-assisted: the
+  visitor enquires, ServeOS follows up and sets them up. The page therefore
+  carries **no** explanation of a payment mechanism, because none is exposed.
+- Changing how an existing customer upgrades. The billing page's invoice and
+  proof-of-payment flow is untouched.
 - Any change to plan pricing, limits, or the plans themselves.
 
 ## Approach
@@ -100,70 +101,105 @@ home page, so it is unreachable on a tenant or admin host, and
 ## Section 2 — The conversion path
 
 Every plan CTA — on the home section and on `/pricing` — points at
-`/subscribe?plan=<key>`. Keeping the fork in one route is why this was a
+`/subscribe?plan=<key>`. Keeping the intent in one route is why this was a
 one-file defect rather than a hunt; splitting the rules across two pages is how
 they drift.
 
-### Corrected fork rules
+`/subscribe` stops being redirect-only. It now either redirects or renders the
+enquiry form, by visitor:
 
-Implemented in `subscribe/page.tsx`:
-
-| Visitor | Destination | Today |
+| Visitor | Result | Today |
 |---|---|---|
-| Real customer (session + `tenantId`, slug **not** `demo-*`) | `/dashboard/settings/billing?plan=X` | unchanged — always correct |
-| Demo session (`isDemoSlug(tenant.slug)`) | `/register?plan=X` | ❌ demo tenant's billing page |
-| Signed out | `/register?plan=X` | ❌ `/login` |
-| Unknown or absent plan key | `/pricing` | ❌ bare billing page |
+| Free plan (`basic`), any visitor | redirect `/register?plan=basic` | ❌ `/register`, no key |
+| Real customer (session + `tenantId`, slug **not** `demo-*`) | redirect `/dashboard/settings/billing?plan=X` | unchanged — always correct |
+| **Demo session** (`isDemoSlug(tenant.slug)`) | render the enquiry form | ❌ demo tenant's billing page |
+| Signed out | render the enquiry form | ❌ `/login` |
+| Unknown or absent plan key | redirect `/pricing` | ❌ bare billing page |
+
+Free self-serves because there is nothing to sell and nothing to invoice; the
+three paid plans are sales-assisted. An existing customer keeps going to billing
+because they already have "Request upgrade" there alongside their real usage
+against each limit — sending them to a public form asking for their business
+name would be worse than what exists today.
 
 Demo detection reuses `isDemoSlug()` from `src/server/demo/entry.ts` — the same
 guard `/api/demo/login` trusts, so the two cannot drift on what "demo" means.
 This requires resolving the tenant slug from `tenantId`; `validateSession`
 returns the id only.
 
-The rules are extracted into a pure `subscribeDestination()` function, leaving
-`page.tsx` a thin wrapper. Rules that live inside a redirect-only server
+The redirect rules are extracted into a pure `subscribeDestination()` function,
+leaving the page a thin wrapper. Rules that live inside a redirect-only server
 component are otherwise testable only through a browser.
 
-### Carrying the plan through registration
+### Carrying the plan into registration
 
-1. `/register?plan=<key>` — validated against `listPlans()`, the same guard
-   `/subscribe` applies. An invalid key is ignored, never carried.
-2. `RegisterForm` holds it as a hidden field.
-3. `register/actions.ts` redirects to `/dashboard/settings/billing?plan=<key>`
-   on success, instead of the currently hard-coded `/dashboard`.
+`/register?plan=<key>` — validated against `listPlans()`; an invalid key is
+ignored, never carried. `RegisterForm` holds it as a hidden field, and
+`register/actions.ts` redirects to `/dashboard/settings/billing?plan=<key>` on
+success instead of the currently hard-coded `/dashboard`.
 
-A validated `plan` key is used rather than the general `next` pattern that login
-uses. `next` is an open-redirect surface requiring the `safeNext` guard; a plan
-key is a closed set checked against the database, so there is nothing to escape.
+A validated plan key is used rather than the general `next` pattern login uses.
+`next` is an open-redirect surface requiring the `safeNext` guard; a plan key is
+a closed set checked against the database, so there is nothing to escape.
 
-The **Free plan keeps going to plain `/register`** → `/dashboard`. Carrying
-`?plan=basic` would land a new signup on a billing page highlighting the plan
-they already have.
+## Section 3 — The enquiry
 
-Nothing in this path raises an invoice.
+### Why not the notification outbox
 
-## Section 3 — Page composition
+The obvious home for this is `notification_outbox`, the existing store-and-forward
+email queue. It does not fit, for two independent reasons:
+
+1. **It is tenant-scoped by construction.** `notification_outbox.tenant_id` is
+   `NOT NULL` with an FK to `tenants`, and `notify()` takes `{ tenantId }` and
+   wraps every write in `withTenant()` for RLS. A marketing enquiry has no
+   tenant. Using it would mean either making tenancy optional or inventing a
+   fake tenant — both weaken the isolation that table exists to enforce.
+2. **Its worker runs once a day.** `vercel.json` schedules
+   `/api/notifications/worker` at `0 3 * * *`, deliberately, because the Vercel
+   Hobby plan caps cron frequency. A queued enquiry could sit unsent for 24
+   hours. That is fatal for a sales lead.
+
+### What happens instead
+
+A new `plan_enquiries` table, written first, then sent immediately:
+
+| column | notes |
+|---|---|
+| `id` | uuid pk |
+| `plan_key` | validated against `listPlans()` |
+| `name`, `business_name`, `phone`, `email` | from the form |
+| `locale` | which language they were reading |
+| `status` | `sent` / `unsent` |
+| `last_error` | why a send failed |
+| `created_at`, `sent_at` | |
+
+The server action commits the row **before** attempting delivery, so a provider
+outage or a missing API key can never lose a lead — it stays in the table as
+`unsent` with the reason. Delivery is a direct `activeEmailProvider().send()`
+call: it arrives in seconds rather than waiting for tomorrow's cron, and needs no
+tenant.
+
+The email goes to `SALES_INBOX_EMAIL` (new env var) with `replyTo` set to the
+enquirer's address, so replying reaches them directly. There is no tenant, so
+this deliberately does not go through `notify()`.
+
+### Spam control
+
+The form is public and causes an email, so it needs a guard. No rate limiter
+exists in the codebase, and this does not justify new infrastructure:
+
+- a honeypot field, which must be empty;
+- a throttle read off `plan_enquiries` itself — reject a submission when the same
+  email or IP has enquired within the last few minutes.
+
+Both are cheap, need no new dependency, and fail closed.
+
+## Section 4 — Page composition
 
 Content, in order: plan cards with the term switcher; the full limits and
-features comparison; how payment actually works; a pricing FAQ.
-
-The **payment block** states plainly that a plan is chosen inside the dashboard,
-an invoice is raised, the owner uploads proof of payment, and an admin verifies
-it — there is no card checkout. This exists for the same reason the feature grid
-marks unshipped features rather than hiding them: a pricing page that implies
-instant card payment is selling something that does not ship.
-
-### The home page pricing section
-
-The home section keeps its four plan cards and term switcher — they work and they
-sell, and the page has just been through a motion fix. Two changes only:
-
-- its CTAs route through the corrected `/subscribe?plan=<key>` fork, like the
-  pricing page's;
-- a "compare all plans" link points at `/pricing` for the full limits and
-  feature comparison, which is the detail the home cards cannot show well.
-
-`/pricing` does not replace the home section; it is where the detail lives.
+features comparison; a pricing FAQ. There is **no** payment-mechanism block —
+nothing is paid for on the site, so describing one would invent a flow that does
+not exist.
 
 **Reused unchanged:** `PricingTerms`, `PlanCard`, the `PRICING` content, and
 `formatEgp` / `monthlyEquivalent` / `termTotal`.
@@ -189,41 +225,61 @@ Two existing rules it must inherit:
 Five columns do not fit a phone, so the table scrolls horizontally inside its own
 container. The page body must never scroll sideways.
 
-New content (`faq`, the payment explainer) goes in `_content/pricing.ts`, so
+New content (`faq`, the enquiry form's labels) goes in `_content/pricing.ts`, so
 `_content/parity.test.ts` covers it automatically — it compares Arabic/English
 key paths for `PRICING`, meaning a missing Arabic string fails the suite rather
 than shipping half-translated.
+
+### The home page pricing section
+
+The home section keeps its four plan cards and term switcher — they work and they
+sell, and the page has just been through a motion fix. Two changes only:
+
+- its CTAs route through the corrected `/subscribe?plan=<key>` fork;
+- a "compare all plans" link points at `/pricing` for the full comparison, which
+  is the detail the home cards cannot show well.
+
+`/pricing` does not replace the home section; it is where the detail lives.
 
 ## Testing
 
 **Unit**
 
-- `subscribeDestination()` — all four rows of the fork table.
+- `subscribeDestination()` — every row of the Section 2 table.
 - `marketingLocaleAction` — `/pricing` rewrites to `/ar/pricing`; and the
   regression that `/login`, `/register` and `/api/health` still return `none`.
   That regression is the allowlist's entire risk.
 - Register redirect target for a valid, invalid, and absent plan key.
+- The enquiry action: writes the row before sending; a provider throw leaves the
+  row `unsent` with `last_error` set and does **not** surface as a lost lead; an
+  invalid plan key is rejected; the honeypot and the throttle both reject.
 - Content parity picks up the new strings automatically.
 
 **E2E** — `tests/e2e/pricing.spec.ts`
 
 - `/pricing` serves Arabic RTL; `/en/pricing` serves English LTR.
 - The comparison table renders a row per limit and per feature.
-- A signed-out paid CTA lands on `/register?plan=<key>`.
+- A Free CTA lands on `/register?plan=basic`.
+- A paid CTA renders the enquiry form; submitting it shows a confirmation.
 - `/login` and `/register` still load — guards the allowlist change.
 - **The regression that matters:** open `/api/demo/login?trade=pharmacy`, return
-  to `/pricing`, click a paid CTA, and assert it lands on `/register` and never
-  on a billing page. This is the reported defect; without this test nothing stops
-  it returning.
+  to `/pricing`, click a paid CTA, and assert the enquiry form renders and no
+  billing page is ever reached. This is the reported defect; without this test
+  nothing stops it returning.
 
-## Risks
+## Risks and open items
 
+- **`SALES_INBOX_EMAIL` and the Resend credentials are not set locally.** No
+  email config exists in `.env.local`, `.env.production`, `.env.qa` or
+  `.env.test`; `RESEND_API_KEY` lives only in the Vercel project env. Sending
+  cannot be verified locally until those are available, and the destination
+  address is still to be confirmed.
 - **The allowlist change touches sign-in routing.** Mitigated by keeping it an
-  allowlist and by the explicit `none` regression tests above.
+  allowlist and by the explicit `none` regression tests.
+- **A public form that sends email invites abuse.** Mitigated by the honeypot and
+  the throttle; both fail closed.
 - **Demo detection depends on the `demo-` slug prefix.** Acceptable because
   `isDemoSlug()` is already the sole guard protecting the public demo login from
-  reaching a real tenant; if that assumption breaks, a much more serious bug
-  exists already.
+  reaching a real tenant.
 - **A comparison table is a new place for prices to be stated.** Mitigated by
-  deriving every value from the same `plan` rows the cards use, never from
-  hardcoded copy.
+  deriving every value from the same `plan` rows the cards use.
