@@ -15,6 +15,7 @@ export default defineConfig({
       // group, and silently matches ZERO files rather than erroring.
       "src/app/\\(marketing\\)/**/*.test.ts",
       "src/server/demo/**/*.test.ts",
+      "src/app/subscribe/**/*.test.ts",
     ],
     env: { NODE_ENV: "test" },
   },
