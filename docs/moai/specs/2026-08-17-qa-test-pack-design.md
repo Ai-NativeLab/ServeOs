@@ -152,25 +152,29 @@ assumed either way.
 
 ### 3.7 Existing automation, for the `Auto` tags
 
-11 spec files, listed here so tags can be resolved without re-reading them:
+**43 Playwright tests across 11 spec files**, re-counted 2026-08-17 after PR #137
+rebuilt the marketing site (which took its old 5 tests to 11). An `Auto` tag
+names the spec file and the test title; several cases legitimately share one
+test.
 
-| Spec file | Covers | Tag target |
-|-----------|--------|------------|
-| `admin.spec.ts` | admin sign-in, tenant-user at `/admin`, non-admin platform account | `ADM-LOGIN`, `ADM-NOACC` |
-| `dashboard.spec.ts` | owner sign-in → Orders, settings tabs, staff redirect, sign-out | `DSH-LOGIN`, `DSH-SET`, `XC-RBAC` |
-| `marketing.spec.ts` | hero/features/auth links, trade re-skin, docket height, roadmap flags, AR + RTL | `MKT-HOME`, `MKT-TRADE`, `MKT-I18N` |
-| `menu.spec.ts` | `/api/menu` 200/404/400, storefront renders menu | `SF-BROWSE` |
-| `offline-payment.spec.ts` | method + pay-to on checkout, `pending_verification` order, merchant queue | `SF-PAY`, `DSH-PAY` |
-| `onboarding.spec.ts` | PWA manifest, storefront brand, marketing host does not leak a tenant | `SF-PWA`, `XC-ISO` |
-| `ordering.spec.ts` | browse → cart → checkout | `SF-CART` |
-| `responsive.spec.ts` | mobile dashboard nav, cards not tables, no 360px overflow | `XC-RESP` |
-| `scheduling.spec.ts` | schedule an order, cancel while pending | `SF-SCHED` |
-| `shop.spec.ts` | retail shop template, restaurant menu template | `SF-BROWSE` |
-| `storefront-responsive.spec.ts` | storefront 360px, search, variant add, out-of-stock, tap targets, checkout | `XC-RESP`, `SF-CART` |
+| Spec file | Tests | Covers | Journeys tagged |
+|-----------|------:|--------|-----------------|
+| `marketing.spec.ts` | 11 | Arabic-first + `dir`/`lang`, no-JS render, `/en`, `/ar` redirect, trade re-copy, docket height, roadmap chips, demo band, pricing terms, outcomes, footer | `MKT-*`, `XC-I18N` |
+| `responsive.spec.ts` | 5 | mobile dashboard nav, cards not tables, no 360px overflow | `XC-RESP`, `DSH-ORD`, `DSH-CAT`, `DSH-ANL` |
+| `storefront-responsive.spec.ts` | 6 | storefront 360px, search, variant add, out-of-stock, tap targets, checkout | `SF-BROWSE`, `SF-PROD`, `SF-CHK`, `XC-RESP` |
+| `dashboard.spec.ts` | 4 | owner sign-in → Orders, settings tabs, staff redirect, sign-out | `DSH-LOGIN`, `DSH-NAV`, `DSH-SET`, `XC-SESS` |
+| `menu.spec.ts` | 4 | `/api/menu` 200/404/400, storefront renders | `SF-SERVE`, `SF-BROWSE` |
+| `admin.spec.ts` | 3 | admin sign-in, tenant user at `/admin`, non-admin platform account | `ADM-LOGIN`, `ADM-NOACC`, `XC-RBAC`, `XC-SESS` |
+| `offline-payment.spec.ts` | 3 | method + pay-to detail, `pending_verification` order, merchant queue | `SF-PAY`, `DSH-PAY` |
+| `onboarding.spec.ts` | 3 | PWA manifest, storefront brand, marketing host does not leak a tenant | `SF-PWA`, `SF-SERVE`, `XC-ISO` |
+| `shop.spec.ts` | 2 | retail shop template, restaurant menu template | `SF-BROWSE` |
+| `ordering.spec.ts` | 1 | browse → cart → checkout | `SF-PROD`, `SF-CART`, `SF-CHK` |
+| `scheduling.spec.ts` | 1 | schedule an order, cancel while pending | `SF-SCHED`, `SF-CANCEL` |
 
-Nothing automated touches the POS, WhatsApp, inventory, audit, refunds,
-analytics or the admin approval flow. Those files will be almost entirely
-`MANUAL`, which is the point of tagging.
+**Nothing automated touches the POS, WhatsApp, inventory, refunds, the audit
+chain, analytics, customer accounts, prescriptions, dimensional pricing, or the
+admin approval flow.** Those files are almost entirely `MANUAL`, which is the
+point of tagging.
 
 ## 4. Structure
 
@@ -180,20 +184,31 @@ analytics or the admin approval flow. Those files will be almost entirely
 docs/qa/
   README.md            how to run a pass · environments · seed accounts · defect template · sign-off
   personas.md          9 personas · credentials · the 5 × 25 permission matrix
-  01-marketing.md      MKT   5 journeys   ~20 cases
-  02-storefront.md     SF   14 journeys   ~90 cases
-  03-dashboard.md      DSH  24 journeys  ~115 cases
-  04-admin-console.md  ADM   7 journeys   ~25 cases
-  05-pos.md            POS  18 journeys   101 cases  ← written
-  06-whatsapp.md       WA   10 journeys   ~40 cases
-  99-cross-cutting.md  XC    7 journeys   ~45 cases
+  01-marketing.md      MKT   8 journeys    40 cases  (budget  5 / ~20)
+  02-storefront.md     SF   15 journeys   105 cases  (budget 14 / ~90)
+  03-dashboard.md      DSH  24 journeys   148 cases  (budget 24 / ~115)
+  04-admin-console.md  ADM   8 journeys    37 cases  (budget  7 / ~25)
+  05-pos.md            POS  18 journeys   101 cases  (budget 17 / ~85)
+  06-whatsapp.md       WA   12 journeys    64 cases  (budget 10 / ~40)
+  99-cross-cutting.md  XC    7 journeys    63 cases  (budget  7 / ~45)
 ```
 
-85 journeys, 420 cases. These per-file counts are the budget, not a quota: a
-journey gets the cases its risk earns. If a file needs to run over, it takes
-the room from the total rather than padding elsewhere. `05-pos.md` is written
-and came in at 101 against a budget of 85 — the overrun is in the refund and
-drawer-close guards, where each guard is a distinct way to lose money.
+**Delivered: 92 journeys, 558 cases, 430 of them P1, 66 tagged as already
+automated.** Against a budget of 85 journeys and 420 cases — 33% over.
+
+The per-file counts were a budget, not a quota: a journey gets the cases its
+risk earns, and room comes out of the total rather than being padded elsewhere.
+Where the overrun went, and why:
+
+| File | Over by | Cause |
+|---|---|---|
+| `01-marketing.md` | +20 | PR #137 rebuilt the surface: `[lang]` routing, a credential-less demo door, a subscribe fork |
+| `02-storefront.md` | +15 | `SF-TIMBER` and `SF-RX` — each validation rule is a separate way to mis-sell |
+| `03-dashboard.md` | +33 | inventory (`DSH-INV`/`MOVE`/`CNT`/`REC` = 27 cases), the newest and largest subsystem |
+| `04-admin-console.md` | +12 | `ADM-APPR`/`ADM-SUSP` — each action decides whether a real business can trade |
+| `05-pos.md` | +16 | refund and drawer-close guards; each guard is a distinct way to lose money |
+| `06-whatsapp.md` | +24 | a 10-state machine, three access gates, a signed webhook, a single-use token — plus `WA-GAP` |
+| `99-cross-cutting.md` | +18 | `XC-ISO` and `XC-RBAC` — each case is a way for one business to see another's money |
 
 ### 4.2 Case IDs
 
@@ -296,7 +311,11 @@ Genuine gaps that remain:
 
 ## 8. Definition of done
 
-- Every one of the 84 journeys has a narrative and at least one `P1` case.
+**Status: met, 2026-08-17.** Verified mechanically — all seven per-file coverage
+summaries agree with their own tables, no case ID is duplicated, and all 52
+distinct `AUTOMATED` tags resolve to a real spec file and test title.
+
+- Every one of the 92 journeys has a narrative and at least one `P1` case.
 - Every case has steps, an expected result, a type, a priority and an
   automation tag — no blanks, no `TBD`.
 - Every `AUTOMATED` tag names a real spec file and test title in `tests/e2e/`.
@@ -304,3 +323,19 @@ Genuine gaps that remain:
   inferred from the UI or from a design doc. Where code and design doc disagree,
   the pack records both and files a question.
 - The epic and six children exist on board #10 with the epic as parent.
+
+### Findings produced by meeting the last bullet
+
+Checking every expected result against its code path — rather than against a
+design doc — is what surfaced these. They are listed in full in
+`docs/qa/README.md`'s findings register.
+
+| # | Finding | Severity |
+|---|---|---|
+| F1 | WhatsApp lists Rx and dimensional products it cannot order; `placeOrder` throws at confirm, the turn rolls back, the route 500s, Meta's retry is deduped — the customer taps Confirm and gets permanent silence | **P1 defect** |
+| G1 | `pos:void` is granted to owner and manager but nothing writes a void; the analytics Voids table can only ever be empty | product question |
+| G2 | Pairing-code entry is unreachable at the till, though `README.md` documents it and the dashboard mints codes | doc/UI gap |
+| G3 | `apps/pos/electron/_offline/` is imported by nothing — there is no offline mode, so a planned journey was dropped rather than fabricated | scope fact |
+| G4 | `ROADMAP.md` understates six shipped specs | doc drift |
+| G5 | `isTenantServable` accepts `"trial"`, which is not a tenant status — dead branch | minor |
+| Q1–Q8 | Eight open questions the pack answers on execution, incl. whether `advanced_analytics` is enforced at all | to decide |
