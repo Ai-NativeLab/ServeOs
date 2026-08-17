@@ -3,9 +3,12 @@ import { useState, type FormEvent } from "react";
 export function CashierSignIn({
   branchName,
   onSignedIn,
+  onUnpaired,
 }: {
   branchName: string;
   onSignedIn: (c: { name: string; permissions: string[] }) => void;
+  /** The backend disowned this device; only re-pairing gets past it. */
+  onUnpaired: () => void;
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -20,6 +23,11 @@ export function CashierSignIn({
       onSignedIn(await window.pos.signInCashier(email.trim(), password));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign-in failed");
+      // The main process drops the pairing when the backend rejects the device,
+      // which no password can recover from. Ask it what the state is rather
+      // than matching on the message: an Error crosses IPC as a bare string,
+      // and branching on that text is what DrawerResult exists to avoid.
+      if (!(await window.pos.isPaired())) onUnpaired();
     } finally {
       setBusy(false);
     }

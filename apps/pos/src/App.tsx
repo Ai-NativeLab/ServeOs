@@ -75,7 +75,16 @@ export function App() {
   }
 
   if (!cashier) {
-    return <CashierSignIn branchName={branchName} onSignedIn={setCashier} />;
+    return (
+      <CashierSignIn
+        branchName={branchName}
+        onSignedIn={setCashier}
+        onUnpaired={() => {
+          setPaired(false);
+          setCashier(null);
+        }}
+      />
+    );
   }
 
   if (hasOpenShift === null) {
