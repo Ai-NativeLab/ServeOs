@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolvePurchasingContext, resolvePurchasingActor } from "@/app/dashboard/purchasing-permission";
 import { getPurchaseOrder, updateDraftPo } from "@/server/purchasing/service";
-import { PoNotFoundError, InvalidPoTransitionError } from "@/server/purchasing/errors";
+import { PoNotFoundError, InvalidPoTransitionError, NoBranchError } from "@/server/purchasing/errors";
 import { parseLines } from "../validation";
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -43,6 +43,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     });
     return NextResponse.json({ ok: true });
   } catch (e) {
+    if (e instanceof NoBranchError) return NextResponse.json({ error: e.message }, { status: 409 });
     if (e instanceof PoNotFoundError) return NextResponse.json({ error: e.message }, { status: 404 });
     if (e instanceof InvalidPoTransitionError) return NextResponse.json({ error: e.message }, { status: 409 });
     throw e;

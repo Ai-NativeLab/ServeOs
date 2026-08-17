@@ -119,3 +119,38 @@ describe("purchase order variance", () => {
     expect(po?.status).toBe("sent");
   });
 });
+
+describe("tax basis — all three variance figures agree", () => {
+  it("a fully-received, correctly-invoiced tax-bearing PO shows zero variance on both deltas", async () => {
+    // ordered (po.total), received (Σ receipt lines) and invoiced
+    // (po.invoice_total) must share ONE tax basis. Grossing up ordered without
+    // grossing up received made receivedVsOrdered report -7.00 on a flawless
+    // 14%-VAT PO while leaving invoiceVsReceived just as wrong in the other
+    // direction — two bases, so every delta was structural noise.
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const actor = await seedActor(tenantId, branchId);
+    const supplierId = await createSupplier(actor, { name: "Sup", email: "s@x.com" });
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+
+    const { poId } = await createDraftPo(actor, {
+      supplierId, branchId,
+      lines: [{ itemId, qtyOrdered: 10, uom: "each", unitCost: 5, taxRate: 0.14 }],
+    });
+    await withTenant(tenantId, (tx) =>
+      tx.update(purchaseOrders).set({ status: "sent" }).where(eq(purchaseOrders.id, poId)));
+    const [line] = await withTenant(tenantId, (tx) =>
+      tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId)));
+
+    await postReceipt(actor, poId, {
+      lines: [{ poLineId: line.id, receivedQty: 10, uom: "each", unitCost: 5 }],
+    });
+    await enterInvoiceTotal(actor, poId, 57);   // the supplier bills GROSS
+
+    const v = await getPoVariance(tenantId, poId);
+    expect(v.total).toBe("57.00");              // ordered, gross
+    expect(v.receivedTotal).toBe("57.00");      // received, grossed via the line's rate
+    expect(v.invoiceTotal).toBe("57.00");       // invoiced, gross
+    expect(v.receivedVsOrdered).toBe("0.00");
+    expect(v.invoiceVsReceived).toBe("0.00");
+  });
+});

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolvePurchasingContext, resolvePurchasingActor } from "@/app/dashboard/purchasing-permission";
 import { enterInvoiceTotal } from "@/server/purchasing/variance";
-import { PoNotFoundError } from "@/server/purchasing/errors";
+import { PoNotFoundError, NoBranchError } from "@/server/purchasing/errors";
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { ctx, denied } = await resolvePurchasingContext("purchasing:manage");
@@ -21,6 +21,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     await enterInvoiceTotal(await resolvePurchasingActor(ctx), id, invoiceTotal);
     return NextResponse.json({ ok: true });
   } catch (e) {
+    if (e instanceof NoBranchError) return NextResponse.json({ error: e.message }, { status: 409 });
     if (e instanceof PoNotFoundError) return NextResponse.json({ error: e.message }, { status: 404 });
     throw e;
   }

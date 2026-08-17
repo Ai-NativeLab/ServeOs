@@ -20,6 +20,13 @@ export function parseLines(raw: unknown): ParsedLines {
     if (!Number.isFinite(qtyOrdered) || qtyOrdered <= 0) return { error: "each line needs a positive qtyOrdered" };
     if (!Number.isFinite(unitCost) || unitCost < 0) return { error: "each line needs a non-negative unitCost" };
     if (typeof row.uom !== "string" || !row.uom) return { error: "each line needs a uom" };
+    // The service floor (assertLineNumbers) rejects these too, but from inside
+    // the route's blanket catch that surfaces as a 500. Validating here keeps a
+    // bad body a 400, and keeps the two validators agreeing on every field.
+    if (row.taxRate !== undefined) {
+      const taxRate = Number(row.taxRate);
+      if (!Number.isFinite(taxRate) || taxRate < 0) return { error: "each line needs a non-negative taxRate" };
+    }
     lines.push({
       itemId: row.itemId,
       qtyOrdered,

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolvePurchasingContext, resolvePurchasingActor } from "@/app/dashboard/purchasing-permission";
 import { postReceipt } from "@/server/purchasing/receiving";
-import { InvalidPoInputError, PoNotFoundError, InvalidPoTransitionError, ReceiptUomMismatchError } from "@/server/purchasing/errors";
+import { InvalidPoInputError, PoNotFoundError, InvalidPoTransitionError, ReceiptUomMismatchError, NoBranchError } from "@/server/purchasing/errors";
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { ctx, denied } = await resolvePurchasingContext("purchasing:manage");
@@ -44,6 +44,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     });
     return NextResponse.json({ receiptId, status }, { status: 201 });
   } catch (e) {
+    if (e instanceof NoBranchError) return NextResponse.json({ error: e.message }, { status: 409 });
     if (e instanceof PoNotFoundError) return NextResponse.json({ error: e.message }, { status: 404 });
     if (e instanceof InvalidPoTransitionError) return NextResponse.json({ error: e.message }, { status: 409 });
     if (e instanceof InvalidPoInputError || e instanceof ReceiptUomMismatchError) {

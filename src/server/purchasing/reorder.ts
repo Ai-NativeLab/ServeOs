@@ -12,7 +12,7 @@ import { purchaseOrders, purchaseOrderLines, supplierItems, suppliers } from "./
 import { reorderRules } from "./reorder-schema";
 import type { PurchasingActor } from "./suppliers";
 import { InvalidPoInputError } from "./errors";
-import { lockTenant } from "./locking";
+import { lockPoNumbering } from "./locking";
 
 function auditCtx(actor: PurchasingActor) {
   return {
@@ -40,7 +40,6 @@ export async function upsertReorderRule(actor: PurchasingActor, input: ReorderRu
     // of letting recordAuditEvent grab it at the end) keeps both paths locking
     // in the same order — otherwise two writers of the same rule rows deadlock
     // (40P01). Re-acquiring in recordAuditEvent later is a re-entrant no-op.
-    await lockTenant(tx, actor.tenantId);
 
     // Body-supplied ids must resolve under our RLS or the rule could reference
     // another tenant's item/location/supplier (FK checks bypass row security).
@@ -115,7 +114,6 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
     // Serialize the whole sweep per tenant. Advisory locks are re-entrant, so
     // recordAuditEvent re-acquiring the same key later is a no-op; the sweep's
     // read-then-write steps (rules → debounce → notify → draft) are now atomic.
-    await lockTenant(tx, actor.tenantId);
 
     const rules = await tx.select().from(reorderRules).where(eq(reorderRules.isActive, true));
     if (rules.length === 0) return { triggered: 0, draftsCreated: 0 };
@@ -184,13 +182,17 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
       // which means the merge must NOT silently drop a DIFFERENT low item that
       // triggered this run. Only items already lined on that draft are skipped;
       // every other triggered item is appended to it (or starts a fresh draft).
+      // FOR UPDATE, not an advisory key: we are about to UPDATE this row, and
+      // every other PO writer (send/update/cancel/receive) also takes the row
+      // first and the tenant key last, via its closing audit event. Taking the
+      // key up front here instead is what deadlocked 24/24 — see ./locking.ts.
       const [open] = await tx.select({ id: purchaseOrders.id, total: purchaseOrders.total, poNumber: purchaseOrders.poNumber })
         .from(purchaseOrders)
         .where(and(
           eq(purchaseOrders.supplierId, supplierId),
           eq(purchaseOrders.branchId, actor.branchId),
           eq(purchaseOrders.status, "draft"),
-        )).limit(1);
+        )).for("update").limit(1);
 
       // Items already covered by the open draft — the ones being merged — must
       // not be re-lined. The rest is what this run actually adds.
@@ -241,6 +243,7 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
           actorType: actor.actorType,
         }, tx);
       } else {
+        await lockPoNumbering(tx, actor.tenantId);
         const [{ max }] = await tx.select({ max: sql<number>`COALESCE(MAX(${purchaseOrders.poNumber}), 0)` }).from(purchaseOrders);
         const poNumber = Number(max) + 1;
 

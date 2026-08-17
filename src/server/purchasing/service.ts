@@ -12,7 +12,7 @@ import { purchaseOrders, purchaseOrderLines, suppliers } from "./schema";
 import type { PurchasingActor } from "./suppliers";
 import { InvalidPoInputError, InvalidPoTransitionError, PoNotFoundError } from "./errors";
 import { assertTransition } from "./status";
-import { lockTenant } from "./locking";
+import { lockPoNumbering } from "./locking";
 import type { PoStatus } from "./status";
 
 function auditCtx(actor: PurchasingActor) {
@@ -74,11 +74,6 @@ export async function createDraftPo(actor: PurchasingActor, input: DraftPoInput)
   requireCapability(actor.vertical, "inventory");
   assertLineNumbers(input.lines);
   return withTenant(actor.tenantId, async (tx) => {
-    // Same per-tenant serialization discipline as placeOrder: the advisory lock
-    // spans only the read-max-then-insert window, and FORCE RLS scopes the MAX
-    // to this tenant via app.tenant_id.
-    await lockTenant(tx, actor.tenantId);
-
     // RLS doesn't cover FK referential-integrity checks (Postgres runs those
     // with row security bypassed), so a body-supplied branch/supplier id could
     // point at another tenant's row. A SELECT under our RLS is itself the tenant
@@ -88,6 +83,11 @@ export async function createDraftPo(actor: PurchasingActor, input: DraftPoInput)
     const [supplier] = await tx.select().from(suppliers).where(eq(suppliers.id, input.supplierId));
     if (!supplier) throw new InvalidPoInputError(`supplierId ${input.supplierId} is not a supplier of this tenant`);
 
+    // Taken here, after the validation SELECTs and immediately before the read
+    // it protects: everything from this point is an INSERT of a new row, so the
+    // key is never held while waiting on a row another writer holds. See
+    // ./locking.ts for why that distinction is the whole ballgame.
+    await lockPoNumbering(tx, actor.tenantId);
     const [{ max }] = await tx.select({ max: sql<number>`COALESCE(MAX(${purchaseOrders.poNumber}), 0)` }).from(purchaseOrders);
     const poNumber = Number(max) + 1;
 
@@ -162,7 +162,6 @@ export async function updateDraftPo(actor: PurchasingActor, poId: string, input:
   requireCapability(actor.vertical, "inventory");
   assertLineNumbers(input.lines);
   return withTenant(actor.tenantId, async (tx) => {
-    await lockTenant(tx, actor.tenantId);
     const po = await loadPo(tx, poId);
     if (po.status !== "draft") throw new InvalidPoTransitionError(po.status as PoStatus, "draft");
 
@@ -206,7 +205,6 @@ export async function updateDraftPo(actor: PurchasingActor, poId: string, input:
 export async function cancelPurchaseOrder(actor: PurchasingActor, poId: string): Promise<void> {
   requireCapability(actor.vertical, "inventory");
   return withTenant(actor.tenantId, async (tx) => {
-    await lockTenant(tx, actor.tenantId);
     const po = await loadPo(tx, poId);
     assertTransition(po.status as PoStatus, "cancelled");
     await tx.update(purchaseOrders)

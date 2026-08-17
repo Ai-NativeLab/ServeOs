@@ -263,3 +263,39 @@ describe("cross-channel sales aggregations", () => {
     expect(byCashier.some((r) => r.cashierUserId === rival.ctx.cashierUserId)).toBe(false);
   });
 });
+
+describe("purchasing analytics tax basis", () => {
+  it("grosses the received side up by the ordering line's tax rate", async () => {
+    // getReceivedVsInvoiced puts `ordered` (po.total, gross) next to `received`
+    // and `invoiced` (po.invoice_total, gross). If `received` stayed net, every
+    // tax-bearing PO would show a permanent variance and the report would
+    // disagree with getPoVariance, which is documented to match it.
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const [user] = await db.insert(users).values({
+      tenantId, name: "Buyer", email: `tax-${crypto.randomUUID().slice(0, 8)}@x.com`, status: "active",
+    }).returning({ id: users.id });
+    const actor: PurchasingActor = { tenantId, branchId, actorUserId: user.id, vertical: "restaurant" };
+    const supplierId = await createSupplier(actor, { name: "VAT Supplier" });
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+
+    const { poId } = await createDraftPo(actor, {
+      supplierId, branchId,
+      lines: [{ itemId, qtyOrdered: 10, uom: "each", unitCost: 5, taxRate: 0.14 }],
+    });
+    await withTenant(tenantId, (tx) =>
+      tx.update(purchaseOrders).set({ status: "sent" }).where(eq(purchaseOrders.id, poId)));
+    const [line] = await withTenant(tenantId, (tx) =>
+      tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId)));
+    await postReceipt(actor, poId, {
+      lines: [{ poLineId: line.id, receivedQty: 10, uom: "each", unitCost: 5 }],
+    });
+    await enterInvoiceTotal(actor, poId, 57);
+
+    const rvi = await getReceivedVsInvoiced(tenantId, 30);
+    const row = rvi.find((r) => r.poId === poId)!;
+    expect(row.ordered).toBeCloseTo(57, 2);
+    expect(row.received).toBeCloseTo(57, 2);   // 50 net grossed by 14%, not 50
+    expect(row.invoiced).toBeCloseTo(57, 2);
+    expect(row.variance).toBeCloseTo(0, 2);
+  });
+});

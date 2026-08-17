@@ -12,7 +12,6 @@ import { purchaseOrders, purchaseOrderLines, poReceipts, poReceiptLines } from "
 import type { PurchasingActor } from "./suppliers";
 import { InvalidPoInputError, InvalidPoTransitionError, PoNotFoundError, ReceiptUomMismatchError } from "./errors";
 import { assertTransition, receiptStatus } from "./status";
-import { lockTenant } from "./locking";
 import type { PoStatus } from "./status";
 
 function auditCtx(actor: PurchasingActor) {
@@ -64,7 +63,6 @@ export async function postReceipt(
 ): Promise<{ receiptId: string; status: PoStatus }> {
   requireCapability(actor.vertical, "inventory");
   return withTenant(actor.tenantId, async (tx) => {
-    await lockTenant(tx, actor.tenantId);
     // 1. SERIALIZE receipts per PO. The qty_received bump is a read-then-write
     //    under READ COMMITTED, and the status recompute reads the same stale
     //    snapshot: two receipts on the same PO in the same instant could both

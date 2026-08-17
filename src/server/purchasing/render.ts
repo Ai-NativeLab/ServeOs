@@ -22,9 +22,18 @@ export function renderPurchaseOrderHtml(
   branch: { name: string },
   tenant: { name: string },
 ): string {
+  let subtotal = 0;
+  let taxTotal = 0;
   const rows = lines.map((l) => {
     const name = itemNames.get(l.itemId) ?? l.itemId;
-    const lineTotal = money(Number(l.qtyOrdered) * Number(l.unitCost));
+    const net = Number(l.qtyOrdered) * Number(l.unitCost);
+    const tax = net * Number(l.taxRate ?? 0);
+    subtotal += net;
+    taxTotal += tax;
+    // The row shows NET so the column sums to the subtotal; tax is broken out
+    // once in the footer. `po.total` is gross, so without that block the
+    // document would not add up to its own stated total.
+    const lineTotal = money(net);
     return `<tr>
       <td style="padding:8px 16px 8px 0;color:#1A0F0A;">${escapeHtml(name)}</td>
       <td style="padding:8px 16px;color:#1A0F0A;text-align:right;">${escapeHtml(l.qtyOrdered)} ${escapeHtml(l.uom)}</td>
@@ -47,6 +56,8 @@ export function renderPurchaseOrderHtml(
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
-    <p style="margin:16px 0 0;color:#1A0F0A;font-size:16px;text-align:right;"><strong>Total: ${escapeHtml(po.total)} ${escapeHtml(po.currency)}</strong></p>
+    <p style="margin:16px 0 0;color:#6E6459;font-size:13px;text-align:right;">Subtotal: ${escapeHtml(money(subtotal))} ${escapeHtml(po.currency)}</p>
+    <p style="margin:2px 0 0;color:#6E6459;font-size:13px;text-align:right;">Tax: ${escapeHtml(money(taxTotal))} ${escapeHtml(po.currency)}</p>
+    <p style="margin:6px 0 0;color:#1A0F0A;font-size:16px;text-align:right;"><strong>Total: ${escapeHtml(po.total)} ${escapeHtml(po.currency)}</strong></p>
   </div></body></html>`;
 }

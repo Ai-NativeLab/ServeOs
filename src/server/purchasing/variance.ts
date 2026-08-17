@@ -8,7 +8,6 @@ import { purchaseOrders, purchaseOrderLines } from "./schema";
 import type { PurchasingActor } from "./suppliers";
 import { InvalidPoInputError, InvalidPoTransitionError, PoNotFoundError } from "./errors";
 import { assertTransition } from "./status";
-import { lockTenant } from "./locking";
 import type { PoStatus } from "./status";
 
 function auditCtx(actor: PurchasingActor) {
@@ -41,10 +40,16 @@ export async function getPoVariance(tenantId: string, poId: string): Promise<PoV
     // Received value is Σ receipt-line received_qty × unit_cost across every
     // receipt on this PO — the same aggregate the analytics report reads, so
     // the detail and the report can never disagree.
+    // All three figures must share ONE tax basis or the deltas are noise.
+    // `invoice_total` is what the supplier actually bills, i.e. GROSS, and
+    // `po.total` is gross too — so the received side is grossed up here with the
+    // ordering line's tax rate. Receipt lines carry no rate of their own, hence
+    // the join back to purchase_order_lines.
     const { rows: receivedRows } = await tx.execute<{ received: string }>(sql`
-      SELECT COALESCE(SUM(prl.received_qty * prl.unit_cost), 0) AS received
+      SELECT COALESCE(SUM(prl.received_qty * prl.unit_cost * (1 + COALESCE(pol.tax_rate, 0))), 0) AS received
       FROM po_receipt_lines prl
       JOIN po_receipts pr ON pr.id = prl.po_receipt_id
+      LEFT JOIN purchase_order_lines pol ON pol.id = prl.po_line_id
       WHERE pr.purchase_order_id = ${poId}
     `);
 
@@ -72,7 +77,6 @@ export async function enterInvoiceTotal(actor: PurchasingActor, poId: string, in
     throw new InvalidPoInputError(`invoiceTotal must be a non-negative finite number (got ${invoiceTotal})`);
   }
   return withTenant(actor.tenantId, async (tx) => {
-    await lockTenant(tx, actor.tenantId);
     const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId)).for("update").limit(1);
     if (!po) throw new PoNotFoundError();
     if (po.status !== "sent" && po.status !== "partially_received" && po.status !== "received") {
@@ -98,7 +102,6 @@ export async function enterInvoiceTotal(actor: PurchasingActor, poId: string, in
 export async function closePurchaseOrder(actor: PurchasingActor, poId: string): Promise<void> {
   requireCapability(actor.vertical, "inventory");
   return withTenant(actor.tenantId, async (tx) => {
-    await lockTenant(tx, actor.tenantId);
     const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId)).for("update").limit(1);
     if (!po) throw new PoNotFoundError();
     assertTransition(po.status, "closed");

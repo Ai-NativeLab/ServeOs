@@ -529,11 +529,12 @@ export async function getReceivedVsInvoiced(tenantId: string, days: number): Pro
     const { rows } = await tx.execute<{ po_id: string; po_number: string; ordered: string; received: string; invoiced: string }>(sql`
       SELECT po.id AS po_id, po.po_number,
              COALESCE(po.total, 0) AS ordered,
-             COALESCE(SUM(prl.received_qty * prl.unit_cost), 0) AS received,
+             COALESCE(SUM(prl.received_qty * prl.unit_cost * (1 + COALESCE(pol.tax_rate, 0))), 0) AS received,
              COALESCE(po.invoice_total, 0) AS invoiced
       FROM purchase_orders po
       JOIN po_receipts pr ON pr.purchase_order_id = po.id
       JOIN po_receipt_lines prl ON prl.po_receipt_id = pr.id
+      LEFT JOIN purchase_order_lines pol ON pol.id = prl.po_line_id
       WHERE po.created_at >= ${since}
       GROUP BY po.id, po.po_number, po.invoice_total
       ORDER BY MAX(po.created_at) DESC

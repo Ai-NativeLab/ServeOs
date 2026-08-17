@@ -50,3 +50,23 @@ describe("renderPurchaseOrderHtml", () => {
     expect(html).not.toMatch(/src\s*=\s*"/);
   });
 });
+
+it("the emailed PO adds up: subtotal + tax equals the stated total", () => {
+  // po.total is gross; the line rows are net. Without a subtotal/tax block the
+  // document's own column does not sum to its own footer — an arithmetic error
+  // visible to the supplier receiving it.
+  const html = renderPurchaseOrderHtml(
+    { poNumber: 7, total: "57.00", currency: "EGP", expectedAt: null } as never,
+    [{ itemId: "i1", qtyOrdered: "10.000", uom: "each", unitCost: "5.00", taxRate: "0.14" }] as never,
+    new Map([["i1", "Cola"]]),
+    { name: "Sup", email: "s@x.com" } as never,
+    { name: "Main" },
+    { name: "T" },
+  );
+  expect(html).toContain("Subtotal: 50.00");
+  expect(html).toContain("Tax: 7.00");
+  expect(html).toContain("Total: 57.00");
+  // and the row itself shows NET, so the column sums to the subtotal
+  const cells = [...html.matchAll(/<td[^>]*>([^<]*)<\/td>/g)].map((m) => m[1].trim());
+  expect(cells).toContain("50.00");
+});
