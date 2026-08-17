@@ -151,12 +151,44 @@ export async function upsertSupplierItem(actor: PurchasingActor, input: UpsertSu
   });
 }
 
+export async function getSupplier(tenantId: string, supplierId: string): Promise<Supplier | null> {
+  return withTenant(tenantId, async (tx) => {
+    const [row] = await tx.select().from(suppliers).where(eq(suppliers.id, supplierId));
+    return row ?? null;
+  });
+}
+
 export async function listSuppliers(tenantId: string) {
   return withTenant(tenantId, async (tx) =>
     tx.select().from(suppliers).orderBy(suppliers.name));
 }
 
+export type SupplierItemWithDetails = {
+  id: string;
+  tenantId: string;
+  supplierId: string;
+  itemId: string;
+  itemNameEn: string | null;
+  supplierSku: string | null;
+  lastUnitCost: string | null;
+  packUom: UnitOfMeasure | null;
+  createdAt: Date;
+};
+
 export async function listSupplierItems(tenantId: string, supplierId: string) {
-  return withTenant(tenantId, async (tx) =>
-    tx.select().from(supplierItems).where(eq(supplierItems.supplierId, supplierId)));
+  return withTenant(tenantId, async (tx) => {
+    const rows = await tx
+      .select({
+        item: supplierItems,
+        itemNameEn: inventoryItems.nameEn,
+      })
+      .from(supplierItems)
+      .leftJoin(inventoryItems, eq(inventoryItems.id, supplierItems.itemId))
+      .where(eq(supplierItems.supplierId, supplierId));
+
+    return rows.map((r) => ({
+      ...r.item,
+      itemNameEn: r.itemNameEn,
+    }));
+  });
 }
