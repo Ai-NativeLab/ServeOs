@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { eq, and } from "drizzle-orm";
-import { db, pool } from "@/db/client";
+import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { users } from "@/server/auth/schema";
 import { seedInventoryTenant, seedItem, seedLocation } from "@/server/inventory/test-helpers";
@@ -14,7 +14,6 @@ import type { PurchasingActor } from "./suppliers";
 import { createSupplier, upsertSupplierItem } from "./suppliers";
 import { reorderRules } from "./reorder-schema";
 import { upsertReorderRule, listReorderRules, checkReorder } from "./reorder";
-import { createDraftPo, updateDraftPo } from "./service";
 import { InvalidPoInputError } from "./errors";
 
 async function seedActor(tenantId: string, branchId: string): Promise<PurchasingActor> {

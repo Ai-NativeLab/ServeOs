@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolvePurchasingContext, resolvePurchasingActor } from "@/app/dashboard/purchasing-permission";
 import { createDraftPo, listPurchaseOrders } from "@/server/purchasing/service";
+import { purchasingErrorResponse } from "../purchasing-errors";
 import { parseLines } from "./validation";
 
 export async function GET(req: NextRequest) {
@@ -38,6 +39,8 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json({ poId, poNumber }, { status: 201 });
   } catch (e) {
+    const mapped = purchasingErrorResponse(e);
+    if (mapped) return mapped;
     console.error("createDraftPo failed", { tenantId: ctx.tenantId, error: e });
     return NextResponse.json({ error: "Something went wrong" }, { status: 500 });
   }

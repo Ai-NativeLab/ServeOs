@@ -67,8 +67,16 @@ function assertLineNumbers(lines: DraftPoLineInput[]): void {
     if (!Number.isFinite(l.unitCost) || l.unitCost < 0) {
       throw new InvalidPoInputError(`unitCost must be a finite non-negative number (got ${l.unitCost})`);
     }
-    if (l.taxRate !== undefined && (!Number.isFinite(l.taxRate) || l.taxRate < 0)) {
-      throw new InvalidPoInputError(`taxRate must be a finite non-negative number (got ${l.taxRate})`);
+    // A FRACTION, not a percentage. The distinction needs enforcing because the
+    // codebase carries both conventions under near-identical names: getVatRate
+    // (tenancy/settings.ts) returns 14 for a 14% rate, while this field wants
+    // 0.14 — `lineTotal` multiplies by `1 + taxRate`. Unbounded, a caller
+    // passing 14 turned a 50.00 order into 750.00, stored it, and emailed it to
+    // the supplier as the amount to bill. 1 (100%) is the generous ceiling.
+    if (l.taxRate !== undefined && (!Number.isFinite(l.taxRate) || l.taxRate < 0 || l.taxRate > 1)) {
+      throw new InvalidPoInputError(
+        `taxRate must be a fraction between 0 and 1, not a percentage (got ${l.taxRate}${l.taxRate > 1 ? ` — did you mean ${l.taxRate / 100}?` : ""})`,
+      );
     }
   }
 }

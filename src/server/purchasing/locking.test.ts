@@ -1,11 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db, pool } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { users } from "@/server/auth/schema";
 import { products, categories } from "@/server/catalog/schema";
 import { seedInventoryTenant, seedItem, seedLocation } from "@/server/inventory/test-helpers";
 import { inventoryLots, productInventoryLinks } from "@/server/inventory/schema";
+import { notifications } from "@/server/notifications/schema";
 import { adjustStock } from "@/server/inventory/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { purchaseOrders, purchaseOrderLines } from "./schema";
@@ -46,13 +47,14 @@ function is40P01(e: unknown): boolean {
   return false;
 }
 
+/** Counts 40P01 deadlocks across ROUNDS of a concurrent pairing. Other
+ *  rejections (InvalidPoTransitionError from a legitimately-lost race) are not
+ *  failures here — a blocked writer failing closed is the desired outcome. */
 async function tally(round: () => Promise<unknown[]>) {
-  let dl = 0, ok = 0, other = 0;
+  let dl = 0;
   for (let i = 0; i < ROUNDS; i++) {
     for (const r of (await round()) as PromiseSettledResult<unknown>[]) {
-      if (r.status === "fulfilled") ok++;
-      else if (is40P01(r.reason)) dl++;
-      else other++;
+      if (r.status === "rejected" && is40P01(r.reason)) dl++;
     }
   }
   return dl;
@@ -220,6 +222,33 @@ describe("lock ordering — deadlock regressions", () => {
 
   it("the sweep never holds the tenant key while waiting on a row (draft visited second)", async () => {
     expect(await keyHeldWhileWaitingOnRow(1)).toBe(0);
+  });
+
+  // The ONLY concurrent-sweep assertion in this file used a fixture where a
+  // draft already exists, which is the one arrangement where the open-draft
+  // FOR UPDATE holds something. With NO draft yet that lookup matches zero rows
+  // and locks nothing, so both sweeps also read lastAlertedAt from the same
+  // snapshot: two notification sets and two drafts for one low item.
+  it("two concurrent sweeps notify once and draft once for the same low item", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const actor = await seedActor(tenantId, branchId);
+    const supplierId = await createSupplier(actor, { name: "S", email: "s@x.com" });
+    const itemId = await seedItem(tenantId, { baseUom: "g", nameEn: "Flour" });
+    const locationId = await seedLocation(tenantId, branchId, "kitchen");
+    await upsertSupplierItem(actor, { supplierId, itemId, lastUnitCost: 2 });
+    await upsertReorderRule(actor, { itemId, locationId, reorderPoint: 20, reorderQty: 10, preferredSupplierId: supplierId });
+    await withTenant(tenantId, (tx) => tx.insert(inventoryLots).values({
+      tenantId, itemId, locationId, qtyReceived: "5", qtyRemaining: "5", unitCost: "1",
+    }));
+
+    await Promise.allSettled([checkReorder(actor), checkReorder(actor)]);
+
+    const feed = await withTenant(tenantId, (tx) =>
+      tx.select().from(notifications).where(eq(notifications.type, "low_stock")));
+    expect(feed).toHaveLength(2); // owner + manager, from ONE sweep
+
+    const pos = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders));
+    expect(pos).toHaveLength(1);
   });
 
   it("postReceipt || adjustStock (the pairing the last fix broke)", async () => {

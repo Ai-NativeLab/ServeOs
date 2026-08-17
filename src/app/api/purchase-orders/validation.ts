@@ -25,7 +25,12 @@ export function parseLines(raw: unknown): ParsedLines {
     // bad body a 400, and keeps the two validators agreeing on every field.
     if (row.taxRate !== undefined) {
       const taxRate = Number(row.taxRate);
-      if (!Number.isFinite(taxRate) || taxRate < 0) return { error: "each line needs a non-negative taxRate" };
+      // Fraction, not percentage — kept in step with assertLineNumbers so the
+      // route and the service agree on every field. See service.ts for why the
+      // upper bound matters (getVatRate returns 14, this field wants 0.14).
+      if (!Number.isFinite(taxRate) || taxRate < 0 || taxRate > 1) {
+        return { error: "each line needs a taxRate as a fraction between 0 and 1, not a percentage" };
+      }
     }
     lines.push({
       itemId: row.itemId,

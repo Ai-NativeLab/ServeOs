@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolvePurchasingContext, resolvePurchasingActor } from "@/app/dashboard/purchasing-permission";
 import { listReorderRules, upsertReorderRule } from "@/server/purchasing/reorder";
+import { purchasingErrorResponse } from "../../purchasing-errors";
 
 export async function GET() {
   const { ctx, denied } = await resolvePurchasingContext("purchasing:manage");
@@ -42,6 +43,8 @@ export async function PUT(req: NextRequest) {
     });
     return NextResponse.json({ ok: true }, { status: 201 });
   } catch (e) {
+    const mapped = purchasingErrorResponse(e);
+    if (mapped) return mapped;
     console.error("upsertReorderRule failed", { tenantId: ctx.tenantId, error: e });
     return NextResponse.json({ error: "Something went wrong" }, { status: 500 });
   }

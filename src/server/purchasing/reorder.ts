@@ -33,15 +33,32 @@ export type ReorderRuleInput = {
   preferredSupplierId?: string | null;
 };
 
+/**
+ * Same rationale as service.ts's assertLineNumbers: the routes validate their
+ * own bodies, but this is an exported service function the cron, scripts and
+ * tests call directly. A zero or negative reorderQty becomes the qtyOrdered of
+ * an auto-drafted PO line, so the floor has to live here and not only at the
+ * HTTP edge.
+ */
+function assertRuleNumbers(input: ReorderRuleInput): void {
+  if (!Number.isFinite(input.reorderPoint) || input.reorderPoint < 0) {
+    throw new InvalidPoInputError(`reorderPoint must be a non-negative finite number (got ${input.reorderPoint})`);
+  }
+  if (!Number.isFinite(input.reorderQty) || input.reorderQty <= 0) {
+    throw new InvalidPoInputError(`reorderQty must be a positive finite number (got ${input.reorderQty})`);
+  }
+}
+
 export async function upsertReorderRule(actor: PurchasingActor, input: ReorderRuleInput): Promise<void> {
   requireCapability(actor.vertical, "inventory");
   return withTenant(actor.tenantId, async (tx) => {
-    // Same per-tenant serialization as checkReorder: the advisory lock is the
-    // FIRST statement every tenant writer takes. checkReorder holds it while it
-    // reads-then-writes reorder_rules; acquiring it here at the start (instead
-    // of letting recordAuditEvent grab it at the end) keeps both paths locking
-    // in the same order — otherwise two writers of the same rule rows deadlock
-    // (40P01). Re-acquiring in recordAuditEvent later is a re-entrant no-op.
+    // No advisory key here. This writer takes its rule row lock via the
+    // ON CONFLICT below and reaches hashtext(tenantId) only through its closing
+    // recordAuditEvent — rows first, tenant key last, the same order checkReorder
+    // follows. See ./locking.ts. (An earlier revision took the key first here
+    // and described doing so in this comment; that inverted purchasing against
+    // every other domain and is what deadlocked postReceipt || adjustStock.)
+    assertRuleNumbers(input);
 
     // Body-supplied ids must resolve under our RLS or the rule could reference
     // another tenant's item/location/supplier (FK checks bypass row security).
@@ -101,11 +118,20 @@ export type ReorderRun = { triggered: number; draftsCreated: number };
  *  - Debounced by lastAlertedAt: a rule alerted in the last 24h is skipped.
  *  - Rules with a preferred supplier pre-fill one draft PO per supplier (never
  *    sent) at reorderQty × lastUnitCost (0 when the supplier has no price for it).
- *  - The sweep is serialized per tenant by the advisory lock taken as its FIRST
- *    statement: an overlapping run (or a cron re-fire) blocks until this one
- *    commits, then re-reads rules and lastAlertedAt, so it cannot double-notify
- *    or double-draft. A supplier with an already-open draft PO is skipped, so a
- *    chronically-low item cannot spawn a fresh draft every day forever.
+ *  - Overlapping sweeps are serialized by `FOR UPDATE` on the reorder_rules rows
+ *    themselves, taken with the debounce read. A rival run blocks there, and
+ *    under READ COMMITTED re-reads the winner's committed `lastAlertedAt` when
+ *    it unblocks, so it cannot double-notify or double-draft. Row locks, not an
+ *    advisory key: see ./locking.ts for why the key must be taken last.
+ *  - A supplier with an already-open draft PO has the new lines merged into it,
+ *    so a chronically-low item cannot spawn a fresh draft every day forever.
+ *  - Auto-drafted lines carry NO tax rate, deliberately. Nothing here knows the
+ *    rate for a given item — the tenant's `vatRate` is its SALES rate, and much
+ *    of what a restaurant buys is zero-rated or reduced, so stamping it on every
+ *    line would be wrong more often than right. A draft is never sent
+ *    automatically; the buyer states the tax when they review it, and until they
+ *    do, `getPoVariance` showing the tax as an invoice discrepancy is the
+ *    correct signal that it has not been captured.
  *  - Machine-written draft POs are audit-attributed by the caller: the cron
  *    passes an actor with actorType "system", an interactive check keeps the
  *    real user — the shared service never decides which it was.
@@ -113,11 +139,21 @@ export type ReorderRun = { triggered: number; draftsCreated: number };
 export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> {
   requireCapability(actor.vertical, "inventory");
   return withTenant(actor.tenantId, async (tx) => {
-    // Serialize the whole sweep per tenant. Advisory locks are re-entrant, so
-    // recordAuditEvent re-acquiring the same key later is a no-op; the sweep's
-    // read-then-write steps (rules → debounce → notify → draft) are now atomic.
-
-    const rules = await tx.select().from(reorderRules).where(eq(reorderRules.isActive, true));
+    // FOR UPDATE on the rule rows this sweep may stamp. The debounce is a
+    // read-then-write on `lastAlertedAt`: without the lock two overlapping runs
+    // read the same snapshot, both pass the 24h check and both notify (measured:
+    // 4 rows for one low item), and when no draft exists yet the open-draft
+    // lookup below matches nothing and locks nothing, so both also insert a
+    // draft. Locking here makes the loser block and re-read the winner's commit.
+    //
+    // ORDER BY id so concurrent sweeps take these rows in one order — an
+    // unordered scan can hand two backends different orders (synchronize_seqscans
+    // is on by default), which is its own deadlock. This is also the first lock
+    // the sweep takes, well before anything acquires hashtext(tenantId).
+    const rules = await tx.select().from(reorderRules)
+      .where(eq(reorderRules.isActive, true))
+      .orderBy(asc(reorderRules.id))
+      .for("update");
     if (rules.length === 0) return { triggered: 0, draftsCreated: 0 };
 
     const locRows = await tx.select({ id: storageLocations.id, name: storageLocations.name }).from(storageLocations);

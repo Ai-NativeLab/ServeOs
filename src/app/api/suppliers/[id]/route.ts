@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolvePurchasingContext, resolvePurchasingActor } from "@/app/dashboard/purchasing-permission";
 import { updateSupplier } from "@/server/purchasing/suppliers";
+import { purchasingErrorResponse } from "../../purchasing-errors";
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { ctx, denied } = await resolvePurchasingContext("suppliers:manage");
@@ -41,6 +42,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (!supplier) return NextResponse.json({ error: "Supplier not found" }, { status: 404 });
     return NextResponse.json({ supplier });
   } catch (e) {
+    const mapped = purchasingErrorResponse(e);
+    if (mapped) return mapped;
     console.error("updateSupplier failed", { tenantId: ctx.tenantId, supplierId: id, error: e });
     return NextResponse.json({ error: "Something went wrong" }, { status: 500 });
   }

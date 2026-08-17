@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolvePurchasingContext, resolvePurchasingActor } from "@/app/dashboard/purchasing-permission";
 import { createSupplier, listSuppliers } from "@/server/purchasing/suppliers";
+import { purchasingErrorResponse } from "../purchasing-errors";
 
 export async function GET() {
   const { ctx, denied } = await resolvePurchasingContext("suppliers:manage");
@@ -32,6 +33,8 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json({ id: supplierId }, { status: 201 });
   } catch (e) {
+    const mapped = purchasingErrorResponse(e);
+    if (mapped) return mapped;
     console.error("createSupplier failed", { tenantId: ctx.tenantId, error: e });
     return NextResponse.json({ error: "Something went wrong" }, { status: 500 });
   }

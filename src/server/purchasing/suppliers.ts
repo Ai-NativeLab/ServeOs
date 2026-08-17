@@ -6,7 +6,6 @@ import { requireCapability } from "@/server/verticals/registry";
 import type { VerticalId } from "@/server/verticals/types";
 import type { UnitOfMeasure } from "@/server/catalog/uom";
 import { assertInventoryUom } from "@/server/inventory/uom";
-import { money } from "@/server/ordering/service";
 import { unitRate } from "./amounts";
 import { inventoryItems } from "@/server/inventory/schema";
 import { suppliers, supplierItems } from "./schema";
@@ -116,23 +115,32 @@ export async function upsertSupplierItem(actor: PurchasingActor, input: UpsertSu
     const [item] = await tx.select().from(inventoryItems).where(eq(inventoryItems.id, input.itemId));
     if (!item) throw new InvalidPoInputError(`itemId ${input.itemId} is not an item of this tenant`);
 
-    await tx.insert(supplierItems).values({
+    // Only touch keys the caller provided so a partial upsert doesn't erase the
+    // stored supplierSku/packUom/lastUnitCost (drizzle skips `undefined`).
+    const patch = {
+      supplierSku: input.supplierSku !== undefined ? input.supplierSku : undefined,
+      lastUnitCost: input.lastUnitCost !== undefined ? unitRate(input.lastUnitCost) : undefined,
+      packUom: input.packUom !== undefined ? assertInventoryUom(input.packUom) : undefined,
+    };
+
+    const insert = tx.insert(supplierItems).values({
       tenantId: actor.tenantId,
       supplierId: input.supplierId,
       itemId: input.itemId,
       supplierSku: input.supplierSku ?? null,
       lastUnitCost: input.lastUnitCost !== undefined ? unitRate(input.lastUnitCost) : null,
       packUom,
-    }).onConflictDoUpdate({
-      target: [supplierItems.supplierId, supplierItems.itemId],
-      set: {
-        // Only touch keys the caller provided so a partial upsert doesn't erase
-        // the stored supplierSku/packUom/lastUnitCost (drizzle skips `undefined`).
-        supplierSku: input.supplierSku !== undefined ? input.supplierSku : undefined,
-        lastUnitCost: input.lastUnitCost !== undefined ? unitRate(input.lastUnitCost) : undefined,
-        packUom: input.packUom !== undefined ? assertInventoryUom(input.packUom) : undefined,
-      },
     });
+
+    // With every optional field omitted the patch is empty, and drizzle's
+    // mapUpdateSet throws "No values to set" while BUILDING the statement — so
+    // it fired even on a first insert with nothing to conflict against, and the
+    // route surfaced it as a 500. Linking an item to a supplier before its price
+    // is known is a legitimate call, and it is idempotent: DO NOTHING.
+    const hasPatch = Object.values(patch).some((v) => v !== undefined);
+    await (hasPatch
+      ? insert.onConflictDoUpdate({ target: [supplierItems.supplierId, supplierItems.itemId], set: patch })
+      : insert.onConflictDoNothing({ target: [supplierItems.supplierId, supplierItems.itemId] }));
     await recordAuditEvent(auditCtx(actor), {
       action: "supplier.item.upserted",
       entityType: "supplier",

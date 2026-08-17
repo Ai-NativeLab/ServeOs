@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { resolvePurchasingContext, resolvePurchasingActor } from "@/app/dashboard/purchasing-permission";
 import { listSupplierItems, upsertSupplierItem } from "@/server/purchasing/suppliers";
 import { INVENTORY_UOMS, type Uom } from "@/server/inventory/uom";
+import { purchasingErrorResponse } from "../../../purchasing-errors";
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { ctx, denied } = await resolvePurchasingContext("suppliers:manage");
@@ -44,6 +45,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     });
     return NextResponse.json({ ok: true }, { status: 201 });
   } catch (e) {
+    const mapped = purchasingErrorResponse(e);
+    if (mapped) return mapped;
     console.error("upsertSupplierItem failed", { tenantId: ctx.tenantId, supplierId: id, error: e });
     return NextResponse.json({ error: "Something went wrong" }, { status: 500 });
   }

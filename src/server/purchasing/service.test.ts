@@ -198,6 +198,28 @@ describe("purchase order drafting", () => {
     expect(ok.map((r) => r.value.poNumber).sort()).toEqual([1, 2]);
   });
 
+  // `taxRate` is a FRACTION (0.14), but this codebase also carries a PERCENTAGE
+  // convention under a near-identical name — getVatRate returns 14, not 0.14.
+  // Nothing bounded the field, so a caller reading "tax rate" and passing 14
+  // silently ordered 10 x 5.00 as 750.00, stored it, and emailed it to the
+  // supplier as the amount to bill.
+  it("rejects a taxRate expressed as a percentage instead of a fraction", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const actor = await seedActor(tenantId, branchId);
+    const supplierId = await seedSupplier(tenantId, branchId);
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+
+    await expect(createDraftPo(actor, {
+      supplierId, branchId, lines: [line(itemId, { taxRate: 14 })],
+    })).rejects.toBeInstanceOf(InvalidPoInputError);
+
+    // The fraction form is still accepted, at the boundary too.
+    const ok = await createDraftPo(actor, {
+      supplierId, branchId, lines: [line(itemId, { taxRate: 0.14 })],
+    });
+    expect(ok.poNumber).toBeGreaterThan(0);
+  });
+
   it("getPurchaseOrder returns null for an unknown PO", async () => {
     const { tenantId } = await seedInventoryTenant();
     expect(await getPurchaseOrder(tenantId, "00000000-0000-0000-0000-000000000000")).toBeNull();

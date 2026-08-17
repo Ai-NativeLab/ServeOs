@@ -1,8 +1,13 @@
 # Finds stock below reorder points and pre-fills draft POs + low_stock alerts on
-# a schedule. checkReorder takes a per-tenant advisory lock as its first
-# statement and skips suppliers that already have an open draft, so a re-run or
-# an overlapping schedule cannot double-notify or double-draft. Drives the same
-# function as POST /api/inventory/reorder/check, with a per-tenant system actor.
+# a schedule. Drives the same function as POST /api/inventory/reorder/check, with
+# a per-tenant system actor.
+#
+# Two independent things keep a re-run from duplicating alerts or drafts: the
+# `concurrency` group below serialises runs of THIS workflow, and checkReorder
+# takes FOR UPDATE on the reorder_rules rows it may stamp, which covers the
+# sweep racing a manual API call. It does NOT take a per-tenant advisory key —
+# doing that inverted the codebase's lock order and deadlocked; see
+# src/server/purchasing/locking.ts.
 name: reorder-check
 
 on:

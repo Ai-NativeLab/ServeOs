@@ -7,7 +7,6 @@ import type { UnitOfMeasure } from "@/server/catalog/uom";
 import { assertInventoryUom, dimensionOf, qty, toBase } from "@/server/inventory/uom";
 import { receiveStock, getOrCreateDefaultLocation } from "@/server/inventory/service";
 import { inventoryItems } from "@/server/inventory/schema";
-import { money } from "@/server/ordering/service";
 import { unitRate } from "./amounts";
 import { purchaseOrders, purchaseOrderLines, poReceipts, poReceiptLines } from "./schema";
 import type { PurchasingActor } from "./suppliers";

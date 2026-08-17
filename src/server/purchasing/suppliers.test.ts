@@ -5,7 +5,7 @@ import { withTenant } from "@/db/with-tenant";
 import { users } from "@/server/auth/schema";
 import { seedInventoryTenant, seedItem } from "@/server/inventory/test-helpers";
 import { suppliers, supplierItems } from "./schema";
-import { createSupplier, updateSupplier, upsertSupplierItem, listSuppliers } from "./suppliers";
+import { createSupplier, updateSupplier, upsertSupplierItem, listSuppliers, listSupplierItems } from "./suppliers";
 
 async function seedActor(tenantId: string, branchId: string) {
   const [user] = await db.insert(users).values({
@@ -81,6 +81,28 @@ describe("supplier CRUD", () => {
     const rows = await withTenant(tenantId, (tx) => tx.select().from(supplierItems).where(eq(supplierItems.supplierId, supplierId)));
     expect(rows).toHaveLength(1);
     expect(Number(rows[0]!.lastUnitCost)).toBe(12);
+  });
+
+  // Linking an item to a supplier before its price is known is a legitimate
+  // call. With every optional field undefined, drizzle's mapUpdateSet threw
+  // "No values to set" while BUILDING the onConflictDoUpdate — so it fired even
+  // on a first insert with no conflict, and the route turned it into a 500.
+  it("links an item with no optional fields at all (itemId only)", async () => {
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const actor = await seedActor(tenantId, branchId);
+    const supplierId = await createSupplier(actor, { name: "S" });
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+
+    await expect(upsertSupplierItem(actor, { supplierId, itemId })).resolves.toBeUndefined();
+
+    const rows = await listSupplierItems(tenantId, supplierId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].itemId).toBe(itemId);
+    expect(rows[0].lastUnitCost).toBeNull();
+
+    // And it stays idempotent: a second bare link must not throw or duplicate.
+    await expect(upsertSupplierItem(actor, { supplierId, itemId })).resolves.toBeUndefined();
+    expect(await listSupplierItems(tenantId, supplierId)).toHaveLength(1);
   });
 
   it("a cost-only upsert preserves supplierSku and packUom (C7 reviewer pin)", async () => {
