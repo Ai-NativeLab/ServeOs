@@ -1,9 +1,11 @@
-import { cookies, headers } from "next/headers";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { validateSession } from "@/server/auth/session";
 import { SESSION_COOKIE } from "@/server/auth/current-user";
 import { listPlans } from "@/server/subscription";
 import { getTenantById } from "@/server/tenancy/service";
+import { isFreePrice } from "@/shared/plans";
+import type { Locale } from "@/shared/errors";
 import { subscribeDestination } from "./destination";
 import { EnquiryForm } from "./EnquiryForm";
 
@@ -34,12 +36,22 @@ import { EnquiryForm } from "./EnquiryForm";
 export default async function SubscribePage({
   searchParams,
 }: {
-  searchParams: Promise<{ plan?: string }>;
+  searchParams: Promise<{ plan?: string; lang?: string }>;
 }) {
-  const { plan } = await searchParams;
+  const { plan, lang } = await searchParams;
+
+  // The locale rides in the URL because it cannot ride in a header: proxy.ts
+  // deletes x-locale and only re-sets it for paths the marketing allowlist
+  // rewrites. /subscribe is deliberately NOT one of them — that fallthrough is
+  // what keeps /login and /register out of the marketing segment — so reading
+  // x-locale here always yielded "en" and served an English-only form to the
+  // default-locale visitor, on the one path this page exists to serve.
+  //
+  // A closed two-value set, validated the same way ?plan is: nothing to escape.
+  const locale: Locale = lang === "en" ? "en" : "ar";
 
   const plans = await listPlans();
-  const planExists = Boolean(plan && plans.some((p) => p.key === plan));
+  const chosen = plan ? plans.find((p) => p.key === plan) : undefined;
 
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
   const session = token ? await validateSession(token) : null;
@@ -50,10 +62,15 @@ export default async function SubscribePage({
     tenantSlug = tenant?.slug ?? null;
   }
 
-  const destination = subscribeDestination({ planKey: plan, planExists, tenantSlug });
+  const destination = subscribeDestination({
+    planKey: plan,
+    planExists: Boolean(chosen),
+    planIsFree: Boolean(chosen && isFreePrice(chosen.priceMonthly)),
+    tenantSlug,
+    locale,
+  });
   if (destination.kind === "redirect") redirect(destination.href);
 
-  const locale = (await headers()).get("x-locale") === "ar" ? "ar" : "en";
   return (
     <main>
       <EnquiryForm planKey={destination.planKey} locale={locale} />

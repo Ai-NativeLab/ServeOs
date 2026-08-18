@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { marketingLocaleAction } from "./marketing-locale";
+import { homeHref, marketingLocaleAction, otherLocaleHref, pricingHref } from "./marketing-locale";
 
 describe("marketingLocaleAction", () => {
   it("rewrites the bare root to the Arabic route", () => {
@@ -53,5 +53,42 @@ describe("marketingLocaleAction", () => {
   it("does not treat a path that merely starts with the letters as a locale", () => {
     expect(marketingLocaleAction("/article")).toEqual({ kind: "none" });
     expect(marketingLocaleAction("/enroll")).toEqual({ kind: "none" });
+  });
+});
+
+describe("pricingHref", () => {
+  // Arabic owns the unprefixed path, so a hardcoded "/pricing" sends an English
+  // reader to the Arabic page.
+  it("gives each locale its own canonical pricing URL", () => {
+    expect(pricingHref("ar")).toBe("/pricing");
+    expect(pricingHref("en")).toBe("/en/pricing");
+  });
+});
+
+describe("otherLocaleHref", () => {
+  it("swaps the home page between locales", () => {
+    expect(otherLocaleHref("/", "ar")).toBe("/en");
+    expect(otherLocaleHref("/", "en")).toBe("/");
+  });
+
+  // The old `locale === "ar" ? "/en" : "/"` dropped a /pricing reader on the
+  // English HOME page, contradicting the hreflang alternates that page declares.
+  it("stays on the same page when swapping locale", () => {
+    expect(otherLocaleHref("/pricing", "ar")).toBe("/en/pricing");
+    expect(otherLocaleHref("/pricing", "en")).toBe("/pricing");
+  });
+
+  // `path` is the locale-INDEPENDENT page ("/pricing"), never a built URL, so
+  // both locales are asked about the same input and must disagree only on prefix.
+  it("gives the two locales the two canonical URLs for one page", () => {
+    expect([otherLocaleHref("/pricing", "ar"), otherLocaleHref("/pricing", "en")])
+      .toEqual(["/en/pricing", "/pricing"]);
+  });
+});
+
+describe("homeHref", () => {
+  it("keeps Arabic on the bare root", () => {
+    expect(homeHref("ar")).toBe("/");
+    expect(homeHref("en")).toBe("/en");
   });
 });

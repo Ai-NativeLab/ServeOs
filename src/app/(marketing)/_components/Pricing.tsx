@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { Plan } from "@/server/subscription";
+import { pricingHref } from "@/marketing-locale";
 import type { Locale } from "@/shared/errors";
 import { PRICING } from "../_content/pricing";
 import { PricingTerms } from "./PricingTerms";
@@ -16,9 +17,10 @@ export function Pricing({ plans, locale }: { plans: Plan[]; locale: Locale }) {
 
       {/* The cards sell; the full limits and feature grid does not fit here.
           It lives on /pricing, which is also the link to send when someone
-          asks for pricing. */}
+          asks for pricing. Locale-aware: Arabic owns the unprefixed /pricing,
+          so a hardcoded "/pricing" sent English readers to the Arabic page. */}
       <Link
-        href="/pricing"
+        href={pricingHref(locale)}
         className="mt-10 inline-block text-sm font-medium underline underline-offset-4 hover:no-underline"
       >
         {t.compareAll}
