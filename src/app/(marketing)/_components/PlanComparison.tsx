@@ -15,8 +15,12 @@ import { PRICING } from "../_content/pricing";
  */
 export function PlanComparison({ plans, locale }: { plans: Plan[]; locale: Locale }) {
   const t = PRICING[locale];
-  const limitKeys = Object.keys(t.limits) as (keyof PlanLimits)[];
-  const featureKeys = Object.keys(t.features) as (keyof PlanFeatures)[];
+  // A row that is an em dash in every column compares nothing — the seeded
+  // plans all have reservations off, which rendered a whole row of "—".
+  const limitKeys = (Object.keys(t.limits) as (keyof PlanLimits)[])
+    .filter((k) => plans.some((p) => p.limits[k] > 0));
+  const featureKeys = (Object.keys(t.features) as (keyof PlanFeatures)[])
+    .filter((k) => plans.some((p) => p.features[k]));
   const nf = new Intl.NumberFormat(locale === "ar" ? "ar-EG" : "en");
 
   return (

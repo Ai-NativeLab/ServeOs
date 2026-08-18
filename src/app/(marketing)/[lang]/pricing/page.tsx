@@ -73,7 +73,7 @@ export default async function PricingPage({ params }: { params: Promise<{ lang: 
 
   return (
     <PaperSurface>
-      <Header locale={locale} />
+      <Header locale={locale} path="/pricing" />
       <main>
         <section id="pricing" className="mx-auto max-w-6xl px-6 py-20">
           <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
@@ -90,7 +90,7 @@ export default async function PricingPage({ params }: { params: Promise<{ lang: 
 
         <Faq content={t.faq} id="pricing-faq" />
       </main>
-      <Footer locale={locale} />
+      <Footer locale={locale} path="/pricing" />
     </PaperSurface>
   );
 }
