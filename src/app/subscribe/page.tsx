@@ -4,8 +4,8 @@ import { validateSession } from "@/server/auth/session";
 import { SESSION_COOKIE } from "@/server/auth/current-user";
 import { listPlans } from "@/server/subscription";
 import { getTenantById } from "@/server/tenancy/service";
+import { queryLocale } from "@/marketing-locale";
 import { isFreePrice } from "@/shared/plans";
-import type { Locale } from "@/shared/errors";
 import { subscribeDestination } from "./destination";
 import { EnquiryForm } from "./EnquiryForm";
 
@@ -47,8 +47,9 @@ export default async function SubscribePage({
   // x-locale here always yielded "en" and served an English-only form to the
   // default-locale visitor, on the one path this page exists to serve.
   //
-  // A closed two-value set, validated the same way ?plan is: nothing to escape.
-  const locale: Locale = lang === "en" ? "en" : "ar";
+  // queryLocale() is the same function the proxy uses to declare x-locale for
+  // this path, so the document's dir/lang and the copy inside it are one rule.
+  const locale = queryLocale(lang);
 
   const plans = await listPlans();
   const chosen = plan ? plans.find((p) => p.key === plan) : undefined;

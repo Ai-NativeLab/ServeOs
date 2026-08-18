@@ -45,6 +45,32 @@ export function marketingLocaleAction(pathname: string): LocaleAction {
  * like `#surfaces` can no longer be assumed to resolve — on /pricing those
  * targets do not exist. Prefixing them with this makes them work from anywhere.
  */
+/**
+ * Marketing paths that declare their locale in the query string.
+ *
+ * They sit outside MARKETING_PATHS on purpose — rewriting them would pull them
+ * into the [lang] segment — but they are still marketing pages a reader reaches
+ * in one language or the other. Without this the proxy sets no x-locale, and
+ * the ROOT layout falls back to en/ltr: Arabic copy inside an LTR document.
+ */
+const QUERY_LOCALE_PATHS = new Set(["/subscribe"]);
+
+export function declaresLocaleInQuery(pathname: string): boolean {
+  return QUERY_LOCALE_PATHS.has(pathname);
+}
+
+/**
+ * The locale a ?lang-carrying page renders in.
+ *
+ * Shared by the proxy (which sets x-locale, so the root layout ships the right
+ * dir/lang in the first byte) and the page itself (which picks the copy). One
+ * rule, two consumers, so the document direction and the words in it cannot
+ * disagree. Arabic is the default, as everywhere else on this surface.
+ */
+export function queryLocale(lang: string | null | undefined): Locale {
+  return lang === "en" ? "en" : "ar";
+}
+
 export function homeHref(locale: Locale): string {
   return locale === "en" ? "/en" : "/";
 }

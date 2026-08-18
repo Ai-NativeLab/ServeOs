@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { homeHref, marketingLocaleAction, otherLocaleHref, pricingHref } from "./marketing-locale";
+import {
+  declaresLocaleInQuery,
+  homeHref,
+  marketingLocaleAction,
+  otherLocaleHref,
+  pricingHref,
+  queryLocale,
+} from "./marketing-locale";
 
 describe("marketingLocaleAction", () => {
   it("rewrites the bare root to the Arabic route", () => {
@@ -90,5 +97,30 @@ describe("homeHref", () => {
   it("keeps Arabic on the bare root", () => {
     expect(homeHref("ar")).toBe("/");
     expect(homeHref("en")).toBe("/en");
+  });
+});
+
+describe("queryLocale", () => {
+  // The root layout reads x-locale, so if the proxy does not declare one for
+  // /subscribe the document is en/ltr no matter how Arabic the copy is.
+  it("defaults to Arabic and only accepts en as the alternative", () => {
+    expect(queryLocale("ar")).toBe("ar");
+    expect(queryLocale("en")).toBe("en");
+    expect(queryLocale(null)).toBe("ar");
+    expect(queryLocale(undefined)).toBe("ar");
+    expect(queryLocale("fr")).toBe("ar");
+  });
+});
+
+describe("declaresLocaleInQuery", () => {
+  it("covers /subscribe, which the allowlist deliberately does not rewrite", () => {
+    expect(declaresLocaleInQuery("/subscribe")).toBe(true);
+    expect(marketingLocaleAction("/subscribe")).toEqual({ kind: "none" });
+  });
+
+  it("does not extend to the auth routes that share the fallthrough", () => {
+    expect(declaresLocaleInQuery("/login")).toBe(false);
+    expect(declaresLocaleInQuery("/register")).toBe(false);
+    expect(declaresLocaleInQuery("/subscribe/extra")).toBe(false);
   });
 });

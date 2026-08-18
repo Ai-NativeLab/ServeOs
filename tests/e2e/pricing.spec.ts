@@ -86,7 +86,36 @@ test("the enquiry form follows the language the visitor was reading", async ({ p
   await page.locator("#pricing").getByRole("link", { name: "ابدأ الآن" }).first().click();
   await expect(page).toHaveURL(/lang=ar/);
   await expect(page.getByRole("button", { name: "ابعت الطلب" })).toBeVisible();
+});
+
+/**
+ * Loaded directly, NOT followed from the pricing page.
+ *
+ * A soft navigation keeps the <html> element of the page it came from, so
+ * asserting dir on a clicked-through form proves nothing about a cold load —
+ * a shared link, a refresh, a search result. The root layout reads x-locale,
+ * which reaches this path only because the proxy declares it from ?lang.
+ */
+test("a cold load of the enquiry form is a right-to-left Arabic document", async ({ page }) => {
+  await page.goto("/subscribe?plan=pro&lang=ar");
   await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
+  await expect(page.locator("html")).toHaveAttribute("lang", "ar");
+  await expect(page.getByRole("button", { name: "ابعت الطلب" })).toBeVisible();
+});
+
+test("a cold load in English is left-to-right", async ({ page }) => {
+  await page.goto("/subscribe?plan=pro&lang=en");
+  await expect(page.locator("html")).toHaveAttribute("dir", "ltr");
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(page.getByRole("button", { name: "Send request" })).toBeVisible();
+});
+
+// No ?lang at all — a hand-typed or truncated URL still gets the canonical
+// locale, not the fallback the old header lookup produced.
+test("the enquiry form defaults to Arabic without a lang parameter", async ({ page }) => {
+  await page.goto("/subscribe?plan=pro");
+  await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
+  await expect(page.getByRole("button", { name: "ابعت الطلب" })).toBeVisible();
 });
 
 // The design called for this and nothing exercised it: the action, the row and
