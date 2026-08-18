@@ -38,7 +38,29 @@ test("a zero limit reads as an em dash, never as zero", async ({ page }) => {
 test("the home pricing section links through to the full comparison", async ({ page }) => {
   await page.goto("/en");
   await page.locator("#pricing").getByRole("link", { name: "Compare all plans" }).click();
+  // The English page specifically: /pricing is the ARABIC URL, and a hardcoded
+  // href sent English readers there.
+  await expect(page).toHaveURL(/\/en\/pricing$/);
+});
+
+// Marketing chrome was written for the home page, where every nav target is an
+// in-page anchor. On /pricing those sections do not exist, so the logo — the
+// universal way back — pointed at nothing.
+test("the pricing page's chrome links back to the home page, not to dead anchors", async ({ page }) => {
+  await page.goto("/en/pricing");
+  await page.getByRole("banner").getByRole("link").first().click();
+  // The home page, at its hero — not /en/pricing#hero, which is where a bare
+  // "#hero" would have left the reader, on an anchor that does not exist there.
+  await expect(page).toHaveURL(/\/en#hero$/);
+});
+
+// The switcher used to hardcode the home page, contradicting the hreflang
+// alternates this very page declares.
+test("switching language stays on the pricing page", async ({ page }) => {
+  await page.goto("/en/pricing");
+  await page.getByRole("banner").getByRole("link", { name: "العربية" }).click();
   await expect(page).toHaveURL(/\/pricing$/);
+  await expect(page.locator("html")).toHaveAttribute("lang", "ar");
 });
 
 test("the free plan self-serves, carrying its key into registration", async ({ page }) => {
@@ -52,6 +74,34 @@ test("a paid plan asks a signed-out visitor to enquire", async ({ page }) => {
   await page.locator("#pricing").getByRole("link", { name: "Get started" }).first().click();
   await expect(page).toHaveURL(/\/subscribe\?plan=/);
   await expect(page.getByRole("button", { name: "Send request" })).toBeVisible();
+});
+
+/**
+ * /subscribe sits outside the marketing locale allowlist, so no x-locale header
+ * ever reaches it — the form read one anyway and rendered English for everyone,
+ * including the default-locale reader this page is primarily written for.
+ */
+test("the enquiry form follows the language the visitor was reading", async ({ page }) => {
+  await page.goto("/pricing");
+  await page.locator("#pricing").getByRole("link", { name: "ابدأ الآن" }).first().click();
+  await expect(page).toHaveURL(/lang=ar/);
+  await expect(page.getByRole("button", { name: "ابعت الطلب" })).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
+});
+
+// The design called for this and nothing exercised it: the action, the row and
+// the provider call were only ever tested apart from the browser.
+test("submitting the enquiry confirms it was received", async ({ page }) => {
+  await page.goto("/en/pricing");
+  await page.locator("#pricing").getByRole("link", { name: "Get started" }).first().click();
+
+  await page.getByLabel("Name", { exact: true }).fill("Mona Adel");
+  await page.getByLabel("Business name", { exact: true }).fill("El Nour Pharmacy");
+  await page.getByLabel("Phone", { exact: true }).fill("+201001234567");
+  await page.getByLabel("Email", { exact: true }).fill(`prospect-${Date.now()}@example.com`);
+  await page.getByRole("button", { name: "Send request" }).click();
+
+  await expect(page.getByText("Got it. We'll be in touch shortly.")).toBeVisible();
 });
 
 test("an unknown plan key goes back to pricing rather than a dashboard", async ({ page }) => {
