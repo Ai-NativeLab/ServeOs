@@ -14,7 +14,13 @@ export default defineConfig({
       // Parens must be escaped: tinyglobby reads (marketing) as an extglob
       // group, and silently matches ZERO files rather than erroring.
       "src/app/\\(marketing\\)/**/*.test.ts",
-      "src/server/demo/**/*.test.ts",
+      // Named files, not a glob: src/server/demo/**/ also swept in
+      // session.test.ts, which needs a live database, so `npm run test:unit`
+      // failed 6 tests before it ever reached anything pure.
+      "src/server/demo/entry.test.ts",
+      "src/server/demo/images.test.ts",
+      "src/app/subscribe/**/*.test.ts",
+      "src/app/register/**/*.test.ts",
     ],
     env: { NODE_ENV: "test" },
   },

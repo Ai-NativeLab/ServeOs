@@ -7,6 +7,7 @@ import { plans, subscriptions } from "@/server/subscription/schema";
 import { recordAuditEvent } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { onboardingApplications } from "./schema";
+import { isDemoSlug } from "@/server/demo/entry";
 import { VERTICAL_IDS, type VerticalId } from "@/server/verticals";
 
 export type RegisterInput = {
@@ -17,6 +18,12 @@ export type RegisterInput = {
   email: string;
   password: string;
   vertical: VerticalId;
+  /**
+   * Opt out of the reserved-slug guard. ONLY the demo seed script sets this —
+   * it is the thing that legitimately creates `demo-*` tenants. Public
+   * registration must never pass it.
+   */
+  allowReservedSlug?: boolean;
 };
 
 export type RegisterResult = { tenantId: string; ownerUserId: string };
@@ -28,6 +35,14 @@ export async function registerTenant(input: RegisterInput): Promise<RegisterResu
   if (!(VERTICAL_IDS as readonly string[]).includes(input.vertical))
     throw new Error(`Invalid vertical: ${input.vertical}`);
   if (!SLUG_RE.test(input.slug)) throw new Error(`Invalid slug: ${input.slug}`);
+  // The demo prefix is reserved. /api/demo/login will sign ANYONE into a slug
+  // this predicate accepts, so a self-registered `demo-*` tenant would hand
+  // strangers an owner session on it. The subscribe fork now leans on the same
+  // predicate to tell a prospect from a customer, which makes it load-bearing
+  // twice over. The demo seeder is the one caller that may opt out.
+  if (!input.allowReservedSlug && isDemoSlug(input.slug)) {
+    throw new Error(`Reserved slug: ${input.slug}`);
+  }
 
   const passwordHash = await hashPassword(input.password);
 

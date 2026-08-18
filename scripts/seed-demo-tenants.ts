@@ -593,7 +593,31 @@ const TIMBER: TenantSeedConfig = {
   orderableNames: ["Skirting Board 2.4m", "Cove Moulding", "Door Architrave", "Wood Glue 1L", "Hinges Pack"],
 };
 
-const TENANTS: TenantSeedConfig[] = [RESTAURANT, RETAIL, PHARMACY, TIMBER];
+const ALL_TENANTS: TenantSeedConfig[] = [RESTAURANT, RETAIL, PHARMACY, TIMBER];
+
+/**
+ * `--trade=pharmacy` seeds one demo tenant instead of all four.
+ *
+ * CI needs exactly one (pricing.spec.ts signs in through the pharmacy door to
+ * prove a demo session is not a customer), and seeding four full catalogues,
+ * order histories and shift cycles for it is minutes of work thrown away.
+ * Unfiltered behaviour is unchanged.
+ */
+const TENANTS: TenantSeedConfig[] = (() => {
+  const wanted = process.argv
+    .filter((a) => a.startsWith("--trade="))
+    .map((a) => a.slice("--trade=".length));
+  if (wanted.length === 0) return ALL_TENANTS;
+
+  const chosen = ALL_TENANTS.filter((t) => wanted.includes(t.trade));
+  const unknown = wanted.filter((w) => !ALL_TENANTS.some((t) => t.trade === w));
+  if (unknown.length > 0) {
+    throw new Error(
+      `Unknown --trade value(s): ${unknown.join(", ")}. Known: ${ALL_TENANTS.map((t) => t.trade).join(", ")}`,
+    );
+  }
+  return chosen;
+})();
 
 /**
  * Fails fast when a config lists a product that placeOrder cannot actually
@@ -650,6 +674,9 @@ async function seedOneTenant(cfg: TenantSeedConfig, adminId: string) {
       email: cfg.ownerEmail,
       password: cfg.ownerPassword,
       vertical: cfg.trade,
+      // This script IS the owner of the demo- prefix; public registration is
+      // refused it precisely so nobody else can create one of these.
+      allowReservedSlug: true,
     });
     await approveTenant(reg.tenantId, adminId);
     [tenant] = await db.select().from(tenants).where(eq(tenants.slug, cfg.slug)).limit(1);
