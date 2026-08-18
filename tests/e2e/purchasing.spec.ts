@@ -23,7 +23,7 @@ test.describe("Purchasing & Suppliers Dashboard Flow", () => {
 
   test("can navigate to purchase orders and view list", async ({ page }) => {
     await page.goto("/dashboard/purchase-orders");
-    await expect(page.getByRole("heading", { name: "Purchase orders" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Purchase orders", exact: true })).toBeVisible();
 
     const draftBtn = page.getByRole("link", { name: "Draft PO", exact: true });
     const reorderBtn = page.getByRole("link", { name: "Reorder rules", exact: true });
@@ -34,20 +34,20 @@ test.describe("Purchasing & Suppliers Dashboard Flow", () => {
 
   test("can navigate to suppliers and view catalog", async ({ page }) => {
     await page.goto("/dashboard/suppliers");
-    await expect(page.getByRole("heading", { name: "Suppliers" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Suppliers", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Add supplier" })).toBeVisible();
   });
 
   test("can navigate to reorder rules and trigger check", async ({ page }) => {
     await page.goto("/dashboard/purchase-orders/reorder-rules");
-    await expect(page.getByRole("heading", { name: "Reorder rules" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Reorder rules", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Run check now" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Add rule" })).toBeVisible();
   });
 
   test("can open new PO draft page with line builder", async ({ page }) => {
     await page.goto("/dashboard/purchase-orders/new");
-    await expect(page.getByRole("heading", { name: "Draft purchase order" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Draft purchase order", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Add item" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Save draft PO" })).toBeVisible();
   });
