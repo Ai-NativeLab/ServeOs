@@ -22,14 +22,24 @@ export const planEnquiries = pgTable("plan_enquiries", {
   email: text("email").notNull(),
   /** Which language they were reading when they asked. */
   locale: text("locale").notNull(),
+  /**
+   * The submitter's address, for the per-IP cap.
+   *
+   * Nullable because it is derived from a proxy header: behind Vercel it is
+   * always present, but a direct hit or a stripped header must still capture
+   * the lead rather than reject it. A null simply cannot be rate-limited.
+   */
+  ip: text("ip"),
   /** "sent" once the provider accepted it; "unsent" until then. */
   status: text("status").notNull().default("unsent"),
   lastError: text("last_error"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   sentAt: timestamp("sent_at", { withTimezone: true }),
 }, (t) => [
-  // The throttle reads by email, newest first.
+  // The duplicate check reads by email and plan, newest first.
   index("plan_enquiries_email_created").on(t.email, t.createdAt),
+  // The per-IP cap counts recent rows for one address.
+  index("plan_enquiries_ip_created").on(t.ip, t.createdAt),
 ]);
 
 export type PlanEnquiry = typeof planEnquiries.$inferSelect;

@@ -8,7 +8,8 @@ import { auditEvents } from "@/server/audit/schema";
 import { FakeEmailProvider } from "@/server/email/fake-provider";
 import { notifications, notificationOutbox } from "./schema";
 import { notify } from "./service";
-import { drainOutbox, MAX_ATTEMPTS, defaultSender } from "./worker";
+import { defaultSender } from "@/server/email/sender";
+import { drainOutbox, MAX_ATTEMPTS } from "./worker";
 
 async function seed(slug: string) {
   const [t] = await db.insert(tenants).values({ slug, name: "T", country: "EG", vertical: "restaurant" }).returning();
