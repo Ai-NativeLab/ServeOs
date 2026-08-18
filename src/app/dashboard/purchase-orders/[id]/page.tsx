@@ -187,7 +187,7 @@ export default async function PurchaseOrderDetailPage({
                   <TableCell className="font-medium">
                     {new Date(r.receivedAt).toLocaleDateString()}
                   </TableCell>
-                  <TableCell>{r.deliveryNote ?? "—"}</TableCell>
+                  <TableCell>{r.supplierDeliveryNote ?? "—"}</TableCell>
                   <TableCell className="text-muted-foreground">
                     {new Date(r.receivedAt).toLocaleTimeString()}
                   </TableCell>

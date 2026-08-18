@@ -172,7 +172,6 @@ export type SupplierItemWithDetails = {
   supplierSku: string | null;
   lastUnitCost: string | null;
   packUom: UnitOfMeasure | null;
-  createdAt: Date;
 };
 
 export async function listSupplierItems(tenantId: string, supplierId: string) {

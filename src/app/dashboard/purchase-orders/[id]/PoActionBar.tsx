@@ -2,7 +2,7 @@
 
 import { useTransition } from "react";
 import { toast } from "sonner";
-import { Send, CheckCircle2, XCircle } from "lucide-react";
+import { Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmActionButton } from "@/components/dashboard/ConfirmActionButton";
 import { sendPoAction, cancelPoAction, closePoAction } from "./actions";
@@ -34,28 +34,6 @@ export function PoActionBar({
     });
   }
 
-  function handleCancel() {
-    startTransition(async () => {
-      const res = await cancelPoAction(po.id);
-      if ("error" in res) {
-        toast.error(res.error);
-        return;
-      }
-      toast.success(`PO #${po.poNumber} cancelled`);
-    });
-  }
-
-  function handleClose() {
-    startTransition(async () => {
-      const res = await closePoAction(po.id);
-      if ("error" in res) {
-        toast.error(res.error);
-        return;
-      }
-      toast.success(`PO #${po.poNumber} closed`);
-    });
-  }
-
   const canSend = po.status === "draft";
   const canReceive = po.status === "sent" || po.status === "partially_received";
   const canInvoice = po.status === "sent" || po.status === "partially_received" || po.status === "received";
@@ -70,15 +48,20 @@ export function PoActionBar({
     <div className="flex flex-wrap items-center gap-2">
       {canCancel && (
         <ConfirmActionButton
+          label="Cancel PO"
           title="Cancel Purchase Order"
           description={`Are you sure you want to cancel PO #${po.poNumber}? This action cannot be undone.`}
           confirmLabel="Yes, cancel PO"
-          onConfirm={handleCancel}
-          trigger={
-            <Button variant="outline" size="sm" className="text-destructive hover:text-destructive hover:bg-destructive/10" disabled={pending}>
-              <XCircle className="size-4 mr-1.5" /> Cancel PO
-            </Button>
-          }
+          variant="outline"
+          size="sm"
+          action={async () => {
+            const res = await cancelPoAction(po.id);
+            if ("error" in res) {
+              toast.error(res.error);
+              return;
+            }
+            toast.success(`PO #${po.poNumber} cancelled`);
+          }}
         />
       )}
 
@@ -98,15 +81,20 @@ export function PoActionBar({
 
       {canClose && (
         <ConfirmActionButton
+          label="Close PO"
           title="Close Purchase Order"
           description={`Close PO #${po.poNumber}? This marks the purchasing lifecycle as complete.`}
           confirmLabel="Close PO"
-          onConfirm={handleClose}
-          trigger={
-            <Button size="sm" variant="default" disabled={pending}>
-              <CheckCircle2 className="size-4 mr-1.5" /> Close PO
-            </Button>
-          }
+          variant="default"
+          size="sm"
+          action={async () => {
+            const res = await closePoAction(po.id);
+            if ("error" in res) {
+              toast.error(res.error);
+              return;
+            }
+            toast.success(`PO #${po.poNumber} closed`);
+          }}
         />
       )}
     </div>

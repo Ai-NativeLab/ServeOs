@@ -100,10 +100,6 @@ export async function upsertReorderRule(actor: PurchasingActor, input: ReorderRu
   });
 }
 
-export async function listReorderRules(tenantId: string) {
-  return withTenant(tenantId, async (tx) => tx.select().from(reorderRules));
-}
-
 export type ReorderRun = { triggered: number; draftsCreated: number };
 
 /**
@@ -359,9 +355,9 @@ export type ReorderRuleWithDetails = {
   reorderQty: string;
   preferredSupplierId: string | null;
   preferredSupplierName: string | null;
+  lastAlertedAt: Date | null;
   isActive: boolean;
   createdAt: Date;
-  updatedAt: Date;
 };
 
 export async function listReorderRules(tenantId: string): Promise<ReorderRuleWithDetails[]> {
