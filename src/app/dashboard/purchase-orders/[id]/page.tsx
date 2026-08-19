@@ -75,6 +75,7 @@ export default async function PurchaseOrderDetailPage({
               qtyOrdered: Number(l.qtyOrdered),
               qtyReceived: Number(l.qtyReceived),
               uom: l.uom,
+              unitCost: Number(l.unitCost),
             })),
           }}
         />

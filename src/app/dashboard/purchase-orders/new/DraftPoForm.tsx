@@ -36,7 +36,8 @@ export function DraftPoForm({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
 
-  const [supplierId, setSupplierId] = useState(suppliers[0]?.id ?? "");
+  const activeSuppliers = suppliers.filter((s) => s.isActive);
+  const [supplierId, setSupplierId] = useState(activeSuppliers[0]?.id ?? "");
   const [expectedAt, setExpectedAt] = useState("");
   const [lines, setLines] = useState<LineState[]>(() => {
     const firstItem = items[0];
@@ -53,8 +54,6 @@ export function DraftPoForm({
         ]
       : [];
   });
-
-  const activeSuppliers = suppliers.filter((s) => s.isActive);
 
   function addLine() {
     const firstItem = items[0];

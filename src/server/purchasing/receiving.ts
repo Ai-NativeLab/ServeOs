@@ -27,7 +27,7 @@ export type PostReceiptLineInput = {
   poLineId: string;
   receivedQty: number;
   uom: UnitOfMeasure;
-  unitCost: number;
+  unitCost?: number;
   lotCode?: string;
   expiryAt?: Date | null;
 };
@@ -94,20 +94,22 @@ export async function postReceipt(
     const poLines = await tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId));
 
     for (const l of input.lines) {
-      // 4. Input guardrail first: NaN / non-positive quantities and non-finite
-      //    unit costs would otherwise reach `money`/`qty` and store junk ledger.
-      if (!Number.isFinite(l.receivedQty) || l.receivedQty <= 0) {
-        throw new InvalidPoInputError(`receivedQty must be a positive finite number (got ${l.receivedQty})`);
-      }
-      if (!Number.isFinite(l.unitCost) || l.unitCost < 0) {
-        throw new InvalidPoInputError(`unitCost must be a finite non-negative number (got ${l.unitCost})`);
-      }
-
       const poLine = poLines.find((x) => x.id === l.poLineId);
       if (!poLine) throw new PoNotFoundError();
 
       const [item] = await tx.select().from(inventoryItems).where(eq(inventoryItems.id, poLine.itemId));
       if (!item) throw new PoNotFoundError();
+
+      const effectiveUnitCost = l.unitCost !== undefined ? l.unitCost : Number(poLine.unitCost);
+
+      // 4. Input guardrail first: NaN / non-positive quantities and non-finite
+      //    unit costs would otherwise reach `money`/`qty` and store junk ledger.
+      if (!Number.isFinite(l.receivedQty) || l.receivedQty <= 0) {
+        throw new InvalidPoInputError(`receivedQty must be a positive finite number (got ${l.receivedQty})`);
+      }
+      if (!Number.isFinite(effectiveUnitCost) || effectiveUnitCost < 0) {
+        throw new InvalidPoInputError(`unitCost must be a finite non-negative number (got ${effectiveUnitCost})`);
+      }
 
       const uom = assertInventoryUom(l.uom);
       // Receipts must be stated in the same unit the line was ordered in:
@@ -124,7 +126,7 @@ export async function postReceipt(
         itemId: poLine.itemId,
         receivedQty: qty(l.receivedQty),
         uom,
-        unitCost: unitRate(l.unitCost),
+        unitCost: unitRate(effectiveUnitCost),
         lotCode: l.lotCode ?? null,
         expiryAt: l.expiryAt ?? null,
       }).returning({ id: poReceiptLines.id });
@@ -161,14 +163,14 @@ export async function postReceipt(
       // permanent wedge between the lot's value (2.08 × 48 = 99.84) and what
       // was actually paid (100.00). `inventory_lots.unit_cost` is unbounded
       // numeric, so the exact quotient is stored as-is.
-      const baseUnitCost = (l.unitCost * l.receivedQty) / baseQty;
+      const baseUnitCost = (effectiveUnitCost * l.receivedQty) / baseQty;
       // `receivedQty` and `unitCost` are each finite, but their PRODUCT can
       // still overflow to Infinity, and `String(Infinity)` is accepted by
       // Postgres `numeric` — the same un-correctable ledger poison the NaN
       // guard above exists to stop, arriving through the quotient instead.
       if (!Number.isFinite(baseUnitCost)) {
         throw new InvalidPoInputError(
-          `receivedQty ${l.receivedQty} x unitCost ${l.unitCost} overflows to a non-finite cost`,
+          `receivedQty ${l.receivedQty} x unitCost ${effectiveUnitCost} overflows to a non-finite cost`,
         );
       }
       await receiveStock(tx, {

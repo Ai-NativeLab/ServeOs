@@ -14,6 +14,7 @@ import type { PurchasingActor } from "./suppliers";
 import { createSupplier } from "./suppliers";
 import { createDraftPo } from "./service";
 import { postReceipt } from "./receiving";
+import { getPoVariance } from "./variance";
 import { InvalidPoInputError, InvalidPoTransitionError, PoNotFoundError, ReceiptUomMismatchError } from "./errors";
 
 async function seedActor(tenantId: string, branchId: string): Promise<PurchasingActor> {
@@ -401,5 +402,24 @@ describe("receiving", () => {
     expect(lots[0]?.qtyRemaining).toBe("48.000");
     // 100.00 paid across 48 base units, stored exactly rather than rounded to 2dp.
     expect(Number(lots[0]?.unitCost) * 48).toBeCloseTo(100, 10);
+  });
+
+  it("defaults unitCost from poLine when omitted and computes non-zero receivedTotal in variance", async () => {
+    // PO was created for 10 @ 5.00 (= 50.00 ordered)
+    const seeded = await seedSentPo();
+    const { status } = await postReceipt(seeded.actor, seeded.poId, {
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 10, uom: "each" }],
+    });
+    expect(status).toBe("received");
+
+    const lots = await withTenant(seeded.tenantId, (tx) =>
+      tx.select().from(inventoryLots).where(eq(inventoryLots.itemId, seeded.itemId)));
+    expect(lots).toHaveLength(1);
+    expect(Number(lots[0]?.unitCost)).toBe(5);
+
+    const variance = await getPoVariance(seeded.tenantId, seeded.poId);
+    expect(variance.receivedTotal).toBe("50.00");
+    expect(variance.total).toBe("50.00");
+    expect(variance.receivedVsOrdered).toBe("0.00");
   });
 });

@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { requirePurchasingPermission, resolvePurchasingActor } from "../../purchasing-permission";
+import { domainErrorValue } from "../../action-errors";
 import {
   upsertReorderRule,
   checkReorder,
@@ -34,7 +35,7 @@ export async function upsertReorderRuleAction(
     revalidatePath("/dashboard/purchase-orders/reorder-rules");
     return { success: true };
   } catch (e) {
-    return { error: e instanceof Error ? e.message : "Failed to save reorder rule" };
+    return domainErrorValue(e);
   }
 }
 
@@ -50,6 +51,6 @@ export async function runReorderCheckAction(): Promise<
     revalidatePath("/dashboard/purchase-orders");
     return { success: true, triggered: result.triggered, draftsCreated: result.draftsCreated };
   } catch (e) {
-    return { error: e instanceof Error ? e.message : "Failed to run reorder check" };
+    return domainErrorValue(e);
   }
 }
