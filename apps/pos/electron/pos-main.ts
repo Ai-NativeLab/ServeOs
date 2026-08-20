@@ -3,11 +3,12 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 
-// In dev (vite serving), default to the local backend; otherwise the live
-// dashboard host on serveos.tech (serveos.com only 302-redirects there, which
-// a packaged build cannot follow for POSTs with an Authorization header).
-// POS_API_URL always wins.
-const DEFAULT_BASE_URL = process.env.VITE_DEV_SERVER_URL ? "http://localhost:3000" : "https://app.serveos.tech";
+function resolveDefaultBaseUrl(): string {
+  if (process.env.POS_API_URL) return process.env.POS_API_URL;
+  if (process.env.VITE_DEV_SERVER_URL || !app.isPackaged) return "http://localhost:3000";
+  return "https://app.serveos.tech";
+}
+
 
 /**
  * The body a POS route returns when the *device* token is missing, unknown or
@@ -318,7 +319,7 @@ export type CashMovementInput = {
  * and can be reintroduced later behind this same surface.
  */
 export class PosMain {
-  private baseUrl = process.env.POS_API_URL || DEFAULT_BASE_URL;
+  private baseUrl = resolveDefaultBaseUrl();
   private device: Device | null = null;
   /** In memory only: closing the app signs the cashier out but leaves the device paired. */
   private cashier: Cashier | null = null;
