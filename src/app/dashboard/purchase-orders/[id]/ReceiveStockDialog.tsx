@@ -26,7 +26,7 @@ export type ReceiveDialogLine = {
   qtyOrdered: number;
   qtyReceived: number;
   uom: UnitOfMeasure;
-  unitCost: number;
+  unitCost?: number;
 };
 
 export function ReceiveStockDialog({
@@ -87,7 +87,6 @@ export function ReceiveStockDialog({
         poLineId: l.id,
         receivedQty: Number(receivedQtys[l.id]),
         uom: l.uom,
-        unitCost: l.unitCost,
         expiryAt: expiryAt || null,
       }));
 

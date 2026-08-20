@@ -81,7 +81,7 @@ export type ReceiveLinePayload = {
   poLineId: string;
   receivedQty: number;
   uom: UnitOfMeasure;
-  unitCost: number;
+  unitCost?: number;
   lotCode?: string;
   expiryAt?: string | null;
 };
@@ -109,7 +109,10 @@ export async function postReceiptAction(
       poLineId: l.poLineId,
       receivedQty: Number(l.receivedQty),
       uom: l.uom,
-      unitCost: Number(l.unitCost),
+      unitCost:
+        l.unitCost !== undefined && l.unitCost !== null && Number.isFinite(Number(l.unitCost))
+          ? Number(l.unitCost)
+          : undefined,
       lotCode: l.lotCode?.trim() || undefined,
       expiryAt: l.expiryAt && !isNaN(new Date(l.expiryAt).getTime()) ? new Date(l.expiryAt) : null,
     }));

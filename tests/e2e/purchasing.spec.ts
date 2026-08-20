@@ -86,11 +86,11 @@ test.describe("Purchasing & Suppliers Dashboard Flow", () => {
 
     // 4. Lands on PO detail page
     await expect(page).toHaveURL(/\/dashboard\/purchase-orders\/[0-9a-f-]+/);
-    await expect(page.getByText("Draft")).toBeVisible();
+    await expect(page.getByTestId("po-status-badge")).toHaveText("Draft");
 
     // 5. Send PO to supplier
     await page.getByRole("button", { name: "Send to supplier" }).click();
-    await expect(page.getByText("Sent", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("po-status-badge")).toHaveText("Sent");
 
     // 6. Receive stock: 10 units
     await page.getByRole("button", { name: "Receive stock" }).click();
@@ -99,8 +99,10 @@ test.describe("Purchasing & Suppliers Dashboard Flow", () => {
     await page.locator('div[role="dialog"] button:has-text("Post receipt")').click();
 
     // 7. Verify status moves to Received and Variance Strip shows 120.00 received (not 0.00)
-    await expect(page.getByText("Received", { exact: true })).toBeVisible();
-    await expect(page.getByText("120.00 EGP").first()).toBeVisible();
+    await expect(page.getByTestId("po-status-badge")).toHaveText("Received");
+    await expect(page.getByTestId("variance-received-total")).toHaveText("120.00 EGP");
+    await expect(page.getByTestId("variance-ordered-total")).toHaveText("120.00 EGP");
+    await expect(page.getByTestId("variance-received-delta")).toHaveText("0.00 EGP");
 
     // 8. Enter Invoice: 132.00 (expect +12.00 delta)
     await page.getByRole("button", { name: "Enter invoice" }).click();
@@ -109,7 +111,8 @@ test.describe("Purchasing & Suppliers Dashboard Flow", () => {
     await page.locator('div[role="dialog"] button:has-text("Record invoice")').click();
 
     // 9. Verify variance strip renders the +12.00 invoiced variance delta
-    await expect(page.getByText("+12.00 EGP")).toBeVisible();
+    await expect(page.getByTestId("variance-invoiced-total")).toHaveText("132.00 EGP");
+    await expect(page.getByTestId("variance-invoiced-delta")).toHaveText("+12.00 EGP");
 
     // 10. Close PO
     await page.getByRole("button", { name: "Close PO" }).click();
@@ -117,6 +120,6 @@ test.describe("Purchasing & Suppliers Dashboard Flow", () => {
     await page.locator('div[role="alertdialog"] button:has-text("Close PO")').click();
 
     // 11. Verify PO is closed
-    await expect(page.getByText("Closed", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("po-status-badge")).toHaveText("Closed");
   });
 });
