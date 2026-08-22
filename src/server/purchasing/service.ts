@@ -180,13 +180,24 @@ export async function getPurchaseOrder(tenantId: string, poId: string): Promise<
   });
 }
 
-export async function listPurchaseOrders(tenantId: string, opts: { status?: PoStatus } = {}) {
+export type PurchaseOrderListItem = PurchaseOrder & { supplierName: string | null };
+
+export async function listPurchaseOrders(tenantId: string, opts: { status?: PoStatus } = {}): Promise<PurchaseOrderListItem[]> {
   return withTenant(tenantId, async (tx) => {
     const where = opts.status ? eq(purchaseOrders.status, opts.status) : undefined;
+    const base = tx
+      .select({
+        po: purchaseOrders,
+        supplierName: suppliers.name,
+      })
+      .from(purchaseOrders)
+      .leftJoin(suppliers, eq(suppliers.id, purchaseOrders.supplierId));
+
     const rows = where
-      ? await tx.select().from(purchaseOrders).where(where).orderBy(sql`${purchaseOrders.createdAt} DESC`)
-      : await tx.select().from(purchaseOrders).orderBy(sql`${purchaseOrders.createdAt} DESC`);
-    return rows;
+      ? await base.where(where).orderBy(sql`${purchaseOrders.createdAt} DESC`)
+      : await base.orderBy(sql`${purchaseOrders.createdAt} DESC`);
+
+    return rows.map((r) => ({ ...r.po, supplierName: r.supplierName }));
   });
 }
 

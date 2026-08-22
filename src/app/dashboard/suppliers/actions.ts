@@ -1,7 +1,15 @@
 "use server";
+
 import { revalidatePath } from "next/cache";
 import { requirePurchasingPermission, resolvePurchasingActor } from "../purchasing-permission";
-import { createSupplier } from "@/server/purchasing/suppliers";
+import { domainErrorValue } from "../action-errors";
+import {
+  createSupplier,
+  updateSupplier,
+  upsertSupplierItem,
+  type UpdateSupplierInput,
+} from "@/server/purchasing/suppliers";
+import type { UnitOfMeasure } from "@/server/catalog/uom";
 
 export async function createSupplierAction(formData: FormData): Promise<void | { error: string }> {
   const ctx = await requirePurchasingPermission("suppliers:manage");
@@ -16,7 +24,53 @@ export async function createSupplierAction(formData: FormData): Promise<void | {
       paymentTerms: String(formData.get("paymentTerms") ?? "") || undefined,
     });
   } catch (e) {
-    return { error: e instanceof Error ? e.message : "Could not create supplier." };
+    return domainErrorValue(e);
   }
   revalidatePath("/dashboard/suppliers");
+}
+
+export async function updateSupplierAction(
+  supplierId: string,
+  input: UpdateSupplierInput,
+): Promise<{ error: string } | { success: true }> {
+  try {
+    const ctx = await requirePurchasingPermission("suppliers:manage");
+    const actor = await resolvePurchasingActor(ctx);
+    await updateSupplier(actor, supplierId, input);
+
+    revalidatePath("/dashboard/suppliers");
+    revalidatePath(`/dashboard/suppliers/${supplierId}`);
+    return { success: true };
+  } catch (e) {
+    return domainErrorValue(e);
+  }
+}
+
+export async function upsertSupplierItemAction(
+  supplierId: string,
+  data: {
+    itemId: string;
+    supplierSku?: string | null;
+    lastUnitCost?: number;
+    packUom?: UnitOfMeasure;
+  },
+): Promise<{ error: string } | { success: true }> {
+  try {
+    const ctx = await requirePurchasingPermission("suppliers:manage");
+    if (!data.itemId) return { error: "Item is required" };
+
+    const actor = await resolvePurchasingActor(ctx);
+    await upsertSupplierItem(actor, {
+      supplierId,
+      itemId: data.itemId,
+      supplierSku: data.supplierSku?.trim() || undefined,
+      lastUnitCost: data.lastUnitCost !== undefined ? Number(data.lastUnitCost) : undefined,
+      packUom: data.packUom || undefined,
+    });
+
+    revalidatePath(`/dashboard/suppliers/${supplierId}`);
+    return { success: true };
+  } catch (e) {
+    return domainErrorValue(e);
+  }
 }
