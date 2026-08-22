@@ -43,7 +43,10 @@ export function AdminTopbar({
               <div className="text-xs text-muted-foreground">Super admin</div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem className="p-0">
+            {/* Same fix as the tenant Topbar: without this, selecting the item
+                closes the menu and unmounts the form before it can submit, so
+                sign-out silently does nothing. */}
+            <DropdownMenuItem className="p-0" onSelect={(e) => e.preventDefault()}>
               <form action={adminSignOutAction} className="w-full">
                 <SubmitButton
                   variant="ghost"

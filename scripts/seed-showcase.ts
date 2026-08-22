@@ -1,5 +1,5 @@
 import { config } from "dotenv";
-config({ path: process.env.ENV_FILE ?? ".env.local", override: true });
+config({ path: process.env.ENV_FILE ?? ".env.local", override: true, quiet: true });
 import { eq } from "drizzle-orm";
 
 /**

@@ -36,6 +36,7 @@ export type TenantSettingsData = {
   whatsappNumber?: string;
   upgradeRequest?: { planKey: string; requestedAt: string };
   shiftPolicy?: Partial<ShiftPolicy>;
+  allowNegativeStock?: boolean;
 };
 
 const E164_RE = /^\+[1-9]\d{6,14}$/;
@@ -205,4 +206,22 @@ export async function getShiftPolicy(tenantId: string): Promise<ShiftPolicy> {
     payoutThreshold: stored?.payoutThreshold ?? 0,
     varianceThreshold: stored?.varianceThreshold ?? 0,
   };
+}
+
+/**
+ * Whether a stock shortfall at checkout may go negative instead of blocking
+ * the order. An explicit per-tenant override always wins; absent one, the
+ * default is derived from the vertical.
+ */
+export async function getAllowNegativeStock(tenantId: string): Promise<boolean> {
+  const settings = await getTenantSettings(tenantId);
+  if (typeof settings.allowNegativeStock === "boolean") return settings.allowNegativeStock;
+  const [t] = await db.select({ vertical: tenants.vertical }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+  // Restaurant kitchens are made-to-order and must never be blocked at the till.
+  return (t?.vertical ?? "restaurant") === "restaurant";
+}
+
+/** Pass `null` to clear the override and revert to the vertical default. */
+export async function setAllowNegativeStock(tenantId: string, value: boolean | null): Promise<void> {
+  await patchTenantSettings(tenantId, { allowNegativeStock: value ?? undefined });
 }

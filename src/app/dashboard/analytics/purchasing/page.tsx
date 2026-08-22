@@ -83,7 +83,7 @@ export default async function PurchasingReportsPage({
                   <TableHead className="eyebrow text-right">Ordered</TableHead>
                   <TableHead className="eyebrow text-right">Received</TableHead>
                   <TableHead className="eyebrow text-right">Invoiced</TableHead>
-                  <TableHead className="eyebrow text-right">Variance</TableHead>
+                  <TableHead className="eyebrow text-right">Invoiced &minus; Received</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -93,7 +93,7 @@ export default async function PurchasingReportsPage({
                     <TableCell className="text-right font-mono">{r.ordered.toFixed(2)}</TableCell>
                     <TableCell className="text-right font-mono">{r.received.toFixed(2)}</TableCell>
                     <TableCell className="text-right font-mono">{r.invoiced.toFixed(2)}</TableCell>
-                    <TableCell className="text-right font-mono">{r.variance.toFixed(2)}</TableCell>
+                    <TableCell className="text-right font-mono">{r.invoiceVsReceived.toFixed(2)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

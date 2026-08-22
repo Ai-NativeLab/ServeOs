@@ -1,5 +1,6 @@
 "use client";
 import type { PublishedMenu } from "@/server/catalog/schema";
+import { arabicDescription } from "./bilingual";
 import { formatMoney } from "@/lib/money";
 import { Badge } from "./Badge";
 
@@ -32,7 +33,17 @@ export function ProductCard({
       <div className="flex flex-1 flex-col p-3">
         <h3 className="line-clamp-2 font-sans text-sm font-semibold leading-tight text-ink">{product.nameEn}</h3>
         <span dir="rtl" className="text-xs text-muted-foreground">{product.nameAr}</span>
+        {/* Both languages, the same way the name above shows both. The Arabic
+            description is stored, editable in the dashboard and carried in the
+            published menu, but no storefront template rendered it — so an
+            Arabic-first storefront showed its customers English prose under a
+            bilingual product name. */}
         {product.descriptionEn && <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{product.descriptionEn}</p>}
+        {arabicDescription(product.descriptionEn, product.descriptionAr) && (
+          <p dir="rtl" className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+            {arabicDescription(product.descriptionEn, product.descriptionAr)}
+          </p>
+        )}
         <div className="mt-auto flex items-center justify-between pt-2.5">
           <span className="font-display font-bold text-ink">{formatMoney(product.effectivePrice, currency)}</span>
           {interactive && <span className="grid size-8 place-items-center rounded-full bg-primary text-lg leading-none text-primary-foreground shadow-sm">+</span>}

@@ -5,11 +5,13 @@ import { tenants } from "@/server/tenancy/schema";
 import { recordAuditEvent } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import type { EmailProvider } from "@/server/email/provider";
+import { defaultSender } from "@/server/email/sender";
 import { notificationOutbox, type NotificationOutboxRow } from "./schema";
 import { notify } from "./service";
 import { eq } from "drizzle-orm";
 
 export const MAX_ATTEMPTS = 5;
+
 /** A claimed row that neither flipped nor failed within this window is
  *  considered stalled (worker crash) and becomes reclaimable. */
 const STALL_RECLAIM_MS = 5 * 60 * 1000;
@@ -63,7 +65,7 @@ export async function drainOutbox(
         // Crash-window recovery: the provider already accepted this one.
         const providerMessageId = row.providerMessageId
           ?? (await provider.send({
-            from: process.env.EMAIL_FROM ?? "no-reply@mail.serveos.com",
+            from: defaultSender(),
             replyTo: row.replyTo ?? undefined,
             to: row.toEmail,
             subject: row.subject,
@@ -124,6 +126,11 @@ export async function drainOutbox(
 /** v1 rendering: a clean transactional shell around the payload. Spec 9 hands
  *  in fully-rendered PO documents via the payload when it arrives. */
 function renderTemplate(template: string, subject: string, payload: Record<string, unknown>): string {
+  // Spec 9: the caller pre-rendered a full document (PO HTML). It is trusted —
+  // renderPurchaseOrderHtml escaped every interpolation at build time. Scoped to
+  // the po_sent template so a future caller cannot turn the outbox into an
+  // arbitrary-HTML emailer by setting a `html` payload key by accident.
+  if (template === "po_sent" && typeof payload.html === "string") return payload.html;
   const rows = Object.entries(payload)
     .map(([k, v]) => `<tr><td style="padding:4px 12px 4px 0;color:#6E6459;">${escapeHtml(k)}</td><td style="padding:4px 0;color:#1A0F0A;">${escapeHtml(String(v))}</td></tr>`)
     .join("");

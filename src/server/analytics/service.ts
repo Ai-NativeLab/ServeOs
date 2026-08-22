@@ -304,19 +304,19 @@ export async function getRefundsAndVoids(tenantId: string, days: number): Promis
 
     if (!(await tableExists(tx, "refunds"))) return { voids, refunds: null };
 
-    // Spec 3's canonical shape: refunds(id, order_id, total, created_at) with
-    // refund_lines carrying reason codes. Lights up when Spec 3 migrates.
+    // Spec 3 shape: refunds(id, order_id, total_amount, created_at, reason_code)
+    // with one reason per refund (header); refund_lines carry the per-item amounts.
     const [{ rows: totals }, { rows: reasons }] = await Promise.all([
       tx.execute<{ amount: string; count: string }>(sql`
-        SELECT COALESCE(SUM(r.total), 0) AS amount, COUNT(*) AS count
+        SELECT COALESCE(SUM(r.total_amount), 0) AS amount, COUNT(*) AS count
         FROM refunds r WHERE r.created_at >= ${since}
       `),
       tx.execute<{ reason_code: string; amount: string; count: string }>(sql`
-        SELECT rl.reason_code, COALESCE(SUM(rl.amount), 0) AS amount, COUNT(*) AS count
+        SELECT r.reason_code, COALESCE(SUM(rl.amount), 0) AS amount, COUNT(*) AS count
         FROM refund_lines rl
         JOIN refunds r ON r.id = rl.refund_id
         WHERE r.created_at >= ${since}
-        GROUP BY rl.reason_code
+        GROUP BY r.reason_code
         ORDER BY amount DESC
       `),
     ]);
@@ -380,12 +380,20 @@ export async function getReconciliationSummary(tenantId: string, days: number): 
 }
 
 // ---------------------------------------------------------------------------
-// Inventory (Spec 8) + purchasing (Spec 9) reports. None of the source tables
-// exist yet — every function short-circuits through tableExists and returns []
-// today, then lights up with NO signature change when those specs migrate.
-// Written against the roadmap's canonical table/column names.
+// Inventory (Spec 8) + purchasing (Spec 9) reports.
+//
+// Spec 8 has now migrated, so the inventory queries below run for real against
+// empty tables (returning [] on no data rather than on a missing table). They
+// were originally written against GUESSED column names, and every guess was
+// wrong once the canonical schema landed — remaining_qty/qty_remaining,
+// name/name_en, quantity/qty, movement_type/type, expected_qty/system_qty,
+// stock_count_id/count_id, created_at/started_at. Corrected against
+// drizzle/0033 + src/server/inventory/schema.ts. The public row shapes are
+// unchanged (still `name`), so Spec 10's consumers were not touched.
+//
+// Purchasing (suppliers / purchase_orders) is still Spec 9 and still guarded.
 // FORWARD (Spec 8/9): fixtures seeding real stock_ledger/PO rows + aggregation
-// assertions land when these tables migrate.
+// assertions land with the reporting spec; today only the empty case is covered.
 // ---------------------------------------------------------------------------
 
 export type InventoryValuationRow = { itemId: string; name: string; onHand: number; unitCost: number; value: number };
@@ -394,12 +402,12 @@ export async function getInventoryValuation(tenantId: string): Promise<Inventory
   return withTenant(tenantId, async (tx) => {
     if (!(await tableExists(tx, "inventory_lots"))) return [];
     const { rows } = await tx.execute<{ item_id: string; name: string; on_hand: string; unit_cost: string; value: string }>(sql`
-      SELECT l.item_id, i.name,
-             SUM(l.remaining_qty) AS on_hand,
+      SELECT l.item_id, i.name_en AS name,
+             SUM(l.qty_remaining) AS on_hand,
              AVG(l.unit_cost) AS unit_cost,
-             SUM(l.remaining_qty * l.unit_cost) AS value
+             SUM(l.qty_remaining * l.unit_cost) AS value
       FROM inventory_lots l JOIN inventory_items i ON i.id = l.item_id
-      GROUP BY l.item_id, i.name ORDER BY value DESC
+      GROUP BY l.item_id, i.name_en ORDER BY value DESC
     `);
     return rows.map((r) => ({ itemId: r.item_id, name: r.name, onHand: Number(r.on_hand), unitCost: Number(r.unit_cost), value: Number(r.value) }));
   });
@@ -412,10 +420,10 @@ async function sumStockMovement(tenantId: string, days: number, movementType: st
   return withTenant(tenantId, async (tx) => {
     if (!(await tableExists(tx, "stock_ledger"))) return [];
     const { rows } = await tx.execute<{ item_id: string; name: string; quantity: string }>(sql`
-      SELECT sl.item_id, i.name, SUM(ABS(sl.quantity)) AS quantity
+      SELECT sl.item_id, i.name_en AS name, SUM(ABS(sl.qty)) AS quantity
       FROM stock_ledger sl JOIN inventory_items i ON i.id = sl.item_id
-      WHERE sl.movement_type = ${movementType} AND sl.created_at >= ${since}
-      GROUP BY sl.item_id, i.name ORDER BY quantity DESC
+      WHERE sl.type = ${movementType}::stock_ledger_type AND sl.created_at >= ${since}
+      GROUP BY sl.item_id, i.name_en ORDER BY quantity DESC
     `);
     return rows.map((r) => ({ itemId: r.item_id, name: r.name, quantity: Number(r.quantity) }));
   });
@@ -442,12 +450,12 @@ export async function getCountVariance(tenantId: string, days: number): Promise<
   return withTenant(tenantId, async (tx) => {
     if (!(await tableExists(tx, "stock_counts"))) return [];
     const { rows } = await tx.execute<{ count_id: string; item_id: string; name: string; counted: string; expected: string }>(sql`
-      SELECT sc.id AS count_id, scl.item_id, i.name, scl.counted_qty AS counted, scl.expected_qty AS expected
+      SELECT sc.id AS count_id, scl.item_id, i.name_en AS name, scl.counted_qty AS counted, scl.system_qty AS expected
       FROM stock_count_lines scl
-      JOIN stock_counts sc ON sc.id = scl.stock_count_id
+      JOIN stock_counts sc ON sc.id = scl.count_id
       JOIN inventory_items i ON i.id = scl.item_id
-      WHERE sc.created_at >= ${since}
-      ORDER BY sc.created_at DESC
+      WHERE sc.started_at >= ${since}
+      ORDER BY sc.started_at DESC
     `);
     return rows.map((r) => ({
       countId: r.count_id, itemId: r.item_id, name: r.name,
@@ -459,14 +467,29 @@ export async function getCountVariance(tenantId: string, days: number): Promise<
 
 export type LowStockRow = { itemId: string; name: string; locationId: string; onHand: number; reorderPoint: number };
 
+/**
+ * Guarded on `reorder_rules`, NOT on the inventory tables: the reorder point is
+ * per item per location and lives in that table (spec Part D), which Spec 9
+ * builds — it is deliberately not a column on inventory_items. Spec 8 landing
+ * must therefore not switch this report on, or it would query a column that
+ * does not exist. An item with a rule but no lots is low stock (on-hand 0), so
+ * the join to lots is a LEFT JOIN. "At or below" the point triggers, per spec.
+ *
+ * FORWARD (Spec 9): this query is written from the spec but cannot be executed
+ * until reorder_rules exists — verify it against the real table then.
+ */
 export async function getLowStock(tenantId: string): Promise<LowStockRow[]> {
   return withTenant(tenantId, async (tx) => {
-    if (!(await tableExists(tx, "inventory_lots"))) return [];
+    if (!(await tableExists(tx, "reorder_rules"))) return [];
     const { rows } = await tx.execute<{ item_id: string; name: string; location_id: string; on_hand: string; reorder_point: string }>(sql`
-      SELECT l.item_id, i.name, l.location_id, SUM(l.remaining_qty) AS on_hand, i.reorder_point
-      FROM inventory_lots l JOIN inventory_items i ON i.id = l.item_id
-      GROUP BY l.item_id, i.name, l.location_id, i.reorder_point
-      HAVING SUM(l.remaining_qty) < i.reorder_point
+      SELECT rr.item_id, i.name_en AS name, rr.location_id,
+             COALESCE(SUM(l.qty_remaining), 0) AS on_hand, rr.reorder_point
+      FROM reorder_rules rr
+      JOIN inventory_items i ON i.id = rr.item_id
+      LEFT JOIN inventory_lots l ON l.item_id = rr.item_id AND l.location_id = rr.location_id
+      WHERE rr.is_active
+      GROUP BY rr.item_id, i.name_en, rr.location_id, rr.reorder_point
+      HAVING COALESCE(SUM(l.qty_remaining), 0) <= rr.reorder_point
       ORDER BY on_hand
     `);
     return rows.map((r) => ({
@@ -475,6 +498,16 @@ export async function getLowStock(tenantId: string): Promise<LowStockRow[]> {
     }));
   });
 }
+
+/**
+ * The statuses that represent money actually committed to a supplier. A `draft`
+ * is not spend — nothing has been ordered — and the nightly reorder sweep
+ * auto-drafts POs, so counting drafts let every chronically-low item inflate
+ * the spend report on its own. `cancelled` is not spend either. Listed
+ * positively so a status added later has to be classified deliberately rather
+ * than silently counting as spend.
+ */
+const COMMITTED_PO_STATUSES = sql`('sent', 'partially_received', 'received', 'closed')`;
 
 export type SpendBySupplierRow = { supplierId: string; name: string; poCount: number; spend: number };
 
@@ -485,35 +518,49 @@ export async function getSpendBySupplier(tenantId: string, days: number): Promis
     const { rows } = await tx.execute<{ supplier_id: string; name: string; po_count: string; spend: string }>(sql`
       SELECT po.supplier_id, s.name, COUNT(*) AS po_count, COALESCE(SUM(po.total), 0) AS spend
       FROM purchase_orders po JOIN suppliers s ON s.id = po.supplier_id
-      WHERE po.created_at >= ${since}
+      WHERE po.created_at >= ${since} AND po.status IN ${COMMITTED_PO_STATUSES}
       GROUP BY po.supplier_id, s.name ORDER BY spend DESC
     `);
     return rows.map((r) => ({ supplierId: r.supplier_id, name: r.name, poCount: Number(r.po_count), spend: Number(r.spend) }));
   });
 }
 
-export type ReceivedVsInvoicedRow = { poId: string; poNumber: string; ordered: number; received: number; invoiced: number; variance: number };
+/**
+ * `invoiceVsReceived` is INVOICED − RECEIVED, the same name and the same sign as
+ * `getPoVariance`'s field, so the report and the PO detail view cannot describe
+ * one PO with opposite signs. Positive means the supplier billed for more than
+ * arrived — the case the buyer has to chase. The field was previously called
+ * `variance` and computed received − invoiced, i.e. the same fact negated, with
+ * the direction stated nowhere.
+ */
+export type ReceivedVsInvoicedRow = { poId: string; poNumber: number; ordered: number; received: number; invoiced: number; invoiceVsReceived: number };
 
 export async function getReceivedVsInvoiced(tenantId: string, days: number): Promise<ReceivedVsInvoicedRow[]> {
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   return withTenant(tenantId, async (tx) => {
     if (!(await tableExists(tx, "po_receipts"))) return [];
+    // Invoice entry is ONE header figure on the PO (the supplier's actual
+    // invoice), not a per-receipt-line amount — so the "invoiced" side reads
+    // po.invoice_total, never a SUM over receipt lines. The shipped stub's
+    // per-line `invoiced_amount` column was deliberately never created; the
+    // query was aligned to the real schema in the same PR (PR #116 precedent).
     const { rows } = await tx.execute<{ po_id: string; po_number: string; ordered: string; received: string; invoiced: string }>(sql`
       SELECT po.id AS po_id, po.po_number,
              COALESCE(po.total, 0) AS ordered,
-             COALESCE(SUM(prl.received_qty * prl.unit_cost), 0) AS received,
-             COALESCE(SUM(prl.invoiced_amount), 0) AS invoiced
+             COALESCE(SUM(prl.received_qty * prl.unit_cost * (1 + COALESCE(pol.tax_rate, 0))), 0) AS received,
+             COALESCE(po.invoice_total, 0) AS invoiced
       FROM purchase_orders po
       JOIN po_receipts pr ON pr.purchase_order_id = po.id
       JOIN po_receipt_lines prl ON prl.po_receipt_id = pr.id
-      WHERE po.created_at >= ${since}
-      GROUP BY po.id, po.po_number
-      ORDER BY po.created_at DESC
+      LEFT JOIN purchase_order_lines pol ON pol.id = prl.po_line_id
+      WHERE po.created_at >= ${since} AND po.status IN ${COMMITTED_PO_STATUSES}
+      GROUP BY po.id, po.po_number, po.invoice_total
+      ORDER BY MAX(po.created_at) DESC
     `);
     return rows.map((r) => ({
-      poId: r.po_id, poNumber: r.po_number,
+      poId: r.po_id, poNumber: Number(r.po_number),
       ordered: Number(r.ordered), received: Number(r.received), invoiced: Number(r.invoiced),
-      variance: Number(r.received) - Number(r.invoiced),
+      invoiceVsReceived: Number(r.invoiced) - Number(r.received),
     }));
   });
 }

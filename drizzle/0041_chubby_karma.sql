@@ -1,0 +1,1 @@
+CREATE INDEX "reorder_rules_tenant_active" ON "reorder_rules" USING btree ("tenant_id","is_active");

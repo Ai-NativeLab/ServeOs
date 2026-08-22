@@ -56,9 +56,15 @@ non-fatal and only affects the POS desktop app.)
 
 ### 4. Local Postgres (Docker — recommended)
 
-The app connects at `127.0.0.1:5433` as role `serveos_app`. The role **must not be
-a superuser** — the schema uses `FORCE ROW LEVEL SECURITY` for tenant isolation,
-and a superuser silently bypasses RLS.
+The app connects as role `serveos_app`. The role **must not be a superuser** — the
+schema uses `FORCE ROW LEVEL SECURITY` for tenant isolation, and a superuser
+silently bypasses RLS.
+
+> **Port depends on which option you pick below**, and the port in your `.env`
+> files (step 5) must match it. Docker maps to **5433** to stay clear of any
+> Postgres already on 5432; Homebrew runs on **5432**. Neither is more correct —
+> just be consistent. A mismatch surfaces as `ECONNREFUSED` on the first
+> `npm run db:migrate`.
 
 ```bash
 # start Postgres 16, host port 5433 -> container 5432
@@ -90,6 +96,9 @@ Homebrew Postgres listens on **5432**, so change the `5433` to `5432` in both
 </details>
 
 ### 5. Recreate the env files (gitignored — not in your clone)
+
+> Both files below use **5433** (the Docker mapping from step 4). On Homebrew,
+> change both to **5432**.
 
 Create **`.env.local`**:
 

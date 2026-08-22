@@ -11,8 +11,14 @@ export function dashboardNavItems(roleKeys: RoleKey[], catalogLabel = "Menu"): N
   if (has("menu:manage") || has("fulfillment:manage")) items.push({ label: "Home", href: "/dashboard", icon: "home" });
   if (has("menu:manage")) items.push({ label: "Analytics", href: "/dashboard/analytics", icon: "analytics" });
   if (has("orders:manage")) items.push({ label: "Orders", href: "/dashboard/orders", icon: "receipt" });
+  if (has("orders:manage")) items.push({ label: "Sales history", href: "/dashboard/orders/history", icon: "history" });
   if (has("payments:confirm")) items.push({ label: "Payments", href: "/dashboard/payments", icon: "receipt" });
   if (has("menu:manage")) items.push({ label: catalogLabel, href: "/dashboard/menu", icon: "utensils" });
+  // Staff hold inventory:view + inventory:count, so they reach the stock screen
+  // to count shelves even though they cannot manage items.
+  if (has("inventory:view")) items.push({ label: "Inventory", href: "/dashboard/inventory", icon: "inventory" });
+  if (has("purchasing:manage")) items.push({ label: "Purchasing", href: "/dashboard/purchase-orders", icon: "receipt" });
+  if (has("suppliers:manage")) items.push({ label: "Suppliers", href: "/dashboard/suppliers", icon: "store" });
   if (has("menu:manage")) items.push({ label: "Branches", href: "/dashboard/branches", icon: "store" });
   if (has("menu:manage")) items.push({ label: "Banners", href: "/dashboard/banners", icon: "image" });
   if (has("fulfillment:manage")) items.push({ label: "Settings", href: "/dashboard/settings", icon: "settings" });

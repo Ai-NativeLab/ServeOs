@@ -27,7 +27,13 @@ export const plans = pgTable("plans", {
   isActive: text("is_active").notNull().default("true"),
   limits: jsonb("limits").$type<PlanLimits>().notNull(),
   features: jsonb("features").$type<PlanFeatures>().notNull(),
-  lemonSqueezyVariantId: text("lemon_squeezy_variant_id"),
+  // lemonSqueezyVariantId is gone. It was never written or read anywhere —
+  // no client, no webhook route, no checkout — so it advertised a card
+  // integration the product does not have, on a plan table whose real
+  // subscription path is the manual invoice + proof + admin verification
+  // flow in dashboard/settings/billing. Billing stays manual by decision;
+  // the column can come back with the integration that needs it, named for
+  // whichever provider that turns out to be.
 });
 
 export const subscriptionStatus = pgEnum("subscription_status", [

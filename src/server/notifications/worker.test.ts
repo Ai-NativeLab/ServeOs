@@ -8,6 +8,7 @@ import { auditEvents } from "@/server/audit/schema";
 import { FakeEmailProvider } from "@/server/email/fake-provider";
 import { notifications, notificationOutbox } from "./schema";
 import { notify } from "./service";
+import { defaultSender } from "@/server/email/sender";
 import { drainOutbox, MAX_ATTEMPTS } from "./worker";
 
 async function seed(slug: string) {
@@ -117,5 +118,86 @@ describe("drainOutbox", () => {
     // Exhausted rows never come back: another drain sends nothing.
     const after = await drainOutbox(p);
     expect(after.sent + after.failed).toBe(0);
+  });
+
+  describe("payload.html passthrough", () => {
+    const seedWithPayload = async (slug: string, payload: Record<string, unknown>) => {
+      const { tenantId } = await seed(slug);
+      await withTenant(tenantId, (tx) => tx.insert(notificationOutbox).values({
+        tenantId, toEmail: "sup@x.com", subject: "PO-9", template: "po_sent", payload,
+      }));
+      return tenantId;
+    };
+
+    it("sends a full document from payload.html verbatim, not the key-value shell", async () => {
+      const html = "<!doctype html><h1>PO-9</h1><table><tr><td>Cola</td></tr></table>";
+      const tenantId = await seedWithPayload("wrk-html-1", { html });
+      const p = new FakeEmailProvider();
+
+      const res = await drainOutbox(p);
+      expect(res.sent).toBe(1);
+      expect(p.sent[0].to).toBe("sup@x.com");
+      expect(p.sent[0].html).toBe(html);
+
+      const [row] = await withTenant(tenantId, (tx) => tx.select().from(notificationOutbox));
+      expect(row.status).toBe("sent");
+    });
+
+    it("still renders the key-value shell when payload.html is absent", async () => {
+      await seedWithPayload("wrk-html-2", { poNumber: "PO-9" });
+      const p = new FakeEmailProvider();
+
+      await drainOutbox(p);
+      expect(p.sent).toHaveLength(1);
+      expect(p.sent[0].html).toContain("PO-9");
+      expect(p.sent[0].html).toContain("<table");
+    });
+
+    it("ignores payload.html on any other template — the passthrough is po_sent only", async () => {
+      // The passthrough is trusted because renderPurchaseOrderHtml escaped every
+      // interpolation at build time. That reasoning holds for po_sent and
+      // nothing else, so the guard is scoped to the template rather than to the
+      // mere SHAPE of the payload — otherwise any future caller that happens to
+      // set `html` turns the outbox into an arbitrary-HTML emailer.
+      const { tenantId } = await seed("wrk-html-3");
+      const html = "<h1>injected</h1>";
+      await withTenant(tenantId, (tx) => tx.insert(notificationOutbox).values({
+        tenantId, toEmail: "u@x.com", subject: "Welcome", template: "generic", payload: { html },
+      }));
+      const p = new FakeEmailProvider();
+
+      await drainOutbox(p);
+      expect(p.sent).toHaveLength(1);
+      expect(p.sent[0].html).not.toBe(html);
+      // It must come back escaped inside the key-value shell, not rendered.
+      expect(p.sent[0].html).toContain("&lt;h1&gt;");
+      expect(p.sent[0].html).toContain("<table");
+    });
+  });
+});
+
+describe("defaultSender", () => {
+  it("falls back to a sender on a domain we actually control", async () => {
+    const previous = process.env.EMAIL_FROM;
+    delete process.env.EMAIL_FROM;
+    try {
+      // mail.serveos.com is not ours — the mail domain is serveos.tech. A
+      // fallback nobody can verify means a missing EMAIL_FROM breaks every
+      // send silently.
+      expect(defaultSender()).toBe("no-reply@serveos.tech");
+    } finally {
+      if (previous !== undefined) process.env.EMAIL_FROM = previous;
+    }
+  });
+
+  it("prefers EMAIL_FROM when it is set", () => {
+    const previous = process.env.EMAIL_FROM;
+    process.env.EMAIL_FROM = "hello@serveos.tech";
+    try {
+      expect(defaultSender()).toBe("hello@serveos.tech");
+    } finally {
+      if (previous === undefined) delete process.env.EMAIL_FROM;
+      else process.env.EMAIL_FROM = previous;
+    }
   });
 });

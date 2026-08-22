@@ -1,0 +1,49 @@
+/**
+ * Background motion for the marketing surface.
+ *
+ * Everything here is decorative and sits behind aria-hidden layers. All of it is
+ * disabled wholesale under prefers-reduced-motion at the bottom of this file —
+ * add new animations above that block, never below it.
+ *
+ * Only transform, opacity and stroke-dashoffset are animated: the first two are
+ * compositor properties, and dashoffset on a handful of thin paths is cheap.
+ * Nothing here animates layout.
+ */
+
+/* Dashes travelling along a path — orders arriving down a channel. */
+@keyframes mk-flow {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: -320;
+  }
+}
+
+.mk-flow {
+  stroke-dasharray: 10 26;
+  animation: mk-flow 5.5s linear infinite;
+}
+
+/* Staggers, so a set of elements arrives as a sequence rather than a block. */
+.mk-d1 {
+  animation-delay: 0.7s;
+}
+.mk-d2 {
+  animation-delay: 1.4s;
+}
+.mk-d3 {
+  animation-delay: 2.1s;
+}
+.mk-d4 {
+  animation-delay: 2.8s;
+}
+.mk-d5 {
+  animation-delay: 3.5s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mk-flow {
+    animation: none !important;
+  }
+}
