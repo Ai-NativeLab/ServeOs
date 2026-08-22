@@ -58,6 +58,10 @@ export async function upsertSupplierItemAction(
   try {
     const ctx = await requirePurchasingPermission("suppliers:manage");
     if (!data.itemId) return { error: "Item is required" };
+    if (data.lastUnitCost !== undefined
+      && (!Number.isFinite(Number(data.lastUnitCost)) || Number(data.lastUnitCost) < 0)) {
+      return { error: "Unit cost must be a non-negative number" };
+    }
 
     const actor = await resolvePurchasingActor(ctx);
     await upsertSupplierItem(actor, {

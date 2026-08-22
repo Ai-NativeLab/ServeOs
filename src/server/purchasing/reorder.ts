@@ -258,7 +258,18 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
       const groupItemIds = pending.map((r) => r.itemId);
       const priceRows = await tx.select().from(supplierItems)
         .where(and(inArray(supplierItems.itemId, groupItemIds), eq(supplierItems.supplierId, supplierId)));
-      const costByItem = new Map(priceRows.map((s) => [s.itemId, Number(s.lastUnitCost ?? 0)]));
+      // A stored cost is only usable if it is finite and non-negative.
+      // `upsertSupplierItem` floors this now, but rows written before that floor
+      // existed still carry 'NaN' / 'Infinity' — Postgres numeric accepts both —
+      // and this sweep inserts PO lines directly rather than through
+      // `createDraftPo`, so `assertLineNumbers` never sees them. Unguarded, one
+      // bad row writes an "Infinity" header that no screen can repair and that
+      // every subsequent run rewrites. Fall back to 0, the same as an item with
+      // no supplier price at all: the buyer prices the draft before sending.
+      const costByItem = new Map(priceRows.map((s) => {
+        const cost = Number(s.lastUnitCost ?? 0);
+        return [s.itemId, Number.isFinite(cost) && cost >= 0 ? cost : 0] as const;
+      }));
 
       let added = 0;
       const lines = pending.map((r) => {

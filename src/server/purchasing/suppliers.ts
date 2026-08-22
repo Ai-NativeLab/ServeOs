@@ -106,6 +106,18 @@ export type UpsertSupplierItemInput = {
 
 export async function upsertSupplierItem(actor: PurchasingActor, input: UpsertSupplierItemInput): Promise<void> {
   requireCapability(actor.vertical, "inventory");
+  // `unitRate` is String(n) and Postgres numeric ACCEPTS 'NaN' / 'Infinity', so
+  // without this floor a single bad write poisons the column permanently:
+  // `checkReorder` reads it back, multiplies it into `purchase_orders.total`,
+  // and re-poisons on every sweep — with no UI path to repair the row. This is
+  // a service-level floor rather than an HTTP-edge one for the reason spelled
+  // out in ./service.ts: the cron, scripts and tests all reach it directly.
+  if (input.lastUnitCost !== undefined
+    && (!Number.isFinite(input.lastUnitCost) || input.lastUnitCost < 0)) {
+    throw new InvalidPoInputError(
+      `lastUnitCost must be a finite non-negative number (got ${input.lastUnitCost})`,
+    );
+  }
   const packUom = input.packUom ? assertInventoryUom(input.packUom) : null;
   return withTenant(actor.tenantId, async (tx) => {
     // RLS covers the write, not the FK: a body-supplied supplierId/itemId could

@@ -9,7 +9,7 @@ import { verifyChain } from "@/server/audit/verifier";
 import { auditEvents } from "@/server/audit/schema";
 import { notifications } from "@/server/notifications/schema";
 import { getLowStock } from "@/server/analytics/service";
-import { purchaseOrders, purchaseOrderLines } from "./schema";
+import { purchaseOrders, purchaseOrderLines, supplierItems } from "./schema";
 import type { PurchasingActor } from "./suppliers";
 import { createSupplier, upsertSupplierItem } from "./suppliers";
 import { reorderRules } from "./reorder-schema";
@@ -130,6 +130,30 @@ describe("reorder rules", () => {
     expect(pos[0]?.supplierId).toBe(supplierId);
     expect(pos[0]?.branchId).toBe(branchId);
     expect(pos[0]?.status).toBe("draft");
+  });
+
+  it("never drafts a PO with a non-finite total from a poisoned supplier cost", async () => {
+    // `upsertSupplierItem` now floors this, but rows written before that floor
+    // existed are still out there — and Postgres numeric stores 'Infinity'
+    // happily. The sweep inserts PO lines directly rather than through
+    // createDraftPo, so it bypasses assertLineNumbers and would otherwise write
+    // an uncorrectable "Infinity" header and re-write it on every run.
+    const { tenantId, actor, supplierId, itemAtPoint, locationId } = await seedReorderContext();
+    await stock(tenantId, itemAtPoint, locationId, 5);
+    await upsertSupplierItem(actor, { supplierId, itemId: itemAtPoint, lastUnitCost: 2 });
+    await withTenant(tenantId, (tx) =>
+      tx.update(supplierItems).set({ lastUnitCost: "Infinity" })
+        .where(eq(supplierItems.itemId, itemAtPoint)));
+    await upsertReorderRule(actor, {
+      itemId: itemAtPoint, locationId, reorderPoint: 20, reorderQty: 10, preferredSupplierId: supplierId,
+    });
+
+    await checkReorder(actor);
+
+    const pos = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders));
+    for (const po of pos) expect(Number.isFinite(Number(po.total))).toBe(true);
+    const poLines = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrderLines));
+    for (const l of poLines) expect(Number.isFinite(Number(l.unitCost))).toBe(true);
   });
 
   it("rejects a preferredSupplierId from another tenant (I13)", async () => {
