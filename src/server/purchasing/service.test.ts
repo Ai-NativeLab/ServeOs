@@ -33,6 +33,30 @@ function line(itemId: string, over: Partial<DraftPoLineInput> = {}): DraftPoLine
 }
 
 describe("purchase order drafting", () => {
+  it("createDraftPo totals the quantity it actually stores, not the raw input", async () => {
+    // qtyOrdered is persisted at QTY_SCALE (3dp) but the header total was summed
+    // from the RAW input, so any finer quantity made po.total disagree with its
+    // own lines — and put a permanent phantom delta on the three-way match.
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const actor = await seedActor(tenantId, branchId);
+    const supplierId = await seedSupplier(tenantId, branchId);
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+
+    const { poId } = await createDraftPo(actor, {
+      supplierId, branchId,
+      lines: [line(itemId, { qtyOrdered: 1.2345, unitCost: 100, taxRate: 0.14 })],
+    });
+
+    const [po] = await withTenant(tenantId, (tx) =>
+      tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId)));
+    const [l] = await withTenant(tenantId, (tx) =>
+      tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId)));
+
+    expect(l?.qtyOrdered).toBe("1.235");
+    const fromLine = Number(l!.qtyOrdered) * Number(l!.unitCost) * (1 + Number(l!.taxRate ?? 0));
+    expect(po?.total).toBe(fromLine.toFixed(2));
+  });
+
   it("createDraftPo assigns poNumber 1 then 2 for the same tenant and computes total", async () => {
     const { tenantId, branchId } = await seedInventoryTenant();
     const actor = await seedActor(tenantId, branchId);

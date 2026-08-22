@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
+import { roundQty } from "@/server/inventory/uom";
 import { createDraftPoAction, type CreatePoLineData } from "../actions";
 import type { UnitOfMeasure } from "@/server/catalog/uom";
 
@@ -89,8 +90,11 @@ export function DraftPoForm({
     );
   }
 
+  // Snap the same way the server does before persisting, so this preview cannot
+  // quote a total the saved PO will disagree with. `roundQty` is the shared rule
+  // rather than a local copy of it — a second definition is how the two drifted.
   const grandTotal = lines.reduce(
-    (acc, line) => acc + (line.qtyOrdered || 0) * (line.unitCost || 0) * (1 + (line.taxRate || 0)),
+    (acc, line) => acc + roundQty(line.qtyOrdered || 0) * (line.unitCost || 0) * (1 + (line.taxRate || 0)),
     0,
   );
 
@@ -215,7 +219,7 @@ export function DraftPoForm({
                   <TableCell>
                     <Input
                       type="number"
-                      step="any"
+                      step="0.001"
                       min="0.001"
                       required
                       value={line.qtyOrdered}

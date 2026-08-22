@@ -39,6 +39,23 @@ async function seedSentPo(qtyOrdered = 10, unitCost = 5) {
 }
 
 describe("purchase order variance", () => {
+  it("a fully-fulfilled PO ordered at a sub-milli quantity shows no phantom delta", async () => {
+    // `po.total` was summed from the RAW qtyOrdered while `receivedTotal` sums
+    // the STORED 3dp one, so 1.2345 @ 100.00 reported a permanent +0.06 on an
+    // order that was fulfilled exactly — structural noise in the three-way match.
+    const { tenantId, actor, poId, poLineId } = await seedSentPo(1.2345, 100);
+    const [line] = await withTenant(tenantId, (tx) =>
+      tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.id, poLineId)));
+
+    await postReceipt(actor, poId, {
+      lines: [{ poLineId, receivedQty: Number(line!.qtyOrdered), uom: "each" }],
+    });
+
+    const v = await getPoVariance(tenantId, poId);
+    expect(v.receivedTotal).toBe(v.total);
+    expect(v.receivedVsOrdered).toBe("0.00");
+  });
+
   it("three-way variance: received below ordered, invoiced above received", async () => {
     const { tenantId, actor, poId, poLineId } = await seedSentPo(10, 10); // total 100.00
     await postReceipt(actor, poId, { lines: [{ poLineId, receivedQty: 9, uom: "each" }] });

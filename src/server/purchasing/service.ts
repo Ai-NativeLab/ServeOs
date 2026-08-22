@@ -6,7 +6,7 @@ import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { requireCapability } from "@/server/verticals/registry";
 import { branches } from "@/server/branches/schema";
 import type { UnitOfMeasure } from "@/server/catalog/uom";
-import { assertInventoryUom, qty } from "@/server/inventory/uom";
+import { assertInventoryUom, qty, roundQty } from "@/server/inventory/uom";
 import { money } from "@/server/ordering/service";
 import { unitRate } from "./amounts";
 import { purchaseOrders, purchaseOrderLines, poReceipts, suppliers } from "./schema";
@@ -57,6 +57,21 @@ function lineTotal(lines: DraftPoLineInput[]): number {
  * service functions — the cron, scripts and tests all reach them directly, so
  * the numeric floor has to live here too rather than only at the HTTP edge.
  */
+/**
+ * Snaps every quantity to the scale the line will actually be STORED at.
+ * `lineTotal` used to sum the raw input while the insert wrote `qty(...)` at
+ * 3dp, so any finer quantity left `purchase_orders.total` disagreeing with its
+ * own lines: 1.2345 @ 100.00 +14% stored 140.73 against a line worth 140.79.
+ * That contradicted the PO detail page against itself, made the emailed PO's
+ * subtotal-plus-tax differ from its own stated total, and put a permanent
+ * phantom delta on `receivedVsOrdered` for a perfectly fulfilled order — the
+ * structural noise in the three-way match that ./amounts.ts exists to keep out.
+ * Snap once, here, so the total and the insert consume the same numbers.
+ */
+function snapQuantities(lines: DraftPoLineInput[]): DraftPoLineInput[] {
+  return lines.map((l) => ({ ...l, qtyOrdered: roundQty(l.qtyOrdered) }));
+}
+
 function assertLineNumbers(lines: DraftPoLineInput[]): void {
   if (lines.length === 0) throw new InvalidPoInputError("a purchase order needs at least one line");
   for (const l of lines) {
@@ -84,6 +99,7 @@ function assertLineNumbers(lines: DraftPoLineInput[]): void {
 export async function createDraftPo(actor: PurchasingActor, input: DraftPoInput): Promise<{ poId: string; poNumber: number }> {
   requireCapability(actor.vertical, "inventory");
   assertLineNumbers(input.lines);
+  const lines = snapQuantities(input.lines);
   return withTenant(actor.tenantId, async (tx) => {
     // RLS doesn't cover FK referential-integrity checks (Postgres runs those
     // with row security bypassed), so a body-supplied branch/supplier id could
@@ -102,7 +118,7 @@ export async function createDraftPo(actor: PurchasingActor, input: DraftPoInput)
     const [{ max }] = await tx.select({ max: sql<number>`COALESCE(MAX(${purchaseOrders.poNumber}), 0)` }).from(purchaseOrders);
     const poNumber = Number(max) + 1;
 
-    const total = money(lineTotal(input.lines));
+    const total = money(lineTotal(lines));
 
     const [po] = await tx.insert(purchaseOrders).values({
       tenantId: actor.tenantId,
@@ -115,7 +131,7 @@ export async function createDraftPo(actor: PurchasingActor, input: DraftPoInput)
       createdByUserId: actor.actorUserId,
     }).returning({ id: purchaseOrders.id, poNumber: purchaseOrders.poNumber });
 
-    for (const l of input.lines) {
+    for (const l of lines) {
       const uom = assertInventoryUom(l.uom);
       await tx.insert(purchaseOrderLines).values({
         tenantId: actor.tenantId,
@@ -215,6 +231,7 @@ async function loadPo(tx: Tx, poId: string) {
 export async function updateDraftPo(actor: PurchasingActor, poId: string, input: DraftPoInput): Promise<void> {
   requireCapability(actor.vertical, "inventory");
   assertLineNumbers(input.lines);
+  const lines = snapQuantities(input.lines);
   return withTenant(actor.tenantId, async (tx) => {
     const po = await loadPo(tx, poId);
     if (po.status !== "draft") throw new InvalidPoTransitionError(po.status as PoStatus, "draft");
@@ -226,10 +243,10 @@ export async function updateDraftPo(actor: PurchasingActor, poId: string, input:
     const [supplier] = await tx.select().from(suppliers).where(eq(suppliers.id, input.supplierId));
     if (!supplier) throw new InvalidPoInputError(`supplierId ${input.supplierId} is not a supplier of this tenant`);
 
-    const total = money(lineTotal(input.lines));
+    const total = money(lineTotal(lines));
 
     await tx.delete(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId));
-    for (const l of input.lines) {
+    for (const l of lines) {
       const uom = assertInventoryUom(l.uom);
       await tx.insert(purchaseOrderLines).values({
         tenantId: actor.tenantId,
