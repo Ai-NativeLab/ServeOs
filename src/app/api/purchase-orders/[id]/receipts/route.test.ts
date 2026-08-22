@@ -26,23 +26,35 @@ const req = (body: unknown) =>
     headers: { "content-type": "application/json" },
   });
 const params = { params: Promise.resolve({ id: "11111111-1111-1111-1111-111111111111" }) };
-const line = (over = {}) => ({ poLineId: "l", receivedQty: 1, uom: "each", unitCost: 1, ...over });
+const line = (over = {}) => ({ poLineId: "l", receivedQty: 1, uom: "each", ...over });
 
 describe("POST [id]/receipts route validation", () => {
-  it('coerces a string receivedQty/unitCost to numbers before calling postReceipt (R4)', async () => {
-    const res = await POST(req({ lines: [line({ receivedQty: "5", unitCost: "2.50" })] }), params);
+  it('coerces a string receivedQty to a number before calling postReceipt (R4)', async () => {
+    const res = await POST(req({ lines: [line({ receivedQty: "5" })] }), params);
     expect(res.status).toBe(201);
     expect(postReceipt).toHaveBeenCalledWith(
       expect.objectContaining({ actorUserId: "u" }),
       "11111111-1111-1111-1111-111111111111",
       expect.objectContaining({
-        lines: [expect.objectContaining({ receivedQty: 5, unitCost: 2.5 })],
+        lines: [expect.objectContaining({ receivedQty: 5 })],
+      }),
+    );
+  });
+
+  it("never forwards a caller-supplied unitCost — the ordered line values the lot", async () => {
+    const res = await POST(req({ lines: [line({ receivedQty: 5, unitCost: 0 })] }), params);
+    expect(res.status).toBe(201);
+    expect(postReceipt).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({
+        lines: [expect.not.objectContaining({ unitCost: expect.anything() })],
       }),
     );
   });
 
   it("maps NaN, negative, and missing line fields to a 400, not a 500", async () => {
-    for (const bad of [line({ receivedQty: NaN }), line({ receivedQty: -1 }), line({ receivedQty: undefined }), line({ unitCost: "x" })]) {
+    for (const bad of [line({ receivedQty: NaN }), line({ receivedQty: -1 }), line({ receivedQty: undefined })]) {
       vi.mocked(postReceipt).mockClear();
       const res = await POST(req({ lines: [bad] }), params);
       expect(res.status).toBe(400);

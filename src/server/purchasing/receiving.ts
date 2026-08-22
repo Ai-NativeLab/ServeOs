@@ -27,7 +27,6 @@ export type PostReceiptLineInput = {
   poLineId: string;
   receivedQty: number;
   uom: UnitOfMeasure;
-  unitCost?: number;
   lotCode?: string;
   expiryAt?: Date | null;
 };
@@ -100,7 +99,13 @@ export async function postReceipt(
       const [item] = await tx.select().from(inventoryItems).where(eq(inventoryItems.id, poLine.itemId));
       if (!item) throw new PoNotFoundError();
 
-      const effectiveUnitCost = l.unitCost !== undefined ? l.unitCost : Number(poLine.unitCost);
+      // Lot valuation is NEVER caller-stated. A client-supplied cost let any
+      // caller value a lot arbitrarily — passing 0 silently zeroed the lot, the
+      // receipt line and `getPoVariance().receivedTotal`, which is the bug this
+      // reads back from the ordered line to close. If a receive-at-a-different-
+      // price workflow is ever wanted it must be an explicit, audited override,
+      // not an unlabelled optional field.
+      const effectiveUnitCost = Number(poLine.unitCost);
 
       // 4. Input guardrail first: NaN / non-positive quantities and non-finite
       //    unit costs would otherwise reach `money`/`qty` and store junk ledger.

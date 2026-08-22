@@ -245,7 +245,7 @@ describe("purchase order drafting", () => {
     // A receipt posted with ONLY what the read path returned must succeed.
     await sendPurchaseOrder(actor, poId);
     const posted = await postReceipt(actor, poId, {
-      lines: [{ poLineId: po!.lines[0].id, receivedQty: 10, uom: "each", unitCost: 5 }],
+      lines: [{ poLineId: po!.lines[0].id, receivedQty: 10, uom: "each" }],
     });
     expect(posted.status).toBe("received");
   });
@@ -263,7 +263,7 @@ describe("purchase order drafting", () => {
 
     const po = await getPurchaseOrder(tenantId, poId);
     await postReceipt(actor, poId, {
-      lines: [{ poLineId: po!.lines[0].id, receivedQty: 4, uom: "each", unitCost: 5 }],
+      lines: [{ poLineId: po!.lines[0].id, receivedQty: 4, uom: "each" }],
       supplierDeliveryNote: "DN-7",
     });
 
@@ -294,9 +294,9 @@ describe("purchase order drafting", () => {
     // The poLineId comes from the PUBLIC read path, not a raw table read — this
     // walk must be reproducible by any API client, not only by the test suite.
     const [poLine] = (await getPurchaseOrder(tenantId, poId))!.lines;
-    const first = await postReceipt(actor, poId, { lines: [{ poLineId: poLine!.id, receivedQty: 4, uom: "each", unitCost: 5 }] });
+    const first = await postReceipt(actor, poId, { lines: [{ poLineId: poLine!.id, receivedQty: 4, uom: "each" }] });
     expect(first.status).toBe("partially_received");
-    const second = await postReceipt(actor, poId, { lines: [{ poLineId: poLine!.id, receivedQty: 6, uom: "each", unitCost: 5 }] });
+    const second = await postReceipt(actor, poId, { lines: [{ poLineId: poLine!.id, receivedQty: 6, uom: "each" }] });
     expect(second.status).toBe("received");
 
     const lots = await withTenant(tenantId, (tx) => tx.select().from(inventoryLots).where(eq(inventoryLots.itemId, itemId)));

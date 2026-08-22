@@ -13,7 +13,7 @@ import { purchaseOrders, purchaseOrderLines, poReceipts, poReceiptLines } from "
 import type { PurchasingActor } from "./suppliers";
 import { createSupplier } from "./suppliers";
 import { createDraftPo } from "./service";
-import { postReceipt } from "./receiving";
+import { postReceipt, type PostReceiptLineInput } from "./receiving";
 import { getPoVariance } from "./variance";
 import { InvalidPoInputError, InvalidPoTransitionError, PoNotFoundError, ReceiptUomMismatchError } from "./errors";
 
@@ -24,9 +24,9 @@ async function seedActor(tenantId: string, branchId: string): Promise<Purchasing
   return { tenantId, branchId, actorUserId: user.id, vertical: "restaurant" as const };
 }
 
-/** A supplier + one item, and a `sent` PO for 10 of it at 5.00. */
-async function seedSentPo(opts: { purchaseToBase?: string; baseUom?: Uom; purchaseUom?: Uom; orderUom?: Uom } = {}) {
-  const { purchaseToBase = "1", baseUom = "each", purchaseUom = baseUom, orderUom = baseUom } = opts;
+/** A supplier + one item, and a `sent` PO for 10 of it at 5.00 (or `unitCost`). */
+async function seedSentPo(opts: { purchaseToBase?: string; baseUom?: Uom; purchaseUom?: Uom; orderUom?: Uom; unitCost?: number } = {}) {
+  const { purchaseToBase = "1", baseUom = "each", purchaseUom = baseUom, orderUom = baseUom, unitCost = 5 } = opts;
   const { tenantId, branchId } = await seedInventoryTenant();
   const actor = await seedActor(tenantId, branchId);
   const supplierId = await createSupplier(actor, { name: "Sup", email: "sup@x.com" });
@@ -37,7 +37,7 @@ async function seedSentPo(opts: { purchaseToBase?: string; baseUom?: Uom; purcha
   }
   const { poId } = await createDraftPo(actor, {
     supplierId, branchId,
-    lines: [{ itemId, qtyOrdered: 10, uom: orderUom, unitCost: 5 }],
+    lines: [{ itemId, qtyOrdered: 10, uom: orderUom, unitCost }],
   });
   await withTenant(tenantId, (tx) =>
     tx.update(purchaseOrders).set({ status: "sent" }).where(eq(purchaseOrders.id, poId)));
@@ -47,7 +47,7 @@ async function seedSentPo(opts: { purchaseToBase?: string; baseUom?: Uom; purcha
 }
 
 function receiptLine(poLineId: string, over: Record<string, unknown> = {}) {
-  return { poLineId, receivedQty: 4, uom: "each", unitCost: 5, ...over } as const;
+  return { poLineId, receivedQty: 4, uom: "each", ...over } as const;
 }
 
 describe("receiving", () => {
@@ -95,9 +95,9 @@ describe("receiving", () => {
   });
 
   it("converts via the item's purchaseToBase factor (2 cases x 24 = 48 base units)", async () => {
-    const seeded = await seedSentPo({ purchaseToBase: "24" });
+    const seeded = await seedSentPo({ purchaseToBase: "24", unitCost: 50 });
     await postReceipt(seeded.actor, seeded.poId, {
-      lines: [{ poLineId: seeded.poLineId, receivedQty: 2, uom: "each", unitCost: 50 }],
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 2, uom: "each" }],
     });
 
     const lots = await withTenant(seeded.tenantId, (tx) =>
@@ -118,7 +118,7 @@ describe("receiving", () => {
     const seeded = await seedSentPo({ purchaseToBase: "1000", baseUom: "g", orderUom: "kg" });
 
     await expect(postReceipt(seeded.actor, seeded.poId, {
-      lines: [{ poLineId: seeded.poLineId, receivedQty: 500, uom: "g", unitCost: 5 }],
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 500, uom: "g" }],
     })).rejects.toThrow(ReceiptUomMismatchError);
 
     const lots = await withTenant(seeded.tenantId, (tx) =>
@@ -137,7 +137,7 @@ describe("receiving", () => {
     });
 
     const { status } = await postReceipt(seeded.actor, seeded.poId, {
-      lines: [{ poLineId: seeded.poLineId, receivedQty: 500, uom: "g", unitCost: 5 }],
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 500, uom: "g" }],
     });
     expect(status).toBe("received");
 
@@ -159,7 +159,7 @@ describe("receiving", () => {
     // was written to remove.
     const seeded = await seedSentPo({ baseUom: "g", purchaseUom: "g" });
     await expect(postReceipt(seeded.actor, seeded.poId, {
-      lines: [{ poLineId: seeded.poLineId, receivedQty: 0.0004, uom: "g", unitCost: 5 }],
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 0.0004, uom: "g" }],
     })).rejects.toThrow(InvalidPoInputError);
 
     const lots = await withTenant(seeded.tenantId, (tx) =>
@@ -167,10 +167,14 @@ describe("receiving", () => {
     expect(lots).toHaveLength(0);
   });
 
-  it("rejects a negative unitCost", async () => {
+  it("rejects a receipt whose ordered line carries a negative unit cost", async () => {
+    // A caller can no longer state a cost, so this guard now defends against a
+    // corrupted purchase_order_lines row rather than against hostile input.
     const seeded = await seedSentPo();
+    await withTenant(seeded.tenantId, (tx) =>
+      tx.update(purchaseOrderLines).set({ unitCost: "-100" }).where(eq(purchaseOrderLines.id, seeded.poLineId)));
     await expect(postReceipt(seeded.actor, seeded.poId, {
-      lines: [{ poLineId: seeded.poLineId, receivedQty: 4, uom: "each", unitCost: -100 }],
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 4, uom: "each" }],
     })).rejects.toThrow(InvalidPoInputError);
   });
 
@@ -194,7 +198,7 @@ describe("receiving", () => {
     expect(lines).toHaveLength(2);
   });
 
-  it("rejects non-finite / non-positive quantities and non-finite unit costs", async () => {
+  it("rejects non-finite / non-positive quantities", async () => {
     const { actor, poId, poLineId } = await seedSentPo();
     await expect(postReceipt(actor, poId, { lines: [receiptLine(poLineId, { receivedQty: Number.NaN })] }))
       .rejects.toThrow(InvalidPoInputError);
@@ -202,10 +206,8 @@ describe("receiving", () => {
       .rejects.toThrow(InvalidPoInputError);
     await expect(postReceipt(actor, poId, { lines: [receiptLine(poLineId, { receivedQty: -1 })] }))
       .rejects.toThrow(InvalidPoInputError);
-    await expect(postReceipt(actor, poId, { lines: [receiptLine(poLineId, { unitCost: Number.POSITIVE_INFINITY })] }))
-      .rejects.toThrow(InvalidPoInputError);
-    await expect(postReceipt(actor, poId, { lines: [receiptLine(poLineId, { unitCost: Number.NaN })] }))
-      .rejects.toThrow(InvalidPoInputError);
+    // Non-finite unit costs are no longer suppliable by a caller; that guard is
+    // covered by the overflow and corrupted-ordered-line tests below.
   });
 
   it("allows over-receipt beyond the ordered qty", async () => {
@@ -246,7 +248,7 @@ describe("receiving", () => {
   it("throws PoNotFoundError for an unknown poLineId", async () => {
     const { actor, poId } = await seedSentPo();
     await expect(postReceipt(actor, poId, {
-      lines: [{ poLineId: "00000000-0000-0000-0000-000000000000", receivedQty: 1, uom: "each", unitCost: 1 }],
+      lines: [{ poLineId: "00000000-0000-0000-0000-000000000000", receivedQty: 1, uom: "each" }],
     })).rejects.toThrow(PoNotFoundError);
   });
 
@@ -268,9 +270,9 @@ describe("receiving", () => {
 
     await expect(postReceipt(actor, poId, {
       lines: [
-        { poLineId: lines[0]!.id, receivedQty: 4, uom: "each", unitCost: 5 },
+        { poLineId: lines[0]!.id, receivedQty: 4, uom: "each" },
         // Line 2 uses a sellable-only UoM the stockable boundary rejects.
-        { poLineId: lines[1]!.id, receivedQty: 1, uom: "m", unitCost: 5 },
+        { poLineId: lines[1]!.id, receivedQty: 1, uom: "m" },
       ],
     })).rejects.toThrow(DimensionalUomError);
 
@@ -371,9 +373,9 @@ describe("receiving", () => {
     // receivedQty and unitCost are each finite, but their PRODUCT can overflow
     // to Infinity — and String(Infinity) is accepted by Postgres numeric, so the
     // same un-correctable ledger poison arrives through the quotient instead.
-    const seeded = await seedSentPo({ baseUom: "g", purchaseUom: "g", orderUom: "g" });
+    const seeded = await seedSentPo({ baseUom: "g", purchaseUom: "g", orderUom: "g", unitCost: 1e300 });
     await expect(postReceipt(seeded.actor, seeded.poId, {
-      lines: [{ poLineId: seeded.poLineId, receivedQty: 1e300, uom: "g", unitCost: 1e300 }],
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 1e300, uom: "g" }],
     })).rejects.toThrow(InvalidPoInputError);
 
     const lots = await withTenant(seeded.tenantId, (tx) =>
@@ -388,14 +390,14 @@ describe("receiving", () => {
     // guard is scoped to non-count dimensions.)
     const seeded = await seedSentPo({ purchaseToBase: "1000", baseUom: "g", purchaseUom: "g", orderUom: "g" });
     await expect(postReceipt(seeded.actor, seeded.poId, {
-      lines: [{ poLineId: seeded.poLineId, receivedQty: 500, uom: "g", unitCost: 5 }],
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 500, uom: "g" }],
     })).rejects.toThrow(InvalidPoInputError);
   });
 
   it("still applies a count-dimension pack factor (24-can case)", async () => {
-    const seeded = await seedSentPo({ purchaseToBase: "24", baseUom: "each", purchaseUom: "each", orderUom: "each" });
+    const seeded = await seedSentPo({ purchaseToBase: "24", baseUom: "each", purchaseUom: "each", orderUom: "each", unitCost: 50 });
     await postReceipt(seeded.actor, seeded.poId, {
-      lines: [{ poLineId: seeded.poLineId, receivedQty: 2, uom: "each", unitCost: 50 }],
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 2, uom: "each" }],
     });
     const lots = await withTenant(seeded.tenantId, (tx) =>
       tx.select().from(inventoryLots).where(eq(inventoryLots.itemId, seeded.itemId)));
@@ -421,5 +423,20 @@ describe("receiving", () => {
     expect(variance.receivedTotal).toBe("50.00");
     expect(variance.total).toBe("50.00");
     expect(variance.receivedVsOrdered).toBe("0.00");
+  });
+  it("ignores a caller-supplied unitCost and always values the lot from the PO line", async () => {
+    // PO was created for 10 @ 5.00. A caller passing 0 must not be able to
+    // value the lot at zero — the shipped bug this guards was exactly that.
+    const seeded = await seedSentPo();
+    await postReceipt(seeded.actor, seeded.poId, {
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 10, uom: "each" } as PostReceiptLineInput],
+    });
+
+    const lots = await withTenant(seeded.tenantId, (tx) =>
+      tx.select().from(inventoryLots).where(eq(inventoryLots.itemId, seeded.itemId)));
+    expect(Number(lots[0]?.unitCost)).toBe(5);
+
+    const variance = await getPoVariance(seeded.tenantId, seeded.poId);
+    expect(variance.receivedTotal).toBe("50.00");
   });
 });

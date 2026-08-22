@@ -41,7 +41,7 @@ async function seedSentPo(qtyOrdered = 10, unitCost = 5) {
 describe("purchase order variance", () => {
   it("three-way variance: received below ordered, invoiced above received", async () => {
     const { tenantId, actor, poId, poLineId } = await seedSentPo(10, 10); // total 100.00
-    await postReceipt(actor, poId, { lines: [{ poLineId, receivedQty: 9, uom: "each", unitCost: 10 }] });
+    await postReceipt(actor, poId, { lines: [{ poLineId, receivedQty: 9, uom: "each" }] });
     await enterInvoiceTotal(actor, poId, 95);
 
     const v = await getPoVariance(tenantId, poId);
@@ -55,7 +55,7 @@ describe("purchase order variance", () => {
 
   it("over-receipt flags overReceived and reports a positive receivedVsOrdered", async () => {
     const { tenantId, actor, poId, poLineId } = await seedSentPo(10, 10); // total 100.00
-    await postReceipt(actor, poId, { lines: [{ poLineId, receivedQty: 11, uom: "each", unitCost: 10 }] });
+    await postReceipt(actor, poId, { lines: [{ poLineId, receivedQty: 11, uom: "each" }] });
 
     const v = await getPoVariance(tenantId, poId);
     expect(v.receivedTotal).toBe("110.00");
@@ -99,7 +99,7 @@ describe("purchase order variance", () => {
 
   it("closePurchaseOrder moves a received PO to closed and audits po.closed", async () => {
     const { tenantId, actor, poId, poLineId } = await seedSentPo();
-    await postReceipt(actor, poId, { lines: [{ poLineId, receivedQty: 10, uom: "each", unitCost: 5 }] });
+    await postReceipt(actor, poId, { lines: [{ poLineId, receivedQty: 10, uom: "each" }] });
 
     await closePurchaseOrder(actor, poId);
 
@@ -142,7 +142,7 @@ describe("tax basis — all three variance figures agree", () => {
       tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId)));
 
     await postReceipt(actor, poId, {
-      lines: [{ poLineId: line.id, receivedQty: 10, uom: "each", unitCost: 5 }],
+      lines: [{ poLineId: line.id, receivedQty: 10, uom: "each" }],
     });
     await enterInvoiceTotal(actor, poId, 57);   // the supplier bills GROSS
 
@@ -162,7 +162,7 @@ describe("tax basis — all three variance figures agree", () => {
   it("a unit cost finer than 2dp does not invent a variance (1000 @ 0.125)", async () => {
     const { tenantId, actor, poId, poLineId } = await seedSentPo(1000, 0.125);
     await postReceipt(actor, poId, {
-      lines: [{ poLineId, receivedQty: 1000, uom: "each", unitCost: 0.125 }],
+      lines: [{ poLineId, receivedQty: 1000, uom: "each" }],
     });
     await enterInvoiceTotal(actor, poId, 125);
 
@@ -179,7 +179,7 @@ describe("tax basis — all three variance figures agree", () => {
   it("a sub-cent unit cost survives storage and agrees with the lot value", async () => {
     const { tenantId, actor, poId, poLineId } = await seedSentPo(1000, 0.0035);
     await postReceipt(actor, poId, {
-      lines: [{ poLineId, receivedQty: 1000, uom: "each", unitCost: 0.0035 }],
+      lines: [{ poLineId, receivedQty: 1000, uom: "each" }],
     });
 
     const v = await getPoVariance(tenantId, poId);

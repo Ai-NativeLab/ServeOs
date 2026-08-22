@@ -73,12 +73,10 @@ export default async function PurchaseOrderDetailPage({
             invoiceTotal: po.invoiceTotal,
             lines: po.lines.map((l) => ({
               id: l.id,
-              itemId: l.itemId,
               itemNameEn: l.itemNameEn ?? "Item",
               qtyOrdered: Number(l.qtyOrdered),
               qtyReceived: Number(l.qtyReceived),
               uom: l.uom,
-              unitCost: Number(l.unitCost),
             })),
           }}
         />
