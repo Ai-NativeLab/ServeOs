@@ -12,6 +12,8 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@
 const ACTOR_TYPES = ["", "user", "system", "device", "customer"] as const;
 const inputCls = "rounded-md border bg-background px-3 py-1.5 text-sm";
 
+import { PermissionDenied } from "@/components/dashboard/PermissionDenied";
+
 export default async function AuditPage({
   searchParams,
 }: {
@@ -25,7 +27,7 @@ export default async function AuditPage({
       return (
         <>
           <PageHeader eyebrow="Audit" title="Audit log" />
-          <EmptyState title="Not authorized" description="Viewing the audit log needs the audit:view permission (owner or manager)." />
+          <PermissionDenied permission="audit:view" />
         </>
       );
     }

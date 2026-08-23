@@ -18,10 +18,25 @@ import { Input } from "@/components/ui/input";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
+import { PermissionDenied } from "@/components/dashboard/PermissionDenied";
+import { UnauthorizedError } from "@/server/rbac/authorize";
 
 export default async function MenuPage() {
-  const ctx = await requireDashboardUser();
-  authorize(ctx.roleKeys, "menu:manage");
+  let ctx;
+  try {
+    ctx = await requireDashboardUser();
+    authorize(ctx.roleKeys, "menu:manage");
+  } catch (e) {
+    if (e instanceof UnauthorizedError) {
+      return (
+        <>
+          <PageHeader eyebrow="Catalog" title="Menu" />
+          <PermissionDenied permission="menu:manage" />
+        </>
+      );
+    }
+    throw e;
+  }
   const cats = await listCategories(ctx.tenantId);
   const prods = await listProducts(ctx.tenantId);
   const tenant = await getTenantById(ctx.tenantId);
