@@ -3,6 +3,7 @@ import { Clock, MessageCircle } from "lucide-react";
 import { getTenantBySlug } from "@/server/tenancy";
 import { getOrderByToken } from "@/server/ordering/service";
 import { getWhatsappNumber } from "@/server/tenancy/settings";
+import { tenantRealtimeConfig } from "@/server/realtime/token";
 import { listBranches, listDeliveryAreas } from "@/server/branches/service";
 import { getVerticalTerms, selectStorefrontTemplate, type VerticalId } from "@/server/verticals";
 import { buildOrderWhatsappMessage, whatsappChatLink } from "@/lib/whatsapp";
@@ -82,6 +83,9 @@ export default async function OrderStatusPage({ params }: { params: Promise<{ to
           terminal={["completed", "rejected", "cancelled"]}
           cancellable={order.status === "pending"}
           statusOverrides={statusOverrides}
+          // Scoped to the tenant whose storefront host served this page — a
+          // customer cannot ask to listen anywhere else.
+          realtime={tenantRealtimeConfig(tenant.id)}
         />
 
         <section className="card-lift mt-6 rounded-2xl border border-border bg-card p-5">

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Check } from "lucide-react";
 import {
   AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader,
@@ -7,10 +7,19 @@ import {
   AlertDialogCancel, AlertDialogAction,
 } from "@/components/ui/alert-dialog";
 import { orderStatusMeta, type StatusLabelOverrides } from "@/lib/order-status";
+import type { TenantEventType, TenantRealtimeConfig } from "@/lib/realtime";
+import { useTenantEvents, RELAXED_POLL_MS } from "@/lib/realtime-client";
 import type { OrderStatus } from "@/server/ordering/schema";
 
+/** The cadence this page keeps on its own. */
+const POLL_MS = 5000;
+
+/** The tenant's whole order stream, filtered by the refetch: this page asks
+ *  about its own token and ignores whatever ids the broadcast named. */
+const ORDER_EVENTS: TenantEventType[] = ["orders.changed", "sync.applied"];
+
 export function StatusPoller({
-  token, slug, initialStatus, steps, terminal, cancellable, statusOverrides,
+  token, slug, initialStatus, steps, terminal, cancellable, statusOverrides, realtime,
 }: {
   token: string;
   slug: string;
@@ -19,25 +28,29 @@ export function StatusPoller({
   terminal: string[];
   cancellable: boolean;
   statusOverrides?: StatusLabelOverrides;
+  realtime: TenantRealtimeConfig | null;
 }) {
   const [status, setStatus] = useState(initialStatus);
   const [cancelError, setCancelError] = useState<string | null>(null);
-  const terminalRef = useRef(terminal);
+  const done = terminal.includes(status);
+
+  // The status token is the authority here, exactly as it is for the poll —
+  // the broadcast only says "something moved", never what this order is now.
+  const refresh = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/orders/${token}/status?slug=${encodeURIComponent(slug)}`);
+      if (res.ok) setStatus((await res.json()).status);
+    } catch { /* keep polling */ }
+  }, [token, slug]);
+
+  // A finished order has nothing left to hear about: no socket, no poll.
+  const live = useTenantEvents(realtime, ORDER_EVENTS, refresh, !done);
 
   useEffect(() => {
-    if (terminalRef.current.includes(status)) return;
-    const id = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/orders/${token}/status?slug=${encodeURIComponent(slug)}`);
-        if (res.ok) {
-          const data = await res.json();
-          setStatus(data.status);
-          if (terminalRef.current.includes(data.status)) clearInterval(id);
-        }
-      } catch { /* keep polling */ }
-    }, 5000);
+    if (done) return;
+    const id = setInterval(() => void refresh(), live ? RELAXED_POLL_MS : POLL_MS);
     return () => clearInterval(id);
-  }, [token, slug, status]);
+  }, [refresh, live, done]);
 
   async function cancel() {
     setCancelError(null);

@@ -255,6 +255,7 @@ export function OrderScreen({
         changeAmount: change,
         cashierName: cashier.name,
         timestamp: new Date().toISOString(),
+        synced: receiptData.synced ?? false,
       });
       resetSale();
       setView("cart");
