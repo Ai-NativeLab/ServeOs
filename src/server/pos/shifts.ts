@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { money } from "@/server/ordering/service";
@@ -10,7 +10,9 @@ import {
   type PosShift, type CashCount, type CashMovementType,
 } from "./shift-schema";
 import { orderPayments, posAdjustmentEvents, type OrderPayment } from "./tender-schema";
-import { resolveAuthorizer } from "./grants";
+import { posSyncEventReceipts } from "./schema";
+import { findSyncReceipt, reviveDates, type SyncReceipt } from "./sync-receipt";
+import { resolveAuthorizer, resolveOfflineAuthorizer } from "./grants";
 import {
   CashCountMismatchError, NoOpenShiftError, ShiftAlreadyOpenError, ShiftClosedError,
 } from "./errors";
@@ -24,11 +26,27 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export type OpenShiftInput = {
   openingFloat: number;
   denominations?: Record<string, number>;
+  /** The id the device minted while opening offline. openShift's own replay
+   *  key — checked before the insert, inside the same advisory lock — via
+   *  `pos_shifts_device_client` (Task 4). Null/absent for an online open. */
+  clientShiftId?: string;
+  /** The device-claimed open time; defaults to now(). Honoured on replay so a
+   *  shift opened offline keeps the till's own clock, not the ingest time. */
+  occurredAt?: Date;
+  syncReceipt?: SyncReceipt;
 };
 
 export type CloseShiftInput = {
   count: { countedTotal: number; denominations?: Record<string, number> };
   grants?: { permission: Permission; token: string }[];
+  /** The device-claimed close time; defaults to now(). */
+  occurredAt?: Date;
+  syncReceipt?: SyncReceipt;
+  /** Replay-only substitute for a live grant token, for the cross-user close
+   *  and the flagged-variance approval — see resolveOfflineAuthorizer.
+   *  Honored only when `syncReceipt` is set (a synced offline event); a live
+   *  close route never reads this field off its request body. */
+  authorizedByUserId?: string;
 };
 
 export type TenderTotal = { method: OrderPayment["method"]; amount: number; tips: number; count: number };
@@ -65,6 +83,9 @@ export type ZReport = ShiftReportCore & {
   cash: { expected: number | null; counted: number; variance: number | null };
   flagged: boolean;
   approvedByUserId: string | null;
+  /** True when a syncReceipt resolved this call to a stored result instead of
+   *  re-closing — same precedent as SaleReceipt.idempotent. */
+  idempotent: boolean;
 };
 
 /** One AuditContext shape for every shift-domain emission (open, close, movements, counts). */
@@ -86,7 +107,9 @@ export function shiftAuditCtx(ctx: PosCashierContext): AuditContext {
  * tenant), and the unique partial index `(device_id) WHERE status = 'open'`
  * catches anything that bypasses this function.
  */
-export async function openShift(ctx: PosCashierContext, input: OpenShiftInput): Promise<PosShift> {
+export async function openShift(
+  ctx: PosCashierContext, input: OpenShiftInput,
+): Promise<PosShift & { idempotent: boolean }> {
   // Guard the count before opening a transaction — a float that disagrees with
   // the notes in the drawer is a counting error, not a shift.
   if (input.denominations && sumDenominations(input.denominations) !== round2(input.openingFloat)) {
@@ -96,14 +119,65 @@ export async function openShift(ctx: PosCashierContext, input: OpenShiftInput): 
   return withTenant(ctx.tenantId, async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${ctx.deviceId})::bigint)`);
 
+    // Replay idempotency: a shift-open event carries its own natural key (the
+    // partial unique index on (deviceId, clientShiftId)), so a retry answers
+    // from this SELECT and never touches pos_sync_event_receipts.
+    if (input.clientShiftId) {
+      const [existing] = await tx
+        .select()
+        .from(posShifts)
+        .where(and(eq(posShifts.deviceId, ctx.deviceId), eq(posShifts.clientShiftId, input.clientShiftId)))
+        .limit(1);
+      // The loser of a concurrent open of the SAME clientShiftId lands here
+      // instead of the insert below — idempotent: true is the only way a
+      // caller (sync-ingest's replay dispatcher) can tell this apart from a
+      // fresh open, since both return a normal PosShift with no exception.
+      if (existing) return { ...existing, idempotent: true };
+    }
+
     const [alreadyOpen] = await tx
       .select()
       .from(posShifts)
       .where(and(eq(posShifts.deviceId, ctx.deviceId), eq(posShifts.status, "open")))
       .limit(1);
-    if (alreadyOpen) throw new ShiftAlreadyOpenError();
+    // Live: one open shift per drawer, no exceptions. Replay: a drawer opened
+    // out of band during the outage (a manager on the dashboard) would
+    // otherwise make this event fail forever, and a stop-on-first-failure
+    // batch freezes every sale queued behind it. The till's session is
+    // adopted onto the open drawer and flagged instead — and the client's own
+    // shift id is aliased onto it when that drawer has none, so the sales
+    // behind this event still resolve their drawer by name (they cannot
+    // collide: a row already carrying this clientShiftId was returned above).
+    // Bound to a local so the adopt branch below narrows: past the throw it is
+    // necessarily defined, but that is two statements apart.
+    const adoptReceipt = input.syncReceipt;
+    if (alreadyOpen && !adoptReceipt) throw new ShiftAlreadyOpenError();
+    if (alreadyOpen && adoptReceipt) {
+      const [aliased] = input.clientShiftId && !alreadyOpen.clientShiftId
+        ? await tx.update(posShifts).set({ clientShiftId: input.clientShiftId })
+            .where(and(eq(posShifts.id, alreadyOpen.id), isNull(posShifts.clientShiftId)))
+            .returning()
+        : [];
+      const adopted = aliased ?? alreadyOpen;
+      await recordAuditEvent(shiftAuditCtx(ctx), {
+        action: "shift.open",
+        entityType: "pos_shift",
+        entityId: adopted.id,
+        summary: `Shift open replayed onto an already-open drawer (float ${money(input.openingFloat)})`,
+        metadata: {
+          deviceId: ctx.deviceId,
+          openingFloat: money(input.openingFloat),
+          shiftAlreadyOpenAtReplay: true,
+          claimedOpenedAt: (input.occurredAt ?? new Date()).toISOString(),
+        },
+        actorType: "user",
+      }, tx);
+      await tx.insert(posSyncEventReceipts).values({ ...adoptReceipt, resultJson: adopted });
+      return { ...adopted, idempotent: false };
+    }
 
     const openingFloat = money(input.openingFloat);
+    const openedAt = input.occurredAt ?? new Date();
     const [shift] = await tx
       .insert(posShifts)
       .values({
@@ -113,6 +187,8 @@ export async function openShift(ctx: PosCashierContext, input: OpenShiftInput): 
         openedByUserId: ctx.cashierUserId,
         status: "open",
         openingFloat,
+        openedAt,
+        clientShiftId: input.clientShiftId ?? null,
       })
       .returning();
 
@@ -140,7 +216,11 @@ export async function openShift(ctx: PosCashierContext, input: OpenShiftInput): 
       actorType: "user",
     }, tx);
 
-    return shift;
+    if (input.syncReceipt) {
+      await tx.insert(posSyncEventReceipts).values({ ...input.syncReceipt, resultJson: shift });
+    }
+
+    return { ...shift, idempotent: false };
   });
 }
 
@@ -240,8 +320,13 @@ export async function buildXReport(tenantId: string, shift: PosShift): Promise<X
 export async function recordMidShiftCount(
   ctx: PosCashierContext,
   shiftId: string,
-  count: { countedTotal: number; denominations?: Record<string, number> },
-): Promise<CashCount> {
+  count: {
+    countedTotal: number;
+    denominations?: Record<string, number>;
+    occurredAt?: Date;
+    syncReceipt?: SyncReceipt;
+  },
+): Promise<CashCount & { idempotent: boolean }> {
   if (count.denominations && sumDenominations(count.denominations) !== round2(count.countedTotal)) {
     throw new CashCountMismatchError();
   }
@@ -251,12 +336,38 @@ export async function recordMidShiftCount(
     // or sees the closed drawer — never straddles it.
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${shiftId})::bigint)`);
 
+    // A mid-shift count has no natural idempotency key — the receipt is it.
+    // Checked inside the lock just taken, so two concurrent replays of the
+    // same event can't both insert.
+    if (count.syncReceipt) {
+      const stored = await findSyncReceipt(count.syncReceipt, tx);
+      // The loser of a concurrent replay of this SAME event lands here — it
+      // never reaches the insert below, so it needs its own idempotent signal.
+      if (stored) return { ...reviveDates(stored.resultJson as CashCount, ["createdAt"]), idempotent: true };
+    }
+
     // FOR UPDATE for the same reason the close takes it: the advisory lock does
     // not hold off recordCashMovement, so without the row a movement can commit
     // between this read and the count we persist below.
-    const [shift] = await tx.select().from(posShifts).where(eq(posShifts.id, shiftId)).limit(1).for("update");
+    //
+    // Defence in depth on the replay path: the caller (sync-ingest) already
+    // resolves the id device-scoped, but this function looks a shift up by id
+    // alone and the sync endpoint carries a device token with no cashier
+    // session — so a device must not be able to name another till's drawer
+    // even if that resolution is ever bypassed. Live callers are unfiltered,
+    // exactly as before.
+    const [shift] = await tx.select().from(posShifts)
+      .where(count.syncReceipt
+        ? and(eq(posShifts.id, shiftId), eq(posShifts.deviceId, ctx.deviceId))
+        : eq(posShifts.id, shiftId))
+      .limit(1).for("update");
     if (!shift) throw new NoOpenShiftError();
-    if (shift.status === "closed") throw new ShiftClosedError();
+    // Live: a closed drawer takes no more counts. Replay: the drawer may have
+    // been closed out of band while the till was offline, and refusing here
+    // freezes the till's whole queue. The count is recorded against the
+    // drawer it belongs to and flagged instead.
+    const shiftClosedAtReplay = shift.status === "closed" && Boolean(count.syncReceipt);
+    if (shift.status === "closed" && !shiftClosedAtReplay) throw new ShiftClosedError();
 
     const { expected } = await gatherShift(tx, shift);
     const counted = round2(count.countedTotal);
@@ -273,6 +384,7 @@ export async function recordMidShiftCount(
         variance: money(variance),
         denominations: count.denominations ?? null,
         byUserId: ctx.cashierUserId,
+        createdAt: count.occurredAt ?? new Date(),
       })
       .returning();
 
@@ -286,11 +398,16 @@ export async function recordMidShiftCount(
         expected: money(expected),
         counted: money(counted),
         variance: money(variance),
+        ...(shiftClosedAtReplay ? { shiftClosedAtReplay: true } : {}),
       },
       actorType: "user",
     }, tx);
 
-    return row;
+    if (count.syncReceipt) {
+      await tx.insert(posSyncEventReceipts).values({ ...count.syncReceipt, resultJson: row });
+    }
+
+    return { ...row, idempotent: false };
   });
 }
 
@@ -307,6 +424,16 @@ export async function closeShift(
   shiftId: string,
   input: CloseShiftInput,
 ): Promise<ZReport> {
+  // Cheap pre-check, mirroring recordSale's clientOrderId lookup: a plain
+  // retry answers here before policy is fetched or a grant token spent. The
+  // authoritative check — the one that actually closes the crash-between-
+  // effect-and-receipt window and the concurrent-replay race — is the same
+  // lookup re-run inside the advisory-lock block below.
+  if (input.syncReceipt) {
+    const stored = await findSyncReceipt(input.syncReceipt);
+    if (stored) return { ...(stored.resultJson as ZReport), idempotent: true };
+  }
+
   const policy = await getShiftPolicy(ctx.tenantId);
   if (input.count.denominations &&
       sumDenominations(input.count.denominations) !== round2(input.count.countedTotal)) {
@@ -315,16 +442,33 @@ export async function closeShift(
 
   const grantToken = input.grants?.find((g) => g.permission === "reconciliation:manage")?.token;
   const holdsPermission = ctx.permissions.includes("reconciliation:manage");
+  // A synced offline close names its manager directly (no live grant token can
+  // survive the outage) — see resolveOfflineAuthorizer. Only trusted when this
+  // IS a synced event: syncReceipt is what the ingest dispatcher always sets
+  // and a live route never does, so a live body can't forge this field.
+  const offline = Boolean(input.syncReceipt && input.authorizedByUserId);
   // Grants are single-use, so resolve at most once and reuse the answer: a close
   // that is BOTH cross-user and flagged must not spend the token twice.
   let authorizer: string | null = null;
-  const authorize = (): string => {
-    if (authorizer === null) authorizer = resolveAuthorizer(ctx, "reconciliation:manage", grantToken);
+  let authorizerDeactivated = false;
+  let authorizerLacksPermission = false;
+  const authorize = async (): Promise<string> => {
+    if (authorizer === null) {
+      if (offline) {
+        const off = await resolveOfflineAuthorizer(ctx.tenantId, input.authorizedByUserId!, "reconciliation:manage");
+        authorizer = off.userId;
+        authorizerDeactivated = off.deactivated;
+        authorizerLacksPermission = off.lacksPermission;
+      } else {
+        authorizer = await resolveAuthorizer(ctx, "reconciliation:manage", grantToken);
+      }
+    }
     return authorizer;
   };
-  // A grant is a manager standing at the till: validate it up front so one token
-  // governs the cross-user close, the variance approval, and the blind reveal.
-  if (!holdsPermission && grantToken) authorize();
+  // A grant (or its offline substitute) is a manager standing at the till:
+  // validate it up front so one authorizer governs the cross-user close, the
+  // variance approval, and the blind reveal.
+  if (!holdsPermission && (grantToken || offline)) await authorize();
   const canManage = holdsPermission || authorizer !== null;
 
   return withTenant(ctx.tenantId, async (tx) => {
@@ -333,17 +477,42 @@ export async function closeShift(
     // open on this device.
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${shiftId})::bigint)`);
 
+    // Re-checked here, inside the lock: two concurrent replays of the same
+    // event must not both pass the pre-check above and both close the drawer.
+    if (input.syncReceipt) {
+      const stored = await findSyncReceipt(input.syncReceipt, tx);
+      if (stored) return { ...(stored.resultJson as ZReport), idempotent: true };
+    }
+
     // FOR UPDATE, and before gatherShift: the advisory lock only serializes us
     // against other closes and counts. recordCashMovement never takes it — it
     // takes this row lock — so without holding the row from here, a movement can
     // commit between the read below and the UPDATE further down, and the count
     // we persist would omit cash that is really in the drawer.
-    const [shift] = await tx.select().from(posShifts).where(eq(posShifts.id, shiftId)).limit(1).for("update");
+    //
+    // Defence in depth on the replay path — same reasoning as
+    // recordMidShiftCount's: this function trusts a bare shift id, and the
+    // sync endpoint authenticates a device with no cashier session, so a
+    // replayed close is additionally pinned to the drawer's own device. Live
+    // callers are unfiltered, exactly as before (the close route accepts a
+    // shiftId that need not be the one open on this till).
+    const [shift] = await tx.select().from(posShifts)
+      .where(input.syncReceipt
+        ? and(eq(posShifts.id, shiftId), eq(posShifts.deviceId, ctx.deviceId))
+        : eq(posShifts.id, shiftId))
+      .limit(1).for("update");
     if (!shift) throw new NoOpenShiftError();
-    if (shift.status === "closed") throw new ShiftClosedError();
+    // Live: closing a closed drawer is a conflict the till must reconcile.
+    // Replay: the drawer may have been closed out of band mid-outage (a
+    // manager on the dashboard), and a sticky refusal here jams the till's
+    // whole queue — including every sale behind it — for a close that can
+    // never succeed. The till's own count is reported and flagged; the
+    // server's close stands, and no second count or transition is written.
+    const alreadyClosedAtReplay = shift.status === "closed" && Boolean(input.syncReceipt);
+    if (shift.status === "closed" && !alreadyClosedAtReplay) throw new ShiftClosedError();
 
     // Throws PosForbiddenError unless the permission is held or granted.
-    if (shift.openedByUserId !== ctx.cashierUserId) authorize();
+    if (shift.openedByUserId !== ctx.cashierUserId) await authorize();
 
     const { core, expected } = await gatherShift(tx, shift);
     const counted = round2(input.count.countedTotal);
@@ -351,9 +520,17 @@ export async function closeShift(
     const flagged = isVarianceFlagged(variance, policy.varianceThreshold);
     // Who settled the discrepancy. Durable reconciliation state is Spec 7; this
     // is the approval as recorded on the count and in the audit chain.
-    const approvedByUserId = flagged && canManage ? authorize() : null;
+    const approvedByUserId = flagged && canManage ? await authorize() : null;
 
-    const [count] = await tx
+    // Computed once and reused below for both the closing count and the shift
+    // row: recordMidShiftCount already honours the claimed close time here,
+    // the mid-shift path always has — omitting it on the closing count left
+    // the two counts of one offline shift landing on different business days.
+    const closedAt = input.occurredAt ?? new Date();
+    // Nothing is written to the drawer on the already-closed replay path: a
+    // second closing count would double the shift's count history and the
+    // transition below cannot fire against a closed row anyway.
+    const [count] = alreadyClosedAtReplay ? [null] : await tx
       .insert(cashCounts)
       .values({
         tenantId: ctx.tenantId,
@@ -364,34 +541,41 @@ export async function closeShift(
         variance: money(variance),
         denominations: input.count.denominations ?? null,
         byUserId: ctx.cashierUserId,
+        createdAt: closedAt,
       })
       .returning();
 
-    const closedAt = new Date();
     // The `status = 'open'` guard is the real serialization point: a writer that
     // closed this drawer first leaves no matching row, so this close rolls back
     // whole — no second closing count, no second shift.close event, no rival
     // Z-report. Same discipline the ordering service uses for status
     // transitions, and it holds even against a writer that skipped the lock.
-    const [transitioned] = await tx.update(posShifts)
-      .set({ status: "closed", closedAt, closedByUserId: ctx.cashierUserId })
-      .where(and(eq(posShifts.id, shiftId), eq(posShifts.status, "open")))
-      .returning({ id: posShifts.id });
-    if (!transitioned) throw new ShiftClosedError();
+    if (!alreadyClosedAtReplay) {
+      const [transitioned] = await tx.update(posShifts)
+        .set({ status: "closed", closedAt, closedByUserId: ctx.cashierUserId })
+        .where(and(eq(posShifts.id, shiftId), eq(posShifts.status, "open")))
+        .returning({ id: posShifts.id });
+      if (!transitioned) throw new ShiftClosedError();
+    }
 
     await recordAuditEvent(shiftAuditCtx(ctx), {
       action: "shift.close",
       entityType: "pos_shift",
       entityId: shiftId,
-      summary: `Shift closed (variance ${money(variance)})`,
+      summary: alreadyClosedAtReplay
+        ? `Shift close replayed onto an already-closed drawer (variance ${money(variance)})`
+        : `Shift closed (variance ${money(variance)})`,
       metadata: {
-        countId: count.id,
+        countId: count?.id ?? null,
         expected: money(expected),
         counted: money(counted),
         variance: money(variance),
         flagged,
         approvedByUserId,
         closedByUserId: ctx.cashierUserId,
+        ...(authorizerDeactivated ? { authorizerDeactivated: true } : {}),
+        ...(authorizerLacksPermission ? { authorizerLacksPermission: true } : {}),
+        ...(alreadyClosedAtReplay ? { alreadyClosedAtReplay: true, claimedClosedAt: closedAt.toISOString() } : {}),
       },
       actorType: "user",
     }, tx);
@@ -399,16 +583,25 @@ export async function closeShift(
     const z: ZReport = {
       kind: "z",
       ...core,
-      closedByUserId: ctx.cashierUserId,
-      closedAt: closedAt.toISOString(),
+      // The drawer's real close facts when this replay found it already
+      // closed — the till's own claim is in the audit metadata above.
+      closedByUserId: (alreadyClosedAtReplay ? shift.closedByUserId : null) ?? ctx.cashierUserId,
+      closedAt: (alreadyClosedAtReplay ? shift.closedAt ?? closedAt : closedAt).toISOString(),
       cash: { expected, counted, variance },
       flagged,
       approvedByUserId,
+      idempotent: false,
+      ...(alreadyClosedAtReplay ? { alreadyClosedAtReplay: true as const } : {}),
     };
     // Blind close: the cashier counts without being told the target.
-    if (policy.blindClose && !canManage) {
-      return { ...z, cash: { ...z.cash, expected: null, variance: null } };
+    const result: ZReport = policy.blindClose && !canManage
+      ? { ...z, cash: { ...z.cash, expected: null, variance: null } }
+      : z;
+
+    if (input.syncReceipt) {
+      await tx.insert(posSyncEventReceipts).values({ ...input.syncReceipt, resultJson: result });
     }
-    return z;
+
+    return result;
   });
 }

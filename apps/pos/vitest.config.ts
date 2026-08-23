@@ -9,18 +9,12 @@ export default defineConfig({
     },
   },
   test: {
-    // The offline SQLite store/sync tests are parked (need the native
-    // better-sqlite3 build); exclude them from the default online-first run.
+    // The _offline tests are no longer parked — better-sqlite3 is a real
+    // dependency and they cover the event log, reducer and sync engine.
     //
-    // dist-electron is excluded too: vitest's defaults cover **/dist/** but not
+    // dist-electron stays excluded: vitest's defaults cover **/dist/** but not
     // **/dist-electron/**, so a tree still holding a pre-`--noEmit` build had
     // its compiled _offline/*.test.js collected and failed on `require("vitest")`.
-    // The build no longer emits those, but a stale checkout should not be a
-    // red test run.
-    exclude: [
-      ...configDefaults.exclude,
-      "**/electron/_offline/**",
-      "**/dist-electron/**",
-    ],
+    exclude: [...configDefaults.exclude, "**/dist-electron/**"],
   },
 });

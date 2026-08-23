@@ -43,7 +43,10 @@ function returnedQty(sale: SaleDetail, itemId: string) {
   );
 }
 
-export function SalesHistory() {
+/** Search, refunds and reprints are all server-backed (they read/write the
+ *  authoritative Order rows, not till-local state) — Task 11 disables the
+ *  whole tab with a notice rather than let each action fail individually. */
+export function SalesHistory({ offline }: { offline: boolean }) {
   const [search, setSearch] = useState({ from: "", to: "", cashier: "", orderNumber: "", phone: "", amount: "" });
   const [rows, setRows] = useState<SalesRow[]>([]);
   const [selected, setSelected] = useState<SaleDetail | null>(null);
@@ -92,10 +95,11 @@ export function SalesHistory() {
   }, []);
 
   useEffect(() => {
+    if (offline) return;
     // Fetch on mount; setState happens after the async fetch, not synchronously.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void runSearch();
-  }, [runSearch]);
+  }, [runSearch, offline]);
 
   async function openSale(id: string) {
     setBusySale(id);
@@ -195,6 +199,15 @@ export function SalesHistory() {
   }
 
   const netPaid = selected ? round2(tendersTotal(selected) - refundsTotal(selected)) : 0;
+
+  if (offline) {
+    return (
+      <div className="grid place-items-center gap-1 py-20 text-center text-sm text-muted-foreground">
+        <p className="font-medium text-ink">History, refunds and reprints are unavailable offline</p>
+        <p>These read and write the server&apos;s own sale records — they will work again once the till reconnects.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="p-4">
