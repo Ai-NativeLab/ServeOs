@@ -59,6 +59,17 @@ interface AuthCacheRow {
 /** Task 14's local_events retention window. */
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
+/** local_state key holding the seq high-water mark independently of
+ *  local_events (C1 fix). local_events is the append log AND, until this
+ *  fix, the only record of "the highest seq ever assigned" — but retention
+ *  pruning can delete every row (a 30+ day idle till, or a backward clock
+ *  jump that lets a high-seq row's occurred_at sort before a low-seq row's).
+ *  Once the table is empty, `MAX(seq)` restarts at 0 and appendEvent would
+ *  reissue seqs the server already holds receipts for, which the server's
+ *  out_of_order check rejects with no client-side recovery. The watermark
+ *  survives a prune that would erase the log entirely. */
+const SEQ_WATERMARK_KEY = "local_events_seq_watermark";
+
 export class Store {
   /** `cipher` defaults to a plaintext passthrough (every test, and any build
    *  that never wires one up) — see db.ts's AtRestCipher. `pos-main.ts` is the
@@ -163,25 +174,36 @@ export class Store {
   // ---- event log (Task 8) ----
 
   /** Appends one event and assigns it the next seq, gap-free and strictly
-   *  increasing per device: `MAX(seq)+1` is read and written inside a single
-   *  synchronous better-sqlite3 statement, so there is no window for a second
-   *  writer to interleave (there is only ever one, this process). `payload`
-   *  carries whatever the wire contract needs on it — actorUserId,
-   *  clientShiftId, authorizedByUserId — the store itself is agnostic to
-   *  event shape. `occurred_at` is stamped now: it is the till's own clock at
-   *  the moment the operator acted, which is what the server's business-day
-   *  and clock-skew logic keys off. */
+   *  increasing per device: the insert and the watermark update run inside a
+   *  single synchronous better-sqlite3 transaction, so there is no window for
+   *  a second writer to interleave (there is only ever one, this process) and
+   *  no window where the watermark could drift from what was just assigned.
+   *  seq is `MAX(current table max, stored watermark) + 1` rather than just
+   *  the table's own MAX(seq) (C1 fix) — the table alone under-reports once
+   *  retention pruning has deleted rows the server already has receipts for,
+   *  which reissuing their seqs would collide with. `payload` carries
+   *  whatever the wire contract needs on it — actorUserId, clientShiftId,
+   *  authorizedByUserId — the store itself is agnostic to event shape.
+   *  `occurred_at` is stamped now: it is the till's own clock at the moment
+   *  the operator acted, which is what the server's business-day and
+   *  clock-skew logic keys off. */
   appendEvent(type: string, payload: unknown): { eventId: string; seq: number; occurredAt: string } {
     const eventId = crypto.randomUUID();
     const occurredAt = new Date().toISOString();
-    const row = this.db
-      .prepare(
-        `INSERT INTO local_events (event_id, seq, type, payload, occurred_at, status)
-         VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM local_events), ?, ?, ?, 'pending')
-         RETURNING seq`,
-      )
-      .get(eventId, type, JSON.stringify(payload), occurredAt) as { seq: number };
-    return { eventId, seq: row.seq, occurredAt };
+    const append = this.db.transaction(() => {
+      const { maxSeq } = this.db.prepare(`SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM local_events`).get() as { maxSeq: number };
+      const watermark = this.getState<number>(SEQ_WATERMARK_KEY) ?? 0;
+      const seq = Math.max(maxSeq, watermark) + 1;
+      this.db
+        .prepare(
+          `INSERT INTO local_events (event_id, seq, type, payload, occurred_at, status)
+           VALUES (?, ?, ?, ?, ?, 'pending')`,
+        )
+        .run(eventId, seq, type, JSON.stringify(payload), occurredAt);
+      this.setState(SEQ_WATERMARK_KEY, seq);
+      return seq;
+    });
+    return { eventId, seq: append(), occurredAt };
   }
 
   /** Everything still owed to the server, oldest first — the flush order. */
@@ -255,12 +277,26 @@ export class Store {
    *  past forever. Only ever touches `status = 'synced'`: pending and failed
    *  rows are live state (a failed one holds the sticky halt) and must never
    *  age out from under it. `now` is injectable so a test can control the
-   *  cutoff without waiting on wall time. Returns the row count deleted. */
+   *  cutoff without waiting on wall time. Returns the row count deleted.
+   *
+   *  Folds the table's current `MAX(seq)` into the watermark BEFORE deleting
+   *  (C1 fix), in the same transaction as the delete: this is what keeps
+   *  appendEvent's next seq gap-free even when the row carrying the true
+   *  high-seq is exactly the one this call deletes — e.g. a full-table prune
+   *  (idle till), or a backward clock jump that back-dates a high-seq row's
+   *  occurred_at ahead of a low-seq row's, so a synced high-seq row is
+   *  eligible while a lower-seq one survives. Reads MAX(seq) over the WHOLE
+   *  table, not just eligible rows, so a surviving pending/failed row with a
+   *  higher seq than anything deleted is still folded in. */
   pruneSyncedEvents(now: Date = new Date()): number {
     const cutoff = new Date(now.getTime() - RETENTION_MS).toISOString();
-    return this.db
-      .prepare(`DELETE FROM local_events WHERE status = 'synced' AND occurred_at < ?`)
-      .run(cutoff).changes;
+    const prune = this.db.transaction(() => {
+      const { maxSeq } = this.db.prepare(`SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM local_events`).get() as { maxSeq: number };
+      const watermark = this.getState<number>(SEQ_WATERMARK_KEY) ?? 0;
+      if (maxSeq > watermark) this.setState(SEQ_WATERMARK_KEY, maxSeq);
+      return this.db.prepare(`DELETE FROM local_events WHERE status = 'synced' AND occurred_at < ?`).run(cutoff).changes;
+    });
+    return prune();
   }
 
   // ---- auth roster cache (Task 8) ----

@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
 import type Database from "better-sqlite3";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { openDb, type AtRestCipher } from "./db";
 import { Store, type AuthUser } from "./store";
 
@@ -240,6 +243,89 @@ describe("Store — local_events retention (Task 14)", () => {
     expect(s.pruneSyncedEvents(farFuture)).toBe(0);
     expect(s.pendingEvents().map((r) => r.event_id)).toEqual([pending.eventId]);
     expect(s.hasFailedEvents()).toBe(true);
+  });
+});
+
+describe("Store — seq watermark survives retention pruning (C1)", () => {
+  it("prune-to-empty does not reset seq: the next append continues past what the server already has a receipt for", () => {
+    const s = makeStore();
+    const a = s.appendEvent("shift.opened", { n: 1 });
+    const b = s.appendEvent("cash.movement", { n: 2 });
+    const c = s.appendEvent("shift.closed", { n: 3 });
+    expect([a.seq, b.seq, c.seq]).toEqual([1, 2, 3]);
+    for (const ev of [a, b, c]) s.markEventSynced(ev.eventId, { ok: true });
+
+    const in31Days = new Date(Date.now() + 31 * 24 * 60 * 60 * 1000);
+    expect(s.pruneSyncedEvents(in31Days)).toBe(3); // the table is now empty
+    expect(s.pendingEvents()).toHaveLength(0);
+
+    // A bare MAX(seq) over an emptied table would restart at 1 here — exactly
+    // the seq the server's lastReceiptSeq already covers, which it would
+    // reject as out_of_order with no client-side way to recover.
+    expect(s.appendEvent("shift.opened", { n: 4 }).seq).toBe(4);
+  });
+
+  it("prune with one surviving row stays monotonic — the watermark and the survivor agree on the next seq", () => {
+    const s = makeStore();
+    const a = s.appendEvent("shift.opened", { n: 1 });
+    const b = s.appendEvent("cash.movement", { n: 2 }); // stays pending, survives the prune
+    s.markEventSynced(a.eventId, { ok: true });
+
+    const in31Days = new Date(Date.now() + 31 * 24 * 60 * 60 * 1000);
+    expect(s.pruneSyncedEvents(in31Days)).toBe(1);
+    expect(s.pendingEvents().map((r) => r.event_id)).toEqual([b.eventId]);
+
+    expect(s.appendEvent("shift.closed", { n: 3 }).seq).toBe(3);
+  });
+
+  it("a backward clock jump can't reuse a pruned high-seq row's seq, even when the survivor has a LOWER seq", () => {
+    // Second trigger from the bug report: seq and occurred_at are only
+    // co-monotonic while the wall clock never runs backwards. An NTP
+    // correction can leave a high-seq row's occurred_at earlier than a
+    // low-seq row's, so pruning (which keys off occurred_at) deletes the
+    // high-seq row and keeps the low-seq one.
+    const { store: s, db } = makeStoreWithDb();
+    const early = s.appendEvent("shift.opened", { n: 1 }); // seq 1, real occurred_at (now)
+    const late = s.appendEvent("cash.movement", { n: 2 }); // seq 2, the true high-seq
+    s.markEventSynced(early.eventId, { ok: true });
+    s.markEventSynced(late.eventId, { ok: true });
+
+    db.prepare("UPDATE local_events SET occurred_at = ? WHERE event_id = ?")
+      .run("2000-01-01T00:00:00.000Z", late.eventId);
+
+    // "now" for the prune sits just past seq 1's real occurred_at's window,
+    // so only the rewritten seq-2 row (Jan 2000) is old enough to prune.
+    expect(s.pruneSyncedEvents(new Date())).toBe(1);
+    expect(db.prepare("SELECT event_id FROM local_events").all()).toEqual([{ event_id: early.eventId }]);
+
+    // seq 2 is gone from the table, but the watermark still remembers it.
+    expect(s.appendEvent("shift.closed", { n: 3 }).seq).toBe(3);
+  });
+
+  it("the watermark is durable across a process restart: close the file, reopen it, and the next seq still continues", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pos-store-seq-"));
+    const file = join(dir, "pos.db");
+    try {
+      const db1 = openDb(file);
+      const s1 = new Store(db1);
+      const a = s1.appendEvent("shift.opened", { n: 1 });
+      const b = s1.appendEvent("cash.movement", { n: 2 });
+      s1.markEventSynced(a.eventId, { ok: true });
+      s1.markEventSynced(b.eventId, { ok: true });
+      db1.close();
+
+      // A fresh Database connection and a fresh Store instance — nothing held
+      // only in a JS variable survives this boundary. This is pos-main.ts's
+      // real boot order: open the file, then pruneSyncedEvents, then append.
+      const db2 = openDb(file);
+      const s2 = new Store(db2);
+      const in31Days = new Date(Date.now() + 31 * 24 * 60 * 60 * 1000);
+      expect(s2.pruneSyncedEvents(in31Days)).toBe(2); // empties the table
+      expect(s2.appendEvent("shift.opened", { n: 3 }).seq).toBe(3);
+      db2.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
