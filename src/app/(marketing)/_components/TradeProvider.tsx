@@ -84,7 +84,12 @@ export function TradeProvider({ locale, children }: { locale: Locale; children: 
       });
       return () => mm.revert();
     },
-    { scope: root, dependencies: [id] },
+    // `id` changes on every switch, so without revertOnUpdate useGSAP never
+    // runs this cleanup and each switch leaves the previous fromTo's context
+    // live. An interrupted tween then strands its target at autoAlpha:0 —
+    // opacity 0 AND visibility hidden — with nothing left to restore it. See
+    // usePinnedTour for the same trap.
+    { scope: root, dependencies: [id], revertOnUpdate: true },
   );
 
   function setTrade(next: VerticalId) {

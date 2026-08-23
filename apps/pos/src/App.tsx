@@ -96,12 +96,24 @@ export function App() {
 
   if (!cashier) {
     return (
+      // The halt modal rides along from here on: a sync halt left over from a
+      // previous session must be visible before a cashier signs back in, not
+      // hidden behind the sign-in and drawer screens.
       <>
-        <CashierSignIn branchName={branchName} onSignedIn={setCashier} />
+        <CashierSignIn
+          branchName={branchName}
+          onSignedIn={setCashier}
+          onUnpaired={() => {
+            setPaired(false);
+            setCashier(null);
+          }}
+        />
         {haltedModal}
       </>
     );
   }
+  // No "Checking the drawer…" gate: hasOpenShift starts false and is corrected
+  // by a local read, so boot never waits on the network.
 
   // Offered, not forced: card-only selling is legitimate without a drawer, and
   // the server refuses cash when there is none.

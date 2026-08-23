@@ -499,6 +499,16 @@ export async function getLowStock(tenantId: string): Promise<LowStockRow[]> {
   });
 }
 
+/**
+ * The statuses that represent money actually committed to a supplier. A `draft`
+ * is not spend — nothing has been ordered — and the nightly reorder sweep
+ * auto-drafts POs, so counting drafts let every chronically-low item inflate
+ * the spend report on its own. `cancelled` is not spend either. Listed
+ * positively so a status added later has to be classified deliberately rather
+ * than silently counting as spend.
+ */
+const COMMITTED_PO_STATUSES = sql`('sent', 'partially_received', 'received', 'closed')`;
+
 export type SpendBySupplierRow = { supplierId: string; name: string; poCount: number; spend: number };
 
 export async function getSpendBySupplier(tenantId: string, days: number): Promise<SpendBySupplierRow[]> {
@@ -508,35 +518,49 @@ export async function getSpendBySupplier(tenantId: string, days: number): Promis
     const { rows } = await tx.execute<{ supplier_id: string; name: string; po_count: string; spend: string }>(sql`
       SELECT po.supplier_id, s.name, COUNT(*) AS po_count, COALESCE(SUM(po.total), 0) AS spend
       FROM purchase_orders po JOIN suppliers s ON s.id = po.supplier_id
-      WHERE po.created_at >= ${since}
+      WHERE po.created_at >= ${since} AND po.status IN ${COMMITTED_PO_STATUSES}
       GROUP BY po.supplier_id, s.name ORDER BY spend DESC
     `);
     return rows.map((r) => ({ supplierId: r.supplier_id, name: r.name, poCount: Number(r.po_count), spend: Number(r.spend) }));
   });
 }
 
-export type ReceivedVsInvoicedRow = { poId: string; poNumber: string; ordered: number; received: number; invoiced: number; variance: number };
+/**
+ * `invoiceVsReceived` is INVOICED − RECEIVED, the same name and the same sign as
+ * `getPoVariance`'s field, so the report and the PO detail view cannot describe
+ * one PO with opposite signs. Positive means the supplier billed for more than
+ * arrived — the case the buyer has to chase. The field was previously called
+ * `variance` and computed received − invoiced, i.e. the same fact negated, with
+ * the direction stated nowhere.
+ */
+export type ReceivedVsInvoicedRow = { poId: string; poNumber: number; ordered: number; received: number; invoiced: number; invoiceVsReceived: number };
 
 export async function getReceivedVsInvoiced(tenantId: string, days: number): Promise<ReceivedVsInvoicedRow[]> {
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   return withTenant(tenantId, async (tx) => {
     if (!(await tableExists(tx, "po_receipts"))) return [];
+    // Invoice entry is ONE header figure on the PO (the supplier's actual
+    // invoice), not a per-receipt-line amount — so the "invoiced" side reads
+    // po.invoice_total, never a SUM over receipt lines. The shipped stub's
+    // per-line `invoiced_amount` column was deliberately never created; the
+    // query was aligned to the real schema in the same PR (PR #116 precedent).
     const { rows } = await tx.execute<{ po_id: string; po_number: string; ordered: string; received: string; invoiced: string }>(sql`
       SELECT po.id AS po_id, po.po_number,
              COALESCE(po.total, 0) AS ordered,
-             COALESCE(SUM(prl.received_qty * prl.unit_cost), 0) AS received,
-             COALESCE(SUM(prl.invoiced_amount), 0) AS invoiced
+             COALESCE(SUM(prl.received_qty * prl.unit_cost * (1 + COALESCE(pol.tax_rate, 0))), 0) AS received,
+             COALESCE(po.invoice_total, 0) AS invoiced
       FROM purchase_orders po
       JOIN po_receipts pr ON pr.purchase_order_id = po.id
       JOIN po_receipt_lines prl ON prl.po_receipt_id = pr.id
-      WHERE po.created_at >= ${since}
-      GROUP BY po.id, po.po_number
-      ORDER BY po.created_at DESC
+      LEFT JOIN purchase_order_lines pol ON pol.id = prl.po_line_id
+      WHERE po.created_at >= ${since} AND po.status IN ${COMMITTED_PO_STATUSES}
+      GROUP BY po.id, po.po_number, po.invoice_total
+      ORDER BY MAX(po.created_at) DESC
     `);
     return rows.map((r) => ({
-      poId: r.po_id, poNumber: r.po_number,
+      poId: r.po_id, poNumber: Number(r.po_number),
       ordered: Number(r.ordered), received: Number(r.received), invoiced: Number(r.invoiced),
-      variance: Number(r.received) - Number(r.invoiced),
+      invoiceVsReceived: Number(r.invoiced) - Number(r.received),
     }));
   });
 }

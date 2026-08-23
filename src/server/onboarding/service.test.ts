@@ -78,6 +78,18 @@ describe("registerTenant", () => {
     expect(t.vertical).toBe("timber");
   });
 
+  // /api/demo/login signs anyone into any slug isDemoSlug() accepts, so letting
+  // the public register one would hand strangers an owner session on it.
+  it("refuses to register a reserved demo slug", async () => {
+    await seedDefaultPlans();
+    await expect(
+      registerTenant({
+        restaurantName: "X", slug: "demo-pharmacy", country: "EG",
+        ownerName: "X", email: "squatter@x.com", password: "x", vertical: "pharmacy",
+      }),
+    ).rejects.toThrow(/reserved/i);
+  });
+
   it("rejects an invalid vertical", async () => {
     await seedDefaultPlans();
     await expect(

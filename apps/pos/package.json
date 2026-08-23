@@ -1,18 +1,67 @@
 {
   "name": "pos",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
+  "description": "ServeOS point-of-sale terminal",
+  "author": "ServeOS",
   "main": "dist-electron/main.js",
+  "//electron": "Pinned exactly, not a ^ range: npm workspaces hoist electron to the repo root, electron-builder only looks in apps/pos/node_modules, and its fallback of reading the declared version needs that version to be fixed (electron-builder#3984). A range here fails the packaging step with 'Cannot compute electron version'. Bump it deliberately.",
+  "//scripts": "The tsc step in `build` is --noEmit on purpose: it is a typecheck gate, and vite-plugin-electron — not tsc — produces the dist-electron/{main,preload}.js that actually ship. Letting it emit wrote dist-electron/_offline/*.test.js, which vitest then collected as CommonJS test files and failed on (its exclude covers electron/_offline, not dist-electron/_offline), and shipped the parked offline tests inside the installer.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -p tsconfig.node.json && vite build && electron-builder",
+    "build": "tsc --noEmit -p tsconfig.node.json && vite build && electron-builder --publish never",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run"
   },
+  "//build": "Notes on the `build` block below — they live out here because electron-builder validates its config against a schema and rejects unknown keys, so a '//' inside it fails the build. (1) `files` ships the two bundles plus better-sqlite3: vite emits the renderer to dist/, vite-plugin-electron emits main+preload to dist-electron/. better-sqlite3 is the one runtime dependency that cannot be bundled — it is a native binding — so it must be collected, and npmRebuild must stay on to rebuild it against Electron's ABI rather than Node's. Both were off while the offline store was parked; the offline engine is now live and imports it, so shipping without it would leave the till unable to open its own event log. (2) `mac.identity: null` makes the unsigned build explicit rather than accidental — signing needs an Apple Developer cert, and without one macOS Gatekeeper requires right-click - Open on first launch. It is paired with the `afterPack` hook, which ad-hoc signs the bundle: skipping signing entirely leaves the Electron binary's own linker signature over a resource set packaging has changed, which fails `codesign --verify` and gets the download refused as 'damaged' — a wall right-click - Open does not get past. See build/adhoc-sign-mac.mjs. (3) `artifactName` overrides the default, which interpolates productName and would put a space in every filename — that breaks the unquoted glob the release workflow passes to `gh release create`, and turns every download URL into %20 soup.",
   "dependencies": {
     "@supabase/supabase-js": "^2.112.3",
     "better-sqlite3": "^11.8.0",
     "ws": "^8.21.3"
+  },
+  "build": {
+    "appId": "tech.serveos.pos",
+    "productName": "ServeOS POS",
+    "directories": {
+      "output": "release"
+    },
+    "artifactName": "ServeOS-POS-${version}-${arch}.${ext}",
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json",
+      "node_modules/better-sqlite3/**",
+      "node_modules/bindings/**",
+      "node_modules/file-uri-to-path/**"
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.business",
+      "identity": null
+    },
+    "afterPack": "build/adhoc-sign-mac.mjs",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   },
   "devDependencies": {
     "@fontsource/bricolage-grotesque": "^5.3.0",
@@ -24,7 +73,7 @@
     "@types/react-dom": "^19",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.3.0",
-    "electron": "^33.0.0",
+    "electron": "33.4.11",
     "electron-builder": "^25.0.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",

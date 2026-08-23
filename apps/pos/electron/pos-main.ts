@@ -45,11 +45,40 @@ const authCacheCipher: AtRestCipher = {
   decryptString: (b) => safeStorage.decryptString(b),
 };
 
-// In dev (vite serving), default to the local backend; otherwise the
-// configured/placeholder production host. POS_API_URL always wins.
-const DEFAULT_BASE_URL = process.env.VITE_DEV_SERVER_URL ? "http://localhost:3000" : "https://app.serveos.com";
+// In dev (vite serving), default to the local backend; otherwise the live
+// dashboard host on serveos.tech (serveos.com only 302-redirects there, which
+// a packaged build cannot follow for POSTs with an Authorization header).
+// POS_API_URL always wins.
+const DEFAULT_BASE_URL = process.env.VITE_DEV_SERVER_URL ? "http://localhost:3000" : "https://app.serveos.tech";
+
+/**
+ * The body a POS route returns when the *device* token is missing, unknown or
+ * revoked (PosAuthError). A wrong cashier password is also a 401, but carries
+ * PosCashierError's own message — so the status alone cannot tell the two
+ * apart, and unpairing on any 401 would wipe a till's pairing every time
+ * somebody mistyped their password.
+ *
+ * Note this only discriminates on the routes that report the two separately.
+ * Most cashier-authenticated routes still collapse PosAuthError and
+ * PosCashierError into this same string, which is why unpair-on-401 is applied
+ * only to the device-authenticated calls below.
+ */
+const DEVICE_UNAUTHORIZED = "Unauthorized";
+
+/** Shown to the operator, and the renderer's cue to return to pairing. */
+const DEVICE_UNPAIRED_MESSAGE = "Device unpaired — please pair again";
 
 type Device = { token: string; tenantId: string; branchId: string; branchName: string };
+
+/**
+ * What actually lands on disk. `baseUrl` is part of the record because a device
+ * token only means anything to the backend that minted it: dev and the packaged
+ * build share one userData directory (Electron derives it from the package
+ * `name`, which is "pos" for both), so without this a pairing made against
+ * localhost silently becomes the production app's credentials — and production
+ * answers every call with 401 Unauthorized.
+ */
+type StoredDevice = Device & { baseUrl: string };
 
 export type OrderLine = { productId: string; quantity: number; selectedOptionIds: string[] };
 export type OrderDraft = { lines: OrderLine[]; notes?: string };
@@ -508,7 +537,19 @@ export class PosMain {
     try {
       const raw = fs.readFileSync(this.file);
       const json = safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(raw) : raw.toString("utf8");
-      this.device = JSON.parse(json) as Device;
+      const stored = JSON.parse(json) as Partial<StoredDevice>;
+      // A file written before baseUrl was recorded has none, so it is not
+      // trusted either — which is the point: those are the dev pairings that
+      // were being replayed against production.
+      this.device =
+        stored.baseUrl === this.baseUrl && stored.token
+          ? {
+              token: stored.token,
+              tenantId: stored.tenantId ?? "",
+              branchId: stored.branchId ?? "",
+              branchName: stored.branchName ?? "",
+            }
+          : null;
     } catch {
       this.device = null;
     }
@@ -516,7 +557,7 @@ export class PosMain {
 
   private persist(): void {
     if (!this.device) return;
-    const json = JSON.stringify(this.device);
+    const json = JSON.stringify({ ...this.device, baseUrl: this.baseUrl } satisfies StoredDevice);
     const data = safeStorage.isEncryptionAvailable()
       ? safeStorage.encryptString(json)
       : Buffer.from(json, "utf8");
@@ -587,10 +628,17 @@ export class PosMain {
    */
   async getMenu(): Promise<{ json: string; pricing: CheckoutPricing; syncedAt: string } | null> {
     if (!this.device) return null;
+<<<<<<< HEAD
     const cached = this.cachedCatalog();
     if (cached) {
       void this.engine.pull().catch(() => { /* the cached menu stands */ });
       return { json: cached.json, pricing: cached.pricing, syncedAt: cached.syncedAt };
+=======
+    const res = await fetch(`${this.baseUrl}/api/pos/v1/catalog`, { headers: this.authHeaders() });
+    if (res.status === 401) {
+      this.unpair();
+      throw new Error(DEVICE_UNPAIRED_MESSAGE);
+>>>>>>> origin/main
     }
     try {
       await this.engine.pull();
@@ -628,6 +676,12 @@ export class PosMain {
     }
     if (!res.ok) {
       const err = (await res.json().catch(() => ({}))) as { error?: string };
+      // The device check runs before credentials are looked at, so a device
+      // rejection here is terminal: no password will get past it.
+      if (res.status === 401 && err.error === DEVICE_UNAUTHORIZED) {
+        this.unpair();
+        throw new Error(DEVICE_UNPAIRED_MESSAGE);
+      }
       throw new Error(err.error ?? `Sign-in failed (${res.status})`);
     }
     const d = (await res.json()) as { cashierToken: string; userId: string; name: string; permissions: string[] };

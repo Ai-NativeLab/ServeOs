@@ -1,0 +1,2 @@
+CREATE INDEX "po_receipt_lines_po_line" ON "po_receipt_lines" USING btree ("po_line_id");--> statement-breakpoint
+CREATE INDEX "purchase_orders_supplier" ON "purchase_orders" USING btree ("supplier_id");

@@ -6,6 +6,7 @@ import type { Locale } from "@/shared/errors";
 import { ClosingCta } from "../_components/ClosingCta";
 import { DemoBand } from "../_components/DemoBand";
 import { Faq } from "../_components/Faq";
+import { FAQ } from "../_content/faq";
 import { FeatureGrid } from "../_components/FeatureGrid";
 import { Footer } from "../_components/Footer";
 import { Header } from "../_components/Header";
@@ -99,7 +100,7 @@ export default async function MarketingPage({
           <Reveal kind="wipe"><DemoBand locale={locale} /></Reveal>
           <Reveal kind="stagger"><Outcomes locale={locale} /></Reveal>
           <Reveal kind="scale"><Pricing plans={plans} locale={locale} /></Reveal>
-          <Reveal kind="stagger"><Faq locale={locale} /></Reveal>
+          <Reveal kind="stagger"><Faq content={FAQ[locale]} /></Reveal>
           <Reveal kind="wipe"><PhotoBand /></Reveal>
           <Reveal kind="blur"><ClosingCta locale={locale} /></Reveal>
         </main>

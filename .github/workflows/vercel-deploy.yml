@@ -1,0 +1,155 @@
+# Deploys to Vercel from CI instead of through Vercel's Git integration.
+#
+# Why: Vercel's Hobby plan refuses to deploy a PRIVATE repository owned by a
+# GitHub organisation. Ai-NativeLab/ServeOs is currently public, which is the
+# only reason deploys work today — making it private would break production.
+# Building here and uploading a prebuilt deployment sidesteps that entirely,
+# because Vercel never has to pull the source itself.
+#
+# INERT UNTIL SWITCHED ON. Every job is gated on the repository variable
+# VERCEL_DEPLOY_ENABLED == 'true'. Merging this file changes nothing until that
+# variable is set, so it cannot cause double deployments while the Git
+# integration is still connected.
+#
+# See docs/references/vercel-cli-deploy.md for the full cutover runbook.
+
+name: vercel-deploy
+
+on:
+  pull_request:
+  push:
+    branches: [main, qa]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  # apps/pos keeps electron as a devDependency for the desktop build. Nothing
+  # here builds it, and its postinstall fetches a ~100 MB binary.
+  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+  VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+
+jobs:
+  # ── Preview: every PR ────────────────────────────────────────────────────
+  preview:
+    name: preview
+    if: ${{ vars.VERCEL_DEPLOY_ENABLED == 'true' && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_PROD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm i -g vercel@latest
+
+      # Pulls the project's Preview env vars so the build sees the same
+      # configuration Vercel's own builder would have used.
+      - name: Pull Vercel environment
+        run: vercel pull --yes --environment=preview --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Build
+        run: vercel build --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Deploy prebuilt
+        id: deploy
+        run: |
+          url=$(vercel deploy --prebuilt --token=${{ secrets.VERCEL_TOKEN }})
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Preview: $url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment the preview URL on the PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const url = '${{ steps.deploy.outputs.url }}';
+            const marker = '<!-- vercel-preview -->';
+            const body = `${marker}\n**Preview deployed** → ${url}`;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body?.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: context.issue.number, body,
+              });
+            }
+
+  # ── Production: main → serveos.tech ──────────────────────────────────────
+  production:
+    name: production
+    if: ${{ vars.VERCEL_DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_PROD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm i -g vercel@latest
+
+      # The production build applies database migrations before the deploy goes
+      # live (see next.config.ts / package.json build script), so it needs the
+      # real production env — which is what `vercel pull` fetches.
+      - name: Pull Vercel environment
+        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Build
+        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Deploy prebuilt to production
+        run: |
+          url=$(vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }})
+          echo "Production: $url" >> "$GITHUB_STEP_SUMMARY"
+
+  # ── QA: qa branch → qa.serveos.tech ──────────────────────────────────────
+  # The QA Vercel project tracks the `qa` branch as ITS production environment,
+  # so this also deploys with --prod, just against the QA project id.
+  qa:
+    name: qa
+    if: ${{ vars.VERCEL_DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/qa' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: qa
+    env:
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_QA }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm i -g vercel@latest
+
+      - name: Pull Vercel environment
+        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Build
+        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Deploy prebuilt to QA
+        run: |
+          url=$(vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }})
+          echo "QA: $url" >> "$GITHUB_STEP_SUMMARY"
