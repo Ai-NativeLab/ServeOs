@@ -38,8 +38,9 @@ export async function POST(req: NextRequest) {
   if (ctx instanceof NextResponse) return ctx;
 
   const body = (await req.json()) as { countedTotal?: number; denominations?: Record<string, number> };
-  if (typeof body.countedTotal !== "number") {
-    return NextResponse.json({ error: "Missing countedTotal" }, { status: 400 });
+  // See shifts/open: typeof admits Infinity, which JSON expresses as 1e999.
+  if (typeof body.countedTotal !== "number" || !Number.isFinite(body.countedTotal)) {
+    return NextResponse.json({ error: "countedTotal must be a finite number" }, { status: 400 });
   }
 
   const shift = await findOpenShift(ctx.tenantId, ctx.deviceId);
