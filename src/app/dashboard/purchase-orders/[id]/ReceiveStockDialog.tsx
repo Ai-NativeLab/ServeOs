@@ -21,12 +21,10 @@ import type { UnitOfMeasure } from "@/server/catalog/uom";
 
 export type ReceiveDialogLine = {
   id: string;
-  itemId: string;
   itemNameEn: string;
   qtyOrdered: number;
   qtyReceived: number;
   uom: UnitOfMeasure;
-  unitCost?: number;
 };
 
 export function ReceiveStockDialog({

@@ -3,6 +3,7 @@
  * Lives beside the routes rather than in them because a route module may only
  * export its HTTP handlers.
  */
+import { roundQty, QTY_SCALE } from "@/server/inventory/uom";
 import type { createDraftPo } from "@/server/purchasing/service";
 
 export type ParsedLines = Parameters<typeof createDraftPo>[1]["lines"] | { error: string };
@@ -18,6 +19,12 @@ export function parseLines(raw: unknown): ParsedLines {
     const qtyOrdered = Number(row.qtyOrdered);
     const unitCost = Number(row.unitCost);
     if (!Number.isFinite(qtyOrdered) || qtyOrdered <= 0) return { error: "each line needs a positive qtyOrdered" };
+    // Quantities are stored at QTY_SCALE, so anything finer rounds to zero and
+    // the service rejects it. Catching it here keeps that a 400 rather than a
+    // 500 through the route's blanket catch — same reason as the taxRate check.
+    if (roundQty(qtyOrdered) <= 0) {
+      return { error: `each line needs a qtyOrdered of at least ${1 / 10 ** QTY_SCALE}` };
+    }
     if (!Number.isFinite(unitCost) || unitCost < 0) return { error: "each line needs a non-negative unitCost" };
     if (typeof row.uom !== "string" || !row.uom) return { error: "each line needs a uom" };
     // The service floor (assertLineNumbers) rejects these too, but from inside

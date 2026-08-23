@@ -33,6 +33,52 @@ function line(itemId: string, over: Partial<DraftPoLineInput> = {}): DraftPoLine
 }
 
 describe("purchase order drafting", () => {
+  it("createDraftPo totals the quantity it actually stores, not the raw input", async () => {
+    // qtyOrdered is persisted at QTY_SCALE (3dp) but the header total was summed
+    // from the RAW input, so any finer quantity made po.total disagree with its
+    // own lines — and put a permanent phantom delta on the three-way match.
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const actor = await seedActor(tenantId, branchId);
+    const supplierId = await seedSupplier(tenantId, branchId);
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+
+    const { poId } = await createDraftPo(actor, {
+      supplierId, branchId,
+      lines: [line(itemId, { qtyOrdered: 1.2345, unitCost: 100, taxRate: 0.14 })],
+    });
+
+    const [po] = await withTenant(tenantId, (tx) =>
+      tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, poId)));
+    const [l] = await withTenant(tenantId, (tx) =>
+      tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId)));
+
+    expect(l?.qtyOrdered).toBe("1.235");
+    const fromLine = Number(l!.qtyOrdered) * Number(l!.unitCost) * (1 + Number(l!.taxRate ?? 0));
+    expect(po?.total).toBe(fromLine.toFixed(2));
+  });
+
+  it("rejects a quantity that survives validation but rounds away when stored", async () => {
+    // 0.0004 clears assertLineNumbers' `> 0` check on the raw input, then snaps
+    // to "0.000". A zero-ordered line is worse than a rejected one: receiptStatus
+    // counts `qtyReceived >= qtyOrdered` as met, so the line reports itself fully
+    // received the moment its siblings are and flips the PO to `received` for
+    // goods never delivered — with overReceived silent, because 0 > 0 is false.
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const actor = await seedActor(tenantId, branchId);
+    const supplierId = await seedSupplier(tenantId, branchId);
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+
+    await expect(createDraftPo(actor, {
+      supplierId, branchId,
+      lines: [line(itemId, { qtyOrdered: 0.0004, unitCost: 100 })],
+    })).rejects.toThrow(InvalidPoInputError);
+
+    const pos = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders));
+    expect(pos).toHaveLength(0);
+    const lines = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrderLines));
+    expect(lines).toHaveLength(0);
+  });
+
   it("createDraftPo assigns poNumber 1 then 2 for the same tenant and computes total", async () => {
     const { tenantId, branchId } = await seedInventoryTenant();
     const actor = await seedActor(tenantId, branchId);
@@ -245,7 +291,7 @@ describe("purchase order drafting", () => {
     // A receipt posted with ONLY what the read path returned must succeed.
     await sendPurchaseOrder(actor, poId);
     const posted = await postReceipt(actor, poId, {
-      lines: [{ poLineId: po!.lines[0].id, receivedQty: 10, uom: "each", unitCost: 5 }],
+      lines: [{ poLineId: po!.lines[0].id, receivedQty: 10, uom: "each" }],
     });
     expect(posted.status).toBe("received");
   });
@@ -263,7 +309,7 @@ describe("purchase order drafting", () => {
 
     const po = await getPurchaseOrder(tenantId, poId);
     await postReceipt(actor, poId, {
-      lines: [{ poLineId: po!.lines[0].id, receivedQty: 4, uom: "each", unitCost: 5 }],
+      lines: [{ poLineId: po!.lines[0].id, receivedQty: 4, uom: "each" }],
       supplierDeliveryNote: "DN-7",
     });
 
@@ -294,9 +340,9 @@ describe("purchase order drafting", () => {
     // The poLineId comes from the PUBLIC read path, not a raw table read — this
     // walk must be reproducible by any API client, not only by the test suite.
     const [poLine] = (await getPurchaseOrder(tenantId, poId))!.lines;
-    const first = await postReceipt(actor, poId, { lines: [{ poLineId: poLine!.id, receivedQty: 4, uom: "each", unitCost: 5 }] });
+    const first = await postReceipt(actor, poId, { lines: [{ poLineId: poLine!.id, receivedQty: 4, uom: "each" }] });
     expect(first.status).toBe("partially_received");
-    const second = await postReceipt(actor, poId, { lines: [{ poLineId: poLine!.id, receivedQty: 6, uom: "each", unitCost: 5 }] });
+    const second = await postReceipt(actor, poId, { lines: [{ poLineId: poLine!.id, receivedQty: 6, uom: "each" }] });
     expect(second.status).toBe("received");
 
     const lots = await withTenant(tenantId, (tx) => tx.select().from(inventoryLots).where(eq(inventoryLots.itemId, itemId)));
