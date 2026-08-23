@@ -74,6 +74,41 @@ describe("reduce", () => {
     expect(state.openShift).toBeNull();
   });
 
+  it("a second shift.opened resets the per-shift accumulators — the previous drawer's takings do not carry forward (C2)", () => {
+    const s = makeStore();
+    s.appendEvent("shift.opened", { clientShiftId: "cs1", openingFloat: 100, actorUserId: "u1" });
+    s.appendEvent("sale.recorded", {
+      clientOrderId: "o1", clientShiftId: "cs1",
+      payments: [{ method: "cash", amount: 200 }], orderDiscountAmount: 10,
+    });
+    s.appendEvent("cash.movement", { type: "pay_out", amount: 30 });
+    s.appendEvent("shift.closed", {});
+    s.appendEvent("shift.opened", { clientShiftId: "cs2", openingFloat: 100, actorUserId: "u1" });
+
+    const state = reduce(EMPTY_TILL_STATE, s.pendingEvents());
+    // Reviewer's probe: shift 1 left 200 cash and a 30 pay-out on the books.
+    // Without the reset, shift 2's expected cash would read 270, not 100.
+    expect(expectedCash(state)).toBe(100);
+    expect(state.tendersByMethod).toEqual({ cash: 0, card: 0, other: 0 });
+    expect(state.tenderCounts).toEqual({ cash: 0, card: 0, other: 0 });
+    expect(state.movements).toEqual({ payIn: 0, payOut: 0, safeDrop: 0, noSaleCount: 0 });
+    expect(state.movementCounts).toEqual({ payIn: 0, payOut: 0, safeDrop: 0 });
+    expect(state.salesCount).toBe(0);
+    expect(state.discountTotal).toBe(0);
+    expect(state.openShift).toMatchObject({ clientShiftId: "cs2", openingFloat: 100 });
+  });
+
+  it("heldTickets survive a shift boundary — a parked order is workflow state, not shift money, and a reset would silently orphan it", () => {
+    const s = makeStore();
+    s.appendEvent("shift.opened", { clientShiftId: "cs1", openingFloat: 100, actorUserId: "u1" });
+    s.appendEvent("ticket.held", { clientTicketId: "ct1", label: "Table 4", draft: { lines: [] } });
+    s.appendEvent("shift.closed", {});
+    s.appendEvent("shift.opened", { clientShiftId: "cs2", openingFloat: 50, actorUserId: "u1" });
+
+    const state = reduce(EMPTY_TILL_STATE, s.pendingEvents());
+    expect(state.heldTickets).toMatchObject([{ clientTicketId: "ct1", label: "Table 4" }]);
+  });
+
   it("ticket.held then ticket.recalled round-trips: held, then gone", () => {
     const s = makeStore();
     s.appendEvent("ticket.held", { clientTicketId: "ct1", label: "Table 4", draft: { lines: [] } });

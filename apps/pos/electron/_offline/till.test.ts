@@ -110,6 +110,27 @@ describe("tillReport", () => {
   it("is null with no open drawer — there is nothing to report on", () => {
     expect(tillReport("x", EMPTY_TILL_STATE)).toBeNull();
   });
+
+  it("a second shift on the same till reports only that shift's activity (C2)", () => {
+    const store = new Store(openDb(":memory:"));
+    store.appendEvent("shift.opened", { actorUserId: "u1", clientShiftId: "cs1", openingFloat: 100 });
+    store.appendEvent("sale.recorded", {
+      actorUserId: "u1", clientOrderId: "o1", clientShiftId: "cs1",
+      payments: [{ method: "cash", amount: 200 }],
+    });
+    store.appendEvent("cash.movement", { actorUserId: "u1", type: "pay_out", amount: 30, reasonCode: "supplier" });
+    store.appendEvent("shift.closed", { actorUserId: "u1" });
+    store.appendEvent("shift.opened", { actorUserId: "u1", clientShiftId: "cs2", openingFloat: 100 });
+
+    const state = reduce(EMPTY_TILL_STATE, store.pendingEvents());
+    const report = tillReport("x", state);
+    // The reviewer's probe: without the reset this reads expected: 270 —
+    // shift 1's 200 cash sale minus its 30 pay-out, stacked under shift 2's float.
+    expect(report).toMatchObject({ shiftId: "cs2", openingFloat: 100, salesCount: 0, discountTotal: 0 });
+    expect(report!.tenders).toEqual([]);
+    expect(report!.movements).toEqual([]);
+    expect(report!.cash).toEqual({ expected: 100 });
+  });
 });
 
 describe("counting helpers", () => {

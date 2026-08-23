@@ -74,8 +74,19 @@ function applyOne(state: TillState, event: EventRow): TillState {
   switch (event.type) {
     case "shift.opened": {
       const p = payload as ShiftOpenedPayload;
+      // A new drawer starts with clean books (C2): tendersByMethod,
+      // tenderCounts, movements, movementCounts, salesCount, and
+      // discountTotal are all per-shift and must not carry the previous
+      // drawer's totals into this one's expectedCash. heldTickets is the one
+      // field deliberately excluded from the reset — it is parked-order
+      // workflow state, not shift money, so a ticket held under the last
+      // drawer is still a live, unresolved order under this one. Every
+      // action that can append cash.movement/sale.recorded requires an open
+      // shift (pos-main.ts's shiftRef guard), so nothing accumulates in the
+      // gap between a close and the next open for this to lose.
       return {
-        ...state,
+        ...EMPTY_TILL_STATE,
+        heldTickets: state.heldTickets,
         openShift: {
           clientShiftId: p.clientShiftId,
           openedAt: event.occurred_at,
