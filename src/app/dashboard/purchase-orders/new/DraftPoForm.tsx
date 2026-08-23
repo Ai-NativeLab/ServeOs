@@ -93,10 +93,16 @@ export function DraftPoForm({
   // Snap the same way the server does before persisting, so this preview cannot
   // quote a total the saved PO will disagree with. `roundQty` is the shared rule
   // rather than a local copy of it — a second definition is how the two drifted.
-  const grandTotal = lines.reduce(
-    (acc, line) => acc + roundQty(line.qtyOrdered || 0) * (line.unitCost || 0) * (1 + (line.taxRate || 0)),
-    0,
-  );
+  //
+  // ONE expression, used for both the per-line Subtotal column and the footer
+  // total. Snapping only the total left the single-line case showing 140.73 in
+  // the column and 140.79 beneath it — the line no longer summing to the total
+  // printed directly under it, which is a worse thing for a buyer to see than
+  // the server mismatch it was fixing. Sharing the function makes the two
+  // mathematically incapable of disagreeing.
+  const lineAmount = (line: LineState) =>
+    roundQty(line.qtyOrdered || 0) * (line.unitCost || 0) * (1 + (line.taxRate || 0));
+  const grandTotal = lines.reduce((acc, line) => acc + lineAmount(line), 0);
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -198,8 +204,7 @@ export function DraftPoForm({
           </TableHeader>
           <TableBody>
             {lines.map((line, idx) => {
-              const lineSubtotal =
-                (line.qtyOrdered || 0) * (line.unitCost || 0) * (1 + (line.taxRate || 0));
+              const lineSubtotal = lineAmount(line);
               return (
                 <TableRow key={line.id}>
                   <TableCell>
