@@ -25,6 +25,7 @@ import { canTransition } from "./state-machine";
 // from the FIFO deduction, on this same transaction, so the order still rolls back.
 import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, TotalMismatchError } from "./errors";
 import { recordAuditEvent, type AuditFingerprint } from "@/server/audit/service";
+import { publishTenantEvent } from "@/server/realtime/publish";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { enqueueStatusUpdate } from "@/server/whatsapp/status-updates";
 import type { AuditActorType } from "@/server/audit/canonical";
@@ -41,6 +42,43 @@ export type PlaceOrderLine = {
    *  rejected when it isn't — never silently ignored either way. */
   dimensions?: { lengthMm?: number; widthMm?: number; thicknessMm?: number };
 };
+/** One modifier selection as the till itself recorded it — ids AND names,
+ *  because a replayed line may resolve against a catalog where the id no
+ *  longer exists but the name is still what the receipt must show. */
+export type LineSnapshotModifier = {
+  groupId: string;
+  optionId: string;
+  groupNameEn: string;
+  groupNameAr: string;
+  optionNameEn: string;
+  optionNameAr: string;
+  priceDelta: number;
+};
+
+/**
+ * The till's own record of what a line was worth, carried by a replayed sale
+ * event (`PlaceOrderInput.replay`). This is the fallback source of truth per
+ * the offline-sync design: when live-catalog resolution fails (product
+ * unpublished/deleted, variant/option missing) or the live price disagrees
+ * with what's here, the order records THESE names/prices instead of the live
+ * ones. `unitPrice` is the effective per-unit price the till charged —
+ * post-modifiers/post-variant, the same quantity `computeLineTotal` would
+ * multiply — not the bare product base price.
+ */
+export type LineSnapshot = {
+  productId: string;
+  productNameEn: string;
+  productNameAr: string;
+  variantId?: string;
+  variantNameEn?: string;
+  variantNameAr?: string;
+  modifiers?: LineSnapshotModifier[];
+  unitPrice: number;
+  quantity: number;
+  lineTotal: number;
+  discountAmount?: number;
+};
+
 export type PlaceOrderInput = {
   branchId: string;
   fulfillmentType: "pickup" | "delivery";
@@ -65,6 +103,22 @@ export type PlaceOrderInput = {
   /** What the client displayed. Compared, never trusted. */
   expectedTotal?: number;
   audit?: { fingerprint: AuditFingerprint; actorUserId?: string | null; actorType?: AuditActorType };
+  /**
+   * Till-wins replay (offline-sync design doc): the device is the authority
+   * for what actually happened at its till while it was offline — the server
+   * may flag, never veto. When set: `occurredAt` becomes `now` for the
+   * orderability/scheduling check AND the order's `placedAt` (a till
+   * reconnecting at 8:30am replaying last night's sales must not be refused
+   * because the branch "isn't open yet"); the `expectedTotal`/TOTAL_MISMATCH
+   * 409 is skipped entirely; and any line whose live resolution fails or
+   * whose live price disagrees with `lineSnapshots[i]` is built from that
+   * snapshot instead of throwing. `catalogVersion` (if known) travels into
+   * the resulting `pos.replay.price_drift` audit event for diagnosis only.
+   */
+  replay?: { occurredAt: Date; lineSnapshots: LineSnapshot[]; catalogVersion?: number };
+  /** Runs inside the SAME transaction after the order is written. POS uses this
+   *  to make tenders + receipt atomic with the order. Throwing rolls everything back. */
+  onPlaced?: (tx: Parameters<Parameters<typeof withTenant>[1]>[0], placed: PlaceOrderResult) => Promise<void>;
 };
 export type PlaceOrderResult = {
   orderId: string;
@@ -121,7 +175,9 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
 
   await requireFeature(tenantId, "online_ordering");
   const pricing = await getCheckoutPricing(tenantId);
-  const now = input.now ?? new Date();
+  // Replay: every time-dependent check evaluates as of the till's own clock,
+  // not whenever the reconnect happens to land.
+  const now = input.replay?.occurredAt ?? input.now ?? new Date();
 
   const tenant = await getTenantById(tenantId);
   if (!tenant) throw new OrderValidationError("unknown tenant");
@@ -130,7 +186,13 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
   // Resolved outside the transaction: it is a tenant policy, not per-line state.
   // Restaurants default to true so a kitchen is never blocked at the till;
   // retail defaults to false so a shortfall still refuses the sale.
-  const allowNegative = caps.inventory ? await getAllowNegativeStock(tenantId) : false;
+  //
+  // Replay overrides the policy: the goods physically left the counter while
+  // the till was offline, so refusing the sale because the web channel sold
+  // the same stock meanwhile would veto a fact rather than record it. The
+  // shortfall still goes through the existing negative-on-hand + notification
+  // path — it is reported, just not used to reject the sale.
+  const allowNegative = caps.inventory && (Boolean(input.replay) || await getAllowNegativeStock(tenantId));
 
   let scheduledFor: Date | null = null;
   if (input.scheduledFor !== undefined) {
@@ -155,13 +217,26 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
     let subtotal = 0;
     // P3: does this cart contain anything prescription-only? Only meaningful
     // where the vertical actually reviews scripts — a retail tenant with a
-    // stray flag is untouched.
+    // stray flag is untouched. Only ever set from a LIVE product row — a line
+    // that fell back to its replay snapshot has no live row to ask, so Rx
+    // gating can't see it; out of scope for till-wins (no replayed cart is
+    // expected to carry prescription items today).
     let hasRxLine = false;
     const itemsToInsert: Array<{ productId: string; variantId: string | null; variantNameEn: string | null; variantNameAr: string | null; nameEn: string; nameAr: string; unitBasePrice: string; quantity: number; lineTotal: string; discountAmount: string; selectedModifiers: SelectedModifier[]; dimensions: PlaceOrderLine["dimensions"] | null }> = [];
+    // Till-wins bookkeeping (replay only, stays empty on a live order): every
+    // line whose live resolution failed outright — unpublished/deleted
+    // product, missing variant/option. Price-only disagreement (live
+    // resolved fine, just to a different number) is NOT an entity miss, so
+    // it doesn't appear here — see anyDrift for that half of the picture.
+    const missingEntities: Array<{ lineIndex: number; productId: string; variantId?: string; reason: string }> = [];
+    let anyDrift = false;
 
-    for (const line of input.lines) {
-      if (!Number.isInteger(line.quantity) || line.quantity < 1) throw new OrderValidationError("bad quantity");
-
+    /** Resolves ONE line against the live catalog — unchanged from the
+     *  pre-replay behavior. Throws OrderValidationError/InvalidVariantError
+     *  for anything the catalog can't stand behind right now; the caller
+     *  below decides whether that's fatal (a live order) or a fallback to
+     *  the till's own snapshot (replay). */
+    const resolveLiveLine = async (line: PlaceOrderLine) => {
       const [product] = await tx.select().from(products).where(and(eq(products.id, line.productId), eq(products.isPublished, true))).limit(1);
       if (!product) throw new OrderValidationError("product unavailable");
 
@@ -170,7 +245,7 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       if (avail && !avail.isAvailable) throw new OrderValidationError("product unavailable at branch");
       const effectiveBase = avail?.priceOverride ?? product.basePrice;
 
-      if (product.requiresPrescription && caps.pharmacistReview) hasRxLine = true;
+      const requiresRxReview = Boolean(product.requiresPrescription && caps.pharmacistReview);
 
       let unit: number;
       let selected: Array<typeof modifierOptions.$inferSelect> = [];
@@ -242,14 +317,13 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
         Math.round(unit * line.quantity * 100) / 100,
       );
       const lineTotal = computeLineTotal({ unitPrice: unit, quantity: line.quantity, discountAmount: lineDiscount });
-      subtotal += lineTotal;
 
       const snapshot: SelectedModifier[] = selected.map((o) => {
         const g = groups.find((gg) => gg.id === o.modifierGroupId)!;
         return { groupNameEn: g.nameEn, groupNameAr: g.nameAr, optionNameEn: o.nameEn, optionNameAr: o.nameAr, priceDelta: o.priceDelta };
       });
 
-      itemsToInsert.push({
+      const row = {
         productId: product.id, variantId, variantNameEn, variantNameAr, nameEn: product.nameEn, nameAr: product.nameAr,
         // A dimensional line has no separate modifier breakdown to show — like a
         // variant, its computed per-piece price IS the unit price, not the raw
@@ -259,7 +333,71 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
         quantity: line.quantity, lineTotal: money(lineTotal),
         discountAmount: money(lineDiscount), selectedModifiers: variantId ? [] : snapshot,
         dimensions: product.unitOfMeasure ? (line.dimensions ?? null) : null,
-      });
+      };
+      return { row, unit, lineTotal, requiresRxReview };
+    };
+
+    /** Builds the item-insert row straight from the till's own record of the
+     *  line — the fallback source of truth on replay. Trusted wholesale:
+     *  names, unit price, quantity, and line total all come from the
+     *  snapshot, never from whatever (possibly missing, possibly repriced)
+     *  live row exists. */
+    const lineFromSnapshot = (snap: LineSnapshot) => ({
+      productId: snap.productId, variantId: snap.variantId ?? null,
+      variantNameEn: snap.variantNameEn ?? null, variantNameAr: snap.variantNameAr ?? null,
+      nameEn: snap.productNameEn, nameAr: snap.productNameAr,
+      unitBasePrice: String(snap.unitPrice),
+      quantity: snap.quantity, lineTotal: money(snap.lineTotal),
+      discountAmount: money(snap.discountAmount ?? 0),
+      selectedModifiers: (snap.modifiers ?? []).map((m) => ({
+        groupNameEn: m.groupNameEn, groupNameAr: m.groupNameAr,
+        optionNameEn: m.optionNameEn, optionNameAr: m.optionNameAr, priceDelta: String(m.priceDelta),
+      })),
+      dimensions: null,
+    });
+
+    for (let i = 0; i < input.lines.length; i++) {
+      const line = input.lines[i];
+      if (!Number.isInteger(line.quantity) || line.quantity < 1) throw new OrderValidationError("bad quantity");
+
+      const snap = input.replay?.lineSnapshots[i];
+      let live: Awaited<ReturnType<typeof resolveLiveLine>> | null = null;
+      let missingReason: string | null = null;
+      try {
+        live = await resolveLiveLine(line);
+      } catch (err) {
+        // Live order (no replay): a catalog rejection is fatal, exactly as
+        // before. Replay with no snapshot to fall back to is also fatal —
+        // that is an ingestion-payload defect, not catalog drift, and
+        // silently fabricating a line with no data would be worse than
+        // refusing it.
+        if (input.replay && snap && err instanceof OrderValidationError) {
+          missingReason = err.detail;
+        } else if (input.replay && snap && err instanceof InvalidVariantError) {
+          missingReason = err.code;
+        } else {
+          throw err;
+        }
+      }
+
+      const priceDrifted = live !== null && snap !== undefined && Math.abs(live.unit - snap.unitPrice) > 0.001;
+      if (live && !priceDrifted) {
+        itemsToInsert.push(live.row);
+        subtotal += live.lineTotal;
+        if (live.requiresRxReview) hasRxLine = true;
+        continue;
+      }
+
+      // Till-wins: live resolution failed outright (missingReason set) or
+      // succeeded but disagreed on price (priceDrifted). Either way `snap` is
+      // guaranteed here — the catch above only sets missingReason when a
+      // snapshot exists, and priceDrifted's own definition requires one.
+      itemsToInsert.push(lineFromSnapshot(snap!));
+      subtotal += snap!.lineTotal;
+      anyDrift = true;
+      if (missingReason) {
+        missingEntities.push({ lineIndex: i, productId: line.productId, variantId: line.variantId, reason: missingReason });
+      }
     }
 
     // 3. Fulfillment: delivery fee + area, or pickup.
@@ -305,7 +443,11 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
 
     // The register must never quietly charge a different amount than the one
     // shown to the customer. A stale cached catalog lands here.
-    if (input.expectedTotal !== undefined && Math.abs(input.expectedTotal - totals.total) > 0.001) {
+    // Replay is the one exception: till-wins already resolved every line
+    // (live or snapshot) above, and re-litigating the total here would be
+    // exactly the 409-that-cannot-happen the design doc rules out — a device
+    // reconnecting to flush an outage must never be refused.
+    if (!input.replay && input.expectedTotal !== undefined && Math.abs(input.expectedTotal - totals.total) > 0.001) {
       throw new TotalMismatchError(input.expectedTotal, totals.total);
     }
 
@@ -363,6 +505,9 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       total: money(totals.total),
       statusToken,
       scheduledFor,
+      // Replay: the till's own clock, not whenever the reconnect happened to
+      // flush this event — see the `replay` field's doc comment.
+      ...(input.replay ? { placedAt: input.replay.occurredAt } : {}),
     }).returning();
 
     // Bind the script to the order it cleared for — the review decision then
@@ -424,13 +569,60 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       tx,
     );
 
-    return { orderId: order.id, orderNumber, statusToken, total: totals.total, itemIds: inserted.map((i) => i.id) };
+    // Till-wins, flagged: the device is never refused for this, but the
+    // cloud's system-of-record still needs to know it happened. One event
+    // per order covers every line that drifted — a per-line event would just
+    // make the same fact harder to review.
+    //
+    // `anyDrift` only sees LINE-level disagreement. Tax and fee drift moves
+    // the total with every line agreeing: VAT, service charge and
+    // pricesIncludeVat come from getCheckoutPricing, read live at replay
+    // time, and no line snapshot can carry them. Without the totals check
+    // below, a mid-outage VAT change is an under- or over-charged order with
+    // nothing at all in the audit chain.
+    const totalDrifted = Boolean(input.replay) && input.expectedTotal !== undefined
+      && Math.abs(input.expectedTotal - totals.total) > 0.001;
+    if (anyDrift || totalDrifted) {
+      const expectedTotal = input.expectedTotal ?? totals.total;
+      await recordAuditEvent(
+        {
+          tenantId, branchId: input.branchId,
+          actorUserId: input.audit?.actorUserId ?? input.cashierUserId ?? null,
+          fingerprint: input.audit?.fingerprint ?? emptyFingerprint(),
+        },
+        {
+          action: "pos.replay.price_drift", entityType: "order", entityId: order.id,
+          summary: `Order #${orderNumber} replayed with till-wins pricing (${missingEntities.length} missing entit${missingEntities.length === 1 ? "y" : "ies"})`,
+          metadata: {
+            expectedTotal: money(expectedTotal),
+            serverTotal: money(totals.total),
+            catalogVersion: input.replay?.catalogVersion ?? null,
+            missingEntities,
+          },
+          actorType: input.audit?.actorType ?? (input.cashierUserId ? "user" : "customer"),
+        },
+        tx,
+      );
+    }
+
+    const placed: PlaceOrderResult = { orderId: order.id, orderNumber, statusToken, total: totals.total, itemIds: inserted.map((i) => i.id) };
+    // Last statement before the transaction returns: a throw here rolls back
+    // the order, its items, the stock deduction, and order.placed together.
+    await input.onPlaced?.(tx, placed);
+    return placed;
   });
 
   // Meter usage (control table, outside the tenant tx). By design (spec §2)
   // there is NO hard cap in v1 — orders/month is recorded for visibility only,
   // so checkUsage is intentionally not enforced at placement.
   await incrementUsage(tenantId, "orders");
+  // Outside the transaction, after it commits: a broadcast for an order that
+  // then rolled back would send every subscriber to refetch a row that never
+  // existed. A replayed sale is silent here — its batch publishes once, in
+  // ingestEvents, instead of once per event on the flush path.
+  if (!input.replay) {
+    await publishTenantEvent(tenantId, { type: "orders.changed", entityIds: [result.orderId] });
+  }
   return result;
 }
 
@@ -502,7 +694,7 @@ export async function restockRefundedLines(
 export async function cancelOrderByToken(tenantId: string, token: string, audit?: { fingerprint: AuditFingerprint }): Promise<Order> {
   const tenant = await getTenantById(tenantId);
   const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalId);
-  return withTenant(tenantId, async (tx) => {
+  const cancelled = await withTenant(tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.statusToken, token)).limit(1);
     if (!order) throw new OrderNotFoundError();
     if (order.status !== "pending" || !canTransition(order.status, "cancelled", order.fulfillmentType)) {
@@ -530,6 +722,11 @@ export async function cancelOrderByToken(tenantId: string, token: string, audit?
     );
     return updated;
   });
+  // Post-commit (see placeOrder). A customer walking away must reach the
+  // kitchen as fast as any other status change — the relaxed poll is not
+  // where staff should learn about it.
+  await publishTenantEvent(tenantId, { type: "orders.changed", entityIds: [cancelled.id] });
+  return cancelled;
 }
 
 export async function getOrder(tenantId: string, orderId: string): Promise<OrderDetail> {
@@ -594,7 +791,7 @@ export async function ordersThisMonthCount(tenantId: string): Promise<number> {
 export async function transitionStatus(tenantId: string, orderId: string, to: OrderStatus, userId: string, reason?: string, audit?: { fingerprint: AuditFingerprint }): Promise<Order> {
   const tenant = await getTenantById(tenantId);
   const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalId);
-  return withTenant(tenantId, async (tx) => {
+  const updated = await withTenant(tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
     if (!order) throw new OrderNotFoundError();
     if (!canTransition(order.status, to, order.fulfillmentType)) throw new InvalidTransitionError(order.status, to);
@@ -626,10 +823,15 @@ export async function transitionStatus(tenantId: string, orderId: string, to: Or
     );
     return updated;
   });
+  // Post-commit (see placeOrder): the queue screens the customer and the till
+  // are watching refetch on this, so a status the dashboard just set is on the
+  // storefront within a second instead of on the next poll.
+  await publishTenantEvent(tenantId, { type: "orders.changed", entityIds: [orderId] });
+  return updated;
 }
 
 export async function markPaid(tenantId: string, orderId: string, userId: string, audit?: { fingerprint: AuditFingerprint }): Promise<Order> {
-  return withTenant(tenantId, async (tx) => {
+  const paid = await withTenant(tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
     if (!order) throw new OrderNotFoundError();
     // A rejected/cancelled order can't be paid — guard the terminal-failure states.
@@ -654,6 +856,9 @@ export async function markPaid(tenantId: string, orderId: string, userId: string
     );
     return updated;
   });
+  // Post-commit (see placeOrder).
+  await publishTenantEvent(tenantId, { type: "orders.changed", entityIds: [orderId] });
+  return paid;
 }
 
 /** Merchant confirms an offline payment: pending_verification → paid. Guarded + idempotent.
@@ -679,7 +884,7 @@ export async function confirmOrderPayment(
   userId: string | null,
   audit?: { fingerprint: AuditFingerprint },
 ): Promise<Order> {
-  return withTenant(tenantId, async (tx) => {
+  const confirmed = await withTenant(tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
     if (!order) throw new OrderNotFoundError();
     if (order.paymentStatus !== "pending_verification") throw new PaymentAlreadyResolvedError();
@@ -722,6 +927,10 @@ export async function confirmOrderPayment(
     );
     return updated;
   });
+  // Post-commit (see placeOrder). The payments queue is a shared work list —
+  // a colleague's confirmation should drop the row off everyone's screen.
+  await publishTenantEvent(tenantId, { type: "orders.changed", entityIds: [orderId] });
+  return confirmed;
 }
 
 /** Merchant rejects an offline payment: cancel the order + restock.

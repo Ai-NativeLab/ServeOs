@@ -113,7 +113,7 @@ describe("recordCashMovement", () => {
     const { ctx, tenantId, managerId } = await seedPosContext("staff");
     await setPayoutThreshold(tenantId, 100);
     await openShiftForCtx(ctx);
-    const token = issueGrant(tenantId, "reconciliation:manage", managerId);
+    const token = await issueGrant(tenantId, "reconciliation:manage", managerId);
 
     const row = await recordCashMovement(ctx, {
       type: "pay_out", amount: 150, reasonCode: "supplier",

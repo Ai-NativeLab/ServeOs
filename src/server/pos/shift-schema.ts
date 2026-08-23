@@ -21,10 +21,18 @@ export const posShifts = pgTable("pos_shifts", {
   openingFloat: numeric("opening_float").notNull(),
   openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
   closedAt: timestamp("closed_at", { withTimezone: true }),
+  // Offline shift identity: the id the device minted while disconnected.
+  // Null for shifts opened online. openShift's replay uses this to answer
+  // "did this shift already open?" without a server-minted id to check.
+  clientShiftId: uuid("client_shift_id"),
 }, (t) => [
   // The hard guarantee: one open shift per drawer. Verify the WHERE predicate
   // survives generation (Step 4) — it is what makes this a *partial* unique.
   uniqueIndex("pos_shifts_device_open").on(t.deviceId).where(sql`status = 'open'`),
+  // Partial like the index above and for the same reason: many rows share
+  // clientShiftId = NULL (every shift opened online), and NULLs must not
+  // collide under a plain unique index.
+  uniqueIndex("pos_shifts_device_client").on(t.deviceId, t.clientShiftId).where(sql`client_shift_id IS NOT NULL`),
   index("pos_shifts_tenant_branch_status").on(t.tenantId, t.branchId, t.status),
   index("pos_shifts_device_status").on(t.deviceId, t.status),
 ]);

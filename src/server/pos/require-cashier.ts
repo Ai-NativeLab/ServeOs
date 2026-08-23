@@ -24,7 +24,7 @@ export type PosCashierContext = {
 export async function requirePosCashier(req: Request): Promise<PosCashierContext> {
   const device = await requirePosDevice(req);
   const token = req.headers.get("x-pos-cashier")?.trim() ?? "";
-  const session = token ? resolveCashier(token) : null;
+  const session = token ? await resolveCashier(token) : null;
   if (!session) throw new PosCashierError("Cashier not signed in");
 
   // A cashier token minted for another tenant must never work on this device.

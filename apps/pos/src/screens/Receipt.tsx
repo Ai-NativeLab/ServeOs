@@ -13,6 +13,10 @@ export type ReceiptData = {
   changeAmount: number;
   cashierName: string;
   timestamp: string;
+  /** False when the server has not confirmed this sale yet — `orderNumber` is
+   *  then the till's own short code (SaleReceipt.clientOrderId derived), not a
+   *  real order number, so the receipt says so instead of implying it's final. */
+  synced: boolean;
 };
 
 export function Receipt({ data, onPrint, onNewOrder }: { data: ReceiptData; onPrint: () => void; onNewOrder: () => void }) {
@@ -29,6 +33,11 @@ export function Receipt({ data, onPrint, onNewOrder }: { data: ReceiptData; onPr
             <span>{new Date(data.timestamp).toLocaleString()}</span>
             <span>Order #{data.orderNumber}</span>
           </div>
+          {!data.synced && (
+            <p className="mt-1 text-center text-xs uppercase tracking-wider text-status-pending-fg">
+              Pending sync — order number is provisional
+            </p>
+          )}
           <div className="my-3 border-t border-dashed border-border" />
           <ul className="flex flex-col gap-1.5">
             {data.lines.map((l, i) => (
