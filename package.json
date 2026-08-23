@@ -20,6 +20,7 @@
     "db:check": "tsx scripts/db-check.ts",
     "db:check:test": "ENV_FILE=.env.test tsx scripts/db-check.ts",
     "db:repair": "tsx scripts/db-repair.ts",
+    "db:audit:purchasing": "tsx scripts/audit-purchasing-numerics.ts",
     "db:seed": "tsx scripts/seed.ts",
     "demo:seed": "tsx scripts/seed-demo-tenants.ts",
     "marketing:shots": "tsx scripts/capture-marketing-shots.ts",
