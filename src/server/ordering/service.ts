@@ -169,7 +169,13 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
   // Resolved outside the transaction: it is a tenant policy, not per-line state.
   // Restaurants default to true so a kitchen is never blocked at the till;
   // retail defaults to false so a shortfall still refuses the sale.
-  const allowNegative = caps.inventory ? await getAllowNegativeStock(tenantId) : false;
+  //
+  // Replay overrides the policy: the goods physically left the counter while
+  // the till was offline, so refusing the sale because the web channel sold
+  // the same stock meanwhile would veto a fact rather than record it. The
+  // shortfall still goes through the existing negative-on-hand + notification
+  // path — it is reported, just not used to reject the sale.
+  const allowNegative = caps.inventory && (Boolean(input.replay) || await getAllowNegativeStock(tenantId));
 
   let scheduledFor: Date | null = null;
   if (input.scheduledFor !== undefined) {
@@ -550,7 +556,16 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
     // cloud's system-of-record still needs to know it happened. One event
     // per order covers every line that drifted — a per-line event would just
     // make the same fact harder to review.
-    if (anyDrift) {
+    //
+    // `anyDrift` only sees LINE-level disagreement. Tax and fee drift moves
+    // the total with every line agreeing: VAT, service charge and
+    // pricesIncludeVat come from getCheckoutPricing, read live at replay
+    // time, and no line snapshot can carry them. Without the totals check
+    // below, a mid-outage VAT change is an under- or over-charged order with
+    // nothing at all in the audit chain.
+    const totalDrifted = Boolean(input.replay) && input.expectedTotal !== undefined
+      && Math.abs(input.expectedTotal - totals.total) > 0.001;
+    if (anyDrift || totalDrifted) {
       const expectedTotal = input.expectedTotal ?? totals.total;
       await recordAuditEvent(
         {

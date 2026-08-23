@@ -145,17 +145,36 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
   // A replayed sale names its own drawer (clientShiftId, or shiftId if that
   // drawer was opened online) instead of asking "whichever shift is open" —
   // by the time the queue drains, the device may have opened a new one, or
-  // this one may have since closed. Live sales are unaffected: neither field
-  // is ever set outside the replay path.
-  const isReplay = Boolean(input.clientShiftId || input.shiftId);
-  const shift = isReplay
+  // this one may have since closed. Live sales are unaffected: none of these
+  // fields is ever set outside the replay path.
+  //
+  // Replay is what the CALLER declares (`replay`/`syncReceipt`), not what the
+  // input happens to reference: keyed off the shift reference alone, a
+  // replayed sale that carried no reference fell through to findOpenShift and
+  // landed in whichever drawer happened to be open at ingest time.
+  const isReplay = Boolean(input.replay || input.syncReceipt);
+  const namesShift = Boolean(input.clientShiftId || input.shiftId);
+  const byName = isReplay || namesShift;
+  const shift = byName
     ? await resolveReplayShift(ctx.tenantId, ctx.deviceId, input)
     : await findOpenShift(ctx.tenantId, ctx.deviceId);
-  if (!shift && input.payments.some((p) => p.method === "cash")) throw new NoOpenShiftError();
+  // Live, this is the guard that keeps cash out of an unaccounted drawer. On
+  // replay it must NOT fire: the cash is already in a physical drawer and the
+  // sale is a fact being reported, so refusing it here would veto the till and
+  // — because the halt is sticky — freeze every event queued behind it. The
+  // unresolved drawer is flagged instead (shiftUnresolvedAtReplay below).
+  if (!isReplay && !shift && input.payments.some((p) => p.method === "cash")) {
+    throw new NoOpenShiftError();
+  }
   // Tolerated, not refused: the drawer this sale belongs to may have closed
   // before its turn to replay. The tender still lands against it; the flag
   // below tells the audit trail (and Spec 7 reconciliation) it arrived late.
-  const shiftClosedAtReplay = isReplay && shift?.status === "closed";
+  const shiftClosedAtReplay = byName && shift?.status === "closed";
+  // The drawer this sale names does not exist on this device — the
+  // shift.opened never landed, or the device re-paired. The sale is still
+  // recorded (till-wins), but a null shiftId silently drops it from the
+  // Z-report, so it is flagged rather than left to be noticed at close.
+  const shiftUnresolvedAtReplay = byName && !shift;
 
   // Authorize every discount BEFORE writing anything. resolveAuthorizer throws
   // PosForbiddenError when the cashier lacks the permission and has no grant.
@@ -234,7 +253,15 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
     audit: { fingerprint: ctx.fingerprint, actorUserId: ctx.cashierUserId, actorType: "user" },
     replay: input.replay,
     onPlaced: async (tx, placed) => {
-      if (paidAmount > placed.total + 0.001) {
+      // Live: the register must never take more than the amount due. Replay:
+      // the money already changed hands at the till, and the server's total
+      // can differ purely because tenant pricing moved during the outage —
+      // VAT, service charge and pricesIncludeVat are re-read live, so the
+      // line snapshots cannot hold them. "Flag, never veto": the overage is
+      // recorded on sale.recorded instead of failing the event and freezing
+      // every queued sale behind it.
+      const overpaidAtReplay = paidAmount > placed.total + 0.001 ? round2(paidAmount - placed.total) : 0;
+      if (overpaidAtReplay > 0 && !isReplay) {
         throw new PosSaleError("Tenders exceed the amount due");
       }
 
@@ -313,6 +340,8 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
           orderNumber: String(placed.orderNumber), total: money(placed.total), paymentStatus,
           tenders: input.payments.map((p) => ({ method: p.method, amount: money(p.amount) })),
           ...(shiftClosedAtReplay ? { shiftClosedAtReplay: true } : {}),
+          ...(shiftUnresolvedAtReplay ? { shiftUnresolvedAtReplay: true } : {}),
+          ...(overpaidAtReplay > 0 ? { overpaidAtReplay: money(overpaidAtReplay) } : {}),
         }, actorType: "user",
       }, tx);
 

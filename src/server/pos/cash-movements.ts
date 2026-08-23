@@ -3,7 +3,7 @@ import { money } from "@/server/ordering/service";
 import { recordAuditEvent } from "@/server/audit/service";
 import { getShiftPolicy } from "@/server/tenancy/settings";
 import type { Permission } from "@/server/rbac/permissions";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { cashMovements, posShifts, type CashMovement, type CashMovementType } from "./shift-schema";
 import { posSyncEventReceipts } from "./schema";
 import { findSyncReceipt, reviveDates, type SyncReceipt } from "./sync-receipt";
@@ -50,6 +50,8 @@ export async function recordCashMovement(
     throw new CashMovementError("A movement amount must be a positive magnitude");
   }
   const signed = input.type === "pay_in" ? magnitude : input.type === "no_sale" ? 0 : -magnitude;
+  // A synced offline event; only the ingest dispatcher ever sets this.
+  const isReplay = Boolean(input.syncReceipt);
 
   // Cheap pre-check, mirroring closeShift's: a plain retry answers here
   // before the "no open shift" check below — which must not run at all for a
@@ -63,8 +65,10 @@ export async function recordCashMovement(
 
   // Cheap pre-check so "there is no drawer" is reported before a manager's
   // single-use grant would be spent. The authoritative read is inside the
-  // transaction below.
-  if (!(await findOpenShift(ctx.tenantId, ctx.deviceId))) throw new NoOpenShiftError();
+  // transaction below. Skipped on replay: the movement already happened at
+  // the till, so a drawer closed out of band since (a manager closing it from
+  // the dashboard mid-outage) must not refuse it — see the in-tx fallback.
+  if (!isReplay && !(await findOpenShift(ctx.tenantId, ctx.deviceId))) throw new NoOpenShiftError();
 
   // Routine pay-outs are the cashier's own call; a large one is a manager's.
   // resolveAuthorizer returns the cashier when they hold reconciliation:manage,
@@ -75,11 +79,13 @@ export async function recordCashMovement(
   const policy = await getShiftPolicy(ctx.tenantId);
   let authorizedByUserId: string | null = null;
   let authorizerDeactivated = false;
+  let authorizerLacksPermission = false;
   if (input.type === "pay_out" && policy.payoutThreshold > 0 && magnitude > policy.payoutThreshold) {
     if (input.syncReceipt && input.authorizedByUserId) {
       const off = await resolveOfflineAuthorizer(ctx.tenantId, input.authorizedByUserId, "reconciliation:manage");
       authorizedByUserId = off.userId;
       authorizerDeactivated = off.deactivated;
+      authorizerLacksPermission = off.lacksPermission;
     } else {
       const grant = input.grants?.find((g) => g.permission === "reconciliation:manage")?.token;
       authorizedByUserId = await resolveAuthorizer(ctx, "reconciliation:manage", grant);
@@ -112,13 +118,36 @@ export async function recordCashMovement(
     // Do not weaken either side to an unlocked read: the close's advisory lock
     // is keyed on the shift and this path never takes it, so the row lock is
     // what actually holds the two apart.
-    const [shift] = await tx
+    const [open] = await tx
       .select()
       .from(posShifts)
       .where(and(eq(posShifts.deviceId, ctx.deviceId), eq(posShifts.status, "open")))
       .limit(1)
       .for("update");
-    if (!shift) throw new NoOpenShiftError();
+
+    // Replay with no open drawer: the movement happened at the till, so the
+    // cloud records it against the device's most recent drawer and flags it,
+    // rather than refusing. A refusal here is sticky — the batch halts on it
+    // and every sale queued behind it stops with it — which is exactly the
+    // veto the ownership rule forbids. Still device-scoped: "the last drawer
+    // THIS till had" is never another till's.
+    let shift = open;
+    let shiftClosedAtReplay = false;
+    if (!shift) {
+      if (!isReplay) throw new NoOpenShiftError();
+      const [last] = await tx
+        .select()
+        .from(posShifts)
+        .where(eq(posShifts.deviceId, ctx.deviceId))
+        .orderBy(desc(posShifts.openedAt))
+        .limit(1)
+        .for("update");
+      // No drawer has ever existed on this device: there is nothing to attach
+      // the cash to, and cash_movements.shift_id is NOT NULL.
+      if (!last) throw new NoOpenShiftError();
+      shift = last;
+      shiftClosedAtReplay = true;
+    }
 
     const [row] = await tx
       .insert(cashMovements)
@@ -147,6 +176,8 @@ export async function recordCashMovement(
         reasonCode: input.reasonCode,
         authorizedByUserId,
         ...(authorizerDeactivated ? { authorizerDeactivated: true } : {}),
+        ...(authorizerLacksPermission ? { authorizerLacksPermission: true } : {}),
+        ...(shiftClosedAtReplay ? { shiftClosedAtReplay: true } : {}),
       },
       actorType: "user",
     }, tx);

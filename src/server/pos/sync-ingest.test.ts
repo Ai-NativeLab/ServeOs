@@ -9,6 +9,8 @@ import { posSyncEventReceipts } from "./schema";
 import { cashMovements, posShifts } from "./shift-schema";
 import { orders } from "@/server/ordering/schema";
 import { seedPosContext, openShiftForCtx } from "./test-helpers";
+import { createPairingCode, redeemPairingCode, resolveDevice } from "./service";
+import { closeShift } from "./shifts";
 import type { PosCashierContext } from "./require-cashier";
 import type { PosDeviceContext } from "./require-device";
 
@@ -215,11 +217,15 @@ describe("ingestEvents", () => {
 
   it("sale.recorded dispatches through recordSale, and its receipt makes a later replay a duplicate", async () => {
     const { ctx, productId, total } = await seedPosContext("owner");
-    await openShiftForCtx(ctx);
+    const shift = await openShiftForCtx(ctx);
     const device = toDevice(ctx);
 
     const saleEvent = event(ctx.cashierUserId, 1, "sale.recorded", {
       clientOrderId: "sync-sale-1",
+      // Every sale.recorded names its drawer — the server refuses to guess,
+      // because at ingest time "whichever shift is open" is a different
+      // session than the one that rang the sale.
+      shiftId: shift.id,
       lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
       lineSnapshots: [{
         productId, productNameEn: "Margherita", productNameAr: "مارجريتا",
@@ -291,9 +297,13 @@ describe("ingestEvents realtime propagation", () => {
     return seen;
   }
 
-  const sale = (ctx: PosCashierContext, seq: number, productId: string, total: number, clientOrderId: string) =>
+  const sale = (
+    ctx: PosCashierContext, seq: number, productId: string, total: number,
+    clientOrderId: string, shiftId: string,
+  ) =>
     event(ctx.cashierUserId, seq, "sale.recorded", {
       clientOrderId,
+      shiftId,
       lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
       lineSnapshots: [{ productId, productNameEn: "M", productNameAr: "م", unitPrice: 100, quantity: 1, lineTotal: 100 }],
       expectedTotal: total,
@@ -302,12 +312,12 @@ describe("ingestEvents realtime propagation", () => {
 
   it("publishes once per batch — not once per replayed sale", async () => {
     const { ctx, productId, total } = await seedPosContext("owner");
-    await openShiftForCtx(ctx);
+    const shift = await openShiftForCtx(ctx);
     const seen = captureBroadcasts();
 
     const results = await ingestEvents(toDevice(ctx), [
-      sale(ctx, 1, productId, total, "batch-sale-1"),
-      sale(ctx, 2, productId, total, "batch-sale-2"),
+      sale(ctx, 1, productId, total, "batch-sale-1", shift.id),
+      sale(ctx, 2, productId, total, "batch-sale-2", shift.id),
       cashMovement(ctx.cashierUserId, 3, { type: "pay_in", amount: 10, reasonCode: "float_top_up" }),
     ]);
     expect(results.map((r) => r.status)).toEqual(["applied", "applied", "applied"]);
@@ -324,8 +334,8 @@ describe("ingestEvents realtime propagation", () => {
 
   it("stays silent when a batch applied nothing new", async () => {
     const { ctx, productId, total } = await seedPosContext("owner");
-    await openShiftForCtx(ctx);
-    const batch = [sale(ctx, 1, productId, total, "dup-sale-1")];
+    const shift = await openShiftForCtx(ctx);
+    const batch = [sale(ctx, 1, productId, total, "dup-sale-1", shift.id)];
     await ingestEvents(toDevice(ctx), batch);
 
     const seen = captureBroadcasts();
@@ -337,14 +347,87 @@ describe("ingestEvents realtime propagation", () => {
 
   it("a broadcast failure does not fail the flush", async () => {
     const { ctx, productId, total } = await seedPosContext("owner");
-    await openShiftForCtx(ctx);
+    const shift = await openShiftForCtx(ctx);
     vi.stubEnv("SUPABASE_URL", "https://proj.supabase.co");
     vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "svc-key");
     vi.stubGlobal("fetch", vi.fn(async () => {
       throw new Error("realtime is down");
     }));
 
-    const results = await ingestEvents(toDevice(ctx), [sale(ctx, 1, productId, total, "fail-sale-1")]);
+    const results = await ingestEvents(toDevice(ctx), [sale(ctx, 1, productId, total, "fail-sale-1", shift.id)]);
     expect(results[0].status).toBe("applied");
+  });
+});
+
+/**
+ * The ingest endpoint authenticates a DEVICE, with no cashier session — so a
+ * shift id arriving in a payload is attacker-controlled. These pin the two
+ * halves of that: a drawer is only ever addressable by the device that owns
+ * it, and a drawer the till names but the server cannot find is recorded and
+ * flagged rather than refused.
+ */
+describe("ingestEvents — drawer addressing", () => {
+  it("a device cannot close another till's drawer", async () => {
+    const { ctx, tenantId, branchId, managerId } = await seedPosContext("owner");
+    const victimShift = await openShiftForCtx(ctx);
+
+    // A second till, legitimately paired to the same tenant and branch.
+    const { code } = await createPairingCode(tenantId, branchId, "counter-2", managerId);
+    const { deviceToken } = await redeemPairingCode(code);
+    const attacker = (await resolveDevice(deviceToken))!;
+
+    const results = await ingestEvents(
+      { deviceId: attacker.deviceId, tenantId, branchId, createdByUserId: managerId },
+      [event(ctx.cashierUserId, 1, "shift.closed", { shiftId: victimShift.id, countedTotal: 0 })],
+    );
+
+    assertFailed(results[0]);
+    const [after] = await withTenant(tenantId, (tx) =>
+      tx.select().from(posShifts).where(eq(posShifts.id, victimShift.id)));
+    expect(after.status).toBe("open"); // the victim's drawer is untouched
+  });
+
+  it("a replayed sale whose drawer never landed is recorded and flagged, not refused", async () => {
+    const { ctx, productId, total } = await seedPosContext("owner");
+    // No shift opened at all: the shift.opened this sale references never
+    // synced. Refusing here would sticky-halt every event queued behind it.
+    const results = await ingestEvents(toDevice(ctx), [
+      event(ctx.cashierUserId, 1, "sale.recorded", {
+        clientOrderId: "orphan-sale-1",
+        shiftId: crypto.randomUUID(),
+        lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+        lineSnapshots: [{
+          productId, productNameEn: "M", productNameAr: "م",
+          unitPrice: 100, quantity: 1, lineTotal: 100,
+        }],
+        expectedTotal: total,
+        payments: [{ clientPaymentId: "p1", method: "cash", amount: total, tenderedAmount: total }],
+      }),
+    ]);
+
+    expect(results[0].status).toBe("applied");
+    const [placed] = await withTenant(ctx.tenantId, (tx) => tx.select().from(orders));
+    expect(placed).toBeDefined();
+    const [recorded] = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(auditEvents).where(eq(auditEvents.action, "sale.recorded")));
+    expect(recorded.metadata).toMatchObject({ shiftUnresolvedAtReplay: true });
+  });
+
+  it("a replayed cash movement whose drawer closed out of band is tolerated", async () => {
+    const { ctx } = await seedPosContext("owner");
+    const shift = await openShiftForCtx(ctx);
+    await closeShift(ctx, shift.id, { count: { countedTotal: 200, denominations: { "200": 1 } } });
+
+    // A manager closing the drawer from the dashboard mid-outage must not
+    // strand the till's queued pay-out behind an unrecoverable failure.
+    const results = await ingestEvents(toDevice(ctx), [
+      cashMovement(ctx.cashierUserId, 1, {
+        type: "pay_in", amount: 10, reasonCode: "float_top_up", shiftId: shift.id,
+      }),
+    ]);
+
+    expect(results[0].status).toBe("applied");
+    const movements = await withTenant(ctx.tenantId, (tx) => tx.select().from(cashMovements));
+    expect(movements).toHaveLength(1);
   });
 });

@@ -191,22 +191,43 @@ function toJsonSafe<T>(value: T): Record<string, unknown> {
  * is intentionally unexported (record-sale.ts has no callers upstream of it
  * besides itself), and closeShift/recordMidShiftCount need the id BEFORE the
  * call, not resolved internally the way recordSale resolves its own shift.
+ *
+ * BOTH branches are device-scoped, including `shiftId`. This endpoint
+ * authenticates a device token and no cashier session, and closeShift /
+ * recordMidShiftCount look a shift up by id alone — so returning a
+ * caller-supplied id unchecked would let any paired device in the tenant
+ * close another till's drawer with its own Z-report, and jam that till's
+ * queue behind a shift.closed that can never apply. record-sale.ts's
+ * resolveReplayShift has always filtered on deviceId for this reason.
  */
 async function resolveShiftId(
   tenantId: string,
   deviceId: string,
   ref: { shiftId?: string; clientShiftId?: string },
 ): Promise<string> {
-  if (ref.clientShiftId) {
-    const [s] = await withTenant(tenantId, (tx) =>
-      tx.select({ id: posShifts.id }).from(posShifts)
-        .where(and(eq(posShifts.deviceId, deviceId), eq(posShifts.clientShiftId, ref.clientShiftId!)))
-        .limit(1),
-    );
-    if (s) return s.id;
+  // Both columns are `uuid`: a malformed id must fail this event as a data
+  // problem, not reach Postgres and surface as internal_error.
+  for (const id of [ref.clientShiftId, ref.shiftId]) {
+    if (id !== undefined && !UUID_RE.test(id)) {
+      throw new SyncEventValidationError("shiftId/clientShiftId must be a UUID");
+    }
   }
-  if (ref.shiftId) return ref.shiftId;
-  throw new SyncEventValidationError("could not resolve a shift from shiftId/clientShiftId");
+  const [s] = await withTenant(tenantId, async (tx) => {
+    if (ref.clientShiftId) {
+      const byClient = await tx.select({ id: posShifts.id }).from(posShifts)
+        .where(and(eq(posShifts.deviceId, deviceId), eq(posShifts.clientShiftId, ref.clientShiftId)))
+        .limit(1);
+      if (byClient.length > 0) return byClient;
+    }
+    if (ref.shiftId) {
+      return tx.select({ id: posShifts.id }).from(posShifts)
+        .where(and(eq(posShifts.deviceId, deviceId), eq(posShifts.id, ref.shiftId)))
+        .limit(1);
+    }
+    return [];
+  });
+  if (!s) throw new SyncEventValidationError("no shift on this device matches shiftId/clientShiftId");
+  return s.id;
 }
 
 // ---- Per-type payload contracts + handlers -------------------------------
@@ -224,6 +245,8 @@ type SaleRecordedPayload = {
   expectedTotal: number;
   payments: TenderInput[];
   notes?: string;
+  /** Exactly one of these is required (asSaleRecordedPayload enforces it):
+   *  every replayed sale names the drawer it was rung against. */
   clientShiftId?: string;
   shiftId?: string;
   catalogVersion?: number;
@@ -242,6 +265,14 @@ function asSaleRecordedPayload(payload: Record<string, unknown>): SaleRecordedPa
   }
   if (typeof p.expectedTotal !== "number") throw new SyncEventValidationError("sale.recorded requires expectedTotal");
   if (!Array.isArray(p.payments)) throw new SyncEventValidationError("sale.recorded requires payments");
+  // The drawer reference is mandatory, not optional-with-a-fallback: without
+  // it recordSale would have to ask "whichever drawer is open right now",
+  // which at ingest time is a different session than the one that rang the
+  // sale — a card-only sale taken before the drawer opened is enough to reach
+  // that. The server refuses to guess; the till always names its drawer.
+  if (!p.clientShiftId && !p.shiftId) {
+    throw new SyncEventValidationError("sale.recorded requires clientShiftId or shiftId");
+  }
   return p as SaleRecordedPayload;
 }
 
@@ -458,6 +489,7 @@ async function handleGrantIssued(
     permission,
     authorizedByUserId: authorizer.userId,
     ...(authorizer.deactivated ? { authorizerDeactivated: true } : {}),
+    ...(authorizer.lacksPermission ? { authorizerLacksPermission: true } : {}),
   };
   await withTenant(device.tenantId, async (tx) => {
     await recordAuditEvent(
@@ -467,7 +499,11 @@ async function handleGrantIssued(
         entityType: "authorization",
         entityId: permission,
         summary: `${permission} authorized offline for ${actor.name}`,
-        metadata: { permission, authorizedByUserId: authorizer.userId, occurredAt: e.occurredAt },
+        metadata: {
+          permission, authorizedByUserId: authorizer.userId, occurredAt: e.occurredAt,
+          ...(authorizer.deactivated ? { authorizerDeactivated: true } : {}),
+          ...(authorizer.lacksPermission ? { authorizerLacksPermission: true } : {}),
+        },
         actorType: "user",
       },
       tx,

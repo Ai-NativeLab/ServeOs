@@ -3,6 +3,7 @@ import { and, eq, lt } from "drizzle-orm";
 import { db } from "@/db/client";
 import { users } from "@/server/auth/schema";
 import type { Permission } from "@/server/rbac/permissions";
+import { posPermissionsFor } from "./cashier";
 import { PosForbiddenError } from "./errors";
 import { posGrants } from "./schema";
 import { tokenHash } from "./token-hash";
@@ -64,23 +65,30 @@ export async function resolveAuthorizer(
  * Offline substitute for resolveAuthorizer's live-grant path (the sync
  * ingestion design doc's decision #2): a live grant token cannot exist after
  * the outage that produced the event, so a synced gated action names its
- * manager directly via `authorizedByUserId`. Only checked in-tenant — the
- * permission itself was already enforced live at the till when this
- * happened, so a caller who has since lost it is flagged, not re-checked;
- * `deactivated` is that flag for the audit trail, mirroring record-sale.ts's
- * discountAuthorizerDeactivated. Throws PosForbiddenError, like the live
- * path, when authorizedByUserId names no one in this tenant.
+ * manager directly via `authorizedByUserId`. Per "flag, never veto" nothing
+ * here refuses a replayed authorization — the permission was enforced live at
+ * the till when it happened — but the sync endpoint authenticates a DEVICE,
+ * not a cashier, so who was named and whether they could really authorize it
+ * has to reach the audit trail. `deactivated` and `lacksPermission` are those
+ * two flags, mirroring record-sale.ts's discountAuthorizerDeactivated. Throws
+ * PosForbiddenError, like the live path, only when authorizedByUserId names
+ * no one in this tenant.
  */
 export async function resolveOfflineAuthorizer(
   tenantId: string,
   authorizedByUserId: string,
   permission: Permission,
-): Promise<{ userId: string; deactivated: boolean }> {
+): Promise<{ userId: string; deactivated: boolean; lacksPermission: boolean }> {
   const [user] = await db
     .select({ id: users.id, status: users.status })
     .from(users)
     .where(and(eq(users.id, authorizedByUserId), eq(users.tenantId, tenantId)))
     .limit(1);
   if (!user) throw new PosForbiddenError(permission);
-  return { userId: user.id, deactivated: user.status !== "active" };
+  const permissions = await posPermissionsFor(user.id);
+  return {
+    userId: user.id,
+    deactivated: user.status !== "active",
+    lacksPermission: !permissions.includes(permission),
+  };
 }
