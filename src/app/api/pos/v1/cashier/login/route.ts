@@ -2,13 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { requirePosDevice } from "@/server/pos/require-device";
 import { signInCashier } from "@/server/pos/cashier";
 import { webFingerprint } from "@/server/audit/fingerprint";
-import { PosAuthError, PosCashierError } from "@/server/pos/errors";
+import { PosAuthError, PosCashierError, PosTenantBlockedError } from "@/server/pos/errors";
 
 export async function POST(req: NextRequest) {
   let device;
   try {
     device = await requirePosDevice(req);
   } catch (e) {
+    // The one POS surface a human reads during auth: a blocked tenant gets the
+    // reason (403), not a bare 401 (#164).
+    if (e instanceof PosTenantBlockedError) {
+      return NextResponse.json({ error: e.message }, { status: 403 });
+    }
     if (e instanceof PosAuthError) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     throw e;
   }

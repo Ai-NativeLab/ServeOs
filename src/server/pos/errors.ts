@@ -14,6 +14,20 @@ export class PosAuthError extends Error {
   }
 }
 
+/**
+ * The device token itself is fine — the TENANT behind it is not servable
+ * (suspended, rejected, or still onboarding). Subclasses PosAuthError so every
+ * POS v1 route's existing `catch (e instanceof PosAuthError)` refuses without
+ * needing to know about this case (#164); routes that surface a message to a
+ * human (cashier login) can special-case it for a 403 that says why.
+ */
+export class PosTenantBlockedError extends PosAuthError {
+  constructor(public readonly tenantStatus: string) {
+    super(`This store is ${tenantStatus} — ask the platform team to reactivate it before using the till`);
+    this.name = "PosTenantBlockedError";
+  }
+}
+
 /** Thrown when POS login fails (wrong restaurant, email, password, or inactive user). */
 export class PosLoginError extends Error {
   constructor(message = "Wrong restaurant, email, or password") {
