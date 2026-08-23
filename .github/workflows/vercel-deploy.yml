@@ -115,7 +115,19 @@ jobs:
       - name: Pull Vercel environment
         run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
 
+      # The pulled dotenv file mangles DATABASE_URL — the value round-trips
+      # through a file and comes back with a broken host (it resolved to
+      # "base", a fragment of "supabase"). Vercel's own builder injects env
+      # vars directly and never hit this. So drop it from the pulled file and
+      # pass the real value in from a GitHub secret below, where nothing
+      # re-parses it. Runtime is unaffected: with --prebuilt, the deployed
+      # app still reads env from the Vercel project, not from this file.
+      - name: Use the secret DATABASE_URL, not the round-tripped one
+        run: sed -i '/^DATABASE_URL=/d' .vercel/.env.production.local
+
       - name: Build
+        env:
+          DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
         run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
 
       - name: Deploy prebuilt to production
@@ -146,7 +158,19 @@ jobs:
       - name: Pull Vercel environment
         run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
 
+      # The pulled dotenv file mangles DATABASE_URL — the value round-trips
+      # through a file and comes back with a broken host (it resolved to
+      # "base", a fragment of "supabase"). Vercel's own builder injects env
+      # vars directly and never hit this. So drop it from the pulled file and
+      # pass the real value in from a GitHub secret below, where nothing
+      # re-parses it. Runtime is unaffected: with --prebuilt, the deployed
+      # app still reads env from the Vercel project, not from this file.
+      - name: Use the secret DATABASE_URL, not the round-tripped one
+        run: sed -i '/^DATABASE_URL=/d' .vercel/.env.production.local
+
       - name: Build
+        env:
+          DATABASE_URL: ${{ secrets.QA_DATABASE_URL }}
         run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
 
       - name: Deploy prebuilt to QA
