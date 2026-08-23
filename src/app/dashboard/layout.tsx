@@ -9,9 +9,11 @@ import { Topbar } from "@/components/dashboard/Topbar";
 import { Toaster } from "@/components/ui/sonner";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const { user, tenantId, roleKeys } = await requireDashboardUser();
-  const [tenant, pending, unread] = await Promise.all([
-    getTenantById(tenantId),
+  const { user, tenantId, tenant, roleKeys } = await requireDashboardUser({
+    allowBilling: true,
+    allowStatus: ["onboarding", "suspended", "rejected"],
+  });
+  const [pending, unread] = await Promise.all([
     pendingOrderCount(tenantId),
     unreadNotificationCount(tenantId, user.id, roleKeys),
   ]);
