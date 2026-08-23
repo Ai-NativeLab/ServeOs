@@ -41,8 +41,20 @@ describe("POST [id]/receipts route validation", () => {
     );
   });
 
-  it("never forwards a caller-supplied unitCost — the ordered line values the lot", async () => {
-    const res = await POST(req({ lines: [line({ receivedQty: 5, unitCost: 0 })] }), params);
+  it("rejects a caller-supplied unitCost with 400 rather than silently dropping it", async () => {
+    // Accepting the field and ignoring it discards a caller's money value with
+    // no signal — the same class of failure as honouring a zero. A receipt is
+    // valued from the ordered line, and saying so out loud is the contract.
+    for (const bad of [0, 5, "5", null]) {
+      vi.mocked(postReceipt).mockClear();
+      const res = await POST(req({ lines: [line({ receivedQty: 5, unitCost: bad })] }), params);
+      expect(res.status).toBe(400);
+      expect(postReceipt).not.toHaveBeenCalled();
+    }
+  });
+
+  it("never forwards a unitCost when none was sent — the ordered line values the lot", async () => {
+    const res = await POST(req({ lines: [line({ receivedQty: 5 })] }), params);
     expect(res.status).toBe(201);
     expect(postReceipt).toHaveBeenCalledWith(
       expect.anything(),

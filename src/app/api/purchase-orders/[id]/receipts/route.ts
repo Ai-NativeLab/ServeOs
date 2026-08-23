@@ -25,6 +25,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       }
       // No unitCost: `postReceipt` values the lot from the ordered line. This
       // route used to REQUIRE one and accept 0, which valued the lot at zero.
+      //
+      // Reject rather than ignore. Accepting a money field and silently dropping
+      // it is the same class of failure this change exists to remove — a caller
+      // deliberately receiving at a price other than the ordered one would have
+      // had that instruction discarded with no signal. A 400 says so.
+      if (row.unitCost !== undefined) {
+        throw new InvalidPoInputError(
+          "unitCost is not accepted; a receipt is valued from the ordered PO line",
+        );
+      }
       return {
         poLineId: String(row.poLineId ?? ""),
         receivedQty,
