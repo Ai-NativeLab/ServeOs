@@ -44,6 +44,14 @@ export async function recordCashMovement(
   input: CashMovementInput,
 ): Promise<CashMovement & { idempotent: boolean }> {
   const magnitude = round2(input.amount);
+  // Finiteness first, and separately from the sign check below: that check is
+  // `!(magnitude > 0)`, which rejects NaN as a side effect but ADMITS Infinity,
+  // because `Infinity > 0` is true. An infinite magnitude used to reach
+  // `money()` and store "Infinity" as a cash movement, wrecking the shift's
+  // reconciliation permanently. `money()` throws on it now; this says why.
+  if (!Number.isFinite(magnitude)) {
+    throw new CashMovementError(`A movement amount must be a finite number (got ${input.amount})`);
+  }
   if (input.type === "no_sale") {
     if (magnitude !== 0) throw new CashMovementError("A no_sale records no cash");
   } else if (!(magnitude > 0)) {

@@ -18,6 +18,7 @@ import { getCapabilities, type VerticalId } from "@/server/verticals";
 import { isMethodEnabled } from "@/server/payments/offline/methods";
 import { PaymentMethodNotEnabledError, InvalidProofError, PaymentAlreadyResolvedError } from "@/server/payments/offline";
 import { sanitizeHttpUrl } from "@/lib/safe-url";
+import { assertFinite } from "@/shared/errors";
 import { orders, orderItems, orderStatusEvents, type SelectedModifier, type Order, type OrderWithItems, type OrderDetail, type OrderStatus } from "./schema";
 import { canTransition } from "./state-machine";
 // OutOfStockError is no longer thrown here — the inventory service raises it
@@ -128,8 +129,24 @@ export type PlaceOrderResult = {
   itemIds: string[];
 };
 
-/** Round to 2 decimals and format as a numeric string for Postgres. */
+/**
+ * Round to 2 decimals and format as a numeric string for Postgres.
+ *
+ * Throws on a non-finite input. `(Math.round(NaN * 100) / 100).toFixed(2)` is
+ * the string "NaN", and Postgres `numeric` accepts that literal — as it does
+ * "Infinity" — so the bad value persists into a currency column, poisons every
+ * SUM it joins, and has no repair path in any screen.
+ *
+ * This is the LAST line of defence, not the first. Every caller validates its
+ * own numbers and keeps doing so, because a guard at the service boundary can
+ * say `qtyOrdered must be a positive finite number (got NaN)` while this can
+ * only say that something upstream was wrong. The point is that a MISSED guard
+ * now fails loudly instead of writing permanent poison: review found two such
+ * misses in purchasing alone after the last round of per-caller fixes, which is
+ * why the invariant moved to the one function they all pass through.
+ */
 export function money(n: number): string {
+  assertFinite(n, "money");
   return (Math.round(n * 100) / 100).toFixed(2);
 }
 

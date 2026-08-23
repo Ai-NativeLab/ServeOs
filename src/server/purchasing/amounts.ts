@@ -21,9 +21,19 @@
  * This mirrors `inventory_lots.unit_cost`, which already stores the exact
  * per-base-unit quotient for the same reason.
  */
+import { assertFinite } from "@/shared/errors";
 
-/** A per-unit rate, stored exactly. See the module docstring for why NOT `money()`. */
+/**
+ * A per-unit rate, stored exactly. See the module docstring for why NOT `money()`.
+ *
+ * Throws on a non-finite input. `String(NaN)` is "NaN" and Postgres `numeric`
+ * accepts that literal, so without this the function's own contract — "stored
+ * exactly" — quietly becomes "poison stored exactly". Seven call sites feed it;
+ * each one validates its own numbers first and keeps doing so for the better
+ * message, but this is what makes a missed guard loud instead of permanent.
+ */
 export function unitRate(n: number): string {
+  assertFinite(n, "unitRate");
   return String(n);
 }
 

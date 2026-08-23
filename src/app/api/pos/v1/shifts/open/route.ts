@@ -19,8 +19,13 @@ export async function POST(req: NextRequest) {
   }
 
   const body = (await req.json()) as { openingFloat?: number; denominations?: Record<string, number> };
-  if (typeof body.openingFloat !== "number") {
-    return NextResponse.json({ error: "Missing openingFloat" }, { status: 400 });
+  // Number.isFinite, not typeof: JSON `1e999` parses to Infinity, which IS a
+  // number and used to reach `money()` and store "Infinity" as the shift's
+  // opening float — poisoning every variance on that shift with no way for the
+  // cashier to reconcile it. money() throws on that now; this keeps a bad body
+  // a 400 rather than surfacing the throw as a 500.
+  if (typeof body.openingFloat !== "number" || !Number.isFinite(body.openingFloat)) {
+    return NextResponse.json({ error: "openingFloat must be a finite number" }, { status: 400 });
   }
 
   try {
