@@ -156,6 +156,49 @@ describe("reorder rules", () => {
     for (const l of poLines) expect(Number.isFinite(Number(l.unitCost))).toBe(true);
   });
 
+  it("repairs a poisoned header when merging into an open draft, instead of rewriting it", async () => {
+    // The merge branch READS purchase_orders.total back and writes it again, so
+    // an already-poisoned header would make Number() non-finite, money() return
+    // "NaN", and every subsequent sweep re-write it — the fixture above cannot
+    // reach this path because it has no open draft to merge into.
+    const { tenantId, actor, supplierId, itemAtPoint, itemNoLots, locationId } = await seedReorderContext();
+    await stock(tenantId, itemAtPoint, locationId, 5);
+    await upsertSupplierItem(actor, { supplierId, itemId: itemAtPoint, lastUnitCost: 2 });
+    await upsertSupplierItem(actor, { supplierId, itemId: itemNoLots, lastUnitCost: 3 });
+    await upsertReorderRule(actor, {
+      itemId: itemAtPoint, locationId, reorderPoint: 20, reorderQty: 10, preferredSupplierId: supplierId,
+    });
+
+    // Sweep one drafts the PO for itemAtPoint (10 x 2.00 = 20.00).
+    await checkReorder(actor);
+    const [draft] = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders));
+    expect(draft?.total).toBe("20.00");
+
+    // Poison the header, then give the sweep a DIFFERENT low item so the second
+    // run has something to merge — an item already lined on the draft is skipped
+    // and the merge branch never runs.
+    await withTenant(tenantId, (tx) =>
+      tx.update(purchaseOrders).set({ total: "NaN" }).where(eq(purchaseOrders.id, draft!.id)));
+    await upsertReorderRule(actor, {
+      itemId: itemNoLots, locationId, reorderPoint: 20, reorderQty: 10, preferredSupplierId: supplierId,
+    });
+    await withTenant(tenantId, (tx) => tx.update(reorderRules).set({ lastAlertedAt: null }));
+
+    await checkReorder(actor);
+
+    // Merged into the same draft, and the header is REPAIRED from the lines it
+    // holds — 20.00 already there plus 10 x 3.00 added — not zeroed and not NaN.
+    const pos = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders));
+    expect(pos).toHaveLength(1);
+    expect(pos[0]?.total).toBe("50.00");
+
+    const poLines = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrderLines));
+    expect(poLines).toHaveLength(2);
+    const fromLines = poLines.reduce(
+      (s, l) => s + Number(l.qtyOrdered) * Number(l.unitCost) * (1 + Number(l.taxRate ?? 0)), 0);
+    expect(pos[0]?.total).toBe(fromLines.toFixed(2));
+  });
+
   it("rejects a preferredSupplierId from another tenant (I13)", async () => {
     const { actor, itemAtPoint, locationId } = await seedReorderContext();
     const other = await seedReorderContext();

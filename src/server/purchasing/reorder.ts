@@ -217,6 +217,9 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
       open: { id: string; total: string | null; poNumber: number } | null;
       lines: { itemId: string; qtyOrdered: number; uom: UnitOfMeasure; unitCost: number }[];
       added: number;
+      /** The open draft's total recomputed from the lines it already holds, used
+       *  only when its stored header is unusable. See the merge branch. */
+      priorFromLines: number;
     };
     const plans: SupplierPlan[] = [];
 
@@ -247,10 +250,22 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
       // Items already covered by the open draft — the ones being merged — must
       // not be re-lined. The rest is what this run actually adds.
       const coveredItemIds = new Set<string>();
+      let priorFromLines = 0;
       if (open) {
-        const covered = await tx.select({ itemId: purchaseOrderLines.itemId })
-          .from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, open.id));
-        for (const c of covered) coveredItemIds.add(c.itemId);
+        const covered = await tx.select({
+          itemId: purchaseOrderLines.itemId,
+          qtyOrdered: purchaseOrderLines.qtyOrdered,
+          unitCost: purchaseOrderLines.unitCost,
+          taxRate: purchaseOrderLines.taxRate,
+        }).from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, open.id));
+        for (const c of covered) {
+          coveredItemIds.add(c.itemId);
+          // Tax-inclusive, matching service.ts's `lineTotal` — the header this
+          // may replace is on that basis. Any line value that is itself junk
+          // contributes 0 rather than poisoning the recomputation in turn.
+          const amount = Number(c.qtyOrdered) * Number(c.unitCost) * (1 + Number(c.taxRate ?? 0));
+          if (Number.isFinite(amount) && amount >= 0) priorFromLines += amount;
+        }
       }
       const pending = group.filter((r) => !coveredItemIds.has(r.itemId));
       if (pending.length === 0) continue;
@@ -268,6 +283,16 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
       // no supplier price at all: the buyer prices the draft before sending.
       const costByItem = new Map(priceRows.map((s) => {
         const cost = Number(s.lastUnitCost ?? 0);
+        if (!(Number.isFinite(cost) && cost >= 0)) {
+          // Log it: a 0 line is conspicuous to the buyer, but nothing otherwise
+          // distinguishes "no price on file" from "the stored price was poison",
+          // and the audit metadata below records neither. This is what an
+          // operator greps when asked why a familiar item drafted at zero.
+          console.warn(
+            `[reorder] supplier_items.last_unit_cost is not a usable number; pricing the draft line at 0`,
+            { tenantId: actor.tenantId, supplierId, itemId: s.itemId, stored: s.lastUnitCost },
+          );
+        }
         return [s.itemId, Number.isFinite(cost) && cost >= 0 ? cost : 0] as const;
       }));
 
@@ -278,7 +303,7 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
         return { itemId: r.itemId, qtyOrdered: Number(r.reorderQty), uom: itemById.get(r.itemId)?.baseUom ?? "each", unitCost: cost };
       });
 
-      plans.push({ supplierId, open: open ?? null, lines, added });
+      plans.push({ supplierId, open: open ?? null, lines, added, priorFromLines });
     }
 
     // PHASE 2 — WRITES. From here on nothing waits on a row another transaction
@@ -287,11 +312,26 @@ export async function checkReorder(actor: PurchasingActor): Promise<ReorderRun> 
     // safe for `lockPoNumbering` and `recordAuditEvent` to take the key here.
     let draftsCreated = 0;
     for (const plan of plans) {
-      const { supplierId, open, lines, added } = plan;
+      const { supplierId, open, lines, added, priorFromLines } = plan;
       if (open) {
         // Merge: append the missing lines to the existing draft and bump its total.
+        //
+        // The header is read back and re-written here, so it needs the same
+        // floor as the supplier cost above and for the same reason: Postgres
+        // numeric accepts 'NaN' and 'Infinity', and an already-poisoned header
+        // would make `Number(...)` non-finite, `money()` return "NaN", and this
+        // sweep write it straight back — every run, forever.
+        //
+        // Fall back to the total recomputed from the lines the draft already
+        // holds, NOT to 0: this is the one code path that reads a poisoned
+        // header with the lines in hand, so it can genuinely repair it. Zeroing
+        // would swap an un-correctable NaN for a header that silently disagrees
+        // with its own lines — the exact defect ./service.ts's `snapQuantities`
+        // exists to remove, reintroduced one seam over.
+        const prior = Number(open.total ?? 0);
+        const priorTotal = Number.isFinite(prior) && prior >= 0 ? prior : priorFromLines;
         await tx.update(purchaseOrders)
-          .set({ total: money(Number(open.total ?? 0) + added) })
+          .set({ total: money(priorTotal + added) })
           .where(eq(purchaseOrders.id, open.id));
         for (const l of lines) {
           await tx.insert(purchaseOrderLines).values({
