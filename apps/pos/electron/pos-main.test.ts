@@ -13,6 +13,39 @@ vi.mock("electron", () => ({
   safeStorage: { isEncryptionAvailable: () => false },
 }));
 
+vi.mock("./_offline/db", () => {
+  const storeMap = new Map<string, string>();
+  return {
+    openDb: () => ({
+      pragma: () => {},
+      exec: () => {},
+      prepare: (sql: string) => ({
+        run: (...args: any[]) => {
+          if (sql.includes("INSERT OR REPLACE INTO local_state")) {
+            storeMap.set(args[0], args[1]);
+          }
+          return { changes: 1 };
+        },
+        get: (...args: any[]) => {
+          if (sql.includes("MAX(seq)")) return { maxSeq: 0 };
+          if (sql.includes("SELECT value FROM local_state")) {
+            const val = storeMap.get(args[0]);
+            return val ? { value: val } : undefined;
+          }
+          return undefined;
+        },
+        all: () => [],
+      }),
+      transaction: (fn: any) => fn,
+    }),
+    noCipher: {
+      isAvailable: () => false,
+      encryptString: (s: string) => Buffer.from(s),
+      decryptString: (b: Buffer) => b.toString("utf8"),
+    },
+  };
+});
+
 // Static import is safe: vitest hoists the vi.mock factory above it, and
 // PosMain only reaches for electron inside its constructor.
 import { PosMain } from "./pos-main";
@@ -57,6 +90,7 @@ beforeEach(() => {
 afterEach(() => {
   fs.rmSync(hoisted.userDataDir, { recursive: true, force: true });
   delete process.env.POS_API_URL;
+  delete process.env.VITE_DEV_SERVER_URL;
   vi.restoreAllMocks();
 });
 
@@ -122,5 +156,35 @@ describe("device file is scoped to the backend it was paired against", () => {
     process.env.POS_API_URL = BACKEND_A;
 
     expect(new PosMain().isPaired()).toBe(true);
+  });
+});
+
+describe("base URL resolution (Issue #163)", () => {
+  it("resolves to localhost:3000 lazily when VITE_DEV_SERVER_URL is set after module load", () => {
+    delete process.env.POS_API_URL;
+    process.env.VITE_DEV_SERVER_URL = "http://localhost:5173";
+    const pos = new PosMain();
+    expect(pos.getBaseUrl()).toBe("http://localhost:3000");
+  });
+
+  it("defaults to production host when neither POS_API_URL nor VITE_DEV_SERVER_URL is set", () => {
+    delete process.env.POS_API_URL;
+    delete process.env.VITE_DEV_SERVER_URL;
+    const pos = new PosMain();
+    expect(pos.getBaseUrl()).toBe("https://app.serveos.tech");
+  });
+
+  it("prioritizes POS_API_URL over VITE_DEV_SERVER_URL and production fallback", () => {
+    process.env.POS_API_URL = "http://custom-api.test";
+    process.env.VITE_DEV_SERVER_URL = "http://localhost:5173";
+    const pos = new PosMain();
+    expect(pos.getBaseUrl()).toBe("http://custom-api.test");
+  });
+
+  it("logs the resolved base URL at startup", () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    process.env.POS_API_URL = "http://logged-backend.test";
+    new PosMain();
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining("http://logged-backend.test"));
   });
 });
