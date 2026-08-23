@@ -92,6 +92,7 @@ export default async function CheckoutPage({
           openNow={openState.open && branch.isActive && branch.acceptingOrders}
           slots={slots}
           methods={offlineMethods.map((m) => ({ type: m.type, label: m.label, payToDetail: m.payToDetail }))}
+          country={tenant.country}
         />
       </div>
     </main>

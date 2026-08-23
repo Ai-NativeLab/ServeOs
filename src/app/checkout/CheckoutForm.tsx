@@ -4,6 +4,7 @@ import { loadCart, clearCart, cartSubtotal, type Cart } from "../_components/car
 import { rememberOrder } from "../_components/recent-orders";
 import { formatMoney } from "@/lib/money";
 import { computeOrderTotals, type CheckoutPricing } from "@/lib/order-totals";
+import { isValidCustomerPhone, getPhoneFormatHint } from "@/lib/phone";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,6 +28,7 @@ export type OfflineMethodOption = { type: string; label: string; payToDetail: st
 
 export function CheckoutForm({
   slug, branchId, branchName, pricing, currency, openNow, slots, methods,
+  country = "EG",
   initialName = "", initialPhone = "", initialAddress = "",
 }: {
   slug: string;
@@ -37,6 +39,7 @@ export function CheckoutForm({
   openNow: boolean;
   slots: SlotOption[];
   methods: OfflineMethodOption[];
+  country?: string;
   initialName?: string;
   initialPhone?: string;
   initialAddress?: string;
@@ -106,6 +109,14 @@ export function CheckoutForm({
     if (when === "scheduled" && new Date(slotIso).getTime() < Date.now() + 30 * 60_000) {
       setSlotIso("");
       setError("That time is no longer available — please pick a new one.");
+      return;
+    }
+    if (!isValidCustomerPhone(phone, country)) {
+      setError(
+        country === "SA"
+          ? "Please enter a valid Saudi mobile number (e.g. 05XXXXXXXX) · يرجى إدخال رقم جوال سعودي صحيح"
+          : "Please enter a valid Egyptian mobile number (e.g. 01XXXXXXXXX) · يرجى إدخال رقم هاتف مصري صحيح"
+      );
       return;
     }
     if (missingPaymentRef) {
@@ -251,8 +262,17 @@ export function CheckoutForm({
           <Input id="co-name" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
         </div>
         <div className="grid gap-1.5">
-          <Label htmlFor="co-phone">Phone</Label>
-          <Input id="co-phone" placeholder="Phone" inputMode="tel" value={phone} onChange={(e) => setPhone(e.target.value)} />
+          <div className="flex items-center justify-between">
+            <Label htmlFor="co-phone">Phone · الهاتف</Label>
+            <span className="text-xs text-muted-foreground">{getPhoneFormatHint(country)}</span>
+          </div>
+          <Input
+            id="co-phone"
+            placeholder={getPhoneFormatHint(country)}
+            inputMode="tel"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+          />
         </div>
         {fulfillment === "delivery" && (
           <>

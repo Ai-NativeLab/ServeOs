@@ -43,7 +43,7 @@ describe("Rx order gate", () => {
   it("refuses an Rx order placed as a guest — a script needs an owner (decision R3)", async () => {
     const { tenantId, branchId, productId } = await seed("rxg-1", { rx: true });
     await expect(placeOrder(tenantId, {
-      branchId, fulfillmentType: "pickup", customerName: "G", customerPhone: "+2011",
+      branchId, fulfillmentType: "pickup", customerName: "G", customerPhone: "01012345678",
       lines: line(productId),
     })).rejects.toThrow(OrderValidationError);
   });
@@ -52,7 +52,7 @@ describe("Rx order gate", () => {
     const { tenantId, branchId, productId } = await seed("rxg-2", { rx: true });
     const me = await registerCustomer(tenantId, { name: "P", email: "p@x.com", password: "secret123" });
     await expect(placeOrder(tenantId, {
-      branchId, fulfillmentType: "pickup", customerName: "P", customerPhone: "+2011",
+      branchId, fulfillmentType: "pickup", customerName: "P", customerPhone: "01012345678",
       customerId: me.id, lines: line(productId),
     })).rejects.toThrow(OrderValidationError);
   });
@@ -63,7 +63,7 @@ describe("Rx order gate", () => {
     const rx = await submitPrescription(tenantId, me.id, "rx/3.jpg");
 
     const res = await placeOrder(tenantId, {
-      branchId, fulfillmentType: "pickup", customerName: "P", customerPhone: "+2011",
+      branchId, fulfillmentType: "pickup", customerName: "P", customerPhone: "01012345678",
       customerId: me.id, lines: line(productId),
     });
 
@@ -80,7 +80,7 @@ describe("Rx order gate", () => {
     const me = await registerCustomer(tenantId, { name: "P", email: "p@x.com", password: "secret123" });
     const rx = await submitPrescription(tenantId, me.id, "rx/4.jpg");
     const res = await placeOrder(tenantId, {
-      branchId, fulfillmentType: "pickup", customerName: "P", customerPhone: "+2011",
+      branchId, fulfillmentType: "pickup", customerName: "P", customerPhone: "01012345678",
       customerId: me.id, lines: line(productId),
     });
 
@@ -96,7 +96,7 @@ describe("Rx order gate", () => {
   it("an OTC-only guest order is provably unaffected (regression)", async () => {
     const { tenantId, branchId, productId, staffId } = await seed("rxg-5"); // not Rx
     const res = await placeOrder(tenantId, {
-      branchId, fulfillmentType: "pickup", customerName: "G", customerPhone: "+2011",
+      branchId, fulfillmentType: "pickup", customerName: "G", customerPhone: "01012345678",
       lines: line(productId),
     });
     const [order] = await withTenant(tenantId, (tx) => tx.select().from(orders).where(eq(orders.id, res.orderId)));
@@ -109,7 +109,7 @@ describe("Rx order gate", () => {
     const { tenantId, branchId, productId } = await seed("rxg-6", { rx: true, vertical: "retail" });
     // No pharmacistReview capability -> no gate, no account requirement.
     const res = await placeOrder(tenantId, {
-      branchId, fulfillmentType: "pickup", customerName: "G", customerPhone: "+2011",
+      branchId, fulfillmentType: "pickup", customerName: "G", customerPhone: "01012345678",
       lines: line(productId),
     });
     const [order] = await withTenant(tenantId, (tx) => tx.select().from(orders).where(eq(orders.id, res.orderId)));
