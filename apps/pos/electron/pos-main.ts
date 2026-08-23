@@ -628,17 +628,13 @@ export class PosMain {
    */
   async getMenu(): Promise<{ json: string; pricing: CheckoutPricing; syncedAt: string } | null> {
     if (!this.device) return null;
-<<<<<<< HEAD
     const cached = this.cachedCatalog();
     if (cached) {
+      // A revoked device still surfaces, via the blocking pull below on the
+      // next cold read — but revocation must not block a till that already has
+      // a menu to sell from, which is the whole point of the cache.
       void this.engine.pull().catch(() => { /* the cached menu stands */ });
       return { json: cached.json, pricing: cached.pricing, syncedAt: cached.syncedAt };
-=======
-    const res = await fetch(`${this.baseUrl}/api/pos/v1/catalog`, { headers: this.authHeaders() });
-    if (res.status === 401) {
-      this.unpair();
-      throw new Error(DEVICE_UNPAIRED_MESSAGE);
->>>>>>> origin/main
     }
     try {
       await this.engine.pull();
