@@ -6,7 +6,7 @@ import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { requireCapability } from "@/server/verticals/registry";
 import { branches } from "@/server/branches/schema";
 import type { UnitOfMeasure } from "@/server/catalog/uom";
-import { assertInventoryUom, qty, roundQty } from "@/server/inventory/uom";
+import { assertInventoryUom, qty, roundQty, QTY_SCALE } from "@/server/inventory/uom";
 import { money } from "@/server/ordering/service";
 import { unitRate } from "./amounts";
 import { purchaseOrders, purchaseOrderLines, poReceipts, suppliers } from "./schema";
@@ -67,9 +67,27 @@ function lineTotal(lines: DraftPoLineInput[]): number {
  * phantom delta on `receivedVsOrdered` for a perfectly fulfilled order — the
  * structural noise in the three-way match that ./amounts.ts exists to keep out.
  * Snap once, here, so the total and the insert consume the same numbers.
+ *
+ * Also the boundary that rejects a quantity too fine to survive the snap.
+ * `assertLineNumbers` runs first and checks the value the CALLER sent, so its
+ * messages can quote it; this checks the value that will actually be STORED.
+ * 0.0004 passed the `> 0` check, rounded to 0, and stored `qty_ordered "0.000"`
+ * — and a zero-ordered line is worse than a rejected one, because
+ * `receiptStatus` treats `qtyReceived >= qtyOrdered` as met: the line reports
+ * itself fully received the instant its siblings are, flipping the PO to
+ * `received` for goods never delivered, with `overReceived` silent because
+ * `0 > 0` is false.
  */
 function snapQuantities(lines: DraftPoLineInput[]): DraftPoLineInput[] {
-  return lines.map((l) => ({ ...l, qtyOrdered: roundQty(l.qtyOrdered) }));
+  return lines.map((l) => {
+    const qtyOrdered = roundQty(l.qtyOrdered);
+    if (qtyOrdered <= 0 && l.qtyOrdered > 0) {
+      throw new InvalidPoInputError(
+        `qtyOrdered ${l.qtyOrdered} rounds to zero at ${QTY_SCALE} decimals — the smallest orderable quantity is ${1 / 10 ** QTY_SCALE}`,
+      );
+    }
+    return { ...l, qtyOrdered };
+  });
 }
 
 function assertLineNumbers(lines: DraftPoLineInput[]): void {

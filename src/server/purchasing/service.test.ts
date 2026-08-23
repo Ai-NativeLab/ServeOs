@@ -57,6 +57,28 @@ describe("purchase order drafting", () => {
     expect(po?.total).toBe(fromLine.toFixed(2));
   });
 
+  it("rejects a quantity that survives validation but rounds away when stored", async () => {
+    // 0.0004 clears assertLineNumbers' `> 0` check on the raw input, then snaps
+    // to "0.000". A zero-ordered line is worse than a rejected one: receiptStatus
+    // counts `qtyReceived >= qtyOrdered` as met, so the line reports itself fully
+    // received the moment its siblings are and flips the PO to `received` for
+    // goods never delivered — with overReceived silent, because 0 > 0 is false.
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const actor = await seedActor(tenantId, branchId);
+    const supplierId = await seedSupplier(tenantId, branchId);
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+
+    await expect(createDraftPo(actor, {
+      supplierId, branchId,
+      lines: [line(itemId, { qtyOrdered: 0.0004, unitCost: 100 })],
+    })).rejects.toThrow(InvalidPoInputError);
+
+    const pos = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders));
+    expect(pos).toHaveLength(0);
+    const lines = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrderLines));
+    expect(lines).toHaveLength(0);
+  });
+
   it("createDraftPo assigns poNumber 1 then 2 for the same tenant and computes total", async () => {
     const { tenantId, branchId } = await seedInventoryTenant();
     const actor = await seedActor(tenantId, branchId);

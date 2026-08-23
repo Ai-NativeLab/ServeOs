@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { requirePurchasingPermission, resolvePurchasingActor } from "../purchasing-permission";
 import { domainErrorValue } from "../action-errors";
 import { createDraftPo, updateDraftPo, type DraftPoLineInput } from "@/server/purchasing/service";
+import { roundQty, QTY_SCALE } from "@/server/inventory/uom";
 import type { UnitOfMeasure } from "@/server/catalog/uom";
 
 export type CreatePoLineData = {
@@ -31,13 +32,20 @@ function validatePoData(data: CreatePoData): string | null {
   for (let i = 0; i < data.lines.length; i++) {
     const line = data.lines[i];
     if (!line.itemId) return `Line ${i + 1}: item is required`;
-    if (typeof line.qtyOrdered !== "number" || isNaN(line.qtyOrdered) || line.qtyOrdered <= 0) {
+    // `Number.isFinite`, not `isNaN`: `isNaN(Infinity)` is false, so Infinity
+    // walked past this layer and surfaced as a thrown domain error from
+    // assertLineNumbers instead of the friendly per-line message. Kept in step
+    // with the service floor and with the two supplier-cost guards.
+    if (typeof line.qtyOrdered !== "number" || !Number.isFinite(line.qtyOrdered) || line.qtyOrdered <= 0) {
       return `Line ${i + 1}: quantity must be greater than 0`;
     }
-    if (typeof line.unitCost !== "number" || isNaN(line.unitCost) || line.unitCost < 0) {
+    if (roundQty(line.qtyOrdered) <= 0) {
+      return `Line ${i + 1}: quantity must be at least ${1 / 10 ** QTY_SCALE}`;
+    }
+    if (typeof line.unitCost !== "number" || !Number.isFinite(line.unitCost) || line.unitCost < 0) {
       return `Line ${i + 1}: unit cost must be 0 or greater`;
     }
-    if (line.taxRate !== undefined && (isNaN(line.taxRate) || line.taxRate < 0 || line.taxRate > 1)) {
+    if (line.taxRate !== undefined && (!Number.isFinite(line.taxRate) || line.taxRate < 0 || line.taxRate > 1)) {
       return `Line ${i + 1}: tax rate must be between 0 and 1 (e.g. 0.14 for 14%)`;
     }
   }
