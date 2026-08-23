@@ -142,13 +142,15 @@ export function ProductSheet({
             </button>
           </div>
           <Button
+            disabled={!product.inStock}
             onClick={() => {
+              if (!product.inStock) return;
               onAdd(product, selected, quantity);
               onOpenChange(false);
             }}
             className="flex-1 rounded-full"
           >
-            Add — {formatMoney(total, currency)}
+            {product.inStock ? `Add — ${formatMoney(total, currency)}` : "Out of stock"}
           </Button>
         </div>
       </SheetContent>

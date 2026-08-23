@@ -15,20 +15,28 @@ export function ProductCard({
   currency: string;
   badge?: "popular" | "new" | null;
 }) {
+  const inStock = product.inStock;
+
   return (
     <button
       type="button"
-      onClick={interactive ? onOpen : undefined}
-      disabled={!interactive}
-      aria-label={interactive ? `Configure ${product.nameEn}` : product.nameEn}
-      className="card-lift card-lift-hover group flex flex-col overflow-hidden rounded-2xl bg-card text-left"
+      onClick={interactive && inStock ? onOpen : undefined}
+      disabled={!interactive || !inStock}
+      aria-label={!inStock ? `${product.nameEn} (Out of stock)` : interactive ? `Configure ${product.nameEn}` : product.nameEn}
+      className={`card-lift ${interactive && inStock ? "card-lift-hover" : ""} group flex flex-col overflow-hidden rounded-2xl bg-card text-left`}
     >
       <div className="relative aspect-[4/3] w-full">
         {product.imageUrl
           ? /* eslint-disable-next-line @next/next/no-img-element */
-            <img src={product.imageUrl} alt="" loading="lazy" className="sf-img h-full w-full" />
+            <img src={product.imageUrl} alt="" loading="lazy" className={`sf-img h-full w-full ${!inStock ? "opacity-40 grayscale" : ""}`} />
           : <div className="sf-img h-full w-full" />}
-        {badge && <span className="absolute left-2 top-2"><Badge kind={badge} /></span>}
+        {!inStock ? (
+          <span className="absolute left-2 top-2 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+            Out of stock
+          </span>
+        ) : badge ? (
+          <span className="absolute left-2 top-2"><Badge kind={badge} /></span>
+        ) : null}
       </div>
       <div className="flex flex-1 flex-col p-3">
         <h3 className="line-clamp-2 font-sans text-sm font-semibold leading-tight text-ink">{product.nameEn}</h3>
@@ -46,7 +54,9 @@ export function ProductCard({
         )}
         <div className="mt-auto flex items-center justify-between pt-2.5">
           <span className="font-display font-bold text-ink">{formatMoney(product.effectivePrice, currency)}</span>
-          {interactive && <span className="grid size-8 place-items-center rounded-full bg-primary text-lg leading-none text-primary-foreground shadow-sm">+</span>}
+          {interactive && inStock && (
+            <span className="grid size-8 place-items-center rounded-full bg-primary text-lg leading-none text-primary-foreground shadow-sm">+</span>
+          )}
         </div>
       </div>
     </button>
