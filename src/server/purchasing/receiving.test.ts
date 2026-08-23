@@ -178,6 +178,75 @@ describe("receiving", () => {
     })).rejects.toThrow(InvalidPoInputError);
   });
 
+  it.each(["NaN", "Infinity", "-Infinity"])(
+    "rejects a receipt whose ordered line carries a %s unit cost",
+    async (poison) => {
+      // Postgres `numeric` ACCEPTS these three as literals, which is the whole
+      // premise of the lastUnitCost floor — so rows carrying them exist and this
+      // is the branch that stops one reaching a lot's cost basis. The negative
+      // test above covers the sign half of the same guard; this covers finiteness.
+      const seeded = await seedSentPo();
+      await withTenant(seeded.tenantId, (tx) =>
+        tx.update(purchaseOrderLines).set({ unitCost: poison }).where(eq(purchaseOrderLines.id, seeded.poLineId)));
+      await expect(postReceipt(seeded.actor, seeded.poId, {
+        lines: [{ poLineId: seeded.poLineId, receivedQty: 4, uom: "each" }],
+      })).rejects.toThrow(InvalidPoInputError);
+
+      const lots = await withTenant(seeded.tenantId, (tx) =>
+        tx.select().from(inventoryLots).where(eq(inventoryLots.itemId, seeded.itemId)));
+      expect(lots).toHaveLength(0);
+    },
+  );
+
+  it("credits the ledger the same quantity the receipt line stores, at sub-milli precision", async () => {
+    // The received-side twin of the createDraftPo totalling bug. `received_qty`
+    // is stored at 3dp but `toBase` used to run on the RAW value, so receiving
+    // 1.2345 kg of a gram-based item credited 1234.5 g while the receipt line
+    // claimed 1.235 kg (= 1235 g) — half a gram of stock the line says exists
+    // and the ledger says does not, plus the matching wedge between the lot's
+    // valuation and `receivedTotal`, which sums the stored column.
+    const seeded = await seedSentPo({ baseUom: "g", purchaseUom: "kg", orderUom: "kg", purchaseToBase: "1000" });
+    await postReceipt(seeded.actor, seeded.poId, {
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 1.2345, uom: "kg" }],
+    });
+
+    const [line] = await withTenant(seeded.tenantId, (tx) =>
+      tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.id, seeded.poLineId)));
+    const [receiptLineRow] = await withTenant(seeded.tenantId, (tx) =>
+      tx.select().from(poReceiptLines).where(eq(poReceiptLines.poLineId, seeded.poLineId)));
+    const ledger = await withTenant(seeded.tenantId, (tx) =>
+      tx.select().from(stockLedger).where(eq(stockLedger.itemId, seeded.itemId)));
+
+    // 1.2345 snaps to 1.235 kg, so every consumer must agree on 1235 g.
+    expect(receiptLineRow?.receivedQty).toBe("1.235");
+    expect(line?.qtyReceived).toBe("1.235");
+    expect(Number(ledger[0]?.qty)).toBe(1235);
+
+    // …and the lot's value must be the cost actually ordered spread over the
+    // quantity the receipt line claims — not over a quantity nothing stored.
+    const lots = await withTenant(seeded.tenantId, (tx) =>
+      tx.select().from(inventoryLots).where(eq(inventoryLots.itemId, seeded.itemId)));
+    expect(Number(lots[0]?.unitCost) * Number(ledger[0]?.qty)).toBeCloseTo(1.235 * 5, 10);
+  });
+
+  it("rejects a receipt whose quantity rounds away entirely, even when it converts to a live base qty", async () => {
+    // 0.0004 kg passes a `> 0` check on the raw value, stores "0.000", and used
+    // to still credit 0.4 g to the ledger — a receipt line for nothing with
+    // stock on the shelf behind it. The `baseQty > 0` guard never fired because
+    // the CONVERSION did not land on zero, only the stored quantity did.
+    const seeded = await seedSentPo({ baseUom: "g", purchaseUom: "kg", orderUom: "kg", purchaseToBase: "1000" });
+    await expect(postReceipt(seeded.actor, seeded.poId, {
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 0.0004, uom: "kg" }],
+    })).rejects.toThrow(InvalidPoInputError);
+
+    const ledger = await withTenant(seeded.tenantId, (tx) =>
+      tx.select().from(stockLedger).where(eq(stockLedger.itemId, seeded.itemId)));
+    expect(ledger).toHaveLength(0);
+    const lots = await withTenant(seeded.tenantId, (tx) =>
+      tx.select().from(inventoryLots).where(eq(inventoryLots.itemId, seeded.itemId)));
+    expect(lots).toHaveLength(0);
+  });
+
   it("two receipt lines for the same poLineId accumulate, not last-write-wins", async () => {
     const { tenantId, actor, poId, poLineId } = await seedSentPo();
     await postReceipt(actor, poId, {
@@ -207,7 +276,8 @@ describe("receiving", () => {
     await expect(postReceipt(actor, poId, { lines: [receiptLine(poLineId, { receivedQty: -1 })] }))
       .rejects.toThrow(InvalidPoInputError);
     // Non-finite unit costs are no longer suppliable by a caller; that guard is
-    // covered by the overflow and corrupted-ordered-line tests below.
+    // covered by the overflow test and by the corrupted-ordered-line tests,
+    // which drive both its finiteness and its sign half directly.
   });
 
   it("allows over-receipt beyond the ordered qty", async () => {
@@ -429,7 +499,11 @@ describe("receiving", () => {
     // value the lot at zero — the shipped bug this guards was exactly that.
     const seeded = await seedSentPo();
     await postReceipt(seeded.actor, seeded.poId, {
-      lines: [{ poLineId: seeded.poLineId, receivedQty: 10, uom: "each" } as PostReceiptLineInput],
+      // The cast is the point: `unitCost` is no longer part of the input type,
+      // so this is the excess property a pre-type-removal caller would have sent.
+      // Without it this test passes on the OLD code too — the old default only
+      // kicked in when the key was ABSENT — and stops covering the regression.
+      lines: [{ poLineId: seeded.poLineId, receivedQty: 10, uom: "each", unitCost: 0 } as PostReceiptLineInput],
     });
 
     const lots = await withTenant(seeded.tenantId, (tx) =>
