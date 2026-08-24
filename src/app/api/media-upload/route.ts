@@ -45,7 +45,11 @@ export async function POST(req: NextRequest) {
   const supabaseUrl = process.env.SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!supabaseUrl || !serviceKey) {
-    return NextResponse.json({ error: "Image storage is not configured" }, { status: 500 });
+    const missing = [!supabaseUrl && "SUPABASE_URL", !serviceKey && "SUPABASE_SERVICE_ROLE_KEY"].filter(Boolean).join(", ");
+    return NextResponse.json(
+      { error: `Image storage is not configured (missing ${missing})` },
+      { status: 501 },
+    );
   }
 
   const path = `${ctx.tenantId}/${type}/${randomUUID()}.${ext}`;
