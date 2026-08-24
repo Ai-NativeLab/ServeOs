@@ -22,7 +22,7 @@ import { orders, orderItems, orderStatusEvents, type SelectedModifier, type Orde
 import { canTransition } from "./state-machine";
 // OutOfStockError is no longer thrown here — the inventory service raises it
 // from the FIFO deduction, on this same transaction, so the order still rolls back.
-import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, TotalMismatchError } from "./errors";
+import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, TotalMismatchError, PaymentNotVerifiedError } from "./errors";
 import { recordAuditEvent, type AuditFingerprint } from "@/server/audit/service";
 import { publishTenantEvent } from "@/server/realtime/publish";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
@@ -783,6 +783,16 @@ export async function transitionStatus(tenantId: string, orderId: string, to: Or
     // must never be stuck.
     if (order.rxReviewStatus === "pending" && to !== "cancelled" && to !== "rejected") {
       throw new InvalidTransitionError(order.status, to);
+    }
+    // #165: an offline payment still awaiting verification must not hand over
+    // goods. The order may enter the kitchen (preparing), but every target
+    // that hands goods to a customer is refused until the payment is resolved
+    // in the payments queue. Cancelling/rejecting stays exempt so a blocked
+    // order is never stuck; COD (`unpaid`) is unaffected — unpaid by design,
+    // not unverified.
+    const RELEASE_TARGETS: readonly OrderStatus[] = ["ready", "out_for_delivery", "completed"];
+    if (order.paymentStatus === "pending_verification" && RELEASE_TARGETS.includes(to)) {
+      throw new PaymentNotVerifiedError(to);
     }
     const setCancel = (to === "cancelled" || to === "rejected") && reason ? { cancelReason: reason } : {};
     // Guarded UPDATE serializes against concurrent writers (see cancelOrderByToken).

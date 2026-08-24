@@ -15,6 +15,23 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 
+/** #165: an offline payment awaiting verification blocks hand-over — make that
+ * impossible to miss on a busy kitchen screen, not just red text. */
+function PaymentBadge({ status }: { status: string }) {
+  if (status === "pending_verification") {
+    return (
+      <span className="inline-flex items-center rounded-full border border-status-danger-fg/30 bg-status-danger-fg/10 px-2 py-0.5 text-xs font-semibold text-status-danger-fg">
+        ⚠ Payment unverified
+      </span>
+    );
+  }
+  return (
+    <span className={cn("text-xs font-medium", status === "paid" ? "text-status-ready-fg" : "text-status-danger-fg")}>
+      {status}
+    </span>
+  );
+}
+
 /** A web order, a status change, or a till's queue landing after an outage —
  *  all of them change what belongs on this screen. */
 const ORDER_EVENTS: TenantEventType[] = ["orders.changed", "sync.applied"];
@@ -129,8 +146,10 @@ export function OrdersTable({ initial, timezone, realtime }: {
                         : <ShoppingBag className="size-3.5" strokeWidth={1.5} />}
                       {r.fulfillmentType === "delivery" ? "Delivery" : "Pickup"}
                     </span>
-                    <span className={cn("font-medium", r.paymentStatus === "paid" ? "text-status-ready-fg" : "text-status-danger-fg")}>
-                      {r.paymentStatus}
+                    <span className="inline-flex items-center gap-1.5">
+                      {r.paymentStatus === "pending_verification"
+                        ? <PaymentBadge status={r.paymentStatus} />
+                        : <span className={cn("font-medium", r.paymentStatus === "paid" ? "text-status-ready-fg" : "text-status-danger-fg")}>{r.paymentStatus}</span>}
                     </span>
                   </div>
                   <ScheduledChip iso={r.scheduledFor} timezone={timezone} />
@@ -178,11 +197,7 @@ export function OrdersTable({ initial, timezone, realtime }: {
                       </div>
                     </TableCell>
                     <TableCell className="font-mono text-sm text-right">{Number(r.total).toFixed(2)}</TableCell>
-                    <TableCell>
-                      <span className={cn("text-xs font-medium", r.paymentStatus === "paid" ? "text-status-ready-fg" : "text-status-danger-fg")}>
-                        {r.paymentStatus}
-                      </span>
-                    </TableCell>
+                    <TableCell><PaymentBadge status={r.paymentStatus} /></TableCell>
                     <TableCell><StatusBadge status={r.status} /></TableCell>
                   </TableRow>
                 ))}

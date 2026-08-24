@@ -750,28 +750,32 @@ describe("rejectOrderPayment atomicity", () => {
       paymentMethod: "instapay", paymentReference: "IP-RP1",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
-    const { transitionStatus, rejectOrderPayment, getOrder } = await import("./service");
+    const { transitionStatus, rejectOrderPayment, getOrder, confirmOrderPayment } = await import("./service");
     const { InvalidTransitionError } = await import("./errors");
     const userId = user.id;
-    // Advance the fulfillment status all the way to "completed" — a reachable
+    // Advance the fulfillment status all the way to "completed" - a reachable
     // terminal status per the real state machine (pending → confirmed →
-    // preparing → ready → completed for pickup) — WITHOUT resolving the
-    // payment, so paymentStatus stays pending_verification throughout.
+    // preparing → ready → completed for pickup). #165: the payment is now
+    // confirmed first — an unverified payment can no longer reach completed at
+    // all — so this exercises "terminal + already resolved", which is the case
+    // the queue's Reject button actually hits on a completed order.
     await transitionStatus(t.id, res.orderId, "confirmed", userId);
+    await confirmOrderPayment(t.id, res.orderId, userId);
     await transitionStatus(t.id, res.orderId, "preparing", userId);
     await transitionStatus(t.id, res.orderId, "ready", userId);
     await transitionStatus(t.id, res.orderId, "completed", userId);
 
     const before = await getOrder(t.id, res.orderId);
     expect(before.status).toBe("completed");
-    expect(before.paymentStatus).toBe("pending_verification");
+    expect(before.paymentStatus).toBe("paid");
 
     await expect(rejectOrderPayment(t.id, res.orderId, userId, "no funds received")).rejects.toThrow(InvalidTransitionError);
 
     const after = await getOrder(t.id, res.orderId);
     expect(after.status).toBe("completed");
-    // The claim must never have run: paymentStatus is untouched, not flipped to "unpaid".
-    expect(after.paymentStatus).toBe("pending_verification");
+    // The claim must never have run: paymentStatus is untouched ("paid" — the
+    // order was resolved before completing), not flipped to "unpaid".
+    expect(after.paymentStatus).toBe("paid");
   });
 
   it("exactly one of concurrent confirm/reject wins, and the order never ends up cancelled+paid", async () => {

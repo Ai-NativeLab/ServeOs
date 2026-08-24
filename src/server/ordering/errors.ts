@@ -45,6 +45,26 @@ export class InvalidTransitionError extends DomainError {
   }
 }
 
+/**
+ * The transition itself is legal — the money isn't. An offline payment still
+ * awaiting verification must not hand over goods: the order may enter the
+ * kitchen, but ready/out_for_delivery/completed are refused until the payment
+ * is resolved in the payments queue (#165). Distinct from InvalidTransitionError
+ * so the UI can say "resolve the payment" instead of "impossible move".
+ */
+export class PaymentNotVerifiedError extends DomainError {
+  readonly code = "payment_not_verified";
+  constructor(public readonly attemptedStatus: string) {
+    super(`Payment unverified — order cannot advance to ${attemptedStatus}`);
+    this.name = "PaymentNotVerifiedError";
+  }
+  messageFor(locale: Locale): string {
+    return locale === "ar"
+      ? "لم يتم تأكيد الدفع بعد — راجع قائمة المدفوعات قبل تسليم الطلب"
+      : "Payment unverified — resolve it in the payments queue before handing over";
+  }
+}
+
 export class OrderNotFoundError extends DomainError {
   readonly code = "order_not_found";
   constructor() { super("Order not found"); this.name = "OrderNotFoundError"; }
