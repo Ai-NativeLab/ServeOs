@@ -20,8 +20,10 @@ import { PaymentMethodNotEnabledError, InvalidProofError, PaymentAlreadyResolved
 import { sanitizeHttpUrl } from "@/lib/safe-url";
 import { orders, orderItems, orderStatusEvents, type SelectedModifier, type Order, type OrderWithItems, type OrderDetail, type OrderStatus } from "./schema";
 import { canTransition } from "./state-machine";
-// OutOfStockError is no longer thrown here — the inventory service raises it
-// from the FIFO deduction, on this same transaction, so the order still rolls back.
+// OutOfStockError is raised in TWO deliberate layers: the early per-line check
+// below refuses before totals/inserts (better errors, no wasted work), and the
+// inventory FIFO deduction re-checks inside this same transaction as a backstop
+// against stock changing between menu render and checkout.
 import { isValidCustomerPhone } from "@/lib/phone";
 import { OrderValidationError, InvalidPhoneError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, TotalMismatchError, PaymentNotVerifiedError, OutOfStockError } from "./errors";
 import { recordAuditEvent, type AuditFingerprint } from "@/server/audit/service";
