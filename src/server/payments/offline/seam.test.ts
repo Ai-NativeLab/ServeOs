@@ -66,7 +66,7 @@ describe("confirm-seam is provider-agnostic", () => {
     await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
 
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       paymentMethod: "instapay", paymentReference: "IP-SEAM-1",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });

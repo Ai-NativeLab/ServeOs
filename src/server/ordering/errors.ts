@@ -11,6 +11,24 @@ export class OrderValidationError extends DomainError {
   }
 }
 
+export class InvalidPhoneError extends DomainError {
+  readonly code = "invalid_phone";
+  constructor(public readonly country: string) {
+    super(`Invalid mobile phone number for country: ${country}`);
+    this.name = "InvalidPhoneError";
+  }
+  messageFor(locale: Locale): string {
+    if (this.country === "SA") {
+      return locale === "ar"
+        ? "يرجى إدخال رقم جوال سعودي صحيح (مثال: 05XXXXXXXX)"
+        : "Please enter a valid Saudi mobile number (e.g. 05XXXXXXXX)";
+    }
+    return locale === "ar"
+      ? "يرجى إدخال رقم هاتف مصري صحيح (مثال: 01XXXXXXXXX)"
+      : "Please enter a valid Egyptian mobile number (e.g. 01XXXXXXXXX)";
+  }
+}
+
 export class BranchNotAcceptingOrdersError extends DomainError {
   readonly code = "branch_not_accepting_orders";
   constructor() { super("Branch is not accepting orders"); this.name = "BranchNotAcceptingOrdersError"; }
