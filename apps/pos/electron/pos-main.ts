@@ -49,7 +49,15 @@ const authCacheCipher: AtRestCipher = {
 // dashboard host on serveos.tech (serveos.com only 302-redirects there, which
 // a packaged build cannot follow for POSTs with an Authorization header).
 // POS_API_URL always wins.
-const DEFAULT_BASE_URL = process.env.VITE_DEV_SERVER_URL ? "http://localhost:3000" : "https://app.serveos.tech";
+//
+// Resolved per PosMain CONSTRUCTION — which is after vite-plugin-electron has
+// populated VITE_DEV_SERVER_URL and before any network call — rather than at
+// module load. Not literally lazy, but every consumer reaches it post-env.
+function resolveDefaultBaseUrl(): string {
+  if (process.env.POS_API_URL) return process.env.POS_API_URL;
+  if (process.env.VITE_DEV_SERVER_URL) return "http://localhost:3000";
+  return "https://app.serveos.tech";
+}
 
 /**
  * The body a POS route returns when the *device* token is missing, unknown or
@@ -386,7 +394,7 @@ const CONFIRM_WAIT_MAX_QUEUE = 20;
  * disables their entry points from the sync state instead.
  */
 export class PosMain {
-  private baseUrl = process.env.POS_API_URL || DEFAULT_BASE_URL;
+  private baseUrl = resolveDefaultBaseUrl();
   private device: Device | null = null;
   /** In memory only: closing the app signs the cashier out but leaves the device paired. */
   private cashier: Cashier | null = null;
@@ -425,6 +433,16 @@ export class PosMain {
     onSyncState?: (status: SyncStatus) => void,
     onRealtime?: (message: PosRealtimeMessage) => void,
   ) {
+    // #163 AC5: a wrong base URL must be OBVIOUS. stdout vanishes in packaged
+    // Windows builds, so the same line lands in userData/pos-boot.log where it
+    // survives; logging must never crash boot, hence the swallow.
+    const bootLine = `[POS] API Base URL: ${this.getBaseUrl()}`;
+    console.log(bootLine);
+    try {
+      fs.appendFileSync(path.join(app.getPath("userData"), "pos-boot.log"), `${new Date().toISOString()} ${bootLine}\n`);
+    } catch {
+      // No userData write access — the console line is still emitted above.
+    }
     this.load();
     // Retention (Task 14): synced rows older than the window are dead weight
     // on every pendingEvents/unsyncedEvents scan — pending and failed rows are
@@ -571,6 +589,10 @@ export class PosMain {
     };
     if (this.cashier?.token) h["X-POS-Cashier"] = this.cashier.token;
     return h;
+  }
+
+  getBaseUrl(): string {
+    return this.baseUrl;
   }
 
   isPaired(): boolean {
