@@ -2,7 +2,11 @@ import { requireDashboardUser, type DashboardContext } from "@/server/auth/dashb
 import { authorize } from "@/server/rbac/authorize";
 
 export async function requireBillingPermission(): Promise<DashboardContext> {
-  const ctx = await requireDashboardUser();
+  // Billing is the suspension RECOVERY path: reachable while suspended, never
+  // for rejected/onboarding tenants. The settings layout deliberately lets a
+  // suspended tenant through to render chrome; this wrapper re-denies every
+  // other settings page's default and opens only here.
+  const ctx = await requireDashboardUser({ allowSuspended: true });
   authorize(ctx.roleKeys, "billing:manage");
   return ctx;
 }

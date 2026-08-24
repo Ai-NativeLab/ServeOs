@@ -9,9 +9,15 @@ import { Topbar } from "@/components/dashboard/Topbar";
 import { Toaster } from "@/components/ui/sonner";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const { user, tenantId, roleKeys } = await requireDashboardUser();
-  const [tenant, pending, unread] = await Promise.all([
-    getTenantById(tenantId),
+  // The shell lets blocked statuses through so it can render the lockout
+  // screen for them; enforcement then happens per page via
+  // requireDashboardUser()/`*-permission.ts` wrappers (default-deny). INVARIANT:
+  // every dashboard page must carry its own gate — an unguarded new page is
+  // reachable by suspended tenants. See the invariant note on requireDashboardUser.
+  const { user, tenantId, tenant, roleKeys } = await requireDashboardUser({
+    allowStatus: ["onboarding", "suspended", "rejected"],
+  });
+  const [pending, unread] = await Promise.all([
     pendingOrderCount(tenantId),
     unreadNotificationCount(tenantId, user.id, roleKeys),
   ]);
