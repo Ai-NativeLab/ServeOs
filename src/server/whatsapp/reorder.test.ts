@@ -3,7 +3,7 @@ import { placeOrder } from "@/server/ordering/service";
 import { lastWhatsappCart } from "./reorder";
 import { seedWhatsappContext } from "./test-helpers";
 
-const WA = "201111111111";
+const WA = "201012345678"; // a VALID EG mobile once the #173 rule landed (+20 10 …)
 
 describe("lastWhatsappCart", () => {
   it("returns null when this number has never ordered", async () => {

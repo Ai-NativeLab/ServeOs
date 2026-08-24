@@ -28,6 +28,7 @@ describe("POST /api/media-upload", () => {
     vi.spyOn(auth, "requireDashboardUser").mockResolvedValue({
       user: { id: "u1", email: "user@test.com" } as any,
       tenantId: "t1",
+      tenant: { id: "t1", status: "active" } as any,
       roleKeys: ["owner"],
     });
 
@@ -57,6 +58,7 @@ describe("POST /api/media-upload", () => {
     vi.spyOn(auth, "requireDashboardUser").mockResolvedValue({
       user: { id: "u1", email: "user@test.com" } as any,
       tenantId: "t1",
+      tenant: { id: "t1", status: "active" } as any,
       roleKeys: ["owner"],
     });
 

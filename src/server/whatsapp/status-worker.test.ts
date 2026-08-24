@@ -10,7 +10,7 @@ import { FakeWhatsAppProvider } from "./fake-provider";
 import { drainWhatsappStatus } from "./status-worker";
 import { seedWhatsappContext } from "./test-helpers";
 
-const WA = "201111111111";
+const WA = "201012345678"; // a VALID EG mobile once the #173 rule landed (+20 10 …)
 
 async function seedQueuedStatus(opts: { lastInboundAgoMs?: number | null } = {}) {
   const seeded = await seedWhatsappContext();

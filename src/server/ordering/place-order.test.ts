@@ -236,7 +236,7 @@ describe("placeOrder", () => {
   it("places an offline (vodafone_cash) order as pending_verification with the proof", async () => {
     const { t, branch, pizza } = await setup("pay-vc");
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
-    await upsertOfflineMethod(t.id, { type: "vodafone_cash", label: "Vodafone Cash", payToDetail: "0100" });
+    await upsertOfflineMethod(t.id, { type: "vodafone_cash", label: "Vodafone Cash", payToDetail: "01000000000" });
     const res = await placeOrder(t.id, {
       branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       paymentMethod: "vodafone_cash", paymentReference: "VC-99887",
@@ -465,7 +465,7 @@ describe("placeOrder — legacy stock adoption + storefront mirror", () => {
     await setProductStock(t.id, screw.id, 0);
 
     await expect(placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01012345678",
       lines: [{ productId: screw.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(/out of stock/i);
   });

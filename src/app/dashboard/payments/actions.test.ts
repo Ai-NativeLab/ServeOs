@@ -6,7 +6,7 @@ import { seedDefaultPlans } from "@/server/subscription/plans.seed";
 import { startTrial } from "@/server/subscription/service";
 import { createBranch, updateBranchOrdering } from "@/server/branches/service";
 import { createCategory, createProduct, updateProduct } from "@/server/catalog/service";
-import { placeOrder, transitionStatus, getOrder } from "@/server/ordering/service";
+import { placeOrder, transitionStatus, getOrder, confirmOrderPayment } from "@/server/ordering/service";
 import { upsertOfflineMethod } from "@/server/payments/offline/methods";
 import { confirmOrderPaymentAction, rejectOrderPaymentAction } from "./actions";
 
@@ -47,13 +47,14 @@ describe("payments actions error handling (Issue #171)", () => {
     currentMockUser = { tenantId, user: { id: userId }, roleKeys: ["owner"] };
 
     const res = await placeOrder(tenantId, {
-      branchId, fulfillmentType: "pickup", customerName: "Test", customerPhone: "+2010",
+      branchId, fulfillmentType: "pickup", customerName: "Test", customerPhone: "01012345678",
       paymentMethod: "vodafone_cash", paymentReference: "VF-12345",
       lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
     });
 
-    // Advance order to completed
+    // Advance order to completed. #165: resolve the offline payment first -`n    // an unverified payment can no longer reach completed.
     await transitionStatus(tenantId, res.orderId, "confirmed", userId);
+    await confirmOrderPayment(tenantId, res.orderId, userId);
     await transitionStatus(tenantId, res.orderId, "preparing", userId);
     await transitionStatus(tenantId, res.orderId, "ready", userId);
     await transitionStatus(tenantId, res.orderId, "completed", userId);
@@ -70,7 +71,9 @@ describe("payments actions error handling (Issue #171)", () => {
 
     const order = await getOrder(tenantId, res.orderId);
     expect(order?.status).toBe("completed");
-    expect(order?.paymentStatus).toBe("pending_verification");
+    // #165: the payment had to be resolved (paid) before the order could
+    // complete; rejecting afterwards must still refuse without touching it.
+    expect(order?.paymentStatus).toBe("paid");
   });
 
   it("confirmOrderPaymentAction succeeds on pending payment and updates paymentStatus", async () => {
@@ -78,7 +81,7 @@ describe("payments actions error handling (Issue #171)", () => {
     currentMockUser = { tenantId, user: { id: userId }, roleKeys: ["owner"] };
 
     const res = await placeOrder(tenantId, {
-      branchId, fulfillmentType: "pickup", customerName: "Test", customerPhone: "+2010",
+      branchId, fulfillmentType: "pickup", customerName: "Test", customerPhone: "01012345678",
       paymentMethod: "vodafone_cash", paymentReference: "VF-12345",
       lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
     });

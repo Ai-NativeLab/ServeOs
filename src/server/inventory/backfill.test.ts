@@ -65,14 +65,14 @@ describe("inventory backfill", () => {
     const loc = await withTenant(t.id, (tx) => getOrCreateDefaultLocation(tx, t.id, branch.id, "retail"));
 
     await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01012345678",
       lines: [{ productId: product.id, quantity: 7, selectedOptionIds: [] }],
     });
     expect(await onHand(t.id, link.itemId!, loc.id)).toBe(0);
 
     // Retail still blocks past zero, exactly as the flat counter did.
     await expect(placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "B", customerPhone: "2",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "B", customerPhone: "01012345679",
       lines: [{ productId: product.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(OutOfStockError);
   });

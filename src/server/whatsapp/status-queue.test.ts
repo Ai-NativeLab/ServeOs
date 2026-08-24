@@ -32,7 +32,7 @@ describe("whatsapp status queue", () => {
     const rows = await withTenant(tenantId, (tx) => tx.select().from(whatsappStatusQueue));
     expect(rows).toHaveLength(2);
     expect(rows.map((r) => r.status)).toEqual(["queued", "queued"]);
-    expect(rows[0].waId).toBe("201111111111"); // customerPhone minus the plus
+    expect(rows[0].waId).toBe("201012345678"); // customerPhone minus the plus
     expect(rows.map((r) => r.body).join(" ")).toMatch(/confirmed/i);
     expect(rows.map((r) => r.body).join(" ")).toMatch(/ready/i);
   });

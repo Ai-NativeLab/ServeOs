@@ -19,7 +19,7 @@ const roleCache = new Map<string, string>(); // `${tenantId}:${roleKey}` -> role
 async function seedTenant() {
   const i = n++;
   const [t] = await db.insert(tenants).values({
-    slug: `auth-sync-${i}`, name: "T", country: "EG", vertical: "restaurant",
+    status: "active", slug: `auth-sync-${i}`, name: "T", country: "EG", vertical: "restaurant",
   }).returning();
   return t.id;
 }
