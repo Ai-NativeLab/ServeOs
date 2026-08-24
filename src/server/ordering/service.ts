@@ -23,7 +23,7 @@ import { canTransition } from "./state-machine";
 // OutOfStockError is no longer thrown here — the inventory service raises it
 // from the FIFO deduction, on this same transaction, so the order still rolls back.
 import { isValidCustomerPhone } from "@/lib/phone";
-import { OrderValidationError, InvalidPhoneError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, TotalMismatchError, PaymentNotVerifiedError } from "./errors";
+import { OrderValidationError, InvalidPhoneError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, TotalMismatchError, PaymentNotVerifiedError, OutOfStockError } from "./errors";
 import { recordAuditEvent, type AuditFingerprint } from "@/server/audit/service";
 import { publishTenantEvent } from "@/server/realtime/publish";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
@@ -228,6 +228,9 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
     const resolveLiveLine = async (line: PlaceOrderLine) => {
       const [product] = await tx.select().from(products).where(and(eq(products.id, line.productId), eq(products.isPublished, true))).limit(1);
       if (!product) throw new OrderValidationError("product unavailable");
+      if (product.trackStock && (product.stockQuantity ?? 0) <= 0) {
+        throw new OutOfStockError(product.nameEn, product.nameAr);
+      }
 
       const [avail] = await tx.select().from(branchProductAvailability)
         .where(and(eq(branchProductAvailability.branchId, input.branchId), eq(branchProductAvailability.productId, product.id))).limit(1);
@@ -265,6 +268,9 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
           .where(and(eq(productVariants.id, line.variantId), eq(productVariants.productId, product.id), eq(productVariants.isActive, true)))
           .limit(1);
         if (!variant) throw new InvalidVariantError();
+        if (variant.stockQuantity !== null && variant.stockQuantity <= 0) {
+          throw new OutOfStockError(variant.nameEn, variant.nameAr);
+        }
         unit = Number(variant.price);
         variantId = variant.id;
         variantNameEn = variant.nameEn;

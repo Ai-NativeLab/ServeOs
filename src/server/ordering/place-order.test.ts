@@ -453,6 +453,22 @@ describe("placeOrder — legacy stock adoption + storefront mirror", () => {
 
     expect((await findProduct())?.inStock).toBe(false);
   });
+
+  it("rejects an order for a tracked product that is out of stock at submission time (#167)", async () => {
+    const { t, branch } = await setupRetail("oos1");
+    const { setProductStock } = await import("@/server/catalog/variants");
+    const { createCategory, createProduct, updateProduct } = await import("@/server/catalog/service");
+
+    const cat = await createCategory(t.id, { nameEn: "Screws", nameAr: "براغي" });
+    const screw = await createProduct(t.id, { nameEn: "Screw", nameAr: "برغي", basePrice: "10", categoryId: cat.id });
+    await updateProduct(t.id, screw.id, { isPublished: true, trackStock: true });
+    await setProductStock(t.id, screw.id, 0);
+
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: screw.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(/out of stock/i);
+  });
 });
 
 describe("placeOrder — restaurant recipes (BOM)", () => {
