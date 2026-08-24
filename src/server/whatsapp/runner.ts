@@ -4,6 +4,7 @@ import { getPublishedMenu } from "@/server/catalog/service";
 import { getTenantById } from "@/server/tenancy/service";
 import { listBranches } from "@/server/branches/service";
 import { mintHandoff } from "./handoff";
+import { buildTenantUrl } from "@/lib/urls";
 import { lastWhatsappCart, CONVERSATION_TTL_MS } from "./reorder";
 import { placeOrder } from "@/server/ordering/service";
 import { recordAuditEvent } from "@/server/audit/service";
@@ -86,7 +87,7 @@ export async function handleInbound(
         const cart = out.nextCart.length ? out.nextCart : conv.cart;
         const token = await mintHandoff(tenantId, msg.waId, out.nextBranchId ?? conv.branchId, cart);
         const tenant = await getTenantById(tenantId);
-        const url = `https://${tenant?.slug}.${process.env.ROOT_DOMAIN ?? "serveos.com"}/?handoff=${token}`;
+        const url = tenant ? buildTenantUrl(tenant.slug, `/?handoff=${token}`) : "";
         out.outbound.push({ kind: "text", body: `Finish your order here:\n${url}` });
       }
     }
