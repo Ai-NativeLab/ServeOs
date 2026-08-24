@@ -33,23 +33,23 @@ vi.mock("./_offline/db", () => ({
     exec: () => {},
     prepare: (sql: string) => ({
       // Store.setLocalState / Store.getLocalState persist key-value pairs.
-      run: (...args: any[]) => {
+      run: (...args: unknown[]) => {
         if (sql.includes("INSERT OR REPLACE INTO local_state")) {
-          dbMock.store.set(args[0], args[1]);
+          dbMock.store.set(args[0] as string, args[1] as string);
         }
         return { changes: 1 };
       },
-      get: (...args: any[]) => {
+      get: (...args: unknown[]) => {
         if (sql.includes("MAX(seq)")) return { maxSeq: 0 };
         if (sql.includes("SELECT value FROM local_state")) {
-          const val = dbMock.store.get(args[0]);
+          const val = dbMock.store.get(args[0] as string);
           return val ? { value: val } : undefined;
         }
         return undefined;
       },
       all: () => [],
     }),
-    transaction: (fn: any) => fn,
+    transaction: <T,>(fn: () => T): T => fn,
   }),
   noCipher: {
     isAvailable: () => false,
