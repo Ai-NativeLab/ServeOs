@@ -11,6 +11,12 @@ export default function DashboardError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  // BEST-EFFORT net (#172): production strips server-error messages down to a
+  // digest before they reach this client boundary, so this heuristic can miss
+  // an UnauthorizedError thrown by a server component in prod. The real gate
+  // is page-level: every dashboard page catches its own permission error and
+  // renders <PermissionDenied>. If a route reaches this boundary as a crash in
+  // production, fix that route's catch — don't rely on this branch.
   const isUnauthorized =
     error?.name === "UnauthorizedError" ||
     error?.message?.toLowerCase().includes("unauthorized") ||
