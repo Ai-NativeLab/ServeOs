@@ -46,6 +46,9 @@ export function CheckoutForm({
   initialPhone?: string;
   initialAddress?: string;
   customer?: { id: string; name: string; email: string } | null;
+  /** Test seam only: production hydrates the cart from localStorage inside the
+   *  form (see the sync effect below). Passing it from the server is impossible
+   *  — the cart lives in the browser. */
   initialCart?: Cart;
 }) {
   const [cart, setCart] = useState<Cart>(() => initialCart ?? { branchId: null, lines: [] });
