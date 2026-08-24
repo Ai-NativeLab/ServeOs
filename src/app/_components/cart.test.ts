@@ -50,6 +50,12 @@ describe("withLineQuantity", () => {
     const cart: Cart = { branchId: null, lines: [line()] };
     expect(withLineQuantity(cart, 0, 0).lines).toHaveLength(0);
   });
+  it("removes a specific line from a multi-line cart", () => {
+    const cart: Cart = { branchId: null, lines: [line({ productId: "p1" }), line({ productId: "p2" })] };
+    const updated = withLineQuantity(cart, 0, 0);
+    expect(updated.lines).toHaveLength(1);
+    expect(updated.lines[0].productId).toBe("p2");
+  });
   it("ignores an out-of-range index", () => {
     const cart: Cart = { branchId: null, lines: [line()] };
     expect(withLineQuantity(cart, 5, 2).lines).toHaveLength(1);
