@@ -49,7 +49,11 @@ const authCacheCipher: AtRestCipher = {
 // dashboard host on serveos.tech (serveos.com only 302-redirects there, which
 // a packaged build cannot follow for POSTs with an Authorization header).
 // POS_API_URL always wins.
-export function resolveDefaultBaseUrl(): string {
+//
+// Resolved per PosMain CONSTRUCTION — which is after vite-plugin-electron has
+// populated VITE_DEV_SERVER_URL and before any network call — rather than at
+// module load. Not literally lazy, but every consumer reaches it post-env.
+function resolveDefaultBaseUrl(): string {
   if (process.env.POS_API_URL) return process.env.POS_API_URL;
   if (process.env.VITE_DEV_SERVER_URL) return "http://localhost:3000";
   return "https://app.serveos.tech";
@@ -429,7 +433,16 @@ export class PosMain {
     onSyncState?: (status: SyncStatus) => void,
     onRealtime?: (message: PosRealtimeMessage) => void,
   ) {
-    console.log(`[POS] API Base URL: ${this.baseUrl}`);
+    // #163 AC5: a wrong base URL must be OBVIOUS. stdout vanishes in packaged
+    // Windows builds, so the same line lands in userData/pos-boot.log where it
+    // survives; logging must never crash boot, hence the swallow.
+    const bootLine = `[POS] API Base URL: ${this.getBaseUrl()}`;
+    console.log(bootLine);
+    try {
+      fs.appendFileSync(path.join(app.getPath("userData"), "pos-boot.log"), `${new Date().toISOString()} ${bootLine}\n`);
+    } catch {
+      // No userData write access — the console line is still emitted above.
+    }
     this.load();
     // Retention (Task 14): synced rows older than the window are dead weight
     // on every pendingEvents/unsyncedEvents scan — pending and failed rows are

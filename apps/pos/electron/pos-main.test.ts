@@ -13,38 +13,50 @@ vi.mock("electron", () => ({
   safeStorage: { isEncryptionAvailable: () => false },
 }));
 
-vi.mock("./_offline/db", () => {
-  const storeMap = new Map<string, string>();
+// The offline store's better-sqlite3 binding is a NATIVE module: importing the
+// real _offline/db here would need a compiled binary in every environment that
+// runs these tests. Only openDb is faked, simulating exactly the surface
+// PosMain touches at boot — local_state get/set and the event-log MAX(seq) —
+// keyed off the SQL so the statements stay authoritative in Store. The store
+// map lives in shared hoisted state and MUST be reset between tests
+// (dbMock.reset() in beforeEach) or values leak across cases.
+const dbMock = vi.hoisted(() => {
+  const store = new Map<string, string>();
   return {
-    openDb: () => ({
-      pragma: () => {},
-      exec: () => {},
-      prepare: (sql: string) => ({
-        run: (...args: any[]) => {
-          if (sql.includes("INSERT OR REPLACE INTO local_state")) {
-            storeMap.set(args[0], args[1]);
-          }
-          return { changes: 1 };
-        },
-        get: (...args: any[]) => {
-          if (sql.includes("MAX(seq)")) return { maxSeq: 0 };
-          if (sql.includes("SELECT value FROM local_state")) {
-            const val = storeMap.get(args[0]);
-            return val ? { value: val } : undefined;
-          }
-          return undefined;
-        },
-        all: () => [],
-      }),
-      transaction: (fn: any) => fn,
-    }),
-    noCipher: {
-      isAvailable: () => false,
-      encryptString: (s: string) => Buffer.from(s),
-      decryptString: (b: Buffer) => b.toString("utf8"),
-    },
+    store,
+    reset: () => store.clear(),
   };
 });
+vi.mock("./_offline/db", () => ({
+  openDb: () => ({
+    pragma: () => {},
+    exec: () => {},
+    prepare: (sql: string) => ({
+      // Store.setLocalState / Store.getLocalState persist key-value pairs.
+      run: (...args: any[]) => {
+        if (sql.includes("INSERT OR REPLACE INTO local_state")) {
+          dbMock.store.set(args[0], args[1]);
+        }
+        return { changes: 1 };
+      },
+      get: (...args: any[]) => {
+        if (sql.includes("MAX(seq)")) return { maxSeq: 0 };
+        if (sql.includes("SELECT value FROM local_state")) {
+          const val = dbMock.store.get(args[0]);
+          return val ? { value: val } : undefined;
+        }
+        return undefined;
+      },
+      all: () => [],
+    }),
+    transaction: (fn: any) => fn,
+  }),
+  noCipher: {
+    isAvailable: () => false,
+    encryptString: (s: string) => Buffer.from(s),
+    decryptString: (b: Buffer) => b.toString("utf8"),
+  },
+}));
 
 // Static import is safe: vitest hoists the vi.mock factory above it, and
 // PosMain only reaches for electron inside its constructor.
@@ -85,6 +97,7 @@ async function pairedPos(baseUrl: string) {
 
 beforeEach(() => {
   hoisted.userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "pos-main-test-"));
+  dbMock.reset();
 });
 
 afterEach(() => {
@@ -156,6 +169,18 @@ describe("device file is scoped to the backend it was paired against", () => {
     process.env.POS_API_URL = BACKEND_A;
 
     expect(new PosMain().isPaired()).toBe(true);
+  });
+
+  // #163 AC6: a till paired against an explicit host must not silently carry
+  // that pairing into a dev session whose resolved base URL differs — the
+  // resolved value participates in the scoping exactly like POS_API_URL does.
+  it("ignores a pairing when dev resolution changes the effective base URL", async () => {
+    await pairedPos(BACKEND_A);
+
+    delete process.env.POS_API_URL;
+    process.env.VITE_DEV_SERVER_URL = "http://localhost:5173"; // resolves http://localhost:3000
+
+    expect(new PosMain().isPaired()).toBe(false);
   });
 });
 
