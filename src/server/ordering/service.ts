@@ -149,7 +149,11 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
 
   const tenant = await getTenantById(tenantId);
   const country = tenant?.country ?? "EG";
-  if (!isValidCustomerPhone(input.customerPhone, country)) {
+  if (!isValidCustomerPhone(input.customerPhone, country, {
+    // The till sells to anonymous walk-ins — only the POS channel may use the
+    // 000000000 sentinel (#173 review).
+    allowWalkInSentinel: input.channel === "pos",
+  })) {
     throw new InvalidPhoneError(country);
   }
 

@@ -591,6 +591,7 @@ describe("placeOrder — POS extensions", () => {
     const { t, branch, pizza } = await setup("pos-ext5");
     const res = await placeOrder(t.id, {
       branchId: branch.id, fulfillmentType: "pickup", customerName: "Walk-in", customerPhone: "000000000",
+      channel: "pos",
       lines: [
         { productId: pizza.id, quantity: 1, selectedOptionIds: [] },
         { productId: pizza.id, quantity: 3, selectedOptionIds: [] },

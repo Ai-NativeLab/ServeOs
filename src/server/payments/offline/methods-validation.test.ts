@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { db } from "@/db/client";
 import { tenants } from "@/server/tenancy/schema";
-import { upsertOfflineMethod, listOfflineMethods } from "./methods";
+import { upsertOfflineMethod } from "./methods";
 import { validatePayToDetail } from "./validation";
 import { InvalidPayToDetailError } from "./errors";
 

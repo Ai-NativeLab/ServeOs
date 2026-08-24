@@ -7,7 +7,7 @@ import { createBranch, updateBranchOrdering } from "@/server/branches/service";
 import { createCategory, createProduct, updateProduct } from "@/server/catalog/service";
 import { placeOrder } from "./service";
 import { InvalidPhoneError } from "./errors";
-import { isValidCustomerPhone, getPhoneFormatHint } from "@/lib/phone";
+import { isValidCustomerPhone } from "@/lib/phone";
 
 async function seedTenant(slug: string, country: "EG" | "SA" = "EG") {
   const [t] = await db.insert(tenants).values({
@@ -60,9 +60,19 @@ describe("Customer phone validation (Issue #173)", () => {
       expect(isValidCustomerPhone("01012345678", "SA")).toBe(false);// EG number on SA
     });
 
-    it("allows POS walk-in sentinel 000000000", () => {
-      expect(isValidCustomerPhone("000000000", "EG")).toBe(true);
-      expect(isValidCustomerPhone("000000000", "SA")).toBe(true);
+    // F1 (#173 review): the walk-in sentinel is a POS-only escape hatch. The
+    // shared default must REJECT it — a storefront/WhatsApp customer submitting
+    // all-zeros is exactly the unreachable order this ticket closes.
+    it("rejects the POS walk-in sentinel by default (storefront must not dodge the rule)", () => {
+      expect(isValidCustomerPhone("000000000", "EG")).toBe(false);
+      expect(isValidCustomerPhone("000000000", "SA")).toBe(false);
+    });
+
+    it("accepts the sentinel only via the explicit POS walk-in opt-in", () => {
+      expect(isValidCustomerPhone("000000000", "EG", { allowWalkInSentinel: true })).toBe(true);
+      expect(isValidCustomerPhone("000000000", "SA", { allowWalkInSentinel: true })).toBe(true);
+      // The opt-in covers ONLY the sentinel, not other junk.
+      expect(isValidCustomerPhone("123", "EG", { allowWalkInSentinel: true })).toBe(false);
     });
   });
 
