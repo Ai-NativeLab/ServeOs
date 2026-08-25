@@ -3,6 +3,15 @@ import { NextRequest } from "next/server";
 import { POST } from "./route";
 import * as auth from "@/server/auth/dashboard-context";
 
+/** Minimal authorised-context stub typed against the real signature (#164 added `tenant`). */
+const mockCtx = () =>
+  ({
+    user: { id: "u1", email: "user@test.com" },
+    tenantId: "t1",
+    tenant: { id: "t1", status: "active" },
+    roleKeys: ["owner"],
+  }) as unknown as Awaited<ReturnType<typeof auth.requireDashboardUser>>;
+
 describe("POST /api/media-upload", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -25,12 +34,7 @@ describe("POST /api/media-upload", () => {
   });
 
   it("returns 501 naming missing config when storage env vars are absent", async () => {
-    vi.spyOn(auth, "requireDashboardUser").mockResolvedValue({
-      user: { id: "u1", email: "user@test.com" } as any,
-      tenantId: "t1",
-      tenant: { id: "t1", status: "active" } as any,
-      roleKeys: ["owner"],
-    });
+    vi.spyOn(auth, "requireDashboardUser").mockResolvedValue(mockCtx());
 
     delete process.env.SUPABASE_URL;
     delete process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -55,12 +59,7 @@ describe("POST /api/media-upload", () => {
   });
 
   it("identifies specifically which env var is missing", async () => {
-    vi.spyOn(auth, "requireDashboardUser").mockResolvedValue({
-      user: { id: "u1", email: "user@test.com" } as any,
-      tenantId: "t1",
-      tenant: { id: "t1", status: "active" } as any,
-      roleKeys: ["owner"],
-    });
+    vi.spyOn(auth, "requireDashboardUser").mockResolvedValue(mockCtx());
 
     vi.stubEnv("SUPABASE_URL", "https://xyz.supabase.co");
     delete process.env.SUPABASE_SERVICE_ROLE_KEY;
