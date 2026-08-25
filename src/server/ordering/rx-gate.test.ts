@@ -115,4 +115,29 @@ describe("Rx order gate", () => {
     const [order] = await withTenant(tenantId, (tx) => tx.select().from(orders).where(eq(orders.id, res.orderId)));
     expect(order.rxReviewStatus).toBe("not_required");
   });
+
+  // #185: the auto-claim picks the customer's newest unattached pending script.
+  // Without an age floor, a script uploaded before a FAILED order attempt
+  // lingers for days and silently attaches to a later, unrelated order.
+  it("refuses to auto-claim a prescription older than the claim window", async () => {
+    const { tenantId, branchId, productId } = await seed("rxg-stale", { rx: true });
+    const me = await registerCustomer(tenantId, { name: "P", email: `p-stale-${Date.now()}@x.com`, password: "secret123" });
+    const rx = await submitPrescription(tenantId, me.id, "rx/stale.jpg");
+
+    const { prescriptions } = await import("@/server/prescriptions/schema");
+    await withTenant(tenantId, (tx) =>
+      tx.update(prescriptions).set({ createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000) }).where(eq(prescriptions.id, rx.id)),
+    );
+
+    await expect(placeOrder(tenantId, {
+      branchId, fulfillmentType: "pickup", customerName: "P", customerPhone: "01012345678",
+      customerId: me.id, lines: line(productId),
+    })).rejects.toThrow(/prescription must be uploaded/i);
+
+    // The stale script itself is untouched — still pending for a pharmacist.
+    const [row] = await withTenant(tenantId, (tx) =>
+      tx.select().from(prescriptions).where(eq(prescriptions.id, rx.id)));
+    expect(row?.status).toBe("pending");
+    expect(row?.orderId).toBeNull();
+  });
 });

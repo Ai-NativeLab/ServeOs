@@ -30,6 +30,7 @@ import { recordAuditEvent, type AuditFingerprint } from "@/server/audit/service"
 import { publishTenantEvent } from "@/server/realtime/publish";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { enqueueStatusUpdate } from "@/server/whatsapp/status-updates";
+import { PRESCRIPTION_CLAIM_MAX_AGE_MS } from "@/server/prescriptions/service";
 import type { AuditActorType } from "@/server/audit/canonical";
 
 export type PlaceOrderLine = {
@@ -476,6 +477,9 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
           eq(prescriptions.customerId, input.customerId),
           eq(prescriptions.status, "pending"),
           isNull(prescriptions.orderId),
+          // #185: only claim a FRESH upload. A script from a failed attempt
+          // hours ago must not silently attach to today's unrelated basket.
+          gte(prescriptions.createdAt, new Date(Date.now() - PRESCRIPTION_CLAIM_MAX_AGE_MS)),
         ))
         .orderBy(desc(prescriptions.createdAt))
         .limit(1);
