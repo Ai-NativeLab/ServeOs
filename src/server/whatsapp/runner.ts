@@ -84,10 +84,13 @@ export async function handleInbound(
         );
       }
       if (effect.kind === "mintHandoff") {
+        const tenant = await getTenantById(tenantId);
+        // A vanished tenant can't host a handoff — pushing a blank link would
+        // be worse than staying silent (nit from the #175 review).
+        if (!tenant) continue;
         const cart = out.nextCart.length ? out.nextCart : conv.cart;
         const token = await mintHandoff(tenantId, msg.waId, out.nextBranchId ?? conv.branchId, cart);
-        const tenant = await getTenantById(tenantId);
-        const url = tenant ? buildTenantUrl(tenant.slug, `/?handoff=${token}`) : "";
+        const url = buildTenantUrl(tenant.slug, `/?handoff=${token}`);
         out.outbound.push({ kind: "text", body: `Finish your order here:\n${url}` });
       }
     }
