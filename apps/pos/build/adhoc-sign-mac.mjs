@@ -36,6 +36,16 @@ const run = promisify(execFile);
 export default async function adhocSignMac(context) {
   if (context.electronPlatformName !== "darwin") return;
 
+  // The day a real certificate exists, electron-builder signs with the Developer
+  // ID before hooks run — and re-signing ad-hoc here would silently replace that
+  // identity with none, so notarization would reject the upload and the reason
+  // would be nowhere near this file. Stand down whenever credentials are
+  // present. See docs/pos-code-signing.md.
+  if (process.env.CSC_LINK || process.env.CSC_NAME) {
+    console.log("  • ad-hoc signing skipped  reason=signing credentials present");
+    return;
+  }
+
   const appPath = path.join(
     context.appOutDir,
     `${context.packager.appInfo.productFilename}.app`,

@@ -14,7 +14,8 @@
     "test": "vitest run"
   },
   "//": "better-sqlite3 is parked with the offline store in electron/_offline; kept optional so a failed native build never blocks `npm install`. (Note lives at top level — npm rejects a '//' comment key inside a dependencies object with EINVALIDPACKAGENAME, which breaks install/CI and Vercel deploys.)",
-  "//build": "Notes on the `build` block below — they live out here because electron-builder validates its config against a schema and rejects unknown keys, so a '//' inside it fails the build. (1) `files` ships only the two bundles: vite emits the renderer to dist/, vite-plugin-electron emits main+preload to dist-electron/, and apps/pos has no runtime dependencies — everything is bundled. (2) better-sqlite3 is excluded and npmRebuild is off because it is an optionalDependency of the parked offline store with zero live imports; letting electron-builder collect it would bundle a native binding built for Node, not Electron. Both come back when the offline engine is unparked. (3) `mac.identity: null` makes the unsigned build explicit rather than accidental — signing needs an Apple Developer cert, and without one macOS Gatekeeper requires right-click - Open on first launch. It is paired with the `afterPack` hook, which ad-hoc signs the bundle: skipping signing entirely leaves the Electron binary's own linker signature over a resource set packaging has changed, which fails `codesign --verify` and gets the download refused as 'damaged' — a wall right-click - Open does not get past. See build/adhoc-sign-mac.mjs. (4) `artifactName` overrides the default, which interpolates productName and would put a space in every filename — that breaks the unquoted glob the release workflow passes to `gh release create`, and turns every download URL into %20 soup.",
+  "//build": "Notes on the `build` block below — they live out here because electron-builder validates its config against a schema and rejects unknown keys, so a '//' inside it fails the build. (1) `files` ships only the two bundles: vite emits the renderer to dist/, vite-plugin-electron emits main+preload to dist-electron/, and apps/pos has no runtime dependencies — everything is bundled. (2) better-sqlite3 is excluded and npmRebuild is off because it is an optionalDependency of the parked offline store with zero live imports; letting electron-builder collect it would bundle a native binding built for Node, not Electron. Both come back when the offline engine is unparked. (3) `mac.identity: null` makes the unsigned build explicit rather than accidental — signing needs an Apple Developer cert, and without one macOS Gatekeeper requires right-click - Open on first launch. It is paired with the `afterPack` hook, which ad-hoc signs the bundle: skipping signing entirely leaves the Electron binary's own linker signature over a resource set packaging has changed, which fails `codesign --verify` and gets the download refused as 'damaged' — a wall right-click - Open does not get past. See build/adhoc-sign-mac.mjs. (4) `artifactName` overrides the default, which interpolates productName and would put a space in every filename — that breaks the unquoted glob the release workflow passes to `gh release create`, and turns every download URL into %20 soup. (5) Two icon masters, generated from src/app/icon.svg by build/render-icon.mjs: macOS gets the inset one because the platform adds no padding of its own, Windows gets full-bleed because it draws .ico into a tile it owns. electron-builder derives .icns and .ico from these PNGs. (6) `publish` does not make the build publish anything — the build script passes --publish never, and the workflow uploads assets itself. It is here because it is what makes electron-builder emit latest-mac.yml / latest.yml and embed app-update.yml in the bundle; electron-updater reads those to discover releases, and without this block auto-update has nothing to look at.",
+  "//electron-updater": "A devDependency, not a dependency, and deliberately so: apps/pos ships zero runtime node_modules — vite bundles the renderer and vite-plugin-electron rollups the main process, which is why `files` can list two directories and nothing else. Making it a real dependency would ask electron-builder to collect it out of the workspace-hoisted root node_modules, the same resolution path that already breaks for electron itself. Bundling keeps the installer self-contained. Same reason react and react-dom sit in devDependencies.",
   "build": {
     "appId": "tech.serveos.pos",
     "productName": "ServeOS POS",
@@ -40,6 +41,7 @@
         }
       ],
       "category": "public.app-category.business",
+      "icon": "build/icon-mac.png",
       "identity": null
     },
     "afterPack": "build/adhoc-sign-mac.mjs",
@@ -51,8 +53,16 @@
             "x64"
           ]
         }
-      ]
+      ],
+      "icon": "build/icon.png"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Ai-NativeLab",
+        "repo": "ServeOs"
+      }
+    ],
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
@@ -76,6 +86,7 @@
     "react-dom": "19.2.4",
     "tailwindcss": "^4.3.2",
     "typescript": "^5",
+    "electron-updater": "^6.3.9",
     "vite": "^6.0.0",
     "vite-plugin-electron": "^0.29.0",
     "vitest": "^4.1.8"

@@ -72,6 +72,14 @@ jobs:
           path: |
             apps/pos/release/*.dmg
             apps/pos/release/*.exe
+            apps/pos/release/*.yml
+            apps/pos/release/*.blockmap
+          # The .yml and .blockmap files are not incidental build litter — they
+          # ARE the update feed. electron-updater reads latest-mac.yml /
+          # latest.yml from the release to discover a new version, and the
+          # blockmaps let it fetch only the changed chunks. A release carrying
+          # just the installers installs fine and then never updates again.
+          #
           # A silently empty artifact would publish a release with nothing to
           # download, which is worse than a red run.
           if-no-files-found: error
@@ -119,6 +127,19 @@ jobs:
 
           Signing removes both warnings and needs an Apple Developer account
           ($99/yr) plus a Windows OV code-signing certificate.
+
+          ## Updates
+
+          **Windows** installs update themselves. The terminal checks on launch
+          and every six hours, downloads in the background, and swaps the new
+          version in the next time the app is quit — never mid-shift, and never
+          with a prompt. Closing the till at the end of the day is all anyone
+          has to do.
+
+          **macOS** does not update itself yet: Apple requires a Developer ID
+          signature before an update can be applied, and these builds are
+          ad-hoc signed. Until that is in place, replace the app from the
+          latest `.dmg` by hand.
 
           ## Connecting
 

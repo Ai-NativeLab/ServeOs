@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import path from "node:path";
 import { PosMain, type RecordSaleInput, type CashMovementInput } from "./pos-main";
+import { initAutoUpdate } from "./updater";
 
 const isDev = !!process.env.VITE_DEV_SERVER_URL;
 
@@ -23,6 +24,7 @@ function createWindow() {
 
 app.whenReady().then(() => {
   posMain = new PosMain();
+  initAutoUpdate();
 
   ipcMain.handle("pos:isPaired", () => posMain?.isPaired() ?? false);
   ipcMain.handle("pos:branchName", () => posMain?.branchName() ?? "");
