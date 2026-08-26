@@ -3,7 +3,8 @@ import { redirect } from "next/navigation";
 import { validateSession } from "./session";
 import { loadUserRoleKeys, SESSION_COOKIE } from "./current-user";
 import type { User } from "./schema";
-import type { RoleKey } from "@/server/rbac/permissions";
+import type { RoleKey, Permission } from "@/server/rbac/permissions";
+import { can } from "@/server/rbac/authorize";
 import { getTenantById } from "@/server/tenancy";
 import type { Tenant, tenantStatus } from "@/server/tenancy/schema";
 
@@ -70,4 +71,23 @@ export async function requireDashboardUser(options?: DashboardAuthOptions): Prom
   }
 
   return { user: session.user, tenantId: session.user.tenantId, tenant, roleKeys };
+}
+
+/**
+ * PAGE-level permission gate (#172): redirects to the shared denial screen
+ * instead of throwing, so a missing permission can never reach a client error
+ * boundary as a stripped, unrecognisable crash — in production Next replaces
+ * server-error messages with a digest, which defeats any client-side
+ * "unauthorized?" heuristic.
+ *
+ * API routes and server ACTIONS should keep using `authorize()` (throwing) —
+ * a redirect is meaningless inside a JSON response or a ToastForm action.
+ */
+export async function authorizeDashboardOrRedirect(
+  ctx: DashboardContext,
+  permission: Permission,
+): Promise<void> {
+  if (!can(ctx.roleKeys, permission)) {
+    redirect(`/dashboard/denied?permission=${encodeURIComponent(permission)}`);
+  }
 }

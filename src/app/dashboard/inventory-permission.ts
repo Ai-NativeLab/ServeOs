@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { requireDashboardUser, type DashboardContext } from "@/server/auth/dashboard-context";
+import { requireDashboardUser, authorizeDashboardOrRedirect } from "@/server/auth/dashboard-context";
+import type { DashboardContext } from "@/server/auth/dashboard-context";
 import { authorize, UnauthorizedError } from "@/server/rbac/authorize";
 import type { Permission } from "@/server/rbac/permissions";
 
@@ -10,7 +11,7 @@ import type { Permission } from "@/server/rbac/permissions";
  */
 export async function requireInventoryPermission(perm: Permission): Promise<DashboardContext> {
   const ctx = await requireDashboardUser();
-  authorize(ctx.roleKeys, perm);
+  await authorizeDashboardOrRedirect(ctx, perm);
   return ctx;
 }
 

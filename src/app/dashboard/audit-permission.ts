@@ -1,8 +1,8 @@
-import { requireDashboardUser, type DashboardContext } from "@/server/auth/dashboard-context";
-import { authorize } from "@/server/rbac/authorize";
+import { requireDashboardUser, authorizeDashboardOrRedirect } from "@/server/auth/dashboard-context";
+import type { DashboardContext } from "@/server/auth/dashboard-context";
 
 export async function requireAuditPermission(): Promise<DashboardContext> {
   const ctx = await requireDashboardUser();
-  authorize(ctx.roleKeys, "audit:view");
+  await authorizeDashboardOrRedirect(ctx, "audit:view");
   return ctx;
 }
