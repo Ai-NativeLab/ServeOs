@@ -17,6 +17,10 @@ describe("Offline payment method pay-to detail validation (Issue #174)", () => {
     it("validates vodafone_cash format strictly (010XXXXXXXX, 11 digits)", () => {
       expect(validatePayToDetail("vodafone_cash", "01012345678", "EG")).toBe(true);
       expect(validatePayToDetail("vodafone_cash", "01098765432", "EG")).toBe(true);
+      // Same normalisation as mobile_wallet (#187 review): formatted input is
+      // the same number, not a different one.
+      expect(validatePayToDetail("vodafone_cash", "010 1234 5678", "EG")).toBe(true);
+      expect(validatePayToDetail("vodafone_cash", "+201012345678", "EG")).toBe(true);
 
       // Invalids
       expect(validatePayToDetail("vodafone_cash", "01112345678", "EG")).toBe(false); // 011 is Etisalat

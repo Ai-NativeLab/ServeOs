@@ -1,5 +1,5 @@
 import type { OfflineMethodType } from "./types";
-import { isValidCustomerPhone } from "@/lib/phone";
+import { isValidCustomerPhone, normalizePhone } from "@/lib/phone";
 
 /**
  * Vodafone Cash: exactly 11 digits starting with 010.
@@ -28,7 +28,14 @@ export function validatePayToDetail(
   if (!clean) return false;
 
   if (type === "vodafone_cash") {
-    return VODAFONE_CASH_RE.test(clean);
+    // Same normalisation the mobile_wallet branch gets via
+    // isValidCustomerPhone (#187 review): formatted input is the same number,
+    // and an Egyptian international prefix (+20 / 0020 / 20) collapses to the
+    // national 010… form.
+    return VODAFONE_CASH_RE.test((() => {
+      const n = normalizePhone(clean).replace(/^\+?(?:0020|20)/, "");
+      return n.startsWith("0") ? n : "0" + n;
+    })());
   }
 
   if (type === "mobile_wallet") {
