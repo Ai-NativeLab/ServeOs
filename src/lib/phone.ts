@@ -12,17 +12,18 @@ export type PhoneValidationOptions = {
 
 /**
  * Egyptian mobile format:
- * 010, 011, 012, 015 followed by 8 digits (11 digits total).
- * Accepts international prefix (+20, 0020, 20).
+ * national `010|011|012|015` + 8 digits, or international `+20`/`0020`
+ * followed by the subscriber number WITHOUT the national leading zero
+ * (`1[0125]` + 8 digits). A bare country-code form (`2012…`) is not dialable
+ * and is rejected (#187 review).
  */
-const EG_PHONE_RE = /^(?:\+20|0020|20)?0?1([0125]\d{8})$/;
+const EG_PHONE_RE = /^(?:01[0125]|(?:\+20|0020)1[0125])\d{8}$/;
 
 /**
  * Saudi mobile format:
- * 05 followed by 8 digits (10 digits total).
- * Accepts international prefix (+966, 00966, 966).
+ * national `05` + 8 digits, or international `+966`/`00966` + `5` + 8 digits.
  */
-const SA_PHONE_RE = /^(?:\+966|00966|966)?0?5(\d{8})$/;
+const SA_PHONE_RE = /^(?:05|(?:\+966|00966)5)\d{8}$/;
 
 /**
  * Canonicalises any human-typed phone into `<optional +><ASCII digits>`:

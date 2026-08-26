@@ -33,7 +33,7 @@ describe("Customer phone validation (Issue #173)", () => {
       expect(isValidCustomerPhone("01555555555", "EG")).toBe(true);
       expect(isValidCustomerPhone("+201012345678", "EG")).toBe(true);
       expect(isValidCustomerPhone("00201112345678", "EG")).toBe(true);
-      expect(isValidCustomerPhone("201212345678", "EG")).toBe(true);
+      expect(isValidCustomerPhone("201212345678", "EG")).toBe(false); // bare country-code w/o + is not dialable
 
       // Invalids for Egypt
       expect(isValidCustomerPhone("123", "EG")).toBe(false);
@@ -61,7 +61,7 @@ describe("Customer phone validation (Issue #173)", () => {
       expect(isValidCustomerPhone("0598765432", "SA")).toBe(true);
       expect(isValidCustomerPhone("+966512345678", "SA")).toBe(true);
       expect(isValidCustomerPhone("00966598765432", "SA")).toBe(true);
-      expect(isValidCustomerPhone("966512345678", "SA")).toBe(true);
+      expect(isValidCustomerPhone("966512345678", "SA")).toBe(false); // same rule for SA
 
       // Invalids for Saudi
       expect(isValidCustomerPhone("123", "SA")).toBe(false);
