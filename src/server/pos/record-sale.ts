@@ -74,7 +74,10 @@ export type SaleReceipt = {
   total: number;
   paidAmount: number;
   changeAmount: number;
-  paymentStatus: "paid" | "partially_paid";
+  /** `pending_verification` surfaces when a tender lands on an offline order
+   *  whose payment is still unconfirmed — the receipt tells the till to show
+   *  the queue, not a paid badge (#187 C4). */
+  paymentStatus: "paid" | "partially_paid" | "pending_verification";
   idempotent: boolean;
 };
 
@@ -238,7 +241,7 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
     paidAmount >= total - 0.001 ? "paid" : "partially_paid";
 
   let committedReceipt: SaleReceipt | null = null;
-  const placed = await placeOrder(ctx.tenantId, {
+  await placeOrder(ctx.tenantId, {
     branchId: ctx.branchId,
     fulfillmentType: "pickup",
     customerName: "Walk-in",
@@ -297,7 +300,18 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
       }
       if (events.length > 0) await tx.insert(posAdjustmentEvents).values(events);
 
-      const paymentStatus = paymentStatusFor(placed.total);
+      // #187 C4 (sibling guard of markPaid): tender math must not silently
+      // flip an OFFLINE-unverified order's paymentStatus — partially_paid is
+      // not pending_verification, and the #165 fulfilment gate would stop
+      // firing with money still outstanding and no payments:confirm audit.
+      // Unreachable through today's walk-in flow (recordSale always creates a
+      // cash/card order), but this write path is exactly where a future
+      // "till takes a deposit on an offline order" feature would surface it.
+      const [currentRow] = await tx.select({ ps: orders.paymentStatus }).from(orders).where(eq(orders.id, placed.orderId));
+      let paymentStatus: "paid" | "partially_paid" | "pending_verification" = paymentStatusFor(placed.total);
+      if (currentRow?.ps === "pending_verification") {
+        paymentStatus = "pending_verification";
+      }
       await tx.update(orders).set({ paymentStatus, updatedAt: new Date() }).where(eq(orders.id, placed.orderId));
 
       // Emit the audit chain for this sale on the SAME tx. order.placed was already
