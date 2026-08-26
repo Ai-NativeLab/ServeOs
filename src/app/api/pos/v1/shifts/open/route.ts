@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requirePosCashier, assertPermission } from "@/server/pos/require-cashier";
 import { openShift } from "@/server/pos/shifts";
 import {
-  CashCountMismatchError, PosAuthError, PosCashierError, PosForbiddenError, ShiftAlreadyOpenError,
+  CashCountMismatchError, posAuthResponse, PosCashierError, PosForbiddenError, ShiftAlreadyOpenError,
 } from "@/server/pos/errors";
 
 export async function POST(req: NextRequest) {
@@ -11,8 +11,10 @@ export async function POST(req: NextRequest) {
     ctx = await requirePosCashier(req);
     assertPermission(ctx, "pos:sell");
   } catch (e) {
-    if (e instanceof PosAuthError || e instanceof PosCashierError) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const authRes = posAuthResponse(e);
+    if (authRes) return authRes;
+    if (e instanceof PosCashierError) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     if (e instanceof PosForbiddenError) return NextResponse.json({ error: e.message }, { status: 403 });
     throw e;

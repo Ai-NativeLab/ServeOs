@@ -10,10 +10,14 @@ import { NextRequest } from "next/server";
  *     the service layer, even if a client sends it.
  */
 
-const placeOrderMock = vi.fn(async () => ({ orderId: "o-1", orderNumber: 1, statusToken: "tok" }));
+const placeOrderMock = vi.fn(
+  async (_tenantId: string, _input: Record<string, unknown>): Promise<{ orderId: string; orderNumber: number; statusToken: string }> => ({
+    orderId: "o-1", orderNumber: 1, statusToken: "tok",
+  }),
+);
 
 vi.mock("@/server/ordering/service", () => ({
-  placeOrder: (...args: unknown[]) => placeOrderMock(...args),
+  placeOrder: (...args: [string, Record<string, unknown>]) => placeOrderMock(...args),
 }));
 
 vi.mock("@/server/tenancy", () => ({
