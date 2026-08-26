@@ -7,7 +7,6 @@ import { listBranches } from "@/server/branches/service";
 import { listProducts } from "@/server/catalog/service";
 import { listOrders } from "@/server/ordering/service";
 import { getTenantById } from "@/server/tenancy";
-import { getEnv } from "@/env";
 import { buildTenantUrl } from "@/lib/urls";
 import { onboardingSteps } from "@/lib/onboarding";
 import { orderStatusMeta } from "@/lib/order-status";

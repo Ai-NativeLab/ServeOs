@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { db } from "@/db/client";
 import { tenants } from "@/server/tenancy/schema";
-import { users, userRoles } from "@/server/auth/schema";
+import { users } from "@/server/auth/schema";
 import { seedDefaultPlans } from "@/server/subscription/plans.seed";
 import { startTrial } from "@/server/subscription/service";
 import { createBranch, updateBranchOrdering } from "@/server/branches/service";

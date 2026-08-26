@@ -1,5 +1,4 @@
 import { requireDashboardUser } from "@/server/auth/dashboard-context";
-import { getTenantById } from "@/server/tenancy";
 import { pendingOrderCount } from "@/server/ordering/service";
 import { unreadNotificationCount } from "@/server/notifications/service";
 import { getVerticalTerms, selectStorefrontTemplate, type VerticalId } from "@/server/verticals";

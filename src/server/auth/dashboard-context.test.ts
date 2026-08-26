@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { requireDashboardUser } from "./dashboard-context";
+import type { Tenant } from "@/server/tenancy/schema";
+
 
 const mockRedirect = vi.fn((path: string) => {
-  const err = new Error(`NEXT_REDIRECT: ${path}`);
-  (err as any).digest = `NEXT_REDIRECT;replace;${path};307;;`;
+  const err = new Error(`NEXT_REDIRECT: ${path}`) as Error & { digest: string };
+  err.digest = `NEXT_REDIRECT;replace;${path};307;;`;
   throw err;
 });
 
@@ -46,7 +48,7 @@ describe("requireDashboardUser - tenant status lockout (Issue #164)", () => {
         tenantId: "tenant-1",
         platformRole: null,
       },
-    } as any);
+    } as unknown as Awaited<ReturnType<typeof validateSession>>);
   });
 
   it("permits active tenant users to access dashboard", async () => {
@@ -55,7 +57,7 @@ describe("requireDashboardUser - tenant status lockout (Issue #164)", () => {
       slug: "roma",
       name: "Roma Cafe",
       status: "active",
-    } as any);
+    } as unknown as Awaited<ReturnType<typeof validateSession>>);
 
     const ctx = await requireDashboardUser();
     expect(ctx.user.id).toBe("user-1");
@@ -70,7 +72,7 @@ describe("requireDashboardUser - tenant status lockout (Issue #164)", () => {
       slug: "roma",
       name: "Roma Cafe",
       status: "trial",
-    } as any);
+    } as unknown as Awaited<ReturnType<typeof validateSession>>);
 
     const ctx = await requireDashboardUser();
     expect(ctx.tenant.status).toBe("trial");
@@ -82,8 +84,7 @@ describe("requireDashboardUser - tenant status lockout (Issue #164)", () => {
       id: "tenant-1",
       slug: "roma",
       name: "Roma Cafe",
-      status: "suspended",
-    } as any);
+      status: "suspended" } as Tenant);
 
     await expect(requireDashboardUser()).rejects.toThrow(/NEXT_REDIRECT.*lockout/);
     expect(mockRedirect).toHaveBeenCalledWith(expect.stringContaining("lockout"));
@@ -94,8 +95,7 @@ describe("requireDashboardUser - tenant status lockout (Issue #164)", () => {
       id: "tenant-1",
       slug: "roma",
       name: "Roma Cafe",
-      status: "suspended",
-    } as any);
+      status: "suspended" } as Tenant);
 
     const ctx = await requireDashboardUser({ allowSuspended: true });
     expect(ctx.tenant.status).toBe("suspended");
@@ -107,8 +107,7 @@ describe("requireDashboardUser - tenant status lockout (Issue #164)", () => {
       id: "tenant-1",
       slug: "roma",
       name: "Roma Cafe",
-      status: "rejected",
-    } as any);
+      status: "rejected" } as Tenant);
 
     await expect(requireDashboardUser()).rejects.toThrow(/NEXT_REDIRECT.*lockout/);
     expect(mockRedirect).toHaveBeenCalledWith(expect.stringContaining("lockout"));
@@ -119,8 +118,7 @@ describe("requireDashboardUser - tenant status lockout (Issue #164)", () => {
       id: "tenant-1",
       slug: "roma",
       name: "Roma Cafe",
-      status: "onboarding",
-    } as any);
+      status: "onboarding" } as Tenant);
 
     await expect(requireDashboardUser()).rejects.toThrow(/NEXT_REDIRECT.*lockout/);
     expect(mockRedirect).toHaveBeenCalledWith(expect.stringContaining("lockout"));
@@ -131,8 +129,7 @@ describe("requireDashboardUser - tenant status lockout (Issue #164)", () => {
       id: "tenant-1",
       slug: "roma",
       name: "Roma Cafe",
-      status: "suspended",
-    } as any);
+      status: "suspended" } as Tenant);
 
     const ctx = await requireDashboardUser({ allowStatus: ["suspended", "rejected", "onboarding"] });
     expect(ctx.tenant.status).toBe("suspended");

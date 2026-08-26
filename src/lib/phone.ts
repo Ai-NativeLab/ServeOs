@@ -46,10 +46,6 @@ export function isValidCustomerPhone(
     return SA_PHONE_RE.test(clean);
   }
 
-  if (country === "SA") {
-    return SA_PHONE_RE.test(clean);
-  }
-
   // Default to Egypt
   return EG_PHONE_RE.test(clean);
 }
