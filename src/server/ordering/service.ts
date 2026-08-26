@@ -150,11 +150,15 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
 
   const tenant = await getTenantById(tenantId);
   const country = tenant?.country ?? "EG";
-  if (!isValidCustomerPhone(input.customerPhone, country, {
-    // The till sells to anonymous walk-ins — only the POS channel may use the
-    // 000000000 sentinel (#173 review).
-    allowWalkInSentinel: input.channel === "pos",
-  })) {
+  // #173: country mobile rule. Two deliberate exemptions (#187 review):
+  //   • POS walk-in sentinel — the till sells to anonymous customers.
+  //   • WhatsApp — customerPhone IS the Meta-verified wa_id the merchant is
+  //     chatting with; reachability is guaranteed by the channel, and a
+  //     refusal here dead-letters a CONFIRMED order (recordInbound already
+  //     committed, so retries dedupe into silence).
+  const allowWalkInSentinel = input.channel === "pos";
+  const whatsappVerifiedNumber = input.channel === "whatsapp";
+  if (!whatsappVerifiedNumber && !isValidCustomerPhone(input.customerPhone, country, { allowWalkInSentinel })) {
     throw new InvalidPhoneError(country);
   }
 
