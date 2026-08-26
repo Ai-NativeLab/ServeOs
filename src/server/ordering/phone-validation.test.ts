@@ -45,6 +45,17 @@ describe("Customer phone validation (Issue #173)", () => {
       expect(isValidCustomerPhone("letters", "EG")).toBe(false);
     });
 
+    // #187 review: real-world formatting must not reject a correct number —
+    // an Arabic-first storefront routinely produces these.
+    it("normalises punctuation, grouping and Arabic-Indic digits before testing", () => {
+      expect(isValidCustomerPhone("(010) 1234-5678", "EG")).toBe(true);
+      expect(isValidCustomerPhone("010.1234.5678", "EG")).toBe(true);
+      expect(isValidCustomerPhone("+20 100 123 4567", "EG")).toBe(true);
+      expect(isValidCustomerPhone("\u0660\u0661\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668", "EG")).toBe(true); // ٠١٠١٢٣٤٥٦٧٨
+      expect(isValidCustomerPhone("\u200e01012345678", "EG")).toBe(true); // LRM paste artefact
+      expect(isValidCustomerPhone("010\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668", "EG")).toBe(true); // 010 followed by ١٢٣٤٥٦٧٨
+    });
+
     it("validates Saudi mobile numbers correctly", () => {
       expect(isValidCustomerPhone("0512345678", "SA")).toBe(true);
       expect(isValidCustomerPhone("0598765432", "SA")).toBe(true);

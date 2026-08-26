@@ -25,10 +25,26 @@ const EG_PHONE_RE = /^(?:\+20|0020|20)?0?1([0125]\d{8})$/;
 const SA_PHONE_RE = /^(?:\+966|00966|966)?0?5(\d{8})$/;
 
 /**
+ * Canonicalises any human-typed phone into `<optional +><ASCII digits>`:
+ *  • Arabic-Indic digits (٠-٩ / ۰-۹) → ASCII
+ *  • Bidi controls and zero-width marks (routine in RTL pastes) → stripped
+ *  • Every other separator (spaces, hyphens, dots, parentheses, slashes) → stripped
+ * A single leading "+" survives so international prefixes stay recognisable.
+ */
+export function normalizePhone(raw: string): string {
+  const withoutMarks = raw.replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "");
+  const asciiDigits = withoutMarks.replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[\u06f0-\u06f9]/g, (d) => String(d.charCodeAt(0) - 0x06f0));
+  const plus = /^\s*\+/.test(asciiDigits) ? "+" : "";
+  return plus + asciiDigits.replace(/\+/g, "").replace(/\D/g, "");
+}
+
+/**
  * Validates a customer phone number according to the tenant's country.
  * Supports Egypt (EG) and Saudi Arabia (SA). The POS walk-in sentinel
  * ("000000000") is accepted ONLY when `allowWalkInSentinel` is set by the
- * till's own path (#173 review).
+ * till's own path (#173 review). Input is normalised first (#187 review):
+ * punctuation, grouping, bidi marks and Arabic-Indic digits all resolve.
  */
 export function isValidCustomerPhone(
   phone: string | null | undefined,
@@ -36,8 +52,8 @@ export function isValidCustomerPhone(
   options?: PhoneValidationOptions,
 ): boolean {
   if (!phone || typeof phone !== "string") return false;
-  const clean = phone.trim().replace(/[\s-]/g, "");
-  if (!clean) return false;
+  const clean = normalizePhone(phone);
+  if (!clean || clean === "+") return false;
 
   // POS walk-in / anonymous sentinel — opt-in only (see PhoneValidationOptions).
   if (clean === "000000000") return options?.allowWalkInSentinel === true;
