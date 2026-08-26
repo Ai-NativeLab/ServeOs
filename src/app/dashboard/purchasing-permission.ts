@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireDashboardUser, authorizeDashboardOrRedirect } from "@/server/auth/dashboard-context";
 import type { DashboardContext } from "@/server/auth/dashboard-context";
-import { authorize, UnauthorizedError } from "@/server/rbac/authorize";
+import { UnauthorizedError } from "@/server/rbac/authorize";
 import type { Permission } from "@/server/rbac/permissions";
 import { branches } from "@/server/branches/schema";
 import { tenants } from "@/server/tenancy/schema";

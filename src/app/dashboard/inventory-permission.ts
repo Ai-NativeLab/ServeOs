@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireDashboardUser, authorizeDashboardOrRedirect } from "@/server/auth/dashboard-context";
 import type { DashboardContext } from "@/server/auth/dashboard-context";
-import { authorize, UnauthorizedError } from "@/server/rbac/authorize";
+import { UnauthorizedError } from "@/server/rbac/authorize";
 import type { Permission } from "@/server/rbac/permissions";
 
 /**
@@ -14,7 +14,6 @@ export async function requireInventoryPermission(perm: Permission): Promise<Dash
   await authorizeDashboardOrRedirect(ctx, perm);
   return ctx;
 }
-
 /** requireDashboardUser signals "no session" by throwing redirect("/login"). */
 const isLoginRedirect = (e: unknown): boolean =>
   typeof (e as { digest?: unknown } | null)?.digest === "string" &&

@@ -45,7 +45,7 @@ export function LoginScreen({ onPaired }: { onPaired: (branchName: string) => vo
 
         {branches ? (
           <>
-            <p className="text-sm text-muted-foreground mt-1">Choose this device's branch.</p>
+            <p className="text-sm text-muted-foreground mt-1">Choose this device&apos;s branch.</p>
             <div className="mt-4 grid gap-2">
               {branches.map((b) => (
                 <button

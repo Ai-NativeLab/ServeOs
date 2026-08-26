@@ -445,8 +445,11 @@ export async function addTender(
 
     const after = await tx.select().from(orderPayments).where(eq(orderPayments.orderId, orderId));
     const paidAmount = round2(after.reduce((s, t) => s + Number(t.amount), 0));
-    const paymentStatus: "paid" | "partially_paid" =
+    let paymentStatus: "paid" | "partially_paid" | "pending_verification" =
       paidAmount >= total - 0.001 ? "paid" : "partially_paid";
+    if (order.paymentStatus === "pending_verification" && paymentStatus === "partially_paid") {
+      paymentStatus = "pending_verification";
+    }
 
     await tx.update(orders).set({ paymentStatus, updatedAt: new Date() }).where(eq(orders.id, orderId));
 
