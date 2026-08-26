@@ -49,7 +49,7 @@ vi.mock("./_offline/db", () => ({
       },
       all: () => [],
     }),
-    transaction: <T,>(fn: () => T): T => fn,
+    transaction: <T>(fn: () => T): () => T => fn,
   }),
   noCipher: {
     isAvailable: () => false,
