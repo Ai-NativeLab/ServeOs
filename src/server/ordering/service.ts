@@ -235,7 +235,15 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
     const resolveLiveLine = async (line: PlaceOrderLine) => {
       const [product] = await tx.select().from(products).where(and(eq(products.id, line.productId), eq(products.isPublished, true))).limit(1);
       if (!product) throw new OrderValidationError("product unavailable");
-      if (product.trackStock && (product.stockQuantity ?? 0) <= 0) {
+      // #167 early refusal — but ONLY where selling into zero stock is not
+      // permitted and this line is not governed by its own variant's stock:
+      //   • `allowNegative` honours the tenant setting (restaurant kitchens
+      //     default true — a marked-86 dish must never block the till) and is
+      //     forced on for POS replay (the sale physically happened; refusing
+      //     would veto a fact — see the comment above).
+      //   • Variant lines are judged by the variant's own stock check below.
+      // The inventory FIFO deduction later remains the transactional backstop.
+      if (!allowNegative && !line.variantId && product.trackStock && (product.stockQuantity ?? 0) <= 0) {
         throw new OutOfStockError(product.nameEn, product.nameAr);
       }
 
@@ -376,6 +384,11 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
         if (input.replay && snap && err instanceof OrderValidationError) {
           missingReason = err.detail;
         } else if (input.replay && snap && err instanceof InvalidVariantError) {
+          missingReason = err.code;
+        } else if (input.replay && snap && err instanceof OutOfStockError) {
+          // Belt-and-braces: with allowNegative forced on for replay the gate
+          // above no longer fires, but a variant-level stock refusal must
+          // still fall back to the snapshot rather than vetoing the sale.
           missingReason = err.code;
         } else {
           throw err;

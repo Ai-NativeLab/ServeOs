@@ -514,6 +514,25 @@ describe("placeOrder — restaurant recipes (BOM)", () => {
     expect(await onHand(t.id, itemIds[0], locationId)).toBe(-300);
   });
 
+  // C2 (PR #187 review): restaurant kitchens default allowNegativeStock=true —
+  // #167's refusal must not extend into tenants/channels where selling into
+  // negative stock is the merchant's explicit choice.
+  it("a restaurant may still order a tracked dish at zero stock (default allowNegative)", async () => {
+    const { t, branch } = await setup("oos2");
+    const { setProductStock } = await import("@/server/catalog/variants");
+    const { createCategory, createProduct, updateProduct } = await import("@/server/catalog/service");
+
+    const cat = await createCategory(t.id, { nameEn: "Grill", nameAr: "مشويات" });
+    const dish = await createProduct(t.id, { nameEn: "Kofta", nameAr: "كفتة", basePrice: "80", categoryId: cat.id });
+    await updateProduct(t.id, dish.id, { isPublished: true, trackStock: true });
+    await setProductStock(t.id, dish.id, 0);
+
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01012345678",
+      lines: [{ productId: dish.id, quantity: 1, selectedOptionIds: [] }],
+    })).resolves.toBeDefined();
+  });
+
   it("a dish with no recipe link still sells — a restaurant can enable inventory before building recipes", async () => {
     const { t, branch, pizza } = await setup("bom3");
     const res = await placeOrder(t.id, {
