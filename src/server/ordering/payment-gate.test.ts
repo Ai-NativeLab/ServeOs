@@ -11,7 +11,7 @@ import { createCategory, createProduct, updateProduct } from "@/server/catalog/s
 import { upsertOfflineMethod } from "@/server/payments/offline/methods";
 import { placeOrder, transitionStatus, confirmOrderPayment } from "./service";
 import { orders } from "./schema";
-import { PaymentNotVerifiedError } from "./errors";
+import { PaymentNotVerifiedError, InvalidPhoneError } from "./errors";
 
 /**
  * #165: an offline payment still awaiting verification must not hand over
@@ -87,6 +87,14 @@ describe("unverified-payment fulfilment gate (#165)", () => {
     await expect(transitionStatus(tenantId, orderId!, "cancelled", staffId, "customer unreachable")).resolves.toBeDefined();
   });
 
+  it("refuses a WEB order that tries the POS walk-in sentinel (#187 review gap)", async () => {
+    const { tenantId, branchId, productId } = await seed("pvg-sent");
+    // No `channel` field — defaults to "web", which must never accept 000000000.
+    await expect(placeOrder(tenantId, {
+      branchId, fulfillmentType: "pickup", customerName: "W", customerPhone: "000000000",
+      lines: line(productId),
+    })).rejects.toBeInstanceOf(InvalidPhoneError);
+  });
   it("leaves cash-on-delivery alone â€” unpaid by design, not unverified", async () => {
     const { tenantId, branchId, productId, staffId } = await seed("pvg-4");
     const res = await placeOrder(tenantId, {
