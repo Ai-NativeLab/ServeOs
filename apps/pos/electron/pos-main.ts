@@ -663,6 +663,10 @@ export class PosMain {
     } catch (e) {
       // A revoked device token only surfaces here, on the one call that still
       // blocks — the engine treats every refusal as "try again later".
+      // NOT an unpair trigger: a suspended TENANT answers 403
+      // {code:"tenant_blocked"} (#164) — suspension must be reversible, and
+      // deleting the pairing would force a manager re-pair after reactivation.
+      // Only the literal 401 sentinel means the token itself is dead.
       if (e instanceof Error && e.message.includes("401")) {
         this.unpair();
         throw new Error("Device unpaired — please pair again");

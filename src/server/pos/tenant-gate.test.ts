@@ -6,6 +6,7 @@ import { branches } from "@/server/branches/schema";
 import { users } from "@/server/auth/schema";
 import { posDevices } from "./schema";
 import { requirePosDevice } from "./require-device";
+import { NextRequest } from "next/server";
 import { PosAuthError, PosTenantBlockedError } from "./errors";
 
 /**
@@ -26,7 +27,7 @@ async function seedTenantWithDevice(slug: string, status: "active" | "suspended"
 }
 
 const reqWith = (token: string) =>
-  new Request("http://localhost/api/pos/v1/ping", { headers: { authorization: `Bearer ${token}` } });
+  new NextRequest("http://localhost/api/pos/v1/ping", { headers: { authorization: `Bearer ${token}` } });
 
 describe("POS tenant-status gate (#164)", () => {
   it("blocks a suspended tenant's device with a refusal that says why", async () => {
@@ -47,6 +48,21 @@ describe("POS tenant-status gate (#164)", () => {
       const { token } = await seedTenantWithDevice(`posg-ok-${status}`, status);
       await expect(requirePosDevice(reqWith(token))).resolves.toBeDefined();
     }
+  });
+
+  // C3 (#187 review): routes must answer a blocked tenant with 403 +
+  // `code: "tenant_blocked"` — never the blanket 401 "Unauthorized" that makes
+  // the till DELETE its pairing.
+  it("catalog route answers 403 tenant_blocked for a suspended store", async () => {
+    const { token } = await seedTenantWithDevice("posg-cat", "suspended");
+    const { GET } = await import("@/app/api/pos/v1/catalog/route");
+
+    const res = await GET(reqWith(token));
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toMatch(/suspended/i);
+    expect(body.code).toBe("tenant_blocked");
   });
 
   it("stays a PosAuthError subclass so every route's existing catch refuses without changes", async () => {

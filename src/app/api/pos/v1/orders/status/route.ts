@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePosDevice } from "@/server/pos/require-device";
-import { PosAuthError } from "@/server/pos/errors";
+import { posAuthResponse } from "@/server/pos/errors";
 import { transitionStatus } from "@/server/ordering/service";
 import { webFingerprint } from "@/server/audit/fingerprint";
 import type { OrderStatus } from "@/server/ordering/schema";
@@ -13,7 +13,8 @@ export async function POST(req: NextRequest) {
   try {
     device = await requirePosDevice(req);
   } catch (e) {
-    if (e instanceof PosAuthError) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const authRes = posAuthResponse(e);
+    if (authRes) return authRes;
     throw e;
   }
 

@@ -262,7 +262,7 @@ describe("recordSale — live sales are unaffected by the replay path", () => {
 
     await updateProduct(tenantId, productId, { trackStock: true });
     await withTenant(tenantId, (tx) =>
-      tx.update(products).set({ stockQuantity: "0" }).where(eq(products.id, productId)),
+      tx.update(products).set({ stockQuantity: 0 }).where(eq(products.id, productId)),
     );
 
     const res = await recordSale(ctx, {

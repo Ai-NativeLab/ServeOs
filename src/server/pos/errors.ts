@@ -1,3 +1,5 @@
+import { NextResponse } from "next/server";
+
 /** Thrown when a pairing code cannot be redeemed (missing, expired, or already used). */
 export class PosPairingError extends Error {
   constructor(message = "Invalid or expired pairing code") {
@@ -12,6 +14,29 @@ export class PosAuthError extends Error {
     super(message);
     this.name = "PosAuthError";
   }
+}
+
+/**
+ * Maps a POS auth-layer throw onto its HTTP response, or returns null when the
+ * caller should keep processing other error types.
+ *
+ * ORDER MATTERS (#187 review, C3): PosTenantBlockedError subclasses PosAuthError.
+ * Answering a blocked tenant with the blanket 401 "Unauthorized" makes the till
+ * treat suspension as token death and DELETE its pairing — unrecoverable without
+ * re-pairing even after reactivation. The 403 carries `code: "tenant_blocked"`
+ * so clients can distinguish "retry after reactivation" from "re-pair".
+ */
+export function posAuthResponse(e: unknown): NextResponse | null {
+  if (e instanceof PosTenantBlockedError) {
+    return NextResponse.json(
+      { error: e.message, code: "tenant_blocked" },
+      { status: 403 },
+    );
+  }
+  if (e instanceof PosAuthError) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  return null;
 }
 
 /**
