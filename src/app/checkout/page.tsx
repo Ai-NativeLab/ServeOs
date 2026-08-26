@@ -40,7 +40,7 @@ export default async function CheckoutPage({
     listBranches(tenant.id),
     getCheckoutPricing(tenant.id),
     // #174 last AC: a stored row that fails validation is warned about in
-    // settings — it must not also be SERVED to customers here.
+    // settings â€” it must not also be SERVED to customers here.
     listEnabledOfflineMethods(tenant.id).then((ms) =>
       ms.filter((m) => validatePayToDetail(m.type as OfflineMethodType, m.payToDetail, tenant.country)),
     ),

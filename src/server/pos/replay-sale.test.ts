@@ -254,7 +254,7 @@ describe("recordSale — live sales are unaffected by the replay path", () => {
   });
 
   // C1 (PR #187 review): stock hitting zero while the till was offline must
-  // not veto the replay � the sale physically happened. The gate honours
+  // not veto the replay — the sale physically happened. The gate honours
   // allowNegative, which replay forces true.
   it("records an out-of-stock sale during replay instead of refusing it", async () => {
     const { ctx, tenantId, productId, total } = await seedPosContext("owner");

@@ -76,11 +76,11 @@ export async function requireDashboardUser(options?: DashboardAuthOptions): Prom
 /**
  * PAGE-level permission gate (#172): redirects to the shared denial screen
  * instead of throwing, so a missing permission can never reach a client error
- * boundary as a stripped, unrecognisable crash — in production Next replaces
+ * boundary as a stripped, unrecognisable crash â€” in production Next replaces
  * server-error messages with a digest, which defeats any client-side
  * "unauthorized?" heuristic.
  *
- * API routes and server ACTIONS should keep using `authorize()` (throwing) —
+ * API routes and server ACTIONS should keep using `authorize()` (throwing) â€”
  * a redirect is meaningless inside a JSON response or a ToastForm action.
  */
 export async function authorizeDashboardOrRedirect(

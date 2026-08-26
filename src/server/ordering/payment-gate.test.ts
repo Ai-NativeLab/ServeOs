@@ -89,7 +89,7 @@ describe("unverified-payment fulfilment gate (#165)", () => {
 
   it("refuses a WEB order that tries the POS walk-in sentinel (#187 review gap)", async () => {
     const { tenantId, branchId, productId } = await seed("pvg-sent");
-    // No `channel` field — defaults to "web", which must never accept 000000000.
+    // No `channel` field â€” defaults to "web", which must never accept 000000000.
     await expect(placeOrder(tenantId, {
       branchId, fulfillmentType: "pickup", customerName: "W", customerPhone: "000000000",
       lines: line(productId),
