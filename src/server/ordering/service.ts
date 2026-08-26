@@ -101,6 +101,14 @@ export type PlaceOrderInput = {
   cashierUserId?: string;
   /** Server-resolved from the customer session — NEVER accepted from a client body. */
   customerId?: string;
+  /**
+   * The prescription uploaded for THIS basket (#187 review). When set, exactly
+   * this script is claimed; validated against the customer + pending +
+   * unattached, so a client cannot attach someone else's or an already-used
+   * script. The newest-fresh inference below becomes a fallback for callers
+   * that don't send the id.
+   */
+  prescriptionId?: string;
   orderDiscountAmount?: number;
   orderDiscountReason?: string;
   /** What the client displayed. Compared, never trusted. */
@@ -488,20 +496,37 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       if (!input.customerId) {
         throw new OrderValidationError("prescription items require a signed-in customer account");
       }
-      const [pendingRx] = await tx.select({ id: prescriptions.id }).from(prescriptions)
-        .where(and(
-          eq(prescriptions.tenantId, tenantId),
-          eq(prescriptions.customerId, input.customerId),
-          eq(prescriptions.status, "pending"),
-          isNull(prescriptions.orderId),
-          // #185: only claim a FRESH upload. A script from a failed attempt
-          // hours ago must not silently attach to today's unrelated basket.
-          gte(prescriptions.createdAt, new Date(Date.now() - PRESCRIPTION_CLAIM_MAX_AGE_MS)),
-        ))
-        .orderBy(desc(prescriptions.createdAt))
-        .limit(1);
-      if (!pendingRx) throw new OrderValidationError("a prescription must be uploaded before ordering these items");
-      pendingRxId = pendingRx.id;
+
+      // #187 review: an explicit prescriptionId (the upload this checkout just
+      // performed) is authoritative — claim exactly it, no age window needed.
+      if (input.prescriptionId) {
+        const [explicit] = await tx.select({ id: prescriptions.id }).from(prescriptions)
+          .where(and(
+            eq(prescriptions.id, input.prescriptionId),
+            eq(prescriptions.tenantId, tenantId),
+            eq(prescriptions.customerId, input.customerId),
+            eq(prescriptions.status, "pending"),
+            isNull(prescriptions.orderId),
+          ))
+          .limit(1);
+        if (!explicit) throw new OrderValidationError("that prescription can no longer be used — please upload a new one");
+        pendingRxId = explicit.id;
+      } else {
+        const [pendingRx] = await tx.select({ id: prescriptions.id }).from(prescriptions)
+          .where(and(
+            eq(prescriptions.tenantId, tenantId),
+            eq(prescriptions.customerId, input.customerId),
+            eq(prescriptions.status, "pending"),
+            isNull(prescriptions.orderId),
+            // #185: only claim a FRESH upload. A script from a failed attempt
+            // hours ago must not silently attach to today's unrelated basket.
+            gte(prescriptions.createdAt, new Date(Date.now() - PRESCRIPTION_CLAIM_MAX_AGE_MS)),
+          ))
+          .orderBy(desc(prescriptions.createdAt))
+          .limit(1);
+        if (!pendingRx) throw new OrderValidationError("a prescription must be uploaded before ordering these items");
+        pendingRxId = pendingRx.id;
+      }
     }
 
     const [order] = await tx.insert(orders).values({

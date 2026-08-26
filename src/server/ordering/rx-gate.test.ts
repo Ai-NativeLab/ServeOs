@@ -11,6 +11,7 @@ import { createCategory, createProduct, updateProduct } from "@/server/catalog/s
 import { products } from "@/server/catalog/schema";
 import { registerCustomer } from "@/server/customers/service";
 import { submitPrescription, reviewPrescription } from "@/server/prescriptions/service";
+import { prescriptions } from "@/server/prescriptions/schema";
 import { placeOrder, transitionStatus } from "./service";
 import { orders } from "./schema";
 import { OrderValidationError, InvalidTransitionError } from "./errors";
@@ -139,5 +140,43 @@ describe("Rx order gate", () => {
       tx.select().from(prescriptions).where(eq(prescriptions.id, rx.id)));
     expect(row?.status).toBe("pending");
     expect(row?.orderId).toBeNull();
+  });
+
+  // #187 review: the checkout sends the id of the script IT JUST UPLOADED.
+  // Even with an older stale script also pending, the explicit id is
+  // authoritative — and it bypasses the age window (the customer just took
+  // the photo; staleness is impossible).
+  it("claims the exact prescriptionId sent by checkout, not newest-fresh", async () => {
+    const { tenantId, branchId, productId } = await seed("rxg-explicit", { rx: true });
+    const me = await registerCustomer(tenantId, { name: "P", email: `p-x-${Date.now()}@x.com`, password: "secret123" });
+
+    // An OLD script from a previous failed attempt (back-dated past the window).
+    const oldRx = await submitPrescription(tenantId, me.id, "rx/old.jpg");
+    await withTenant(tenantId, (tx) =>
+      tx.update(prescriptions).set({ createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000) }).where(eq(prescriptions.id, oldRx.id)),
+    );
+
+    // The fresh upload this checkout is submitting WITH.
+    const freshRx = await submitPrescription(tenantId, me.id, "rx/fresh.jpg");
+
+    const res = await placeOrder(tenantId, {
+      branchId, fulfillmentType: "pickup", customerName: "P", customerPhone: "01012345678",
+      customerId: me.id, prescriptionId: freshRx.id, lines: line(productId),
+    });
+    expect(res.orderId).toBeTruthy();
+
+    const [order] = await withTenant(tenantId, (tx) => tx.select().from(orders).where(eq(orders.id, res.orderId)));
+    expect(order.rxReviewStatus).toBe("pending");
+
+    // The FRESH script was claimed...
+    const [claimed] = await withTenant(tenantId, (tx) =>
+      tx.select().from(prescriptions).where(eq(prescriptions.id, freshRx.id)));
+    expect(claimed?.orderId).toBe(res.orderId);
+
+    // ...and the stale one is untouched — still pending for a pharmacist.
+    const [stale] = await withTenant(tenantId, (tx) =>
+      tx.select().from(prescriptions).where(eq(prescriptions.id, oldRx.id)));
+    expect(stale?.orderId).toBeNull();
+    expect(stale?.status).toBe("pending");
   });
 });

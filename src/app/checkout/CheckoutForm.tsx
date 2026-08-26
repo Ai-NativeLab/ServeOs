@@ -170,6 +170,7 @@ export function CheckoutForm({
           areaId: fulfillment === "delivery" ? areaId : undefined,
           addressText: fulfillment === "delivery" ? address : undefined,
           scheduledFor: when === "scheduled" ? slotIso : undefined,
+          prescriptionId: rxUploadedId ?? undefined,
           paymentMethod: payMethod,
           paymentReference: selectedMethod ? payRef.trim() : undefined,
           lines: cart.lines.map((l) => ({

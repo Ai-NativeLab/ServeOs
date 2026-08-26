@@ -42,6 +42,8 @@ export async function POST(req: NextRequest) {
   const input: PlaceOrderInput = {
     branchId: String(body.branchId ?? ""),
     customerId: customerSession?.customer.id,
+    // The id returned by the just-completed prescription upload (#187 review).
+    prescriptionId: typeof body.prescriptionId === "string" ? body.prescriptionId : undefined,
     fulfillmentType: body.fulfillmentType === "delivery" ? "delivery" : "pickup",
     customerName: String(body.customerName ?? ""),
     customerPhone: String(body.customerPhone ?? ""),
