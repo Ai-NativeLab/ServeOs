@@ -947,9 +947,12 @@ export class PosMain {
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      const err = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
       const e = new Error(err.error ?? `Refund failed (${res.status})`) as Error & { code?: string };
-      if (res.status === 403) e.code = "NEEDS_MANAGER";
+      // A 403 usually means "missing pos:refund" — but a suspended tenant also
+      // answers 403 (code:"tenant_blocked", #164), and no manager override can
+      // fix a suspension, so that one must not open ManagerAuthModal.
+      if (res.status === 403 && err.code !== "tenant_blocked") e.code = "NEEDS_MANAGER";
       throw e;
     }
     return (await res.json()) as RefundSaleResult;

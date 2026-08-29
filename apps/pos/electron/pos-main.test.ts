@@ -134,6 +134,78 @@ describe("device rejected by the backend", () => {
   });
 });
 
+describe("suspended tenant (#164 / #187 C3)", () => {
+  // The server-side sweep answers 403 {code:"tenant_blocked"} for every POS
+  // route once a tenant is suspended. These pin the client half of the fix:
+  // suspension is reversible, so it must never destroy the pairing or be
+  // mistaken for a permission problem a manager override could solve.
+
+  it("keeps the device paired when sign-in is refused because the tenant is blocked", async () => {
+    const pos = await pairedPos(BACKEND_A);
+
+    stubFetch(
+      jsonResponse(403, {
+        error: "This store is suspended — ask the platform team to reactivate it before using the till",
+        code: "tenant_blocked",
+      }),
+    );
+
+    await expect(pos.signInCashier("cashier@example.com", "pw123456")).rejects.toThrow(
+      /suspended/,
+    );
+    expect(pos.isPaired()).toBe(true);
+  });
+
+  it("does not ask for a manager override when a refund hits tenant_blocked", async () => {
+    const pos = await pairedPos(BACKEND_A);
+    signInCashierDirectly(pos);
+
+    stubFetch(
+      jsonResponse(403, {
+        error: "This store is suspended — ask the platform team to reactivate it before using the till",
+        code: "tenant_blocked",
+      }),
+    );
+
+    const err = await pos
+      .refundSale({
+        orderId: "o1", clientRefundId: "r1", kind: "full", reasonCode: "other",
+        lines: [], payments: [{ method: "cash", amount: 10 }],
+      })
+      .then(() => null, (e: Error & { code?: string }) => e);
+    expect(err?.message).toMatch(/suspended/);
+    expect(err?.code).toBeUndefined();
+    expect(pos.isPaired()).toBe(true);
+  });
+
+  it("still asks for a manager override on an ordinary refund 403", async () => {
+    const pos = await pairedPos(BACKEND_A);
+    signInCashierDirectly(pos);
+
+    stubFetch(jsonResponse(403, { error: "Missing permission: pos:refund" }));
+
+    const err = await pos
+      .refundSale({
+        orderId: "o1", clientRefundId: "r1", kind: "full", reasonCode: "other",
+        lines: [], payments: [{ method: "cash", amount: 10 }],
+      })
+      .then(() => null, (e: Error & { code?: string }) => e);
+    expect(err?.code).toBe("NEEDS_MANAGER");
+  });
+});
+
+/** Skips the login round-trip (roster tick + shift adoption make its fetch
+ *  sequence brittle to stub) and installs the session state a successful
+ *  signInCashier would have left behind. */
+function signInCashierDirectly(pos: PosMain): void {
+  (pos as unknown as { cashier: { token: string; userId: string; name: string; permissions: string[] } }).cashier = {
+    token: "cashier-token",
+    userId: "user-1",
+    name: "Cashier",
+    permissions: ["pos:sell"],
+  };
+}
+
 describe("device file is scoped to the backend it was paired against", () => {
   it("ignores a device paired against a different backend", async () => {
     await pairedPos(BACKEND_A);

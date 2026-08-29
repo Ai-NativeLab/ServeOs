@@ -65,6 +65,26 @@ describe("POS tenant-status gate (#164)", () => {
     expect(body.code).toBe("tenant_blocked");
   });
 
+  // The routes the first sweep missed (#187 follow-up): sales/[id] and
+  // held-tickets/[id] answered the blanket 401 for a blocked tenant. The
+  // refund route matters most — its client maps an undiscriminated 403 to
+  // "needs manager", and no manager override can fix a suspension.
+  it("sales detail, refund and held-ticket delete routes answer 403 tenant_blocked too", async () => {
+    const { token } = await seedTenantWithDevice("posg-sweep", "suspended");
+    const params = { params: Promise.resolve({ id: "any-id" }) };
+
+    const routes = [
+      async () => (await import("@/app/api/pos/v1/sales/[id]/route")).GET(reqWith(token), params),
+      async () => (await import("@/app/api/pos/v1/sales/[id]/refund/route")).POST(reqWith(token), params),
+      async () => (await import("@/app/api/pos/v1/held-tickets/[id]/route")).DELETE(reqWith(token), params),
+    ];
+    for (const call of routes) {
+      const res = await call();
+      expect(res.status).toBe(403);
+      expect((await res.json()).code).toBe("tenant_blocked");
+    }
+  });
+
   it("stays a PosAuthError subclass so every route's existing catch refuses without changes", async () => {
     const { token } = await seedTenantWithDevice("posg-sub", "suspended");
     await expect(requirePosDevice(reqWith(token))).rejects.toBeInstanceOf(PosAuthError);
