@@ -48,6 +48,13 @@ jobs:
           - env_name: qa
             url_secret: QA_DATABASE_URL
             root_domain: qa.serveos.tech
+            # QA is the only environment nothing else migrates: release-migrate
+            # runs on production Vercel builds only, and serve-os-qa produces
+            # nothing but preview deployments, so its schema drifts the moment a
+            # migration lands on main (this is how the nightly reset broke when
+            # 0045 added catalog_versions). Prod stays off — release-migrate
+            # owns that schema at deploy time.
+            migrate: true
     steps:
       - name: Skip environments not selected for this dispatch
         id: gate
@@ -74,6 +81,12 @@ jobs:
       - name: Install dependencies
         if: steps.gate.outputs.run == 'true'
         run: npm ci
+
+      - name: Apply migrations
+        if: steps.gate.outputs.run == 'true' && matrix.migrate
+        env:
+          DATABASE_URL: ${{ secrets[matrix.url_secret] }}
+        run: npx tsx scripts/migrate.ts
 
       - name: Rebuild the demo tenants
         if: steps.gate.outputs.run == 'true'
