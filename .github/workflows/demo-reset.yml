@@ -48,6 +48,15 @@ jobs:
           - env_name: qa
             url_secret: QA_DATABASE_URL
             root_domain: qa.serveos.tech
+            # Backstop against QA schema drift. serve-os-qa now deploys main as
+            # its Vercel production branch, so release-migrate normally keeps
+            # the QA schema current — but until 2026-08-29 it tracked a stale
+            # "qa" branch and nothing migrated QA at all, which is how the
+            # nightly reset broke when 0045 added catalog_versions. Migrating
+            # here is idempotent and keeps this job self-sufficient if the
+            # Vercel wiring ever regresses. Prod stays off — release-migrate
+            # owns that schema at deploy time.
+            migrate: true
     steps:
       - name: Skip environments not selected for this dispatch
         id: gate
@@ -74,6 +83,12 @@ jobs:
       - name: Install dependencies
         if: steps.gate.outputs.run == 'true'
         run: npm ci
+
+      - name: Apply migrations
+        if: steps.gate.outputs.run == 'true' && matrix.migrate
+        env:
+          DATABASE_URL: ${{ secrets[matrix.url_secret] }}
+        run: npx tsx scripts/migrate.ts
 
       - name: Rebuild the demo tenants
         if: steps.gate.outputs.run == 'true'
