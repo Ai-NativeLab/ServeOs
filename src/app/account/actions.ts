@@ -58,12 +58,6 @@ export async function customerRegisterAction(
     const phoneError = await validateCustomerPhone(phone);
     if (phoneError) return { error: phoneError };
   }
-  if (phone) {
-    const tenant = await storefrontTenant();
-    if (!isValidCustomerPhone(phone, tenant?.country)) {
-      return { error: `Please enter a valid mobile number (${getPhoneFormatHint(tenant?.country)}).` };
-    }
-  }
 
   try {
     const customer = await registerCustomer(tenantId, { name, email, password, phone: phone || undefined });
