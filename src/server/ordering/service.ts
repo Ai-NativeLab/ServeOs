@@ -25,7 +25,7 @@ import { canTransition } from "./state-machine";
 // inventory FIFO deduction re-checks inside this same transaction as a backstop
 // against stock changing between menu render and checkout.
 import { isValidCustomerPhone } from "@/lib/phone";
-import { OrderValidationError, InvalidPhoneError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, TotalMismatchError, PaymentNotVerifiedError, OutOfStockError } from "./errors";
+import { OrderValidationError, PrescriptionRequiredError, InvalidPhoneError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, TotalMismatchError, PaymentNotVerifiedError, OutOfStockError } from "./errors";
 import { recordAuditEvent, type AuditFingerprint } from "@/server/audit/service";
 import { publishTenantEvent } from "@/server/realtime/publish";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
@@ -494,7 +494,7 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
     let pendingRxId: string | null = null;
     if (hasRxLine) {
       if (!input.customerId) {
-        throw new OrderValidationError("prescription items require a signed-in customer account");
+        throw new PrescriptionRequiredError("sign_in");
       }
 
       // #187 review: an explicit prescriptionId (the upload this checkout just
@@ -509,7 +509,7 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
             isNull(prescriptions.orderId),
           ))
           .limit(1);
-        if (!explicit) throw new OrderValidationError("that prescription can no longer be used — please upload a new one");
+        if (!explicit) throw new PrescriptionRequiredError("reupload");
         pendingRxId = explicit.id;
       } else {
         const [pendingRx] = await tx.select({ id: prescriptions.id }).from(prescriptions)
@@ -524,7 +524,7 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
           ))
           .orderBy(desc(prescriptions.createdAt))
           .limit(1);
-        if (!pendingRx) throw new OrderValidationError("a prescription must be uploaded before ordering these items");
+        if (!pendingRx) throw new PrescriptionRequiredError("upload");
         pendingRxId = pendingRx.id;
       }
     }

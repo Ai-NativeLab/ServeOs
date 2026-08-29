@@ -11,6 +11,37 @@ export class OrderValidationError extends DomainError {
   }
 }
 
+/**
+ * P3/#185: prescription refusals must say what to DO — the generic
+ * OrderValidationError copy ("review your cart") names neither prescriptions
+ * nor a remedy, which left customers at a dead end (#187 review). The reason
+ * also reaches the client as part of a distinct `code` so checkout can react
+ * (show the upload field, clear a consumed upload id).
+ */
+export class PrescriptionRequiredError extends DomainError {
+  readonly code = "rx_required";
+  constructor(public readonly reason: "sign_in" | "upload" | "reupload") {
+    super(`Prescription required: ${reason}`);
+    this.name = "PrescriptionRequiredError";
+  }
+  messageFor(locale: Locale): string {
+    switch (this.reason) {
+      case "sign_in":
+        return locale === "ar"
+          ? "سلتك تحتوي على أدوية بوصفة طبية — يرجى تسجيل الدخول أولاً ثم رفع صورة الوصفة"
+          : "Your cart contains prescription items — please sign in, then upload a photo of your prescription";
+      case "reupload":
+        return locale === "ar"
+          ? "لم تعد هذه الوصفة صالحة للاستخدام — يرجى رفع صورة جديدة منها والمحاولة مرة أخرى"
+          : "That prescription can no longer be used — please upload a new photo of it and try again";
+      case "upload":
+        return locale === "ar"
+          ? "سلتك تحتوي على أدوية بوصفة طبية — يرجى رفع صورة الوصفة لإتمام الطلب"
+          : "Your cart contains prescription items — please upload a photo of your prescription to place the order";
+    }
+  }
+}
+
 export class InvalidPhoneError extends DomainError {
   readonly code = "invalid_phone";
   constructor(public readonly country: string) {

@@ -32,6 +32,7 @@ export function CheckoutForm({
   initialName = "", initialPhone = "", initialAddress = "",
   customer = null,
   initialCart,
+  rxProductIds = [],
 }: {
   slug: string;
   branchId: string;
@@ -50,6 +51,10 @@ export function CheckoutForm({
    *  form (see the sync effect below). Passing it from the server is impossible
    *  — the cart lives in the browser. */
   initialCart?: Cart;
+  /** Server-authoritative prescription-only product ids (#185): a cart line
+   *  persisted before `requiresPrescription` existed carries no flag, so the
+   *  line alone cannot be trusted to decide whether the upload field renders. */
+  rxProductIds?: string[];
 }) {
   const [cart, setCart] = useState<Cart>(() => initialCart ?? { branchId: null, lines: [] });
   const [fulfillment, setFulfillment] = useState<"pickup" | "delivery">("delivery");
@@ -92,7 +97,8 @@ export function CheckoutForm({
       .catch(() => {});
   }, [slug, branchId]);
 
-  const hasRxLine = cart.lines.some((l) => l.requiresPrescription);
+  const rxIds = useMemo(() => new Set(rxProductIds), [rxProductIds]);
+  const hasRxLine = cart.lines.some((l) => l.requiresPrescription || rxIds.has(l.productId));
   const subtotal = cartSubtotal(cart.lines);
   const area = useMemo(() => areas.find((a) => a.id === areaId), [areas, areaId]);
   const deliveryFee = fulfillment === "delivery" && area ? Number(area.deliveryFee) : 0;
@@ -183,6 +189,11 @@ export function CheckoutForm({
       if (!res.ok) {
         if (data.code === "out_of_stock") {
           setError(`${data.error} — please remove it from your cart or reduce the quantity.`);
+        } else if (data.code === "rx_required") {
+          // The server judged this basket prescription-gated. Drop a consumed
+          // upload id so the field re-arms for a fresh photo (#185).
+          setRxUploadedId(null);
+          setError(data.error ?? "Please upload your prescription before placing this order.");
         } else {
           setError(data.error ?? "Something went wrong");
         }

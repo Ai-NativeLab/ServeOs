@@ -14,7 +14,7 @@ import { submitPrescription, reviewPrescription } from "@/server/prescriptions/s
 import { prescriptions } from "@/server/prescriptions/schema";
 import { placeOrder, transitionStatus } from "./service";
 import { orders } from "./schema";
-import { OrderValidationError, InvalidTransitionError } from "./errors";
+import { PrescriptionRequiredError, InvalidTransitionError } from "./errors";
 
 async function seed(slug: string, opts: { rx?: boolean; vertical?: "pharmacy" | "retail" } = {}) {
   const [t] = await db.insert(tenants).values({
@@ -46,7 +46,7 @@ describe("Rx order gate", () => {
     await expect(placeOrder(tenantId, {
       branchId, fulfillmentType: "pickup", customerName: "G", customerPhone: "01012345678",
       lines: line(productId),
-    })).rejects.toThrow(OrderValidationError);
+    })).rejects.toMatchObject({ name: "PrescriptionRequiredError", reason: "sign_in" });
   });
 
   it("refuses an Rx order from a signed-in customer with no prescription on file", async () => {
@@ -55,7 +55,7 @@ describe("Rx order gate", () => {
     await expect(placeOrder(tenantId, {
       branchId, fulfillmentType: "pickup", customerName: "P", customerPhone: "01012345678",
       customerId: me.id, lines: line(productId),
-    })).rejects.toThrow(OrderValidationError);
+    })).rejects.toMatchObject({ name: "PrescriptionRequiredError", reason: "upload" });
   });
 
   it("accepts an Rx order with a pending script, marks it awaiting review, and links the script", async () => {
@@ -133,7 +133,7 @@ describe("Rx order gate", () => {
     await expect(placeOrder(tenantId, {
       branchId, fulfillmentType: "pickup", customerName: "P", customerPhone: "01012345678",
       customerId: me.id, lines: line(productId),
-    })).rejects.toThrow(/prescription must be uploaded/i);
+    })).rejects.toMatchObject({ name: "PrescriptionRequiredError", reason: "upload" });
 
     // The stale script itself is untouched — still pending for a pharmacist.
     const [row] = await withTenant(tenantId, (tx) =>
@@ -178,5 +178,30 @@ describe("Rx order gate", () => {
       tx.select().from(prescriptions).where(eq(prescriptions.id, oldRx.id)));
     expect(stale?.orderId).toBeNull();
     expect(stale?.status).toBe("pending");
+  });
+
+  it("an explicit prescriptionId that is gone or consumed asks for a re-upload", async () => {
+    const { tenantId, branchId, productId } = await seed("rxg-gone", { rx: true });
+    const me = await registerCustomer(tenantId, { name: "P", email: `p-gone-${Date.now()}@x.com`, password: "secret123" });
+
+    await expect(placeOrder(tenantId, {
+      branchId, fulfillmentType: "pickup", customerName: "P", customerPhone: "01012345678",
+      customerId: me.id, prescriptionId: crypto.randomUUID(), lines: line(productId),
+    })).rejects.toMatchObject({ name: "PrescriptionRequiredError", reason: "reupload" });
+  });
+});
+
+// #187 review: the refusal the CUSTOMER sees must name prescriptions and a
+// remedy — the generic "review your cart" was a dead end. The `code` is what
+// checkout keys on to re-arm the upload field.
+describe("PrescriptionRequiredError copy", () => {
+  it("carries code rx_required and an actionable message per reason, in both locales", () => {
+    for (const reason of ["sign_in", "upload", "reupload"] as const) {
+      const e = new PrescriptionRequiredError(reason);
+      expect(e.code).toBe("rx_required");
+      expect(e.messageFor("en")).toMatch(/prescription/i);
+      expect(e.messageFor("en")).toMatch(reason === "sign_in" ? /sign in/i : /upload/i);
+      expect(e.messageFor("ar")).toMatch(/الوصفة|وصفة/);
+    }
   });
 });
