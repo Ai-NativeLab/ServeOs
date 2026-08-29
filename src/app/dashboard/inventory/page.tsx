@@ -15,6 +15,8 @@ import { Button } from "@/components/ui/button";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { StockMovementForms } from "./StockMovementForms";
 
+import { PermissionDenied } from "@/components/dashboard/PermissionDenied";
+
 export default async function InventoryPage() {
   let ctx;
   try {
@@ -24,7 +26,7 @@ export default async function InventoryPage() {
       return (
         <>
           <PageHeader eyebrow="Inventory" title="Stock on hand" />
-          <EmptyState title="Not authorized" description="Viewing inventory needs the inventory:view permission." />
+          <PermissionDenied permission="inventory:view" />
         </>
       );
     }

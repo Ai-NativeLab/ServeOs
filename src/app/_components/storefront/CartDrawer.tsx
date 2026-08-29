@@ -2,6 +2,7 @@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { formatMoney } from "@/lib/money";
 import { cartSubtotal, type Cart } from "../cart";
+import { Trash2 } from "lucide-react";
 
 export function CartDrawer({
   cart, slug, currency, preorderOnly, open, onOpenChange, onSetQuantity,
@@ -20,7 +21,23 @@ export function CartDrawer({
       <SheetContent className="flex flex-col gap-0">
         <div className="min-h-0 flex-1 overflow-y-auto">
           <SheetHeader>
-            <SheetTitle>Your cart</SheetTitle>
+            <div className="flex items-center justify-between pr-6">
+              <SheetTitle>Your cart</SheetTitle>
+              {cart.lines.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    for (let idx = cart.lines.length - 1; idx >= 0; idx--) {
+                      onSetQuantity(idx, 0);
+                    }
+                  }}
+                  className="text-xs font-medium text-muted-foreground transition-colors hover:text-destructive"
+                  aria-label="Clear cart"
+                >
+                  Clear cart
+                </button>
+              )}
+            </div>
           </SheetHeader>
 
           {cart.lines.length === 0 && (
@@ -30,7 +47,7 @@ export function CartDrawer({
           <div className="mt-2 flex flex-col divide-y divide-border">
             {cart.lines.map((l, i) => (
               <div key={`${l.productId}-${l.selectedOptionIds.join(".")}`} className="flex items-center justify-between gap-3 py-4">
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <div className="truncate font-sans font-semibold text-ink">{l.nameEn}</div>
                   {l.modifierSummaryEn && (
                     <div className="truncate text-xs text-muted-foreground">{l.modifierSummaryEn}</div>
@@ -42,8 +59,19 @@ export function CartDrawer({
                     <button type="button" onClick={() => onSetQuantity(i, l.quantity + 1)} className="grid size-11 place-items-center rounded-full text-base leading-none text-ink transition-colors hover:text-primary" aria-label={`Increase ${l.nameEn}`}>+</button>
                   </div>
                 </div>
-                <div className="shrink-0 text-right font-display font-bold text-ink">
-                  {formatMoney(l.unitPrice * l.quantity, currency)}
+                <div className="flex shrink-0 flex-col items-end gap-2">
+                  <div className="font-display font-bold text-ink">
+                    {formatMoney(l.unitPrice * l.quantity, currency)}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onSetQuantity(i, 0)}
+                    className="grid size-11 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive active:scale-95"
+                    aria-label={`Remove ${l.nameEn}`}
+                    title={`Remove ${l.nameEn}`}
+                  >
+                    <Trash2 className="size-4" />
+                  </button>
                 </div>
               </div>
             ))}

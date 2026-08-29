@@ -1,12 +1,12 @@
-import { requireDashboardUser } from "@/server/auth/dashboard-context";
+import { requireDashboardUser, authorizeDashboardOrRedirect } from "@/server/auth/dashboard-context";
 import type { DashboardContext } from "@/server/auth/dashboard-context";
-import { authorize, can } from "@/server/rbac/authorize";
+import { can } from "@/server/rbac/authorize";
 import { requireFeature } from "@/server/entitlements/service";
 
 /** Gate for the reports pages. Mirrors requireMenuPermission. */
 export async function requireReportsPermission(): Promise<DashboardContext> {
   const ctx = await requireDashboardUser();
-  authorize(ctx.roleKeys, "reports:view");
+  await authorizeDashboardOrRedirect(ctx, "reports:view");
   return ctx;
 }
 

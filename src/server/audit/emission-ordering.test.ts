@@ -11,7 +11,7 @@ async function eventsFor(tenantId: string, action: string) {
     tx.select().from(auditEvents).where(and(eq(auditEvents.tenantId, tenantId), eq(auditEvents.action, action))));
 }
 const walkIn = (branchId: string, productId: string) => ({
-  branchId, fulfillmentType: "pickup" as const, customerName: "Walk-in", customerPhone: "000000000",
+  branchId, fulfillmentType: "pickup" as const, customerName: "Walk-in", customerPhone: "01000000000",
   lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
 });
 

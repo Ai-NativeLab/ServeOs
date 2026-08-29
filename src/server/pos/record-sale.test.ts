@@ -302,4 +302,27 @@ describe("addTender", () => {
       tx.select().from(orderPayments).where(eq(orderPayments.orderId, sale.orderId)));
     expect(tenders).toHaveLength(1); // only the original card tender
   });
+
+  it("does not disarm pending_verification to partially_paid on partial tender (#187 C4)", async () => {
+    const { ctx, productId, total } = await seedPosContext("owner");
+    const sale = await recordSale(ctx, {
+      clientOrderId: "top-6",
+      lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: total,
+      payments: [{ clientPaymentId: "p-1", method: "card", amount: 1 }],
+    });
+
+    // Manually mark pending_verification to simulate an offline order awaiting verification
+    await withTenant(ctx.tenantId, (tx) =>
+      tx.update(orders).set({ paymentStatus: "pending_verification" }).where(eq(orders.id, sale.orderId)));
+
+    const res = await addTender(ctx, sale.orderId, {
+      clientPaymentId: "p-2", method: "card", amount: 1,
+    });
+
+    expect(res.paymentStatus).toBe("pending_verification");
+    const [orderRow] = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(orders).where(eq(orders.id, sale.orderId)).limit(1));
+    expect(orderRow.paymentStatus).toBe("pending_verification");
+  });
 });

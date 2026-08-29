@@ -2,6 +2,7 @@
 import { headers, cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { getTenantBySlug, isTenantServable } from "@/server/tenancy";
+import { isValidCustomerPhone, getPhoneFormatHint } from "@/lib/phone";
 import {
   registerCustomer, authenticateCustomer, createCustomerSession,
   invalidateCustomerSession, CustomerAuthError,
@@ -12,13 +13,26 @@ import { customers } from "@/server/customers/schema";
 import { eq, and } from "drizzle-orm";
 
 /** Tenant always resolves from the storefront host — never from a form field. */
-async function storefrontTenantId(): Promise<string | null> {
+async function storefrontTenant() {
   const h = await headers();
   if (h.get("x-surface") !== "storefront") return null;
   const slug = h.get("x-tenant-slug");
   if (!slug) return null;
   const tenant = await getTenantBySlug(slug);
-  return tenant && isTenantServable(tenant) ? tenant.id : null;
+  return tenant && isTenantServable(tenant) ? tenant : null;
+}
+
+async function storefrontTenantId(): Promise<string | null> {
+  return (await storefrontTenant())?.id ?? null;
+}
+
+/** Phone validation against the tenant's country, with a localized hint (#187 review). */
+async function validateCustomerPhone(phone: string): Promise<string | null> {
+  const tenant = await storefrontTenant();
+  if (!isValidCustomerPhone(phone, tenant?.country)) {
+    return `Please enter a valid mobile number (${getPhoneFormatHint(tenant?.country)}).`;
+  }
+  return null;
 }
 
 async function setSessionCookie(token: string): Promise<void> {
@@ -40,6 +54,10 @@ export async function customerRegisterAction(
   const phone = String(formData.get("phone") ?? "").trim();
   if (!name || !email) return { error: "Name and email are required." };
   if (password.length < 8) return { error: "Password must be at least 8 characters." };
+  if (phone) {
+    const phoneError = await validateCustomerPhone(phone);
+    if (phoneError) return { error: phoneError };
+  }
 
   try {
     const customer = await registerCustomer(tenantId, { name, email, password, phone: phone || undefined });
@@ -95,6 +113,10 @@ export async function customerUpdateProfileAction(
   const phone = String(formData.get("phone") ?? "").trim();
   const defaultAddressText = String(formData.get("defaultAddressText") ?? "").trim();
   if (!name) return { error: "Name is required." };
+  if (phone) {
+    const phoneError = await validateCustomerPhone(phone);
+    if (phoneError) return { error: phoneError };
+  }
 
   await withTenant(tenantId, (tx) => tx.update(customers)
     .set({ name, phone: phone || null, defaultAddressText: defaultAddressText || null })

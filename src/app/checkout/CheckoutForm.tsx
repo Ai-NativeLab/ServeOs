@@ -4,6 +4,7 @@ import { loadCart, clearCart, cartSubtotal, type Cart } from "../_components/car
 import { rememberOrder } from "../_components/recent-orders";
 import { formatMoney } from "@/lib/money";
 import { computeOrderTotals, type CheckoutPricing } from "@/lib/order-totals";
+import { isValidCustomerPhone, getPhoneFormatHint } from "@/lib/phone";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,7 +28,11 @@ export type OfflineMethodOption = { type: string; label: string; payToDetail: st
 
 export function CheckoutForm({
   slug, branchId, branchName, pricing, currency, openNow, slots, methods,
+  country = "EG",
   initialName = "", initialPhone = "", initialAddress = "",
+  customer = null,
+  initialCart,
+  rxProductIds = [],
 }: {
   slug: string;
   branchId: string;
@@ -37,11 +42,21 @@ export function CheckoutForm({
   openNow: boolean;
   slots: SlotOption[];
   methods: OfflineMethodOption[];
+  country?: string;
   initialName?: string;
   initialPhone?: string;
   initialAddress?: string;
+  customer?: { id: string; name: string; email: string } | null;
+  /** Test seam only: production hydrates the cart from localStorage inside the
+   *  form (see the sync effect below). Passing it from the server is impossible
+   *  — the cart lives in the browser. */
+  initialCart?: Cart;
+  /** Server-authoritative prescription-only product ids (#185): a cart line
+   *  persisted before `requiresPrescription` existed carries no flag, so the
+   *  line alone cannot be trusted to decide whether the upload field renders. */
+  rxProductIds?: string[];
 }) {
-  const [cart, setCart] = useState<Cart>({ branchId: null, lines: [] });
+  const [cart, setCart] = useState<Cart>(() => initialCart ?? { branchId: null, lines: [] });
   const [fulfillment, setFulfillment] = useState<"pickup" | "delivery">("delivery");
   const [when, setWhen] = useState<"asap" | "scheduled">(openNow ? "asap" : "scheduled");
   const [slotIso, setSlotIso] = useState<string>(slots[0]?.iso ?? "");
@@ -57,17 +72,23 @@ export function CheckoutForm({
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // Rx prescription upload state
+  const [rxFile, setRxFile] = useState<File | null>(null);
+  const [rxPreview, setRxPreview] = useState<string | null>(null);
+  const [rxUploadedId, setRxUploadedId] = useState<string | null>(null);
+  const [rxError, setRxError] = useState<string | null>(null);
+
   useEffect(() => {
     const sync = () => setCart(loadCart());
-    sync();
+    if (!initialCart) sync();
     const saved = loadCustomer();
     // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrating client-only saved customer details after mount
-    setName(saved.name);
-    setPhone(saved.phone);
-    setAddress(saved.address);
+    setName((prev) => prev || saved.name);
+    setPhone((prev) => prev || saved.phone);
+    setAddress((prev) => prev || saved.address);
     window.addEventListener("serveos-cart-changed", sync);
     return () => window.removeEventListener("serveos-cart-changed", sync);
-  }, []);
+  }, [initialCart]);
 
   useEffect(() => {
     fetch(`/api/delivery-areas?slug=${encodeURIComponent(slug)}&branch=${branchId}`)
@@ -76,6 +97,8 @@ export function CheckoutForm({
       .catch(() => {});
   }, [slug, branchId]);
 
+  const rxIds = useMemo(() => new Set(rxProductIds), [rxProductIds]);
+  const hasRxLine = cart.lines.some((l) => l.requiresPrescription || rxIds.has(l.productId));
   const subtotal = cartSubtotal(cart.lines);
   const area = useMemo(() => areas.find((a) => a.id === areaId), [areas, areaId]);
   const deliveryFee = fulfillment === "delivery" && area ? Number(area.deliveryFee) : 0;
@@ -92,6 +115,14 @@ export function CheckoutForm({
 
   async function submit() {
     setError(null);
+    if (hasRxLine && !customer) {
+      setError("Please sign in or create an account to order prescription items.");
+      return;
+    }
+    if (hasRxLine && !rxFile && !rxUploadedId) {
+      setError("Please upload your prescription before placing this order.");
+      return;
+    }
     if (fulfillment === "delivery" && (!areaId || !address.trim())) {
       setError("Please choose an area and enter your address.");
       return;
@@ -108,12 +139,34 @@ export function CheckoutForm({
       setError("That time is no longer available — please pick a new one.");
       return;
     }
+    if (!isValidCustomerPhone(phone, country)) {
+      setError(
+        country === "SA"
+          ? "Please enter a valid Saudi mobile number (e.g. 05XXXXXXXX) · يرجى إدخال رقم جوال سعودي صحيح"
+          : "Please enter a valid Egyptian mobile number (e.g. 01XXXXXXXXX) · يرجى إدخال رقم هاتف مصري صحيح"
+      );
+      return;
+    }
     if (missingPaymentRef) {
       setError("Please enter your payment reference.");
       return;
     }
     setSubmitting(true);
     try {
+      if (hasRxLine && rxFile && !rxUploadedId) {
+        const fd = new FormData();
+        fd.append("file", rxFile);
+        const rxRes = await fetch("/api/prescriptions", { method: "POST", body: fd });
+        if (!rxRes.ok) {
+          const rxData = (await rxRes.json().catch(() => ({}))) as { error?: string };
+          setError(rxData.error ?? "Failed to upload prescription");
+          setSubmitting(false);
+          return;
+        }
+        const rxData = (await rxRes.json()) as { id: string };
+        setRxUploadedId(rxData.id);
+      }
+
       const res = await fetch("/api/orders", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -123,6 +176,7 @@ export function CheckoutForm({
           areaId: fulfillment === "delivery" ? areaId : undefined,
           addressText: fulfillment === "delivery" ? address : undefined,
           scheduledFor: when === "scheduled" ? slotIso : undefined,
+          prescriptionId: rxUploadedId ?? undefined,
           paymentMethod: payMethod,
           paymentReference: selectedMethod ? payRef.trim() : undefined,
           lines: cart.lines.map((l) => ({
@@ -135,6 +189,11 @@ export function CheckoutForm({
       if (!res.ok) {
         if (data.code === "out_of_stock") {
           setError(`${data.error} — please remove it from your cart or reduce the quantity.`);
+        } else if (data.code === "rx_required") {
+          // The server judged this basket prescription-gated. Drop a consumed
+          // upload id so the field re-arms for a fresh photo (#185).
+          setRxUploadedId(null);
+          setError(data.error ?? "Please upload your prescription before placing this order.");
         } else {
           setError(data.error ?? "Something went wrong");
         }
@@ -245,14 +304,133 @@ export function CheckoutForm({
         )}
       </div>
 
+      {hasRxLine && !customer && (
+        <div className="card-lift rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4">
+          <div className="flex items-start gap-3">
+            <span className="text-xl">📋</span>
+            <div>
+              <h4 className="text-sm font-semibold text-ink">Prescription required · روشتة طبية مطلوبة</h4>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Your cart contains prescription items. Legally, a pharmacist must review your doctor&apos;s prescription before dispensing. Please sign in or register to attach your prescription.
+              </p>
+              <p dir="rtl" className="mt-1 text-xs text-muted-foreground">
+                تحتوي سلتك على أدوية تتطلب وصفة طبية. يرجى تسجيل الدخول أو إنشاء حساب لإرفاق الروشتة.
+              </p>
+              <a
+                href={`/account?next=${encodeURIComponent(`/checkout?slug=${slug}&branch=${branchId}`)}`}
+                className="mt-3 inline-flex items-center rounded-full bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
+              >
+                Sign in or Register →
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {hasRxLine && customer && (
+        <div className="card-lift space-y-3 rounded-2xl border border-border bg-card p-4">
+          <div>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="co-prescription" className="text-sm font-semibold text-ink">
+                Prescription upload · إرفاق الروشتة
+              </Label>
+              <span className="rounded-full bg-status-pending/20 px-2 py-0.5 text-[10px] font-medium text-status-pending-fg">
+                Rx required
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Please attach a clear photo or PDF of your doctor&apos;s prescription (JPG, PNG, WebP or PDF, max 8 MB).
+            </p>
+            <p dir="rtl" className="mt-0.5 text-xs text-muted-foreground">
+              يرجى إرفاق صورة واضحة أو ملف PDF للروشتة (JPG، PNG، WebP أو PDF، بحد أقصى 8 ميجابايت).
+            </p>
+          </div>
+
+          {rxFile ? (
+            <div className="flex items-center justify-between rounded-xl border border-border bg-muted/30 p-3">
+              <div className="flex items-center gap-3 overflow-hidden">
+                {rxPreview ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={rxPreview} alt="Prescription preview" className="size-12 rounded-lg object-cover" />
+                ) : (
+                  <div className="grid size-12 place-items-center rounded-lg bg-muted text-lg">📄</div>
+                )}
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-medium text-ink">{rxFile.name}</p>
+                  <p className="text-[11px] text-muted-foreground">{(rxFile.size / 1024 / 1024).toFixed(2)} MB</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setRxFile(null);
+                  setRxPreview(null);
+                  setRxUploadedId(null);
+                }}
+                className="text-xs font-medium text-destructive hover:underline"
+              >
+                Remove
+              </button>
+            </div>
+          ) : (
+            <div>
+              <input
+                id="co-prescription"
+                type="file"
+                accept="image/jpeg,image/png,image/webp,application/pdf"
+                className="hidden"
+                onChange={(e) => {
+                  setRxError(null);
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  const allowed = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
+                  if (!allowed.includes(f.type)) {
+                    setRxError("Please upload a JPG, PNG, WebP, or PDF file.");
+                    return;
+                  }
+                  if (f.size > 8 * 1024 * 1024) {
+                    setRxError("Prescription file must be under 8 MB.");
+                    return;
+                  }
+                  setRxFile(f);
+                  if (f.type.startsWith("image/")) {
+                    setRxPreview(URL.createObjectURL(f));
+                  } else {
+                    setRxPreview(null);
+                  }
+                }}
+              />
+              <label
+                htmlFor="co-prescription"
+                className="flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-border bg-muted/20 p-4 text-center transition-colors hover:border-primary/50 hover:bg-muted/40"
+              >
+                <span className="text-xl">📎</span>
+                <span className="mt-1 text-xs font-semibold text-ink">Click to upload prescription</span>
+                <span className="text-[11px] text-muted-foreground">JPG, PNG, WebP or PDF up to 8 MB</span>
+              </label>
+            </div>
+          )}
+          {rxError && <p className="text-xs text-destructive">{rxError}</p>}
+        </div>
+      )}
+
       <div className="card-lift space-y-3 rounded-2xl border border-border bg-card p-4">
         <div className="grid gap-1.5">
           <Label htmlFor="co-name">Name</Label>
           <Input id="co-name" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
         </div>
         <div className="grid gap-1.5">
-          <Label htmlFor="co-phone">Phone</Label>
-          <Input id="co-phone" placeholder="Phone" inputMode="tel" value={phone} onChange={(e) => setPhone(e.target.value)} />
+          <div className="flex items-center justify-between">
+            <Label htmlFor="co-phone">Phone · الهاتف</Label>
+            <span className="text-xs text-muted-foreground">{getPhoneFormatHint(country)}</span>
+          </div>
+          <Input
+            id="co-phone"
+            placeholder={getPhoneFormatHint(country)}
+            inputMode="tel"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+          />
         </div>
         {fulfillment === "delivery" && (
           <>

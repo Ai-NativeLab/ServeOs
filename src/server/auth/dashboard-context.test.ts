@@ -1,0 +1,164 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { requireDashboardUser, authorizeDashboardOrRedirect } from "./dashboard-context";
+import type { Tenant } from "@/server/tenancy/schema";
+
+/** Minimal tenant fixture typed against the real row (#164 asserts on status). */
+const tenantFixture = (status: Tenant["status"]): Tenant =>
+  ({ id: "tenant-1", slug: "roma", name: "Roma Cafe", status }) as unknown as Tenant;
+
+
+const mockRedirect = vi.fn((path: string) => {
+  const err = new Error(`NEXT_REDIRECT: ${path}`) as Error & { digest: string };
+  err.digest = `NEXT_REDIRECT;replace;${path};307;;`;
+  throw err;
+});
+
+vi.mock("next/navigation", () => ({
+  redirect: (path: string) => mockRedirect(path),
+}));
+
+const mockCookiesGet = vi.fn();
+vi.mock("next/headers", () => ({
+  cookies: async () => ({
+    get: mockCookiesGet,
+  }),
+}));
+
+vi.mock("./session", () => ({
+  validateSession: vi.fn(),
+}));
+
+vi.mock("./current-user", () => ({
+  SESSION_COOKIE: "serveos_session",
+  loadUserRoleKeys: vi.fn().mockResolvedValue(["owner"]),
+}));
+
+vi.mock("@/server/tenancy", () => ({
+  getTenantById: vi.fn(),
+}));
+
+import { validateSession } from "./session";
+import { loadUserRoleKeys } from "./current-user";
+import { getTenantById } from "@/server/tenancy";
+
+describe("requireDashboardUser - tenant status lockout (Issue #164)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCookiesGet.mockReturnValue({ value: "valid-session-token" });
+    vi.mocked(validateSession).mockResolvedValue({
+      user: {
+        id: "user-1",
+        email: "owner@roma.com",
+        name: "Owner",
+        tenantId: "tenant-1",
+        platformRole: null,
+      },
+    } as unknown as Awaited<ReturnType<typeof validateSession>>);
+  });
+
+  it("permits active tenant users to access dashboard", async () => {
+    vi.mocked(getTenantById).mockResolvedValue(tenantFixture("active"));
+
+    const ctx = await requireDashboardUser();
+    expect(ctx.user.id).toBe("user-1");
+    expect(ctx.tenantId).toBe("tenant-1");
+    expect(ctx.tenant.status).toBe("active");
+    expect(mockRedirect).not.toHaveBeenCalled();
+  });
+
+  it("permits trial tenant users to access dashboard", async () => {
+    vi.mocked(getTenantById).mockResolvedValue(tenantFixture("trial"));
+
+    const ctx = await requireDashboardUser();
+    expect(ctx.tenant.status).toBe("trial");
+    expect(mockRedirect).not.toHaveBeenCalled();
+  });
+
+  it("redirects suspended tenant users to lockout screen", async () => {
+    vi.mocked(getTenantById).mockResolvedValue(tenantFixture("suspended"));
+
+    await expect(requireDashboardUser()).rejects.toThrow(/NEXT_REDIRECT.*lockout/);
+    expect(mockRedirect).toHaveBeenCalledWith(expect.stringContaining("lockout"));
+  });
+
+  it("allows a suspended tenant through only on the recovery path (allowSuspended)", async () => {
+    vi.mocked(getTenantById).mockResolvedValue(tenantFixture("suspended"));
+
+    const ctx = await requireDashboardUser({ allowSuspended: true });
+    expect(ctx.tenant.status).toBe("suspended");
+    expect(mockRedirect).not.toHaveBeenCalled();
+  });
+
+  // #187 review test-gaps: the exemption covers ONLY `suspended` — a rejected
+  // or onboarding tenant has nothing to recover into and must still bounce.
+  it("allowSuspended does NOT exempt rejected tenants", async () => {
+    vi.mocked(getTenantById).mockResolvedValue(tenantFixture("rejected"));
+
+    await expect(requireDashboardUser({ allowSuspended: true })).rejects.toThrow(/NEXT_REDIRECT.*lockout/);
+    expect(mockRedirect).toHaveBeenCalledWith(expect.stringContaining("lockout"));
+  });
+
+  it("allowSuspended does NOT exempt onboarding tenants", async () => {
+    vi.mocked(getTenantById).mockResolvedValue(tenantFixture("onboarding"));
+
+    await expect(requireDashboardUser({ allowSuspended: true })).rejects.toThrow(/NEXT_REDIRECT.*lockout/);
+    expect(mockRedirect).toHaveBeenCalledWith(expect.stringContaining("lockout"));
+  });
+
+  it("redirects rejected tenant users to lockout screen", async () => {
+    vi.mocked(getTenantById).mockResolvedValue(tenantFixture("rejected"));
+
+    await expect(requireDashboardUser()).rejects.toThrow(/NEXT_REDIRECT.*lockout/);
+    expect(mockRedirect).toHaveBeenCalledWith(expect.stringContaining("lockout"));
+  });
+
+  it("redirects onboarding tenant users to pending approval / lockout screen", async () => {
+    vi.mocked(getTenantById).mockResolvedValue(tenantFixture("onboarding"));
+
+    await expect(requireDashboardUser()).rejects.toThrow(/NEXT_REDIRECT.*lockout/);
+    expect(mockRedirect).toHaveBeenCalledWith(expect.stringContaining("lockout"));
+  });
+
+  it("allows lockout page to load context without redirecting itself", async () => {
+    vi.mocked(getTenantById).mockResolvedValue(tenantFixture("suspended"));
+
+    const ctx = await requireDashboardUser({ allowStatus: ["suspended", "rejected", "onboarding"] });
+    expect(ctx.tenant.status).toBe("suspended");
+    expect(mockRedirect).not.toHaveBeenCalled();
+  });
+});
+
+// #172 (#187 review): the permission refusal every page relies on is this
+// server-side redirect — production strips thrown error messages, so a page
+// that throws instead of redirecting shows the generic crash screen.
+describe("authorizeDashboardOrRedirect (Issue #172)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCookiesGet.mockReturnValue({ value: "valid-session-token" });
+    vi.mocked(validateSession).mockResolvedValue({
+      user: {
+        id: "user-1",
+        email: "owner@roma.com",
+        name: "Owner",
+        tenantId: "tenant-1",
+        platformRole: null,
+      },
+    } as unknown as Awaited<ReturnType<typeof validateSession>>);
+    vi.mocked(getTenantById).mockResolvedValue(tenantFixture("active"));
+  });
+
+  it("redirects to /dashboard/denied naming the permission the role lacks", async () => {
+    vi.mocked(loadUserRoleKeys).mockResolvedValueOnce(["staff"]); // staff has no menu:manage
+    const ctx = await requireDashboardUser();
+
+    await expect(authorizeDashboardOrRedirect(ctx, "menu:manage")).rejects.toThrow(/NEXT_REDIRECT/);
+    expect(mockRedirect).toHaveBeenCalledWith("/dashboard/denied?permission=menu%3Amanage");
+  });
+
+  it("lets a sufficient role through without redirecting", async () => {
+    const ctx = await requireDashboardUser(); // owner, from the module mock
+
+    await expect(authorizeDashboardOrRedirect(ctx, "menu:manage")).resolves.toBeUndefined();
+    expect(mockRedirect).not.toHaveBeenCalled();
+  });
+});

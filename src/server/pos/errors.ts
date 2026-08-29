@@ -1,3 +1,5 @@
+import { NextResponse } from "next/server";
+
 /** Thrown when a pairing code cannot be redeemed (missing, expired, or already used). */
 export class PosPairingError extends Error {
   constructor(message = "Invalid or expired pairing code") {
@@ -11,6 +13,43 @@ export class PosAuthError extends Error {
   constructor(message = "Invalid or revoked device token") {
     super(message);
     this.name = "PosAuthError";
+  }
+}
+
+/**
+ * Maps a POS auth-layer throw onto its HTTP response, or returns null when the
+ * caller should keep processing other error types.
+ *
+ * ORDER MATTERS (#187 review, C3): PosTenantBlockedError subclasses PosAuthError.
+ * Answering a blocked tenant with the blanket 401 "Unauthorized" makes the till
+ * treat suspension as token death and DELETE its pairing — unrecoverable without
+ * re-pairing even after reactivation. The 403 carries `code: "tenant_blocked"`
+ * so clients can distinguish "retry after reactivation" from "re-pair".
+ */
+export function posAuthResponse(e: unknown): NextResponse | null {
+  if (e instanceof PosTenantBlockedError) {
+    return NextResponse.json(
+      { error: e.message, code: "tenant_blocked" },
+      { status: 403 },
+    );
+  }
+  if (e instanceof PosAuthError) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  return null;
+}
+
+/**
+ * The device token itself is fine — the TENANT behind it is not servable
+ * (suspended, rejected, or still onboarding). Subclasses PosAuthError so every
+ * POS v1 route's existing `catch (e instanceof PosAuthError)` refuses without
+ * needing to know about this case (#164); routes that surface a message to a
+ * human (cashier login) can special-case it for a 403 that says why.
+ */
+export class PosTenantBlockedError extends PosAuthError {
+  constructor(public readonly tenantStatus: string) {
+    super(`This store is ${tenantStatus} — ask the platform team to reactivate it before using the till`);
+    this.name = "PosTenantBlockedError";
   }
 }
 

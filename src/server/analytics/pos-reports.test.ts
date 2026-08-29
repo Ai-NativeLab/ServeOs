@@ -56,7 +56,7 @@ describe("POS X report", () => {
     const before = await buildXReport(ctx);
     await placeOrder(tenantId, {
       branchId, fulfillmentType: "pickup",
-      customerName: "Web", customerPhone: "7",
+      customerName: "Web", customerPhone: "01012345671",
       lines: [{ productId, quantity: 3, selectedOptionIds: [] }],
     });
     const after = await buildXReport(ctx);

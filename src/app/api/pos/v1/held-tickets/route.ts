@@ -1,13 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePosCashier } from "@/server/pos/require-cashier";
 import { holdTicket, listHeldTickets } from "@/server/pos/held-tickets";
-import { PosAuthError, PosCashierError } from "@/server/pos/errors";
+import { posAuthResponse, PosCashierError } from "@/server/pos/errors";
 
 async function ctxOr401(req: NextRequest) {
   try {
     return { ctx: await requirePosCashier(req) };
   } catch (e) {
-    if (e instanceof PosAuthError || e instanceof PosCashierError) {
+    const authRes = posAuthResponse(e);
+    if (authRes) return { res: authRes };
+    if (e instanceof PosCashierError) {
       return { res: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
     }
     throw e;

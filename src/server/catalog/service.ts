@@ -121,6 +121,19 @@ export async function listProducts(tenantId: string, categoryId?: string): Promi
   });
 }
 
+/** #185/#187 review: checkout derives "does this cart need a prescription?"
+ *  from the server's product rows, not from the cart line — a line saved to
+ *  localStorage before `requiresPrescription` existed carries no flag, and
+ *  trusting it is how legacy carts reached the server with no upload field
+ *  ever shown. */
+export async function listRxProductIds(tenantId: string): Promise<string[]> {
+  const rows = await withTenant(tenantId, (tx) =>
+    tx.select({ id: products.id }).from(products)
+      .where(and(eq(products.tenantId, tenantId), eq(products.requiresPrescription, true))),
+  );
+  return rows.map((r) => r.id);
+}
+
 export async function getProduct(tenantId: string, productId: string): Promise<ProductWithModifiers> {
   const [prod] = await withTenant(tenantId, (tx) =>
     tx.select().from(products).where(eq(products.id, productId)).limit(1),

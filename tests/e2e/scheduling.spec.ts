@@ -19,7 +19,7 @@ test("customer can schedule an order and cancel it while pending", async ({ page
   // Pickup avoids area/address requirements.
   await page.getByRole("button", { name: "Pickup" }).click();
   await page.getByPlaceholder("Name").fill("E2E Scheduler");
-  await page.getByPlaceholder("Phone").fill("01000000000");
+  await page.getByLabel(/Phone/).fill("01000000000");
   await page.getByRole("button", { name: /Place order/ }).click();
 
   // Tracking page: scheduled banner + pending timeline + cancel. This is

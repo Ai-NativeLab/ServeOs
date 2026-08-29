@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { MapPin, Phone, ChevronRight } from "lucide-react";
-import { requireDashboardUser } from "@/server/auth/dashboard-context";
-import { authorize } from "@/server/rbac/authorize";
+import { requireMenuPermission } from "../menu-permission";
 import { listBranches } from "@/server/branches/service";
 import { createBranchAction } from "./actions";
 import { PageHeader } from "@/components/dashboard/PageHeader";
@@ -12,8 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 export default async function BranchesPage() {
-  const ctx = await requireDashboardUser();
-  authorize(ctx.roleKeys, "menu:manage");
+  const ctx = await requireMenuPermission();
   const branches = await listBranches(ctx.tenantId);
 
   return (

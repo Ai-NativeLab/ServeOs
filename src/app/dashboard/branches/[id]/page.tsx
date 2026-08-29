@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
-import { requireDashboardUser } from "@/server/auth/dashboard-context";
-import { authorize } from "@/server/rbac/authorize";
+import { requireMenuPermission } from "../../menu-permission";
 import { getBranch } from "@/server/branches/service";
 import { updateBranchAction, deleteBranchAction } from "../actions";
 import { PageHeader } from "@/components/dashboard/PageHeader";
@@ -13,8 +12,7 @@ import { Label } from "@/components/ui/label";
 
 export default async function EditBranchPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const ctx = await requireDashboardUser();
-  authorize(ctx.roleKeys, "menu:manage");
+  const ctx = await requireMenuPermission();
   const branch = await getBranch(ctx.tenantId, id);
 
   return (

@@ -36,7 +36,7 @@ describe("trade-account discount", () => {
     await tradeApprove(tenantId, me.id, 10); // 10% off
 
     const res = await placeOrder(tenantId, {
-      branchId, fulfillmentType: "pickup", customerName: "Yard Co", customerPhone: "+2011",
+      branchId, fulfillmentType: "pickup", customerName: "Yard Co", customerPhone: "+201011111111",
       customerId: me.id, lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
     });
     // 100 gross - 10% = 90, then +14% VAT = 102.60.
@@ -48,7 +48,7 @@ describe("trade-account discount", () => {
     const me = await registerCustomer(tenantId, { name: "Regular", email: "r@x.com", password: "secret123" });
 
     const res = await placeOrder(tenantId, {
-      branchId, fulfillmentType: "pickup", customerName: "Regular", customerPhone: "+2012",
+      branchId, fulfillmentType: "pickup", customerName: "Regular", customerPhone: "+201122222222",
       customerId: me.id, lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
     });
     expect(res.total).toBeCloseTo(114, 1); // 100 + 14% VAT, no discount
@@ -60,7 +60,7 @@ describe("trade-account discount", () => {
     await tradeApprove(tenantId, me.id, 10);
 
     const res = await placeOrder(tenantId, {
-      branchId, fulfillmentType: "pickup", customerName: "R", customerPhone: "+2013",
+      branchId, fulfillmentType: "pickup", customerName: "R", customerPhone: "+201233333333",
       customerId: me.id, lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
     });
     expect(res.total).toBeCloseTo(114, 1); // capability off -> full price despite approval
@@ -69,7 +69,7 @@ describe("trade-account discount", () => {
   it("a guest (no customerId) never gets a trade discount", async () => {
     const { tenantId, branchId, productId } = await seed("trade-4");
     const res = await placeOrder(tenantId, {
-      branchId, fulfillmentType: "pickup", customerName: "Guest", customerPhone: "+2014",
+      branchId, fulfillmentType: "pickup", customerName: "Guest", customerPhone: "+201544444444",
       lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
     });
     expect(res.total).toBeCloseTo(114, 1);

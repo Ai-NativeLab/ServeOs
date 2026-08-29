@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePosCashier } from "@/server/pos/require-cashier";
 import { discardHeldTicket } from "@/server/pos/held-tickets";
-import { PosAuthError, PosCashierError } from "@/server/pos/errors";
+import { posAuthResponse, PosCashierError } from "@/server/pos/errors";
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -9,7 +9,9 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   try {
     ctx = await requirePosCashier(req);
   } catch (e) {
-    if (e instanceof PosAuthError || e instanceof PosCashierError) {
+    const authRes = posAuthResponse(e);
+    if (authRes) return authRes;
+    if (e instanceof PosCashierError) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     throw e;

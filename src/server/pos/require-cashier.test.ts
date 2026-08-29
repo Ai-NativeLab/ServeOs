@@ -17,7 +17,7 @@ let n = 0;
 async function seedDeviceAndCashier(roleKey: "owner" | "staff") {
   const i = n++;
   const [t] = await db.insert(tenants).values({
-    slug: `req-cashier-${i}`, name: "T", country: "EG", vertical: "restaurant",
+    status: "active", slug: `req-cashier-${i}`, name: "T", country: "EG", vertical: "restaurant",
   }).returning();
   const [branch] = await withTenant(t.id, (tx) =>
     tx.insert(branches).values({ tenantId: t.id, name: "Main" }).returning(),

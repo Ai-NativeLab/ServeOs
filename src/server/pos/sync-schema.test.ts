@@ -15,7 +15,7 @@ import { GET as getCatalog } from "@/app/api/pos/v1/catalog/route";
 import { posDevices, posSyncEventReceipts } from "./schema";
 
 async function seedDeviceTenant(slug: string) {
-  const [tenant] = await db.insert(tenants).values({ slug, name: "T", country: "EG" }).returning();
+  const [tenant] = await db.insert(tenants).values({ status: "active", slug, name: "T", country: "EG" }).returning();
   await seedDefaultPlans();
   await startTrial(tenant.id, "basic");
   const [branch] = await withTenant(tenant.id, (tx) => tx.insert(branches).values({ tenantId: tenant.id, name: "Main" }).returning());

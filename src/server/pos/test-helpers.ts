@@ -50,6 +50,8 @@ export async function seedPosContext(
   const vertical = opts.vertical ?? "restaurant";
   const [t] = await db.insert(tenants).values({
     slug: `pos-sale-${i}`, name: "T", country: "EG", vertical,
+    // #164: the till refuses non-servable tenants — fixtures run a live store.
+    status: "active",
   }).returning();
   await seedDefaultPlans();
   await startTrial(t.id, "pro");

@@ -3,7 +3,7 @@ import { placeOrder } from "@/server/ordering/service";
 import { lastWhatsappCart } from "./reorder";
 import { seedWhatsappContext } from "./test-helpers";
 
-const WA = "201111111111";
+const WA = "201012345678"; // a VALID EG mobile once the #173 rule landed (+20 10 �)
 
 describe("lastWhatsappCart", () => {
   it("returns null when this number has never ordered", async () => {
@@ -40,6 +40,20 @@ describe("lastWhatsappCart", () => {
     expect(await lastWhatsappCart(b.tenantId, WA)).toBeNull();
   });
 
+  // #187 review: a FOREIGN wa_id (e.g. a UK number on an EG tenant) is still
+  // Meta-verified and reachable � the country rule must not dead-letter the
+  // confirmed order.
+  it("places an order for a foreign wa_id without applying the tenant phone rule", async () => {
+    const { tenantId, branchId, productId } = await seedWhatsappContext();
+    const foreign = "447700900123";
+    const res = await placeOrder(tenantId, {
+      branchId, fulfillmentType: "pickup", customerName: "Tourist", customerPhone: `+${foreign}`,
+      channel: "whatsapp", lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+    });
+    expect(res.orderId).toBeTruthy();
+    // And the order is retrievable under the foreign number, same as any other.
+    expect(await lastWhatsappCart(tenantId, foreign)).not.toBeNull();
+  });
   it("normalises a waId without a leading plus to E.164 before matching", async () => {
     const { tenantId, branchId, productId } = await seedWhatsappContext();
     await placeOrder(tenantId, {

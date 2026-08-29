@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePosDevice } from "@/server/pos/require-device";
-import { PosAuthError } from "@/server/pos/errors";
+import { posAuthResponse } from "@/server/pos/errors";
 import { tenantRealtimeConfig } from "@/server/realtime/token";
 
 /**
@@ -15,7 +15,8 @@ export async function GET(req: NextRequest) {
   try {
     device = await requirePosDevice(req);
   } catch (e) {
-    if (e instanceof PosAuthError) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const authRes = posAuthResponse(e);
+    if (authRes) return authRes;
     throw e;
   }
   const config = tenantRealtimeConfig(device.tenantId);

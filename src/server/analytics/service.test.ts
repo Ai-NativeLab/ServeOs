@@ -70,7 +70,7 @@ describe("analytics service", () => {
     // Order A: pickup, qty 2, → completed (walk the pickup state machine)
     const a = await placeOrder(t.id, {
       branchId: branch.id, fulfillmentType: "pickup",
-      customerName: "A", customerPhone: "1",
+      customerName: "A", customerPhone: "01012345671",
       lines: [{ productId: prod.id, quantity: 2, selectedOptionIds: [] }],
       now: nowA,
     });
@@ -82,7 +82,7 @@ describe("analytics service", () => {
     // Order B: delivery, qty 1, pending
     const b = await placeOrder(t.id, {
       branchId: branch.id, fulfillmentType: "delivery", areaId: area.id, addressText: "x",
-      customerName: "B", customerPhone: "2",
+      customerName: "B", customerPhone: "01012345672",
       lines: [{ productId: prod.id, quantity: 1, selectedOptionIds: [] }],
       now: nowB,
     });
@@ -91,7 +91,7 @@ describe("analytics service", () => {
     // Order C: 10 days ago — must be excluded from the 7-day window
     const c = await placeOrder(t.id, {
       branchId: branch.id, fulfillmentType: "pickup",
-      customerName: "C", customerPhone: "3",
+      customerName: "C", customerPhone: "01012345673",
       lines: [{ productId: prod.id, quantity: 1, selectedOptionIds: [] }],
       now: nowC,
     });
@@ -151,7 +151,7 @@ describe("analytics service", () => {
     const place = () =>
       placeOrder(t.id, {
         branchId: branch.id, fulfillmentType: "pickup",
-        customerName: "X", customerPhone: "9",
+        customerName: "X", customerPhone: "01012345674",
         lines: [{ productId: prod.id, quantity: 1, selectedOptionIds: [] }],
       });
 

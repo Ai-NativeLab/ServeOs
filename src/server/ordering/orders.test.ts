@@ -21,7 +21,7 @@ async function setup(slug: string) {
   const cat = await createCategory(t.id, { nameEn: "P", nameAr: "ب" });
   const prod = await createProduct(t.id, { nameEn: "Pie", nameAr: "فطيرة", basePrice: "100", categoryId: cat.id });
   await updateProduct(t.id, prod.id, { isPublished: true });
-  const order = await placeOrder(t.id, { branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1", lines: [{ productId: prod.id, quantity: 1, selectedOptionIds: [] }] });
+  const order = await placeOrder(t.id, { branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01012345678", lines: [{ productId: prod.id, quantity: 1, selectedOptionIds: [] }] });
   // A real staff row: audit_events.actor_user_id is FK-constrained to users, so
   // status transitions must record an actor that actually exists.
   const [staff] = await db.insert(users).values({ tenantId: t.id, name: "Staff", email: `staff-${slug}@x.com`, status: "active" }).returning();
@@ -32,7 +32,7 @@ describe("orders queries + transitions", () => {
   it("records a whatsapp order on the whatsapp channel", async () => {
     const { t, branch, pizza } = await setup("o-wa");
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "Ahmed", customerPhone: "+201111111111",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "Ahmed", customerPhone: "01012345678",
       channel: "whatsapp", lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
     const [row] = await withTenant(t.id, (tx) =>
@@ -95,7 +95,7 @@ describe("orders queries + transitions", () => {
   it("cancelOrderByToken cancels a pending order and records the event", async () => {
     const { t, branch, pizza } = await setup("cx1");
     const placed = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01012345678",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
     const { cancelOrderByToken, getOrder } = await import("./service");
@@ -113,7 +113,7 @@ describe("orders queries + transitions", () => {
     const { t, branch, pizza, userId } = await setup("cx2");
     const { InvalidTransitionError } = await import("./errors");
     const placed = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01012345678",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
     const { cancelOrderByToken, transitionStatus } = await import("./service");
