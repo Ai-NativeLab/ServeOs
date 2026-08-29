@@ -100,7 +100,7 @@ ServeOS is a multi-tenant commerce and operations operating system serving resta
 2. **Visitor** is routed to `app.serveos.tech/register`, provides Business Name (`Bella Napoli`), unique slug (`bellanapoli`), vertical (`restaurant`), email, and password.
 3. Upon registration, tenant status is set to `pending_approval`.
 4. **Tenant Owner** attempts to log in to `app.serveos.tech`; the system displays an informative "Account Pending Admin Approval" screen preventing unauthorized dashboard operations.
-5. **Platform Super Admin** logs into `admin.serveos.tech/admin/tenants`, reviews the application, assigns plan (`PRO`), verifies entitlements, and clicks **"Approve Tenant"**.
+5. **Platform Super Admin** logs into `admin.serveos.tech/admin/approvals`, reviews the pending application, and clicks **"Approve"** (approval activates the tenant; plan management is separate).
 6. **Tenant Owner** refreshes/logs in:
    - Guided onboarding checklist launches (Setup Branch $\rightarrow$ Add Bank/Payment Account $\rightarrow$ Create First Category & Products $\rightarrow$ Generate POS Pairing Code).
 7. Tenant storefront (`bellanapoli.serveos.tech`) becomes reachable publicly.
@@ -126,7 +126,7 @@ ServeOS is a multi-tenant commerce and operations operating system serving resta
 ### Journey 3: In-Store POS Register, Shift Management & Cash Reconciliation
 **Primary Surfaces:** Merchant Dashboard (`S3`) $\rightarrow$ Electron POS Desktop App (`S5`)
 
-1. **Manager** opens `app.serveos.tech/dashboard/settings/devices` and clicks **"Mint Pairing Code"**.
+1. **Manager** opens `app.serveos.tech/dashboard/settings/pos-devices` and clicks **"Mint Pairing Code"**.
 2. **Cashier** launches Electron POS desktop app (`apps/pos`). First screen prompts for Tenant Slug and Pairing Code (or Owner login).
 3. POS pairs with server; securely stores minted device Bearer token in encrypted local storage.
 4. **Cashier** signs in using Cashier PIN/Code (`X-POS-Cashier`).
@@ -232,7 +232,7 @@ ServeOS is a multi-tenant commerce and operations operating system serving resta
 | `TC-DASH-003` | `S3` | Manager | Menu Category & Product CRUD | Manager authenticated | 1. Create Category "Desserts".<br>2. Create Product "Tiramisu" with price 80.00 EGP, image, and tax rate.<br>3. Edit price to 90.00 EGP.<br>4. Toggle "Publish". | Product persists in DB; updates instantly visible on Storefront; audit log records modification. | Playwright / Vitest |
 | `TC-DASH-004` | `S3` | Manager | Recipe (BOM) Ingredient Linking | Raw inventory items exist | 1. Open `/dashboard/inventory/recipes`.<br>2. Select "Margherita Pizza".<br>3. Add 0.2 kg Flour, 0.15 kg Cheese.<br>4. Save Recipe. | BOM link is stored in `product_inventory_links`; inventory deduction engine activates for this product. | Vitest Integration |
 | `TC-DASH-005` | `S3` | Manager | Purchase Order Lifecycle & Goods Receiving | Supplier configured in directory | 1. Create PO for Supplier "Dairy Fresh" with 20 kg Cheese @ 100 EGP/kg.<br>2. Submit PO.<br>3. Click "Receive Goods", enter batch/lot number and expiry date.<br>4. Confirm receipt. | PO marked `RECEIVED`; inventory stock increments by 20 kg; lot entry created with cost basis. | Playwright / Vitest |
-| `TC-DASH-006` | `S3` | Owner | POS Device Pairing Code Generation | Owner on Settings page | 1. Navigate to `/dashboard/settings/devices`.<br>2. Select Branch "Main".<br>3. Click "Generate Pairing Code". | 6-character uppercase alphanumeric code generated with 15-minute expiration; stored in DB. | Playwright / Vitest |
+| `TC-DASH-006` | `S3` | Owner | POS Device Pairing Code Generation | Owner on Settings page | 1. Navigate to `/dashboard/settings/pos-devices`.<br>2. Select Branch "Main".<br>3. Click "Generate Pairing Code". | 8-character uppercase alphanumeric code generated with 10-minute expiration; stored in DB. | Playwright / Vitest |
 | `TC-DASH-007` | `S3` | Manager | Cross-Channel Financial Analytics & Reports | Tenant plan has `advanced_analytics = true` | 1. Open `/dashboard/analytics`.<br>2. Filter date range (Today, This Week, Custom).<br>3. Inspect Gross Sales, Net Sales, Tax Breakdown, Channel Split. | Metrics accurately aggregate POS + Storefront orders; non-entitled tenants are gated with plan upgrade banner. | Vitest / Playwright |
 
 ---
@@ -256,7 +256,7 @@ ServeOS is a multi-tenant commerce and operations operating system serving resta
 | Test ID | Surface | Persona | Scenario Title | Preconditions | Action Steps | Expected Outcome | Verification Tier |
 |---|---|---|---|---|---|---|---|
 | `TC-ADMIN-001` | `S4` | Super Admin | Super Admin Authentication & MFA | Platform Admin account | 1. Navigate to `admin.serveos.localhost:3000/admin/login`.<br>2. Log in with `admin@serveos.com`. | Reaches Admin Console; non-admin users attempting access receive 403 Forbidden with clear reason. | Playwright (`admin.spec.ts`) |
-| `TC-ADMIN-002` | `S4` | Super Admin | Tenant Review & Approval Workflow | Tenant in `pending_approval` status | 1. Open `/admin/tenants`.<br>2. Select pending tenant.<br>3. Review details, assign plan `PRO`, click "Approve". | Tenant status becomes `ACTIVE`; tenant owner can now access full dashboard; storefront goes live. | Playwright (`admin.spec.ts`) |
+| `TC-ADMIN-002` | `S4` | Super Admin | Tenant Review & Approval Workflow | Tenant in `pending_approval` status | 1. Open `/admin/approvals`.<br>2. Find the pending tenant.<br>3. Review details, click "Approve". | Tenant status becomes `ACTIVE`; tenant owner can now access full dashboard; storefront goes live. | Playwright (`admin.spec.ts`) |
 | `TC-ADMIN-003` | `S4` | Super Admin | Plan Entitlement Override & Feature Gating | Active tenant on `STARTER` plan | 1. Open Tenant Details.<br>2. Override entitlement `advanced_analytics: true`.<br>3. Save. | Tenant immediately gains access to Analytics without full plan upgrade; change logged in platform audit. | Vitest / Playwright |
 | `TC-ADMIN-004` | `S4` | Super Admin | Tenant Suspension & Re-activation | Active tenant | 1. Click "Suspend Tenant" with reason "Billing Overdue".<br>2. Attempt to access tenant Storefront and Dashboard.<br>3. Click "Reactivate Tenant". | While suspended, Storefront shows maintenance/suspended page; dashboard blocked; reactivating restores full functionality. | Vitest / Playwright |
 
@@ -283,7 +283,7 @@ ServeOS is a multi-tenant commerce and operations operating system serving resta
 
 ## 5. Test Automation Coverage & Gap Analysis
 
-Based on the [Feature Maturity Audit](file:///d:/work/AgencyOS/ServeOs/docs/ailab/references/2026-08-13-feature-maturity-audit.md), the table below highlights current automated coverage vs. manual QA requirements:
+Based on the [Feature Maturity Audit](../ailab/references/2026-08-13-feature-maturity-audit.md), the table below highlights current automated coverage vs. manual QA requirements:
 
 | Domain / Surface | Existing Automated Coverage | Coverage State | Action Required for Issue #142 |
 |---|---|---|---|

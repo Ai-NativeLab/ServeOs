@@ -46,7 +46,7 @@
 | **`TC-DASH-001`** | Dashboard (`app.*`) | Live Order Status State Machine Transitions | 🟩 PASS | Transitions pending->confirmed->preparing->ready->out_for_delivery->completed |
 | **`TC-DASH-002`** | Dashboard (`app.*`) | Offline Payment Verification & Rejection | 🟥 FAIL | [BUG-004], [BUG-005], [BUG-006] logged |
 | **`TC-DASH-003`** | Dashboard (`app.*`) | Menu Category & Product CRUD | 🟥 FAIL | [BUG-001] Direct image binary upload fails without Supabase creds |
-| **`TC-DASH-004`** | Dashboard (`app.*`) | Recipe (BOM) Ingredient Linking & Auto-Deduction | 🟥 FAIL | [BUG-010] /dashboard/inventory/items/new returns 404 Not Found |
+| **`TC-DASH-004`** | Dashboard (`app.*`) | Recipe (BOM) Ingredient Linking & Auto-Deduction | ⬜ NOT TESTED | [BUG-010]/[BUG-011] withdrawn — both routes exist on `main` (commit `fa7506a`, 2026-08-09); scenario needs re-execution |
 | **`TC-DASH-005`** | Dashboard (`app.*`) | Purchase Order Lifecycle & Goods Receiving | 🟥 FAIL | [BUG-012] Goods receipt saves unitCost=0, breaking 3-way match |
 | **`TC-DASH-006`** | Dashboard (`app.*`) | POS Device Pairing Code Generation | 🟩 PASS | 8-char secure code with 10-min TTL & audit trail |
 | **`TC-DASH-007`** | Dashboard (`app.*`) | Cross-Channel Financial Analytics Reports | 🟩 PASS | Channel breakdown, AOV, peak hours & plan upgrade prompts |
@@ -217,7 +217,8 @@ Use the template below whenever a test fails or unexpected behavior is observed:
 * **Actual Result:**
   - `ProductCard.tsx` and `ProductSheet.tsx` ignore `product.inStock`. Customer can open the product sheet, configure modifiers, and add the out-of-stock dish to the cart.
 
-### [BUG-010] Navigating to "New Inventory Item" (/dashboard/inventory/items/new) Returns 404 Not Found
+### [BUG-010] ~~Navigating to "New Inventory Item" (/dashboard/inventory/items/new) Returns 404 Not Found~~ — WITHDRAWN
+* **Status:** ❌ Withdrawn (invalid). `src/app/dashboard/inventory/items/new/page.tsx` exists on `main` since commit `fa7506a` (2026-08-09) — nine days before this execution date — and renders. The 404 was most likely a stale checkout or dev server; re-test on a fresh `main` before re-filing.
 * **Scenario ID:** `TC-DASH-004` / Journey 4 (Inventory)
 * **Surface / URL:** `http://app.serveos.localhost:3000/dashboard/inventory/items/new`
 * **Persona:** Merchant Owner / Manager
@@ -231,7 +232,8 @@ Use the template below whenever a test fails or unexpected behavior is observed:
 * **Actual Result:**
   - Next.js returns `404: This page could not be found.`
 
-### [BUG-011] Recipe Detail / Edit Route (/dashboard/inventory/recipes/[id]) Returns 404 Not Found
+### [BUG-011] ~~Recipe Detail / Edit Route (/dashboard/inventory/recipes/[id]) Returns 404 Not Found~~ — WITHDRAWN
+* **Status:** ❌ Withdrawn (invalid). `src/app/dashboard/inventory/recipes/[id]/page.tsx` exists on `main` since commit `fa7506a` (2026-08-09) and renders. Same likely cause as [BUG-010]; re-test on a fresh `main` before re-filing.
 * **Scenario ID:** `TC-DASH-004` / Journey 4 (Inventory)
 * **Surface / URL:** `http://app.serveos.localhost:3000/dashboard/inventory/recipes/[id]`
 * **Persona:** Merchant Owner / Manager
@@ -286,7 +288,9 @@ Use the template below whenever a test fails or unexpected behavior is observed:
 * **Expected Result:**
   - App sends login request to `http://localhost:3000/api/pos/v1/login`.
 * **Actual Result:**
-  - `DEFAULT_BASE_URL` in `pos-main.ts` statically evaluated `process.env.VITE_DEV_SERVER_URL` before Vite initialized, defaulting to `"https://app.serveos.tech"`, which failed with uncaught fetch network error.
+  - Login requests went to `https://app.serveos.tech` and failed with an uncaught fetch network error.
+* **Root-Cause Note (corrected):** The original diagnosis — that `DEFAULT_BASE_URL` "statically evaluated `VITE_DEV_SERVER_URL` before Vite initialized" — does not hold: vite-plugin-electron sets that variable in the spawned Electron process's environment *before* any module evaluates, and the window loader in `main.ts` reads it the same way at module load. The exact trigger of the observed failure was not confirmed (a stale `dist-electron` build or a shell without the variable are the likely candidates).
+* **Resolution:** Base-URL resolution and the window loader now share one dev predicate (`electron/dev-mode.ts`), evaluated at construction time. In dev (vite serving) the POS targets `http://localhost:3000`; everywhere else — packaged **or** unpackaged build output — it targets `https://app.serveos.tech`, so a till paired from source keeps its pairing. `POS_API_URL` still overrides everything.
 
 ### [BUG-015] WhatsApp Cart Handoff URL Omits Local Dev Port and Hardcodes https Protocol
 * **Scenario ID:** `06-whatsapp.md` / WhatsApp Sandbox

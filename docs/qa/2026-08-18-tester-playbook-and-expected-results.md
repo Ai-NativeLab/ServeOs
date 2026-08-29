@@ -94,7 +94,7 @@ The onboarding pipeline from a stranger visiting the marketing site, registering
 3. Submit form.
 4. Try logging in immediately at `http://app.serveos.localhost:3000/login`.
 5. Open `http://admin.serveos.localhost:3000/admin/login` $\rightarrow$ Sign in as `admin@serveos.com` / `admin1234`.
-6. Navigate to `/admin/tenants` $\rightarrow$ Find `cairoroasters` $\rightarrow$ Click **"Approve Tenant"** and select plan `PRO`.
+6. Navigate to `/admin/approvals` $\rightarrow$ Find `cairoroasters` in the pending list $\rightarrow$ Click **"Approve"**. (Tenant detail pages under `/admin/tenants` manage already-active tenants; approval has no plan-selection step.)
 7. Go back to `http://app.serveos.localhost:3000/login` $\rightarrow$ Sign in as `owner@cairoroasters.com`.
 8. Complete the guided setup:
    - Create Main Branch.
@@ -104,7 +104,7 @@ The onboarding pipeline from a stranger visiting the marketing site, registering
 
 #### Exact Expected Results
 * **Before Approval:** Logging in displays a clear message: *"Your account is currently under review by our team"*. No dashboard menus are accessible.
-* **Admin Action:** Approving the tenant sets `tenants.status = 'active'` and assigns subscription plan entitlements.
+* **Admin Action:** Approving the tenant sets `tenants.status = 'active'`, marks the onboarding application approved, and writes a `tenant.approved` audit entry.
 * **After Approval:** Owner logs in directly to the Onboarding Hub/Dashboard.
 * **Storefront Activation:** `http://cairoroasters.serveos.localhost:3000` responds with the tenant's brand name, theme, and published products.
 
@@ -158,12 +158,12 @@ The primary customer-to-kitchen flow. A customer visits the mobile/web storefron
 The physical till flow inside the store using the desktop Electron application (`apps/pos`). This covers device pairing, cashier shifts, drawer cash tracking, ringing sales with split tenders, discounts, cash drops, and end-of-day Z-reports.
 
 #### Test Execution Steps
-1. In Dashboard (`app.serveos.localhost:3000` as Owner), go to `/dashboard/settings/devices` $\rightarrow$ Click **"Mint Pairing Code"** (e.g. `ABC-123`).
+1. In Dashboard (`app.serveos.localhost:3000` as Owner), go to `/dashboard/settings/pos-devices` $\rightarrow$ Click **"Mint Pairing Code"** (8 uppercase alphanumeric characters, e.g. `A7K2P9QM`; valid for 10 minutes).
 2. Start the POS app:
    ```bash
    npm run pos:dev
    ```
-3. Enter slug `roma` and pairing code `ABC-123` $\rightarrow$ Click **"Pair Device"**.
+3. Enter slug `roma` and the minted pairing code (e.g. `A7K2P9QM`) $\rightarrow$ Click **"Pair Device"**.
 4. Log in as Cashier (`staff@roma.com` or cashier PIN).
 5. **Open Shift Screen:** Enter starting cash float: `500.00 EGP` $\rightarrow$ Open Shift.
 6. **Ring a Sale:**
@@ -264,7 +264,7 @@ Validating security boundaries. A tenant must never see another tenant's records
 2. Open incognito window $\rightarrow$ Sign in to `app.serveos.localhost:3000` as Owner of tenant `milan` (`owner@milan.com`).
 3. Manually change browser URL to: `http://app.serveos.localhost:3000/dashboard/orders/[roma_order_id]`.
 4. Check response.
-5. In Admin Console (`admin.serveos.localhost:3000`), open `/admin/audit-logs`.
+5. In Admin Console (`admin.serveos.localhost:3000`), open `/admin/audit`.
 6. Inspect the hash chain table: each record displays `prevHash`, `entryHash`, `actorId`, `action`, `timestamp`.
 
 #### Exact Expected Results
@@ -334,24 +334,26 @@ Use this quick-reference table when testing different store setups:
 
 When testing locally, you can open your developer tools and database to confirm that the backend state matches what the UI shows.
 
-### A. Inspecting Network Headers in Chrome DevTools
-* Open **DevTools (F12)** $\rightarrow$ **Network** tab.
-* On any request, verify the following headers:
-  - `x-surface`: `storefront` | `dashboard` | `admin` | `marketing`
-  - `x-tenant-slug`: e.g. `roma` (only on storefront requests)
-  - `x-locale`: `ar` or `en`
-  - `X-POS-Cashier`: Cashier User ID (on POS API calls)
+### A. Verifying Surface Routing
+The routing headers (`x-surface`, `x-tenant-slug`, `x-locale`) are set by the server-side proxy (`src/proxy.ts`) on the *rewritten internal request* — they never appear in the browser's DevTools Network tab, so do not file a bug when you cannot see them. Verify routing by its observable effects instead:
+* `roma.serveos.localhost:3000` renders the Roma storefront, `app.*` the dashboard, `admin.*` the admin console, and the bare root domain the marketing site.
+* Arabic marketing pages (`/ar/...`) render with `dir="rtl"` and `lang="ar"` on the `<html>` element (inspect via DevTools **Elements** tab).
+* Spoofing is rejected: adding an `x-tenant-slug: roma` header yourself on an `app.*` request must NOT surface Roma's data — the proxy strips client-sent copies.
+
+The POS app's `X-POS-Cashier` header is sent by the Electron main process, not a browser, so it is also invisible in DevTools; it can be observed in the Next.js server's request logs if needed.
 
 ### B. Checking Database State via Command Line
-To check if your test sale or shift was created in the database:
+`npm run test` runs the Vitest suite — it does not inspect the database. To check whether your test sale or shift actually landed, query the database directly with `psql` using the `DATABASE_URL` from the environment you are testing against (`.env.local` for local dev, `.env.test` for the test DB):
 
 ```bash
-# Check the latest orders in the test database
-npm run test -- -t "orders"
+# Latest orders
+psql "$DATABASE_URL" -c "select id, order_number, status, payment_status, total, placed_at from orders order by placed_at desc limit 10;"
 
-# Check active POS shifts
-# A shift should have status = 'open' and an openingFloat
+# Active POS shifts — an open shift has status = 'open' and an opening_float
+psql "$DATABASE_URL" -c "select id, status, opening_float, opened_at from pos_shifts order by opened_at desc limit 5;"
 ```
+
+(The Supabase dashboard's SQL editor works for the same queries if you prefer a UI. `npm run db:check` only reports migration status, not row data.)
 
 ### C. Checking Payment Proof Media in Supabase Storage
 * Uploaded offline receipts are stored under the `media` storage bucket.
