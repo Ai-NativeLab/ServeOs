@@ -137,6 +137,11 @@ jobs:
     env:
       DATABASE_URL: postgresql://serveos_ci:serveos_ci@localhost:5432/serveos_test
       ROOT_DOMAIN: serveos.localhost
+      # pricing.spec.ts submits the public enquiry form, which calls the email
+      # provider. Pinned to the fake so a real send can never happen from CI —
+      # today SALES_INBOX_EMAIL is simply unset, but that is a silent guarantee
+      # and one added secret away from mailing a live inbox on every push.
+      EMAIL_PROVIDER: fake
 
     steps:
       - uses: actions/checkout@v4
@@ -164,13 +169,24 @@ jobs:
       - name: Apply migrations
         run: npm run db:migrate:test
 
-      # Two seeds, both required: roma (9 of 11 specs) + nobio retail
-      # (shop.spec.ts, storefront-responsive.spec.ts).
+      # Three seeds, all required: roma (9 of 11 specs), nobio retail
+      # (shop.spec.ts, storefront-responsive.spec.ts), and the pharmacy demo
+      # tenant (pricing.spec.ts).
       - name: Seed roma tenant
         run: ENV_FILE=.env.test npm run db:seed
 
       - name: Seed nobio retail tenant
         run: ENV_FILE=.env.test npx tsx scripts/seed-retail-showcase.ts
+
+      # pricing.spec.ts signs in through the public demo door to prove a demo
+      # session is never treated as a customer. Without this tenant
+      # /api/demo/login answers ?demo=unavailable and that regression goes
+      # untested — which is exactly the bug it exists to catch.
+      #
+      # Only the pharmacy door is used, and a full demo tenant is a whole
+      # catalogue, order history and shift cycle — so seed the one, not all four.
+      - name: Seed the pharmacy demo tenant
+        run: ENV_FILE=.env.test npm run demo:seed -- --trade=pharmacy
 
       # The seed's 10:00-23:00 window + real-clock order validation would
       # flake any run outside business hours.

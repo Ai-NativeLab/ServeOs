@@ -1,4 +1,5 @@
 import { pgTable, uuid, text, timestamp, numeric, jsonb, pgEnum, uniqueIndex, index } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { tenants } from "@/server/tenancy/schema";
 import { branches } from "@/server/branches/schema";
 import { users } from "@/server/auth/schema";
@@ -58,9 +59,18 @@ export const posHeldTickets = pgTable("pos_held_tickets", {
   cashierUserId: uuid("cashier_user_id").notNull().references(() => users.id),
   label: text("label").notNull(),
   draftJson: jsonb("draft_json").notNull(),
+  // Offline ticket identity: the id the device minted while disconnected.
+  // Null for tickets held online. A later ticket.discarded/ticket.recalled
+  // sync event references THIS, not the server-minted id.
+  clientTicketId: uuid("client_ticket_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index("pos_held_tickets_branch").on(t.branchId)]);
+}, (t) => [
+  index("pos_held_tickets_branch").on(t.branchId),
+  // Partial: only rows that HAVE a client id participate in the uniqueness
+  // check — tickets held online (clientTicketId NULL) must not collide.
+  uniqueIndex("pos_held_tickets_device_client").on(t.deviceId, t.clientTicketId).where(sql`client_ticket_id IS NOT NULL`),
+]);
 
 export type OrderPayment = typeof orderPayments.$inferSelect;
 export type PosAdjustmentEvent = typeof posAdjustmentEvents.$inferSelect;

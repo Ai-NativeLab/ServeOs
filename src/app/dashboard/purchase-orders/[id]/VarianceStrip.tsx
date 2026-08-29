@@ -12,14 +12,14 @@ export function VarianceStrip({
   const invDelta = variance.invoiceVsReceived !== null ? Number(variance.invoiceVsReceived) : null;
 
   return (
-    <Card className="p-4 bg-muted/20 border-border/80">
+    <Card data-testid="variance-strip" className="p-4 bg-muted/20 border-border/80">
       <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
         Three-Way Match & Variance
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 divide-y sm:divide-y-0 sm:divide-x divide-border/60">
         <div className="space-y-1">
           <div className="text-xs text-muted-foreground">Ordered Total</div>
-          <div className="text-lg font-bold font-mono">
+          <div data-testid="variance-ordered-total" className="text-lg font-bold font-mono">
             {variance.total} {currency}
           </div>
           <div className="text-xs text-muted-foreground">Target value at send time</div>
@@ -27,12 +27,13 @@ export function VarianceStrip({
 
         <div className="space-y-1 sm:pl-4 pt-3 sm:pt-0">
           <div className="text-xs text-muted-foreground">Received Total</div>
-          <div className="text-lg font-bold font-mono">
+          <div data-testid="variance-received-total" className="text-lg font-bold font-mono">
             {variance.receivedTotal} {currency}
           </div>
           <div className="flex items-center gap-1.5 text-xs font-medium">
             <span>vs Ordered:</span>
             <span
+              data-testid="variance-received-delta"
               className={
                 recDelta === 0
                   ? "text-muted-foreground"
@@ -50,12 +51,13 @@ export function VarianceStrip({
           <div className="text-xs text-muted-foreground">Invoiced Total</div>
           {variance.invoiceTotal !== null ? (
             <>
-              <div className="text-lg font-bold font-mono">
+              <div data-testid="variance-invoiced-total" className="text-lg font-bold font-mono">
                 {variance.invoiceTotal} {currency}
               </div>
               <div className="flex items-center gap-1.5 text-xs font-medium">
                 <span>vs Received:</span>
                 <span
+                  data-testid="variance-invoiced-delta"
                   className={
                     invDelta === 0
                       ? "text-green-600"

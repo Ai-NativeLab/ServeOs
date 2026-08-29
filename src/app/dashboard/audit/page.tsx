@@ -1,6 +1,7 @@
 import { requireAuditPermission } from "../audit-permission";
 import { UnauthorizedError } from "@/server/rbac/authorize";
 import { listAuditEvents, getChainStatus } from "@/server/audit/read";
+import { listClockSkewFlaggedReceipts } from "@/server/pos/sync-receipt";
 import { getTenantById } from "@/server/tenancy";
 import { formatDayTime } from "@/lib/datetime";
 import { PageHeader } from "@/components/dashboard/PageHeader";
@@ -32,10 +33,11 @@ export default async function AuditPage({
   }
 
   const { action, entityType, actorType } = await searchParams;
-  const [events, status, tenant] = await Promise.all([
+  const [events, status, tenant, skewed] = await Promise.all([
     listAuditEvents(ctx.tenantId, { action: action || undefined, entityType: entityType || undefined, actorType: actorType || undefined }),
     getChainStatus(ctx.tenantId),
     getTenantById(ctx.tenantId),
+    listClockSkewFlaggedReceipts(ctx.tenantId),
   ]);
   const tz = tenant?.timezone ?? "UTC";
 
@@ -55,6 +57,21 @@ export default async function AuditPage({
       <div className={`rounded-lg border px-4 py-3 text-sm font-medium mb-4 ${banner.cls}`}>
         {chainOk ? "✓ " : "⚠ "}{banner.text}
       </div>
+
+      {skewed.length > 0 && (
+        <div className="rounded-lg border px-4 py-3 text-sm mb-4 border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400">
+          <p className="font-medium">
+            ⚠ {skewed.length} clock-skew-flagged sync event{skewed.length === 1 ? "" : "s"} — the till&apos;s clock was more than 48h off the server&apos;s when received.
+          </p>
+          <ul className="mt-2 space-y-1 font-mono text-xs">
+            {skewed.map((r) => (
+              <li key={r.eventId}>
+                {r.deviceLabel} · {r.type} · till said {formatDayTime(r.occurredAt, tz)}, server received it {formatDayTime(r.receivedAt, tz)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <form method="GET" className="flex flex-wrap items-center gap-2 mb-4">
         <input name="action" defaultValue={action ?? ""} placeholder="action" className={inputCls} />

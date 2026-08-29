@@ -18,11 +18,14 @@ const CARD_LABEL: Record<VerticalId, string> = {
   timber: "Timber",
 };
 
-export function RegisterForm() {
+export function RegisterForm({ plan }: { plan?: string }) {
   const [vertical, setVertical] = useState<VerticalId>("restaurant");
   const accent = VERTICAL_ACCENTS[vertical];
   return (
     <form action={registerAction} className="grid gap-4">
+      {/* Carried from the pricing flow so billing opens on the plan they chose.
+          Already validated against the plans table by the page. */}
+      {plan ? <input type="hidden" name="plan" value={plan} /> : null}
       <div className="grid grid-cols-2 gap-2">
         {VERTICAL_IDS.map((v) => {
           const active = v === vertical;

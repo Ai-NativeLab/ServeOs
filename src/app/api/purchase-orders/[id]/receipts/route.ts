@@ -20,18 +20,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const lines = (body.lines as unknown[]).map((l) => {
       const row = (l ?? {}) as Record<string, unknown>;
       const receivedQty = Number(row.receivedQty);
-      const unitCost = Number(row.unitCost);
       if (!Number.isFinite(receivedQty) || receivedQty <= 0) {
         throw new InvalidPoInputError("each line needs a positive finite receivedQty");
       }
-      if (!Number.isFinite(unitCost)) {
-        throw new InvalidPoInputError("each line needs a finite unitCost");
+      // No unitCost: `postReceipt` values the lot from the ordered line. This
+      // route used to REQUIRE one and accept 0, which valued the lot at zero.
+      //
+      // Reject rather than ignore. Accepting a money field and silently dropping
+      // it is the same class of failure this change exists to remove — a caller
+      // deliberately receiving at a price other than the ordered one would have
+      // had that instruction discarded with no signal. A 400 says so.
+      if (row.unitCost !== undefined) {
+        throw new InvalidPoInputError(
+          "unitCost is not accepted; a receipt is valued from the ordered PO line",
+        );
       }
       return {
         poLineId: String(row.poLineId ?? ""),
         receivedQty,
         uom: String(row.uom ?? "") as never,
-        unitCost,
         lotCode: typeof row.lotCode === "string" ? row.lotCode : undefined,
         expiryAt: typeof row.expiryAt === "string" ? new Date(row.expiryAt) : undefined,
       };

@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { requirePurchasingPermission, resolvePurchasingActor } from "../../purchasing-permission";
+import { domainErrorValue } from "../../action-errors";
 import { sendPurchaseOrder } from "@/server/purchasing/send";
 import { cancelPurchaseOrder } from "@/server/purchasing/service";
 import { postReceipt, type PostReceiptLineInput } from "@/server/purchasing/receiving";
@@ -20,7 +21,7 @@ export async function sendPoAction(
     revalidatePath("/dashboard/purchase-orders");
     return { success: true };
   } catch (e) {
-    return { error: e instanceof Error ? e.message : "Failed to send purchase order" };
+    return domainErrorValue(e);
   }
 }
 
@@ -36,7 +37,7 @@ export async function cancelPoAction(
     revalidatePath("/dashboard/purchase-orders");
     return { success: true };
   } catch (e) {
-    return { error: e instanceof Error ? e.message : "Failed to cancel purchase order" };
+    return domainErrorValue(e);
   }
 }
 
@@ -52,7 +53,7 @@ export async function closePoAction(
     revalidatePath("/dashboard/purchase-orders");
     return { success: true };
   } catch (e) {
-    return { error: e instanceof Error ? e.message : "Failed to close purchase order" };
+    return domainErrorValue(e);
   }
 }
 
@@ -72,7 +73,7 @@ export async function enterInvoiceAction(
     revalidatePath("/dashboard/purchase-orders");
     return { success: true };
   } catch (e) {
-    return { error: e instanceof Error ? e.message : "Failed to record invoice total" };
+    return domainErrorValue(e);
   }
 }
 
@@ -80,7 +81,6 @@ export type ReceiveLinePayload = {
   poLineId: string;
   receivedQty: number;
   uom: UnitOfMeasure;
-  unitCost: number;
   lotCode?: string;
   expiryAt?: string | null;
 };
@@ -108,9 +108,8 @@ export async function postReceiptAction(
       poLineId: l.poLineId,
       receivedQty: Number(l.receivedQty),
       uom: l.uom,
-      unitCost: Number(l.unitCost),
       lotCode: l.lotCode?.trim() || undefined,
-      expiryAt: l.expiryAt ? new Date(l.expiryAt) : null,
+      expiryAt: l.expiryAt && !isNaN(new Date(l.expiryAt).getTime()) ? new Date(l.expiryAt) : null,
     }));
 
     const actor = await resolvePurchasingActor(ctx);
@@ -124,6 +123,6 @@ export async function postReceiptAction(
     revalidatePath("/dashboard/purchase-orders");
     return { success: true, status: result.status, receiptId: result.receiptId };
   } catch (e) {
-    return { error: e instanceof Error ? e.message : "Failed to post stock receipt" };
+    return domainErrorValue(e);
   }
 }

@@ -6,6 +6,7 @@ export type { EmailProvider, EmailMessage, ParsedEmailEvent } from "./provider";
 export { ResendEmailProvider } from "./resend-provider";
 export { FakeEmailProvider } from "./fake-provider";
 export { verifySvixSignature, parseResendWebhook, WebhookSignatureError } from "./webhook";
+export { defaultSender } from "./sender";
 
 /** Resolved once from EMAIL_PROVIDER. Swapping Resend → Brevo → SES is an env
  *  change plus DNS re-verification — no call site knows which one is active. */

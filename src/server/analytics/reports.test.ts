@@ -216,7 +216,7 @@ describe("cross-channel sales aggregations", () => {
       tx.update(purchaseOrders).set({ status: "sent" }).where(eq(purchaseOrders.id, poId)));
     const [poLine] = await withTenant(tenantId, (tx) =>
       tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId)));
-    await postReceipt(actor, poId, { lines: [{ poLineId: poLine!.id, receivedQty: 18, uom: "each", unitCost: 5 }] });
+    await postReceipt(actor, poId, { lines: [{ poLineId: poLine!.id, receivedQty: 18, uom: "each" }] });
     await enterInvoiceTotal(actor, poId, 95);
 
     // Cancelled PO — must not appear in spend.
@@ -272,7 +272,7 @@ describe("cross-channel sales aggregations", () => {
       tx.update(purchaseOrders).set({ status: "sent" }).where(eq(purchaseOrders.id, poId)));
     const [poLine] = await withTenant(tenantId, (tx) =>
       tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId)));
-    await postReceipt(actor, poId, { lines: [{ poLineId: poLine!.id, receivedQty: 18, uom: "each", unitCost: 5 }] });
+    await postReceipt(actor, poId, { lines: [{ poLineId: poLine!.id, receivedQty: 18, uom: "each" }] });
     await enterInvoiceTotal(actor, poId, 95);
 
     const detail = await getPoVariance(tenantId, poId);
@@ -326,7 +326,7 @@ describe("purchasing analytics tax basis", () => {
     const [line] = await withTenant(tenantId, (tx) =>
       tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId)));
     await postReceipt(actor, poId, {
-      lines: [{ poLineId: line.id, receivedQty: 10, uom: "each", unitCost: 5 }],
+      lines: [{ poLineId: line.id, receivedQty: 10, uom: "each" }],
     });
     await enterInvoiceTotal(actor, poId, 57);
 

@@ -57,7 +57,10 @@ export default async function PurchaseOrderDetailPage({
           title={`#${po.poNumber}`}
           description={`Addressed to ${supplier?.name ?? "Supplier"}`}
           action={
-            <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${statusMeta.cls}`}>
+            <span
+              data-testid="po-status-badge"
+              className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${statusMeta.cls}`}
+            >
               {statusMeta.label}
             </span>
           }
@@ -70,7 +73,6 @@ export default async function PurchaseOrderDetailPage({
             invoiceTotal: po.invoiceTotal,
             lines: po.lines.map((l) => ({
               id: l.id,
-              itemId: l.itemId,
               itemNameEn: l.itemNameEn ?? "Item",
               qtyOrdered: Number(l.qtyOrdered),
               qtyReceived: Number(l.qtyReceived),

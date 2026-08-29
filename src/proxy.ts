@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { classifyHost } from "./middleware-routing";
-import { marketingLocaleAction } from "./marketing-locale";
+import { declaresLocaleInQuery, marketingLocaleAction, queryLocale } from "./marketing-locale";
 
 export function proxy(req: NextRequest) {
   const root = process.env.ROOT_DOMAIN ?? "serveos.localhost";
@@ -36,6 +36,14 @@ export function proxy(req: NextRequest) {
 
     if (action.kind === "pass") {
       requestHeaders.set("x-locale", action.locale);
+    }
+
+    // /subscribe falls through the allowlist deliberately, but it is still a
+    // marketing page and it carries its locale in ?lang. Declaring it here is
+    // what gives the ROOT layout the right dir/lang on a direct load — without
+    // it, an Arabic enquiry form renders inside an LTR, lang="en" document.
+    if (action.kind === "none" && declaresLocaleInQuery(req.nextUrl.pathname)) {
+      requestHeaders.set("x-locale", queryLocale(req.nextUrl.searchParams.get("lang")));
     }
   }
 

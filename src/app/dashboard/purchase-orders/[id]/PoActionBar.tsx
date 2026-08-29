@@ -8,7 +8,7 @@ import { ConfirmActionButton } from "@/components/dashboard/ConfirmActionButton"
 import { sendPoAction, cancelPoAction, closePoAction } from "./actions";
 import { ReceiveStockDialog, type ReceiveDialogLine } from "./ReceiveStockDialog";
 import { EnterInvoiceDialog } from "./EnterInvoiceDialog";
-import type { PoStatus } from "@/server/purchasing/status";
+import { canTransition, type PoStatus } from "@/server/purchasing/status";
 
 export function PoActionBar({
   po,
@@ -34,11 +34,11 @@ export function PoActionBar({
     });
   }
 
-  const canSend = po.status === "draft";
-  const canReceive = po.status === "sent" || po.status === "partially_received";
+  const canSend = canTransition(po.status, "sent");
+  const canReceive = canTransition(po.status, "partially_received") || canTransition(po.status, "received");
   const canInvoice = po.status === "sent" || po.status === "partially_received" || po.status === "received";
-  const canClose = po.status === "received";
-  const canCancel = po.status === "draft" || (po.status === "sent" && po.lines.every((l) => l.qtyReceived === 0));
+  const canClose = canTransition(po.status, "closed");
+  const canCancel = canTransition(po.status, "cancelled") && (po.status === "draft" || po.lines.every((l) => l.qtyReceived === 0));
 
   if (po.status === "closed" || po.status === "cancelled") {
     return null;

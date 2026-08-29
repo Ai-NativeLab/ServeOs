@@ -51,4 +51,75 @@ test.describe("Purchasing & Suppliers Dashboard Flow", () => {
     await expect(page.getByRole("button", { name: "Add item" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Save draft PO" })).toBeVisible();
   });
+
+  test("full purchasing lifecycle: create supplier, draft PO, send, receive with lot cost, invoice variance, and close", async ({ page }) => {
+    const timestamp = Date.now();
+    const itemName = `Test Mozzarella ${timestamp}`;
+    const supplierName = `Fresh Farms ${timestamp}`;
+
+    // 1. Create an inventory item if not already existing
+    await page.goto("/dashboard/inventory/items/new");
+    await page.locator("#nameEn").fill(itemName);
+    await page.locator('select[name="baseUom"]').selectOption("kg");
+    await page.locator('button[type="submit"]').click();
+    await page.waitForURL(/\/dashboard\/inventory/);
+
+    // 2. Create a supplier with email so PO can be sent
+    await page.goto("/dashboard/suppliers");
+    await page.getByPlaceholder("Acme Foods").fill(supplierName);
+    await page.getByPlaceholder("supplier@acme.example").fill(`supplier.${timestamp}@test.example`);
+    await page.getByRole("button", { name: "Add supplier" }).click();
+    await expect(page.getByText(supplierName)).toBeVisible();
+
+    // 3. Draft a purchase order: 10 @ 12.00 = 120.00
+    await page.goto("/dashboard/purchase-orders/new");
+    await page.locator("#supplierId").selectOption({ label: supplierName });
+    
+    // Fill line item: qty 10, unit cost 12
+    const qtyInput = page.locator('table input[type="number"]').first();
+    await qtyInput.fill("10");
+    const costInput = page.locator('table input[type="number"]').nth(1);
+    await costInput.fill("12");
+
+    await expect(page.getByText("120.00 EGP")).toBeVisible();
+    await page.getByRole("button", { name: "Save draft PO" }).click();
+
+    // 4. Lands on PO detail page
+    await expect(page).toHaveURL(/\/dashboard\/purchase-orders\/[0-9a-f-]+/);
+    await expect(page.getByTestId("po-status-badge")).toHaveText("Draft");
+
+    // 5. Send PO to supplier
+    await page.getByRole("button", { name: "Send to supplier" }).click();
+    await expect(page.getByTestId("po-status-badge")).toHaveText("Sent");
+
+    // 6. Receive stock: 10 units
+    await page.getByRole("button", { name: "Receive stock" }).click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await page.locator('div[role="dialog"] button:has-text("Fill all remaining")').click();
+    await page.locator('div[role="dialog"] button:has-text("Post receipt")').click();
+
+    // 7. Verify status moves to Received and Variance Strip shows 120.00 received (not 0.00)
+    await expect(page.getByTestId("po-status-badge")).toHaveText("Received");
+    await expect(page.getByTestId("variance-received-total")).toHaveText("120.00 EGP");
+    await expect(page.getByTestId("variance-ordered-total")).toHaveText("120.00 EGP");
+    await expect(page.getByTestId("variance-received-delta")).toHaveText("0.00 EGP");
+
+    // 8. Enter Invoice: 132.00 (expect +12.00 delta)
+    await page.getByRole("button", { name: "Enter invoice" }).click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await page.locator('div[role="dialog"] input[type="number"]').fill("132");
+    await page.locator('div[role="dialog"] button:has-text("Record invoice")').click();
+
+    // 9. Verify variance strip renders the +12.00 invoiced variance delta
+    await expect(page.getByTestId("variance-invoiced-total")).toHaveText("132.00 EGP");
+    await expect(page.getByTestId("variance-invoiced-delta")).toHaveText("+12.00 EGP");
+
+    // 10. Close PO
+    await page.getByRole("button", { name: "Close PO" }).click();
+    await expect(page.getByRole("alertdialog")).toBeVisible();
+    await page.locator('div[role="alertdialog"] button:has-text("Close PO")').click();
+
+    // 11. Verify PO is closed
+    await expect(page.getByTestId("po-status-badge")).toHaveText("Closed");
+  });
 });

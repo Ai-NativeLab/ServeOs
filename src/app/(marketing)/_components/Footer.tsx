@@ -1,12 +1,21 @@
 import Link from "next/link";
 import { LogoMark } from "@/components/brand/LogoMark";
 import { Wordmark } from "@/components/brand/Wordmark";
+import { homeHref, otherLocaleHref } from "@/marketing-locale";
 import type { Locale } from "@/shared/errors";
 import { CHROME } from "../_content/chrome";
 
-export function Footer({ locale }: { locale: Locale }) {
+/** `path` is the locale-independent marketing path this footer is rendered on.
+ *  Ten of its twelve links are in-page anchors that exist only on the home
+ *  page, so they are resolved against it rather than the current URL. */
+export function Footer({ locale, path = "/" }: { locale: Locale; path?: string }) {
   const t = CHROME[locale];
-  const otherHref = locale === "ar" ? "/en" : "/";
+  const otherHref = otherLocaleHref(path, locale);
+  const home = homeHref(locale);
+  // Content keeps bare hashes; only rendering knows where they live. `#faq` is
+  // the home FAQ deliberately — /pricing gives its own section id="pricing-faq"
+  // precisely so the two do not collide.
+  const resolve = (href: string) => (href.startsWith("#") ? `${home}${href}` : href);
 
   return (
     <footer className="border-t border-border/60 bg-card/40">
@@ -25,7 +34,7 @@ export function Footer({ locale }: { locale: Locale }) {
               <ul className="mt-4 space-y-2.5 text-sm">
                 {col.links.map((l) => (
                   <li key={`${col.heading}-${l.label}`}>
-                    <Link href={l.href} className="text-foreground/80 hover:text-foreground">{l.label}</Link>
+                    <Link href={resolve(l.href)} className="text-foreground/80 hover:text-foreground">{l.label}</Link>
                   </li>
                 ))}
               </ul>

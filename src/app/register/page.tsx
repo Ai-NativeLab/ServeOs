@@ -1,8 +1,21 @@
 import Link from "next/link";
+import { listPlans } from "@/server/subscription";
 import { LogoMark } from "@/components/brand/LogoMark";
 import { RegisterForm } from "./RegisterForm";
 
-export default function RegisterPage() {
+/**
+ * `?plan=<key>` arrives from the pricing flow. It is validated here against the
+ * plans table — an unknown key is dropped rather than carried through signup to
+ * a billing page that would highlight nothing.
+ */
+export default async function RegisterPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ plan?: string }>;
+}) {
+  const { plan } = await searchParams;
+  const planKey = plan && (await listPlans()).some((p) => p.key === plan) ? plan : undefined;
+
   return (
     <main className="flex min-h-screen items-center justify-center bg-background p-6">
       <div className="w-full max-w-[400px] rounded-2xl border bg-card p-8 shadow-card">
@@ -16,7 +29,7 @@ export default function RegisterPage() {
           Start your free trial. No credit card required.
         </p>
 
-        <RegisterForm />
+        <RegisterForm plan={planKey} />
 
         <p className="mt-5 text-center text-[13px] text-muted-foreground">
           Already have an account?{" "}

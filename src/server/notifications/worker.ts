@@ -5,11 +5,13 @@ import { tenants } from "@/server/tenancy/schema";
 import { recordAuditEvent } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import type { EmailProvider } from "@/server/email/provider";
+import { defaultSender } from "@/server/email/sender";
 import { notificationOutbox, type NotificationOutboxRow } from "./schema";
 import { notify } from "./service";
 import { eq } from "drizzle-orm";
 
 export const MAX_ATTEMPTS = 5;
+
 /** A claimed row that neither flipped nor failed within this window is
  *  considered stalled (worker crash) and becomes reclaimable. */
 const STALL_RECLAIM_MS = 5 * 60 * 1000;
@@ -63,7 +65,7 @@ export async function drainOutbox(
         // Crash-window recovery: the provider already accepted this one.
         const providerMessageId = row.providerMessageId
           ?? (await provider.send({
-            from: process.env.EMAIL_FROM ?? "no-reply@mail.serveos.com",
+            from: defaultSender(),
             replyTo: row.replyTo ?? undefined,
             to: row.toEmail,
             subject: row.subject,

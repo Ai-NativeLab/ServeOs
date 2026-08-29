@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { requirePurchasingPermission, resolvePurchasingActor } from "../purchasing-permission";
+import { domainErrorValue } from "../action-errors";
 import {
   createSupplier,
   updateSupplier,
@@ -23,7 +24,7 @@ export async function createSupplierAction(formData: FormData): Promise<void | {
       paymentTerms: String(formData.get("paymentTerms") ?? "") || undefined,
     });
   } catch (e) {
-    return { error: e instanceof Error ? e.message : "Could not create supplier." };
+    return domainErrorValue(e);
   }
   revalidatePath("/dashboard/suppliers");
 }
@@ -41,7 +42,7 @@ export async function updateSupplierAction(
     revalidatePath(`/dashboard/suppliers/${supplierId}`);
     return { success: true };
   } catch (e) {
-    return { error: e instanceof Error ? e.message : "Failed to update supplier" };
+    return domainErrorValue(e);
   }
 }
 
@@ -57,6 +58,10 @@ export async function upsertSupplierItemAction(
   try {
     const ctx = await requirePurchasingPermission("suppliers:manage");
     if (!data.itemId) return { error: "Item is required" };
+    if (data.lastUnitCost !== undefined
+      && (!Number.isFinite(Number(data.lastUnitCost)) || Number(data.lastUnitCost) < 0)) {
+      return { error: "Unit cost must be a non-negative number" };
+    }
 
     const actor = await resolvePurchasingActor(ctx);
     await upsertSupplierItem(actor, {
@@ -70,6 +75,6 @@ export async function upsertSupplierItemAction(
     revalidatePath(`/dashboard/suppliers/${supplierId}`);
     return { success: true };
   } catch (e) {
-    return { error: e instanceof Error ? e.message : "Failed to save supplier item" };
+    return domainErrorValue(e);
   }
 }

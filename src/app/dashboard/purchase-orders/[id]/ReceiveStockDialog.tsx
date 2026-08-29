@@ -21,7 +21,6 @@ import type { UnitOfMeasure } from "@/server/catalog/uom";
 
 export type ReceiveDialogLine = {
   id: string;
-  itemId: string;
   itemNameEn: string;
   qtyOrdered: number;
   qtyReceived: number;
@@ -49,6 +48,23 @@ export function ReceiveStockDialog({
     return init;
   });
 
+  function resetQtys() {
+    const init: Record<string, number> = {};
+    for (const l of lines) {
+      init[l.id] = Math.max(0, l.qtyOrdered - l.qtyReceived);
+    }
+    setReceivedQtys(init);
+    setDeliveryNote("");
+    setExpiryAt("");
+  }
+
+  function handleOpenChange(nextOpen: boolean) {
+    setOpen(nextOpen);
+    if (nextOpen) {
+      resetQtys();
+    }
+  }
+
   function updateQty(lineId: string, val: number) {
     setReceivedQtys((prev) => ({ ...prev, [lineId]: val }));
   }
@@ -69,7 +85,6 @@ export function ReceiveStockDialog({
         poLineId: l.id,
         receivedQty: Number(receivedQtys[l.id]),
         uom: l.uom,
-        unitCost: 0, // Service looks up ordering line's unit cost
         expiryAt: expiryAt || null,
       }));
 
@@ -95,7 +110,7 @@ export function ReceiveStockDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button size="sm">
           <PackageCheck className="size-4 mr-1.5" /> Receive stock
