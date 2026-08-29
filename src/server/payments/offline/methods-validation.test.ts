@@ -20,6 +20,7 @@ describe("Offline payment method pay-to detail validation (Issue #174)", () => {
       // Same normalisation as mobile_wallet (#187 review): formatted input is
       // the same number, not a different one.
       expect(validatePayToDetail("vodafone_cash", "010 1234 5678", "EG")).toBe(true);
+      expect(validatePayToDetail("vodafone_cash", "010-1234-5678", "EG")).toBe(true);
       expect(validatePayToDetail("vodafone_cash", "+201012345678", "EG")).toBe(true);
 
       // Invalids

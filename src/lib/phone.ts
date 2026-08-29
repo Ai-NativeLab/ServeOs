@@ -36,8 +36,12 @@ export function normalizePhone(raw: string): string {
   const withoutMarks = raw.replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "");
   const asciiDigits = withoutMarks.replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
     .replace(/[\u06f0-\u06f9]/g, (d) => String(d.charCodeAt(0) - 0x06f0));
-  const plus = /^\s*\+/.test(asciiDigits) ? "+" : "";
-  return plus + asciiDigits.replace(/\+/g, "").replace(/\D/g, "");
+  // Separators go BEFORE the "+" check: a "(+20) ..." paste carries its plus
+  // behind a parenthesis, and testing the raw string would strip it (#187
+  // follow-up).
+  const compact = asciiDigits.replace(/[^\d+]/g, "");
+  const plus = compact.startsWith("+") ? "+" : "";
+  return plus + compact.replace(/\D/g, "");
 }
 
 /**

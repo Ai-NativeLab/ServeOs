@@ -34,6 +34,7 @@ describe("Customer phone validation (Issue #173)", () => {
       expect(isValidCustomerPhone("+201012345678", "EG")).toBe(true);
       expect(isValidCustomerPhone("00201112345678", "EG")).toBe(true);
       expect(isValidCustomerPhone("201212345678", "EG")).toBe(false); // bare country-code w/o + is not dialable
+      expect(isValidCustomerPhone("1012345678", "EG")).toBe(false); // bare subscriber number w/o leading 0 (#187 review)
 
       // Invalids for Egypt
       expect(isValidCustomerPhone("123", "EG")).toBe(false);
@@ -51,6 +52,10 @@ describe("Customer phone validation (Issue #173)", () => {
       expect(isValidCustomerPhone("(010) 1234-5678", "EG")).toBe(true);
       expect(isValidCustomerPhone("010.1234.5678", "EG")).toBe(true);
       expect(isValidCustomerPhone("+20 100 123 4567", "EG")).toBe(true);
+      // The "+" must survive a leading parenthesis (#187 follow-up): stripping
+      // it here left a bare country-code form the tightened regex refuses.
+      expect(isValidCustomerPhone("(+20) 100 123 4567", "EG")).toBe(true);
+      expect(isValidCustomerPhone("(+966) 51 234 5678", "SA")).toBe(true);
       expect(isValidCustomerPhone("\u0660\u0661\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668", "EG")).toBe(true); // ٠١٠١٢٣٤٥٦٧٨
       expect(isValidCustomerPhone("\u200e01012345678", "EG")).toBe(true); // LRM paste artefact
       expect(isValidCustomerPhone("010\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668", "EG")).toBe(true); // 010 followed by ١٢٣٤٥٦٧٨
