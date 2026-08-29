@@ -1,8 +1,7 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import path from "node:path";
 import { PosMain, type RecordSaleInput, type CashMovementInput } from "./pos-main";
-
-const isDev = !!process.env.VITE_DEV_SERVER_URL;
+import { devServerUrl } from "./dev-mode";
 
 let posMain: PosMain | null = null;
 let win: BrowserWindow | null = null;
@@ -17,7 +16,8 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
-  if (isDev) win.loadURL(process.env.VITE_DEV_SERVER_URL!);
+  const devUrl = devServerUrl();
+  if (devUrl) win.loadURL(devUrl);
   else win.loadFile(path.join(__dirname, "../dist/index.html"));
 }
 

@@ -1,4 +1,5 @@
 import { app, safeStorage } from "electron";
+import { devServerUrl } from "./dev-mode";
 import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
@@ -45,11 +46,17 @@ const authCacheCipher: AtRestCipher = {
   decryptString: (b) => safeStorage.decryptString(b),
 };
 
-// In dev (vite serving), default to the local backend; otherwise the live
-// dashboard host on serveos.tech (serveos.com only 302-redirects there, which
-// a packaged build cannot follow for POSTs with an Authorization header).
-// POS_API_URL always wins.
-const DEFAULT_BASE_URL = process.env.VITE_DEV_SERVER_URL ? "http://localhost:3000" : "https://app.serveos.tech";
+/**
+ * POS_API_URL always wins. In dev (vite serving), default to the local
+ * backend; otherwise the live dashboard host on serveos.tech — never
+ * serveos.com, which only 302-redirects there, and a packaged build cannot
+ * follow that redirect for POSTs carrying an Authorization header.
+ */
+function resolveBaseUrl(): string {
+  if (process.env.POS_API_URL) return process.env.POS_API_URL;
+  if (devServerUrl()) return "http://localhost:3000";
+  return "https://app.serveos.tech";
+}
 
 /**
  * The body a POS route returns when the *device* token is missing, unknown or
@@ -386,7 +393,7 @@ const CONFIRM_WAIT_MAX_QUEUE = 20;
  * disables their entry points from the sync state instead.
  */
 export class PosMain {
-  private baseUrl = process.env.POS_API_URL || DEFAULT_BASE_URL;
+  private baseUrl = resolveBaseUrl();
   private device: Device | null = null;
   /** In memory only: closing the app signs the cashier out but leaves the device paired. */
   private cashier: Cashier | null = null;
