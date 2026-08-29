@@ -340,7 +340,7 @@ The routing headers (`x-surface`, `x-tenant-slug`, `x-locale`) are set by the se
 * Arabic marketing pages (`/ar/...`) render with `dir="rtl"` and `lang="ar"` on the `<html>` element (inspect via DevTools **Elements** tab).
 * Spoofing is rejected: adding an `x-tenant-slug: roma` header yourself on an `app.*` request must NOT surface Roma's data — the proxy strips client-sent copies.
 
-The POS app's `X-POS-Cashier` header is sent by the Electron main process, not a browser, so it is also invisible in DevTools; it can be observed in the Next.js server's request logs if needed.
+The POS app's `X-POS-Cashier` header carries an opaque cashier session token sent by the Electron main process (`pos-main.ts:367`, only when a cashier is signed in), not a browser, so it is also invisible in DevTools; it can be observed in the Next.js server's request logs if needed.
 
 ### B. Checking Database State via Command Line
 `npm run test` runs the Vitest suite — it does not inspect the database. To check whether your test sale or shift actually landed, query the database directly with `psql` using the `DATABASE_URL` from the environment you are testing against (`.env.local` for local dev, `.env.test` for the test DB):

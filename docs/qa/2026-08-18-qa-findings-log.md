@@ -9,7 +9,7 @@
 
 ---
 
-## 1. Quick Test Credentials & Local Hosts
+## 1. Quick Test Credentials & Local Hosts (Local Seed Only)
 
 | Surface | Host / URL | Role / User | Credentials |
 |---|---|---|---|
@@ -71,21 +71,6 @@
 
 ## 3. Bug Findings Log
 
-Use the template below whenever a test fails or unexpected behavior is observed:
-
-
-### [BUG-001] Short Description of Issue
-* **Scenario ID:** `TC-STORE-004`
-* **Surface / URL:** `http://roma.serveos.localhost:3000/checkout`
-* **Persona:** Customer
-* **Severity:** High / Medium / Low
-* **Steps to Reproduce:**
-  1.
-  2.
-* **Expected Result:**
-* **Actual Result:**
-* **Console / Server Error:**
-* **Screenshot:**
 ### [BUG-001] Binary Media Upload Fails with "Image storage is not configured" in Local Environment
 * **Scenario ID:** `TC-DASH-003`
 * **Surface / URL:** `http://app.serveos.localhost:3000/dashboard/menu/categories/new`
