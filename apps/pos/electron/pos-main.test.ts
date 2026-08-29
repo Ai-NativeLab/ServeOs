@@ -7,10 +7,60 @@ import path from "node:path";
 // the one unavoidable mock here. Everything else is real: real fs, real JSON,
 // real PosMain. safeStorage reports encryption unavailable so the device file
 // round-trips as plaintext and the test can assert on what was actually stored.
-const hoisted = vi.hoisted(() => ({ userDataDir: "" }));
+const hoisted = vi.hoisted(() => ({ userDataDir: "", isPackaged: true }));
 vi.mock("electron", () => ({
-  app: { getPath: () => hoisted.userDataDir },
+  app: {
+    getPath: () => hoisted.userDataDir,
+    get isPackaged() {
+      return hoisted.isPackaged;
+    },
+  },
   safeStorage: { isEncryptionAvailable: () => false },
+}));
+
+// The offline store's better-sqlite3 binding is a NATIVE module: importing the
+// real _offline/db here would need a compiled binary in every environment that
+// runs these tests. Only openDb is faked, simulating exactly the surface
+// PosMain touches at boot — local_state get/set and the event-log MAX(seq) —
+// keyed off the SQL so the statements stay authoritative in Store. The store
+// map lives in shared hoisted state and MUST be reset between tests
+// (dbMock.reset() in beforeEach) or values leak across cases.
+const dbMock = vi.hoisted(() => {
+  const store = new Map<string, string>();
+  return {
+    store,
+    reset: () => store.clear(),
+  };
+});
+vi.mock("./_offline/db", () => ({
+  openDb: () => ({
+    pragma: () => {},
+    exec: () => {},
+    prepare: (sql: string) => ({
+      // Store.setLocalState / Store.getLocalState persist key-value pairs.
+      run: (...args: unknown[]) => {
+        if (sql.includes("INSERT OR REPLACE INTO local_state")) {
+          dbMock.store.set(args[0] as string, args[1] as string);
+        }
+        return { changes: 1 };
+      },
+      get: (...args: unknown[]) => {
+        if (sql.includes("MAX(seq)")) return { maxSeq: 0 };
+        if (sql.includes("SELECT value FROM local_state")) {
+          const val = dbMock.store.get(args[0] as string);
+          return val ? { value: val } : undefined;
+        }
+        return undefined;
+      },
+      all: () => [],
+    }),
+    transaction: <T>(fn: () => T): (() => T) => fn,
+  }),
+  noCipher: {
+    isAvailable: () => false,
+    encryptString: (s: string) => Buffer.from(s),
+    decryptString: (b: Buffer) => b.toString("utf8"),
+  },
 }));
 
 // Static import is safe: vitest hoists the vi.mock factory above it, and
@@ -52,11 +102,14 @@ async function pairedPos(baseUrl: string) {
 
 beforeEach(() => {
   hoisted.userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "pos-main-test-"));
+  hoisted.isPackaged = true;
+  dbMock.reset();
 });
 
 afterEach(() => {
   fs.rmSync(hoisted.userDataDir, { recursive: true, force: true });
   delete process.env.POS_API_URL;
+  delete process.env.VITE_DEV_SERVER_URL;
   vi.restoreAllMocks();
 });
 
@@ -122,5 +175,58 @@ describe("device file is scoped to the backend it was paired against", () => {
     process.env.POS_API_URL = BACKEND_A;
 
     expect(new PosMain().isPaired()).toBe(true);
+  });
+
+  // #163 AC6: a till paired against an explicit host must not silently carry
+  // that pairing into a dev session whose resolved base URL differs — the
+  // resolved value participates in the scoping exactly like POS_API_URL does.
+  it("ignores a pairing when dev resolution changes the effective base URL", async () => {
+    await pairedPos(BACKEND_A);
+
+    delete process.env.POS_API_URL;
+    process.env.VITE_DEV_SERVER_URL = "http://localhost:5173"; // resolves http://localhost:3000
+
+    expect(new PosMain().isPaired()).toBe(false);
+  });
+});
+
+describe("base URL resolution (Issue #163)", () => {
+  it("resolves to localhost:3000 lazily when VITE_DEV_SERVER_URL is set after module load", () => {
+    delete process.env.POS_API_URL;
+    process.env.VITE_DEV_SERVER_URL = "http://localhost:5173";
+    hoisted.isPackaged = true;
+    const pos = new PosMain();
+    expect(pos.getBaseUrl()).toBe("http://localhost:3000");
+  });
+
+  it("resolves to localhost:3000 when unpackaged (app.isPackaged is false)", () => {
+    delete process.env.POS_API_URL;
+    delete process.env.VITE_DEV_SERVER_URL;
+    hoisted.isPackaged = false;
+    const pos = new PosMain();
+    expect(pos.getBaseUrl()).toBe("http://localhost:3000");
+  });
+
+  it("defaults to production host when packaged and no dev env vars are set", () => {
+    delete process.env.POS_API_URL;
+    delete process.env.VITE_DEV_SERVER_URL;
+    hoisted.isPackaged = true;
+    const pos = new PosMain();
+    expect(pos.getBaseUrl()).toBe("https://app.serveos.tech");
+  });
+
+  it("prioritizes POS_API_URL over dev flags and production fallback", () => {
+    process.env.POS_API_URL = "http://custom-api.test";
+    process.env.VITE_DEV_SERVER_URL = "http://localhost:5173";
+    hoisted.isPackaged = false;
+    const pos = new PosMain();
+    expect(pos.getBaseUrl()).toBe("http://custom-api.test");
+  });
+
+  it("logs the resolved base URL at startup", () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    process.env.POS_API_URL = "http://logged-backend.test";
+    new PosMain();
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining("http://logged-backend.test"));
   });
 });
