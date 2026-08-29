@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { orders, orderItems } from "@/server/ordering/schema";
-import { BranchNotAcceptingOrdersError, OrderValidationError, TotalMismatchError } from "@/server/ordering/errors";
+import { BranchNotAcceptingOrdersError, OrderValidationError, OutOfStockError, TotalMismatchError } from "@/server/ordering/errors";
 import { getCheckoutPricing } from "@/server/tenancy/settings";
 import { computeCartTotals } from "@/lib/order-totals";
 import { products } from "@/server/catalog/schema";
@@ -273,7 +273,43 @@ describe("recordSale — live sales are unaffected by the replay path", () => {
       replay: {
         occurredAt: past,
         lineSnapshots: [{
-          productId, productNameEn: "Margherita", productNameAr: "????????",
+          productId, productNameEn: "Margherita", productNameAr: "مارجريتا",
+          unitPrice: 100, quantity: 1, lineTotal: 100,
+        }],
+      },
+    });
+
+    expect(res.total).toBe(total);
+    const written = await withTenant(tenantId, (tx) => tx.select().from(orders));
+    expect(written).toHaveLength(1);
+  });
+
+  // #187 follow-up: the restaurant fixture above cannot catch a deleted replay
+  // override — restaurants default allowNegative=true, so the gate is open for
+  // them either way. A RETAIL tenant (allowNegative=false) isolates it: the
+  // same zero-stock sale must refuse live and record on replay.
+  it("a retail tenant at zero stock refuses the live sale but records the replay", async () => {
+    const { ctx, tenantId, productId, total } = await seedPosContext("owner", {
+      vertical: "retail", trackStock: true, stockQuantity: 0,
+    });
+    await openShiftForCtx(ctx);
+
+    await expect(recordSale(ctx, {
+      clientOrderId: "retail-oos-live",
+      lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: total,
+      payments: [{ clientPaymentId: "p1", method: "cash", amount: total, tenderedAmount: total }],
+    })).rejects.toThrow(OutOfStockError);
+
+    const res = await recordSale(ctx, {
+      clientOrderId: "retail-oos-replay",
+      lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: total,
+      payments: [{ clientPaymentId: "p2", method: "cash", amount: total, tenderedAmount: total }],
+      replay: {
+        occurredAt: past,
+        lineSnapshots: [{
+          productId, productNameEn: "Margherita", productNameAr: "مارجريتا",
           unitPrice: 100, quantity: 1, lineTotal: 100,
         }],
       },

@@ -469,6 +469,30 @@ describe("placeOrder — legacy stock adoption + storefront mirror", () => {
       lines: [{ productId: screw.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(/out of stock/i);
   });
+
+  // #187 review test-gap: with no inventory link, the oos1 state is ALSO
+  // refused by the pre-existing ledger backstop, so oos1 alone cannot tell
+  // whether the early #167 guard exists. Here the two layers disagree — the
+  // ledger holds 5 on hand while the storefront counter says 0 — and only the
+  // early guard refuses. Deleting it turns this into a placed order.
+  it("the early #167 refusal fires even when the ledger has stock (guard isolation)", async () => {
+    const { t, branch } = await setupRetail("oos2");
+    const { OutOfStockError } = await import("./errors");
+    const { setProductStock } = await import("@/server/catalog/variants");
+    const { createCategory, createProduct, updateProduct } = await import("@/server/catalog/service");
+    const { seedFinishedGood } = await import("@/server/inventory/test-helpers");
+
+    const cat = await createCategory(t.id, { nameEn: "Screws", nameAr: "براغي" });
+    const screw = await createProduct(t.id, { nameEn: "Screw", nameAr: "برغي", basePrice: "10", categoryId: cat.id });
+    await updateProduct(t.id, screw.id, { isPublished: true, trackStock: true });
+    await setProductStock(t.id, screw.id, 0);
+    await seedFinishedGood(t.id, { branchId: branch.id, productId: screw.id, onHand: 5 });
+
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01012345678",
+      lines: [{ productId: screw.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(OutOfStockError);
+  });
 });
 
 describe("placeOrder — restaurant recipes (BOM)", () => {
