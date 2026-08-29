@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { requireDashboardUser } from "./dashboard-context";
+import { requireDashboardUser, authorizeDashboardOrRedirect } from "./dashboard-context";
 import type { Tenant } from "@/server/tenancy/schema";
 
 /** Minimal tenant fixture typed against the real row (#164 asserts on status). */
@@ -38,6 +38,7 @@ vi.mock("@/server/tenancy", () => ({
 }));
 
 import { validateSession } from "./session";
+import { loadUserRoleKeys } from "./current-user";
 import { getTenantById } from "@/server/tenancy";
 
 describe("requireDashboardUser - tenant status lockout (Issue #164)", () => {
@@ -123,6 +124,41 @@ describe("requireDashboardUser - tenant status lockout (Issue #164)", () => {
 
     const ctx = await requireDashboardUser({ allowStatus: ["suspended", "rejected", "onboarding"] });
     expect(ctx.tenant.status).toBe("suspended");
+    expect(mockRedirect).not.toHaveBeenCalled();
+  });
+});
+
+// #172 (#187 review): the permission refusal every page relies on is this
+// server-side redirect — production strips thrown error messages, so a page
+// that throws instead of redirecting shows the generic crash screen.
+describe("authorizeDashboardOrRedirect (Issue #172)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCookiesGet.mockReturnValue({ value: "valid-session-token" });
+    vi.mocked(validateSession).mockResolvedValue({
+      user: {
+        id: "user-1",
+        email: "owner@roma.com",
+        name: "Owner",
+        tenantId: "tenant-1",
+        platformRole: null,
+      },
+    } as unknown as Awaited<ReturnType<typeof validateSession>>);
+    vi.mocked(getTenantById).mockResolvedValue(tenantFixture("active"));
+  });
+
+  it("redirects to /dashboard/denied naming the permission the role lacks", async () => {
+    vi.mocked(loadUserRoleKeys).mockResolvedValueOnce(["staff"]); // staff has no menu:manage
+    const ctx = await requireDashboardUser();
+
+    await expect(authorizeDashboardOrRedirect(ctx, "menu:manage")).rejects.toThrow(/NEXT_REDIRECT/);
+    expect(mockRedirect).toHaveBeenCalledWith("/dashboard/denied?permission=menu%3Amanage");
+  });
+
+  it("lets a sufficient role through without redirecting", async () => {
+    const ctx = await requireDashboardUser(); // owner, from the module mock
+
+    await expect(authorizeDashboardOrRedirect(ctx, "menu:manage")).resolves.toBeUndefined();
     expect(mockRedirect).not.toHaveBeenCalled();
   });
 });

@@ -14,9 +14,11 @@ export default function DashboardError({
   // BEST-EFFORT net (#172): production strips server-error messages down to a
   // digest before they reach this client boundary, so this heuristic can miss
   // an UnauthorizedError thrown by a server component in prod. The real gate
-  // is page-level: every dashboard page catches its own permission error and
-  // renders <PermissionDenied>. If a route reaches this boundary as a crash in
-  // production, fix that route's catch — don't rely on this branch.
+  // is server-side: every dashboard PAGE authorizes through a require*Permission
+  // wrapper whose refusal is a redirect to /dashboard/denied, which production
+  // cannot strip. Only actions and API routes may use the throwing authorize().
+  // If a permission refusal reaches this boundary as a crash in production,
+  // some page is calling authorize() inline — move it onto a wrapper.
   const isUnauthorized =
     error?.name === "UnauthorizedError" ||
     error?.message?.toLowerCase().includes("unauthorized") ||

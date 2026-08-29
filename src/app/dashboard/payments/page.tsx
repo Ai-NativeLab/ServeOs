@@ -1,5 +1,4 @@
-import { requireDashboardUser } from "@/server/auth/dashboard-context";
-import { authorize } from "@/server/rbac/authorize";
+import { requirePaymentsPermission } from "../payments-permission";
 import { listAwaitingPaymentOrders } from "@/server/ordering/service";
 import { canTransition } from "@/server/ordering/state-machine";
 import { tenantRealtimeConfig } from "@/server/realtime/token";
@@ -18,8 +17,7 @@ import { Input } from "@/components/ui/input";
 const SAFE_URL_RE = /^https?:\/\//i;
 
 export default async function PaymentsQueuePage() {
-  const ctx = await requireDashboardUser();
-  authorize(ctx.roleKeys, "payments:confirm");
+  const ctx = await requirePaymentsPermission();
   const orders = await listAwaitingPaymentOrders(ctx.tenantId);
   return (
     <>

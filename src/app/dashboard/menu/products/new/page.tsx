@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
-import { requireDashboardUser } from "@/server/auth/dashboard-context";
-import { authorize } from "@/server/rbac/authorize";
+import { requireMenuPermission } from "../../../menu-permission";
 import { listCategories } from "@/server/catalog/service";
 import { createProductAction } from "../actions";
 import { PageHeader } from "@/components/dashboard/PageHeader";
@@ -16,8 +15,7 @@ const selectClass =
 
 export default async function NewProductPage({ searchParams }: { searchParams: Promise<{ categoryId?: string }> }) {
   const { categoryId } = await searchParams;
-  const ctx = await requireDashboardUser();
-  authorize(ctx.roleKeys, "menu:manage");
+  const ctx = await requireMenuPermission();
   const cats = await listCategories(ctx.tenantId);
 
   return (

@@ -1,5 +1,4 @@
-import { requireDashboardUser } from "@/server/auth/dashboard-context";
-import { authorize } from "@/server/rbac/authorize";
+import { requireFulfillmentPermission } from "../fulfillment-permission";
 import { listOfflineMethods } from "@/server/payments/offline/methods";
 import { validatePayToDetail, getPayToDetailHint } from "@/server/payments/offline/validation";
 import type { OfflineMethodType } from "@/server/payments/offline/types";
@@ -25,8 +24,7 @@ const selectClass =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 export default async function PaymentMethodsSettingsPage() {
-  const ctx = await requireDashboardUser();
-  authorize(ctx.roleKeys, "fulfillment:manage");
+  const ctx = await requireFulfillmentPermission();
   const [methods, tenant] = await Promise.all([
     listOfflineMethods(ctx.tenantId),
     getTenantById(ctx.tenantId),

@@ -1,6 +1,5 @@
 import { Plus } from "lucide-react";
-import { requireDashboardUser } from "@/server/auth/dashboard-context";
-import { authorize } from "@/server/rbac/authorize";
+import { requireMenuPermission } from "../menu-permission";
 import { listBanners } from "@/server/banners/service";
 import { createBannerAction, toggleBannerAction, deleteBannerAction } from "./actions";
 import { PageHeader } from "@/components/dashboard/PageHeader";
@@ -14,8 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 export default async function BannersPage() {
-  const ctx = await requireDashboardUser();
-  authorize(ctx.roleKeys, "menu:manage");
+  const ctx = await requireMenuPermission();
   const banners = await listBanners(ctx.tenantId);
 
   return (
