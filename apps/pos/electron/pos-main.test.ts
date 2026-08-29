@@ -57,6 +57,7 @@ beforeEach(() => {
 afterEach(() => {
   fs.rmSync(hoisted.userDataDir, { recursive: true, force: true });
   delete process.env.POS_API_URL;
+  delete process.env.VITE_DEV_SERVER_URL;
   vi.restoreAllMocks();
 });
 
@@ -122,5 +123,36 @@ describe("device file is scoped to the backend it was paired against", () => {
     process.env.POS_API_URL = BACKEND_A;
 
     expect(new PosMain().isPaired()).toBe(true);
+  });
+});
+
+describe("which backend a fresh till targets", () => {
+  const pairBody = {
+    deviceToken: "device-token",
+    tenantId: "tenant-1",
+    branchId: "branch-1",
+    branchName: "Main Branch",
+  };
+
+  it("targets the local backend when the vite dev server is running", async () => {
+    process.env.VITE_DEV_SERVER_URL = "http://localhost:5173";
+
+    const pos = new PosMain();
+    const fetchFn = stubFetch(jsonResponse(200, pairBody));
+    await pos.pair("ABCD1234");
+
+    expect(fetchFn).toHaveBeenCalledWith("http://localhost:3000/api/pos/v1/pair", expect.anything());
+  });
+
+  it("targets production when launched outside vite — packaged build or built output run from source", async () => {
+    // No POS_API_URL, no vite: this is both the packaged app and an
+    // unpackaged `electron .` over the build output. Both must default to
+    // production, or a till paired from source drops its pairing on the
+    // next launch (load() only trusts a device whose baseUrl matches).
+    const pos = new PosMain();
+    const fetchFn = stubFetch(jsonResponse(200, pairBody));
+    await pos.pair("ABCD1234");
+
+    expect(fetchFn).toHaveBeenCalledWith("https://app.serveos.tech/api/pos/v1/pair", expect.anything());
   });
 });
