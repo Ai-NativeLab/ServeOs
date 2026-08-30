@@ -330,6 +330,13 @@
       "when": 1788119583049,
       "tag": "0046_lame_zarek",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1788120122262,
+      "tag": "0047_chubby_rogue",
+      "breakpoints": true
     }
   ]
 }

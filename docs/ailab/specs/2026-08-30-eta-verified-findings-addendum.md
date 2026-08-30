@@ -37,6 +37,8 @@ in `docs/references/eta/` (see its README). Secondary/vendor claims are marked `
   EGS codes must be submitted for ETA approval (codes API) before use in documents; GS1 codes need none.
 - **`eta_submissions` gains** `referenceOldUuid` text nullable (C3) and its `docType` accepts `return_receipt`.
   Semantics note: for receipt docTypes `etaUuid` = the **self-computed** UUID (known pre-submit); `etaLongId` = ETA's.
+  Unique indexes are partial on `status <> 'rejected'` so a corrected resubmission (C3) is a new legal row;
+  enqueue conflict-targets must include the predicate.
 - `eta_tenant_config` unchanged except a comment: its `clientId`/`clientSecretRef` are the **ERP-level** credential.
 
 ## 3. Wire facts for Tasks 3/5/7 (previously TODO(VERIFY), now specifiable)

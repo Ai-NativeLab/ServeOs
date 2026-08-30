@@ -58,13 +58,15 @@ export const etaSubmissions = pgTable("eta_submissions", {
 }, (t) => [
   // The worker's claim query: pending rows, oldest first (mirrors notification_outbox_claim).
   index("eta_submissions_claim").on(t.status, t.createdAt),
-  // Idempotency: at most one submission row per (tenant, docType, order). NOTE:
-  // as specified this also constrains a corrected resubmission after rejection
-  // (see referenceOldUuid) — the future submission worker must account for that
-  // when it implements resubmission (e.g. superseding rather than inserting).
-  uniqueIndex("eta_submissions_order").on(t.tenantId, t.docType, t.orderId).where(sql`order_id is not null`),
-  // Same idempotency guard for refund-keyed doc types (credit_note, return_receipt).
-  uniqueIndex("eta_submissions_refund").on(t.tenantId, t.docType, t.refundId).where(sql`refund_id is not null`),
+  // Idempotency: unique per (tenant, docType, order) among non-rejected rows —
+  // a rejected document may be superseded by a corrected resubmission row
+  // referencing it via referenceOldUuid; enqueue idempotency (onConflictDoNothing)
+  // must target this partial index INCLUDING its predicate.
+  uniqueIndex("eta_submissions_order").on(t.tenantId, t.docType, t.orderId).where(sql`${t.orderId} is not null and ${t.status} <> 'rejected'`),
+  // Same idempotency guard for refund-keyed doc types (credit_note, return_receipt):
+  // unique per (tenant, docType, refund) among non-rejected rows — same
+  // resubmission and onConflictDoNothing-target caveat as eta_submissions_order.
+  uniqueIndex("eta_submissions_refund").on(t.tenantId, t.docType, t.refundId).where(sql`${t.refundId} is not null and ${t.status} <> 'rejected'`),
 ]);
 
 /**
