@@ -82,10 +82,16 @@ export class UnsupportedTaxTypeError extends Error {
  * sale must fail here rather than be rejected by ETA after submission.
  */
 export class BuyerIdRequiredError extends Error {
-  constructor(readonly buyerType: string, readonly total: string, readonly threshold: string) {
+  constructor(
+    readonly buyerType: string,
+    readonly total: string,
+    readonly threshold: string,
+    readonly missing: string[],
+  ) {
     super(
-      `fiscal: buyer type ${buyerType} requires buyer.id and buyer.name on a receipt of ${total} (threshold ${threshold}). ` +
-        "Receipt v1.2 makes them Mandatory for type B, and for type P at or above the ETA-configured amount.",
+      `fiscal: buyer type ${buyerType} is missing ${missing.map((field) => `buyer.${field}`).join(" and ")} ` +
+        `on a receipt of ${total} (threshold ${threshold}). ` +
+        "Receipt v1.2 makes BOTH id and name Mandatory for type B, and for type P at or above the ETA-configured amount.",
     );
     this.name = "BuyerIdRequiredError";
   }
@@ -198,7 +204,10 @@ const DEFAULT_BUYER_ID_THRESHOLD = "150000";
 /** ETA's own rounding allowance on every published calculation is +/- 0.5.
  *  This guard is far tighter: `unitPrice` is derived from `totalSale` at 5
  *  decimals, so the only legitimate gap is that derivation's own rounding,
- *  bounded by quantity * 0.00001. Anything larger is a real mapping bug. */
+ *  bounded by quantity * 0.00001. Anything larger is a real mapping bug.
+ *  (Scale note: past a quantity of ~100,000 that bound itself exceeds ETA's
+ *  own +/- 0.5 allowance — unreachable for integer F&B quantities, so it is
+ *  documented rather than guarded.) */
 const UNIT_PRICE_ROUNDING_BOUND = "0.00001";
 
 /** ETA's `itemType`: "Must be GS1 or EGS for this version". */
@@ -314,10 +323,16 @@ function assertTotalsReconcile(doc: FiscalDocument, extraDiscount: string): void
  */
 function assertBuyerIdentified(doc: FiscalDocument, threshold: string): void {
   const buyer = doc.buyer;
-  if (!buyer || buyer.id) return;
-  if (buyer.type === "B") throw new BuyerIdRequiredError(buyer.type, doc.total, "0");
+  if (!buyer) return;
+
+  // BOTH fields are Mandatory together, so an id alone is not identification —
+  // a `{ type: "B", id }` buyer with no name would be rejected by ETA.
+  const missing = ["id" as const, "name" as const].filter((field) => !buyer[field]);
+  if (missing.length === 0) return;
+
+  if (buyer.type === "B") throw new BuyerIdRequiredError(buyer.type, doc.total, "0", missing);
   if (buyer.type === "P" && compareDecimal(doc.total, threshold) >= 0) {
-    throw new BuyerIdRequiredError(buyer.type, doc.total, threshold);
+    throw new BuyerIdRequiredError(buyer.type, doc.total, threshold, missing);
   }
 }
 

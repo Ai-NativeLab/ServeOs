@@ -692,6 +692,49 @@ describe("wire-boundary fail-closed guards", () => {
     expect(() => toWireReceipt(identified, wireCtx)).not.toThrow();
   });
 
+  it("rejects a business buyer carrying an id but no name", () => {
+    // Receipt v1.2 marks BOTH id and name Mandatory for type B; an id alone
+    // used to satisfy the guard and would have been rejected by ETA instead.
+    const doc = buildReceipt(saleInput);
+    const idOnly = { ...doc, buyer: { type: "B" as const, id: "113317713" } };
+    try {
+      toWireReceipt(idOnly, wireCtx);
+      expect.unreachable("toWireReceipt should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(BuyerIdRequiredError);
+      expect((err as BuyerIdRequiredError).missing).toEqual(["name"]);
+      expect((err as BuyerIdRequiredError).message).toContain("buyer.name");
+    }
+  });
+
+  it("rejects a business buyer carrying a name but no id", () => {
+    const doc = buildReceipt(saleInput);
+    const nameOnly = { ...doc, buyer: { type: "B" as const, name: "Taxpayer1" } };
+    expect(() => toWireReceipt(nameOnly, wireCtx)).toThrow(/buyer\.id/);
+  });
+
+  it("emits for a business buyer carrying both id and name", () => {
+    const doc = buildReceipt(saleInput);
+    const identified = { ...doc, buyer: { type: "B" as const, id: "113317713", name: "Taxpayer1" } };
+    expect(() => toWireReceipt(identified, wireCtx)).not.toThrow();
+
+    const wire = toWireReceipt(identified, wireCtx) as { buyer: Record<string, unknown> };
+    expect(wire.buyer).toEqual({ type: "B", id: "113317713", name: "Taxpayer1" });
+  });
+
+  it("rejects a P-type buyer at the threshold carrying an id but no name", () => {
+    const big = { ...order, subtotal: "150000.00", serviceChargeAmount: null, deliveryFee: "0.00", discountAmount: "0.00", vatAmount: "0.00", total: "150000.00" };
+    const bigItems = [item({ id: "b1", productId: PRODUCT_A, lineTotal: "150000.00", unitBasePrice: "150000.00" })];
+    const doc = buildReceipt({ ...saleInput, order: big, items: bigItems, taxCodes: [taxCode(PRODUCT_A)], feeLines: undefined });
+    const idOnly = { ...doc, buyer: { type: "P" as const, id: "29801011234567" } };
+    try {
+      toWireReceipt(idOnly, wireCtx);
+      expect.unreachable("toWireReceipt should have thrown");
+    } catch (err) {
+      expect((err as BuyerIdRequiredError).missing).toEqual(["name"]);
+    }
+  });
+
   it("honours a caller-supplied threshold", () => {
     const doc = buildReceipt(saleInput); // total 275.80
     expect(() => toWireReceipt(doc, { ...wireCtx, buyerIdThreshold: "100.00" })).toThrow(BuyerIdRequiredError);
