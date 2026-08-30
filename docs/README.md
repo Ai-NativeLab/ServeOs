@@ -81,13 +81,19 @@ This README is the main entry point to all ServeOS documentation.
 | Document | Path | Description |
 |----------|------|-------------|
 | Domain Glossary | [CONTEXT.md](../CONTEXT.md) | Every domain term defined |
+| Functional Requirements | [docs/requirements/functional.md](./requirements/functional.md) | Multi-vertical engine & functional module workflows |
+| Non-Functional Requirements | [docs/requirements/non-functional.md](./requirements/non-functional.md) | Latency budgets, security, RLS, scalability & compliance |
 | Architecture Overview | [docs/architecture/overview.md](./architecture/overview.md) | System architecture with C4 diagrams |
+| Sequence & Flow Diagrams | [docs/flows/sequence-diagrams.md](./flows/sequence-diagrams.md) | 10 critical end-to-end Mermaid sequence diagrams |
+| State Machines | [docs/flows/state-machines.md](./flows/state-machines.md) | 9 finite state machines & transition matrices |
 | Developer Onboarding | [docs/getting-started/onboarding.md](./getting-started/onboarding.md) | New developer → productive in < 1 day |
-| Codebase Conventions | [docs/getting-started/codebase-conventions.md](./getting-started/codebase-conventions.md) | Where does X go? |
-| Database Design & ERD | [docs/database/erd.md](./database/erd.md) | Complete data model |
-| API Reference | [docs/api/](./api/) | All endpoints documented |
-| Roadmap | [docs/ROADMAP.md](./ROADMAP.md) | Spec sequencing + decisions |
-| PRDs | [docs/prds/](./prds/) | Product requirements |
+| Codebase Conventions | [docs/getting-started/codebase-conventions.md](./getting-started/codebase-conventions.md) | Directory structure, naming rules & patterns |
+| Database Design & ERD | [docs/database/erd.md](./database/erd.md) | Complete data model & Mermaid ERD |
+| Database Tables Reference | [docs/database/tables.md](./database/tables.md) | Exhaustive reference of all 72 tables from Drizzle schema |
+| Master API Reference | [docs/api/README.md](./api/README.md) | Master API index (64 endpoints & 31 Server Actions) |
+| Testing Strategy & Gaps | [docs/testing/testing-strategy-and-gaps.md](./testing/testing-strategy-and-gaps.md) | Multi-tier test pyramid, harnesses & roadmap debt |
+| Roadmap | [docs/ROADMAP.md](./ROADMAP.md) | Spec sequencing + locked decisions (D1–D9) |
+| PRDs | [docs/prds/MASTER-PRD.md](./prds/MASTER-PRD.md) | Product requirements registry |
 | Environments | [docs/references/environments.md](./references/environments.md) | Infrastructure map |
 
 ## Quick Start

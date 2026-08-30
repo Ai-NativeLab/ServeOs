@@ -49,14 +49,17 @@ npm run pos:test    # Electron POS tests
 |----------|-------------|
 | [Project Overview](docs/README.md) | What ServeOS is, who it's for, architecture at a glance |
 | [Domain Glossary](CONTEXT.md) | Every domain term defined — the language of the project |
+| [Functional Requirements](docs/requirements/functional.md) | Multi-vertical engine & functional module workflows |
+| [Non-Functional Requirements](docs/requirements/non-functional.md) | Latency budgets, security, RLS, scalability & compliance |
 | [Architecture Overview](docs/architecture/overview.md) | System architecture with C4 diagrams |
+| [Sequence & Flow Diagrams](docs/flows/sequence-diagrams.md) | 10 critical end-to-end Mermaid sequence diagrams |
+| [State Machines](docs/flows/state-machines.md) | 9 finite state machines & transition matrices |
 | [Developer Onboarding](docs/getting-started/onboarding.md) | New developer → productive in < 1 day |
 | [Codebase Conventions](docs/getting-started/codebase-conventions.md) | Directory structure, patterns, naming rules |
-| [Database Design & ERD](docs/database/erd.md) | Complete data model (72 tables, 36 enums) |
-| [POS API Reference](docs/api/pos-api.md) | All POS endpoints documented |
-| [Inventory API Reference](docs/api/inventory-api.md) | Inventory management endpoints |
-| [Purchasing API Reference](docs/api/purchasing-api.md) | Suppliers & purchase orders |
-| [Platform API Reference](docs/api/platform-api.md) | Dashboard, admin, and other endpoints |
+| [Database Design & ERD](docs/database/erd.md) | Complete data model & Mermaid ERD |
+| [Database Tables Reference](docs/database/tables.md) | Exhaustive reference of all 72 tables from Drizzle schema |
+| [Master API Reference](docs/api/README.md) | Master API index (64 endpoints & 31 Server Actions) |
+| [Testing Strategy & Gaps](docs/testing/testing-strategy-and-gaps.md) | Multi-tier test pyramid, harnesses & roadmap debt |
 | [Roadmap](docs/ROADMAP.md) | Spec sequencing + locked decisions (D1–D9) |
 | [PRDs](docs/prds/MASTER-PRD.md) | Product requirements registry |
 | [Environments](docs/references/environments.md) | Infrastructure map |
