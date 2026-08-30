@@ -337,6 +337,13 @@
       "when": 1788120122262,
       "tag": "0047_chubby_rogue",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1788121260298,
+      "tag": "0048_faithful_slipstream",
+      "breakpoints": true
     }
   ]
 }

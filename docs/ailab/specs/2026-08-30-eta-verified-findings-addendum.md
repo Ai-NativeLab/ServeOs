@@ -39,6 +39,13 @@ in `docs/references/eta/` (see its README). Secondary/vendor claims are marked `
   Semantics note: for receipt docTypes `etaUuid` = the **self-computed** UUID (known pre-submit); `etaLongId` = ETA's.
   Unique indexes are partial on `status <> 'rejected'` so a corrected resubmission (C3) is a new legal row;
   enqueue conflict-targets must include the predicate.
+  **Post-review hardening (2026-08-30 quality pass):**
+  - `nextAttemptAt` backoff clock added (mirrors `notification_outbox`); claim index reshaped to `(status, nextAttemptAt)`.
+  - Second partial-unique pair, `WHERE referenceOldUuid IS NULL`, on `(tenantId, docType, orderId|refundId)` — caps the ORIGINAL document at one forever; the `status <> 'rejected'` pair still caps live docs at one.
+  - Plain lookup indexes on `(tenantId, orderId)` / `(tenantId, refundId)` — full-history reads must see rows the partial indexes hide.
+  - Unique `(tenantId, etaUuid) WHERE etaUuid IS NOT NULL` for fiscal-identity uniqueness.
+  - `eta_submissions_parent_xor` CHECK now enforces the docType→parent split in the DB (was writer-trusted).
+  - `orderId`/`refundId` FKs changed `cascade` → `restrict` (5-year statutory retention); `eta_device_chains.deviceId` likewise restricted so deleting a device can't silently reset its chain head.
 - `eta_tenant_config` unchanged except a comment: its `clientId`/`clientSecretRef` are the **ERP-level** credential.
 
 ## 3. Wire facts for Tasks 3/5/7 (previously TODO(VERIFY), now specifiable)

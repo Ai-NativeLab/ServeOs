@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, integer, jsonb, pgEnum, uniqueIndex, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, integer, jsonb, pgEnum, uniqueIndex, index, check } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { tenants } from "@/server/tenancy/schema";
 import { orders } from "@/server/ordering/schema";
@@ -16,22 +16,26 @@ export const etaPosCredentialStatusEnum = pgEnum("eta_pos_credential_status", ["
 /**
  * One row per fiscal document submitted to ETA (e-receipt, e-invoice, credit
  * note, or return receipt). Mirrors notification_outbox's shape (status +
- * attempts + lastError, Spec 5) so the same store-and-forward worker
- * semantics apply: a worker claims pending rows, submits them, and records
- * the outcome here. This table only holds the record — the submission
- * worker/builder is a later task.
+ * attempts + lastError + nextAttemptAt backoff clock, Spec 5) so the same
+ * store-and-forward worker semantics apply: a worker claims pending rows,
+ * submits them, and records the outcome here. This table only holds the
+ * record — the submission worker/builder is a later task.
  *
  * docType decides which parent column is populated: e_receipt/e_invoice
  * reference orderId; credit_note/return_receipt reference refundId. The
- * other of the pair stays null — this schema does not enforce that split
- * with a CHECK constraint, so the writer (later task) must honour it.
+ * other of the pair stays null — enforced by the eta_submissions_parent_xor
+ * CHECK constraint below, not left to the writer.
  */
 export const etaSubmissions = pgTable("eta_submissions", {
   id: uuid("id").defaultRandom().primaryKey(),
   tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
   docType: etaDocTypeEnum("doc_type").notNull(),
-  orderId: uuid("order_id").references(() => orders.id, { onDelete: "cascade" }),
-  refundId: uuid("refund_id").references(() => refunds.id, { onDelete: "cascade" }),
+  /** RESTRICT, not cascade: a fiscal submission is under 5-year statutory
+   *  retention, so deleting its parent order/refund must not silently
+   *  cascade the fiscal record away. Exactly one of orderId/refundId is set
+   *  per docType — see the eta_submissions_parent_xor CHECK below. */
+  orderId: uuid("order_id").references(() => orders.id, { onDelete: "restrict" }),
+  refundId: uuid("refund_id").references(() => refunds.id, { onDelete: "restrict" }),
   status: etaSubmissionStatusEnum("status").notNull().default("pending"),
   /** For e_receipt/return_receipt this is the SELF-COMPUTED SHA-256 uuid
    *  (client-side, chained per device via eta_device_chains) — known before
@@ -48,16 +52,31 @@ export const etaSubmissions = pgTable("eta_submissions", {
   referenceOldUuid: text("reference_old_uuid"),
   qrPayload: text("qr_payload"),
   hashOrSignature: text("hash_or_signature"),
+  /** requestJson/responseJson are the fiscal document payload and ETA's raw
+   *  response. Bearer tokens and auth headers must NEVER be persisted into
+   *  either column. */
   requestJson: jsonb("request_json").$type<Record<string, unknown>>().notNull().default({}),
   responseJson: jsonb("response_json").$type<Record<string, unknown>>(),
   attempts: integer("attempts").notNull().default(0),
+  /** Backoff clock, same role as notification_outbox.nextAttemptAt: attempts
+   *  alone cannot express "eligible again at T" across worker restarts. */
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
   lastError: text("last_error"),
   submittedAt: timestamp("submitted_at", { withTimezone: true }),
   acceptedAt: timestamp("accepted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
-  // The worker's claim query: pending rows, oldest first (mirrors notification_outbox_claim).
-  index("eta_submissions_claim").on(t.status, t.createdAt),
+  // The worker's claim query: pending rows, oldest-eligible first (mirrors notification_outbox_claim).
+  index("eta_submissions_claim").on(t.status, t.nextAttemptAt),
+  // ORIGINAL-document uniqueness: at most one row with no referenceOldUuid per
+  // (tenant, docType, order) — forever, regardless of status. A corrected
+  // resubmission (a row that DOES carry referenceOldUuid) falls outside this
+  // predicate and is admitted freely. A first-time-submission enqueue
+  // (onConflictDoNothing) must target THIS partial index, predicate included;
+  // the status<>'rejected' pair below still caps live (non-rejected) docs at one.
+  uniqueIndex("eta_submissions_order_original").on(t.tenantId, t.docType, t.orderId).where(sql`${t.orderId} is not null and ${t.referenceOldUuid} is null`),
+  // Same original-document guard for refund-keyed doc types.
+  uniqueIndex("eta_submissions_refund_original").on(t.tenantId, t.docType, t.refundId).where(sql`${t.refundId} is not null and ${t.referenceOldUuid} is null`),
   // Idempotency: unique per (tenant, docType, order) among non-rejected rows —
   // a rejected document may be superseded by a corrected resubmission row
   // referencing it via referenceOldUuid; enqueue idempotency (onConflictDoNothing)
@@ -67,6 +86,20 @@ export const etaSubmissions = pgTable("eta_submissions", {
   // unique per (tenant, docType, refund) among non-rejected rows — same
   // resubmission and onConflictDoNothing-target caveat as eta_submissions_order.
   uniqueIndex("eta_submissions_refund").on(t.tenantId, t.docType, t.refundId).where(sql`${t.refundId} is not null and ${t.status} <> 'rejected'`),
+  // Plain (non-partial) lookups: the partial indexes above intentionally hide
+  // rejected/superseded rows, so a full per-order/per-refund history read
+  // (audit, support — "show me every submission, including rejected") needs
+  // its own unfiltered index.
+  index("eta_submissions_order_lookup").on(t.tenantId, t.orderId),
+  index("eta_submissions_refund_lookup").on(t.tenantId, t.refundId),
+  // Fiscal-identity uniqueness: etaUuid is the document's identity (self-computed
+  // for receipts, ETA-assigned for invoices) — unique per tenant once set.
+  uniqueIndex("eta_submissions_eta_uuid").on(t.tenantId, t.etaUuid).where(sql`${t.etaUuid} is not null`),
+  // docType decides which parent column is populated — see table JSDoc.
+  check(
+    "eta_submissions_parent_xor",
+    sql`(doc_type in ('e_receipt','e_invoice') and order_id is not null and refund_id is null) or (doc_type in ('credit_note','return_receipt') and refund_id is not null and order_id is null)`,
+  ),
 ]);
 
 /**
@@ -130,19 +163,36 @@ export const etaTenantConfig = pgTable("eta_tenant_config", {
  * receipt.
  *
  * Advancing the chain must be concurrency-safe: two concurrent sales on the
- * same device must never read the same predecessor. The writer must claim
- * this row `FOR UPDATE` (or take an advisory lock on deviceId) before
- * reading lastUuid and writing the next one — that locking lives in the
+ * same device must never read the same predecessor. The house pattern for
+ * this (recordAuditEvent, src/server/audit/service.ts) is: take
+ * `pg_advisory_xact_lock(hashtext(<key>)::bigint)` to serialize the
+ * read-then-advance window, read the head with a genesis default (no row
+ * yet = the device's first receipt), then upsert via `onConflictDoUpdate`.
+ * Plain `SELECT ... FOR UPDATE` is not enough on its own — the device's
+ * FIRST receipt has no row to lock yet — so the lock must be advisory,
+ * keyed on deviceId, taken before the read. That locking lives in the
  * submission worker/builder (later task); this table only holds the head.
+ *
+ * Lock-ordering note for that later task: recordAuditEvent already takes
+ * `pg_advisory_xact_lock(hashtext(tenantId)::bigint)` inside the same sale
+ * transaction. The device-keyed lock here is a SECOND advisory lock taken
+ * in that same transaction — the worker must define and document a fixed
+ * acquisition order between the two (e.g. tenant lock, then device lock) so
+ * two concurrent transactions can never deadlock by acquiring them in
+ * opposite orders.
  */
 export const etaDeviceChains = pgTable("eta_device_chains", {
   id: uuid("id").defaultRandom().primaryKey(),
   tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
-  deviceId: uuid("device_id").notNull().references(() => posDevices.id, { onDelete: "cascade" }),
+  /** RESTRICT, not cascade: deleting the device out from under its chain
+   *  head would silently let a replacement row for that device restart the
+   *  uuid chain at null, breaking the tamper-evident chain guarantee. */
+  deviceId: uuid("device_id").notNull().references(() => posDevices.id, { onDelete: "restrict" }),
   /** 64-hex SHA-256 of the last issued receipt's uuid; null until the
    *  device's first receipt. */
   lastUuid: text("last_uuid"),
   lastIssuedAt: timestamp("last_issued_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("eta_device_chains_device").on(t.tenantId, t.deviceId),
@@ -176,6 +226,7 @@ export const etaPosCredentials = pgTable("eta_pos_credentials", {
   activatedAt: timestamp("activated_at", { withTimezone: true }),
   expiresAt: timestamp("expires_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("eta_pos_credentials_device").on(t.tenantId, t.deviceId),
 ]);
@@ -185,3 +236,9 @@ export type ProductTaxCode = typeof productTaxCodes.$inferSelect;
 export type EtaTenantConfig = typeof etaTenantConfig.$inferSelect;
 export type EtaDeviceChain = typeof etaDeviceChains.$inferSelect;
 export type EtaPosCredential = typeof etaPosCredentials.$inferSelect;
+export type EtaDocType = (typeof etaDocTypeEnum.enumValues)[number];
+export type EtaSubmissionStatus = (typeof etaSubmissionStatusEnum.enumValues)[number];
+export type EtaEnvironment = (typeof etaEnvironmentEnum.enumValues)[number];
+export type EtaActivationStatus = (typeof etaActivationStatusEnum.enumValues)[number];
+export type EtaCodeSource = (typeof etaCodeSourceEnum.enumValues)[number];
+export type EtaPosCredentialStatus = (typeof etaPosCredentialStatusEnum.enumValues)[number];

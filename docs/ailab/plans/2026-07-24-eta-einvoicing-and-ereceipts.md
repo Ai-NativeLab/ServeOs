@@ -79,9 +79,9 @@ Three tenant-scoped tables with FORCE RLS. `eta_submissions` deliberately mirror
 **Interfaces:**
 - Produces: tables `etaSubmissions`, `productTaxCodes`, `etaTenantConfig`; enums `etaDocTypeEnum` (`e_receipt | e_invoice | credit_note`), `etaSubmissionStatusEnum` (`pending | submitted | accepted | rejected | failed`), `etaEnvironmentEnum` (`preprod | prod`), `etaActivationStatusEnum` (`not_configured | pending | active | suspended`); types `EtaSubmission`, `ProductTaxCode`, `EtaTenantConfig`.
 
-- [ ] **Step 0 (added 2026-08-30): include the addendum §2 deltas** — enum gains `return_receipt`; add `eta_device_chains` + `eta_pos_credentials` tables; `product_tax_codes` gains `codeSource`/`egsApprovalStatus`; `eta_submissions` gains `referenceOldUuid`. The code block below predates the addendum — extend it accordingly.
+- [x] **Step 0 (added 2026-08-30): include the addendum §2 deltas** — enum gains `return_receipt`; add `eta_device_chains` + `eta_pos_credentials` tables; `product_tax_codes` gains `codeSource`/`egsApprovalStatus`; `eta_submissions` gains `referenceOldUuid`. The code block below predates the addendum — extend it accordingly.
 
-- [ ] **Step 1: Write the schema.** Create `src/server/fiscal/schema.ts`:
+- [x] **Step 1: Write the schema.** Create `src/server/fiscal/schema.ts`:
 
 ```ts
 import { pgTable, uuid, text, timestamp, integer, jsonb, pgEnum, uniqueIndex, index } from "drizzle-orm/pg-core";
@@ -157,19 +157,19 @@ export type ProductTaxCode = typeof productTaxCodes.$inferSelect;
 export type EtaTenantConfig = typeof etaTenantConfig.$inferSelect;
 ```
 
-- [ ] **Step 2: Register it.** Append to `src/db/schema.ts` (after the `pos/tender-schema` line):
+- [x] **Step 2: Register it.** Append to `src/db/schema.ts` (after the `pos/tender-schema` line):
 
 ```ts
 export * from "../server/fiscal/schema";
 ```
 
-- [ ] **Step 3: Generate the migration.** `npm run db:generate`. Expected: a new `drizzle/00XX_*.sql` with the four enums, three tables, FKs, and the non-partial indexes. It will **not** contain RLS or the partial-index `WHERE`.
+- [x] **Step 3: Generate the migration.** `npm run db:generate`. Expected: a new `drizzle/00XX_*.sql` with the four enums, three tables, FKs, and the non-partial indexes. It will **not** contain RLS or the partial-index `WHERE`.
 
-- [ ] **Step 4: Hand-append RLS.** Open the generated file and append (mirror `drizzle/0016_bitter_beast.sql:67-71`) an `ENABLE` + `FORCE` + `CREATE POLICY <table>_isolation` block for each of `eta_submissions`, `product_tax_codes`, `eta_tenant_config`. Verify the two partial `uniqueIndex … WHERE … is not null` statements are present (Drizzle emits `.where()`; if not, add the `WHERE` by hand).
+- [x] **Step 4: Hand-append RLS.** Open the generated file and append (mirror `drizzle/0016_bitter_beast.sql:67-71`) an `ENABLE` + `FORCE` + `CREATE POLICY <table>_isolation` block for each of `eta_submissions`, `product_tax_codes`, `eta_tenant_config`. Verify the two partial `uniqueIndex … WHERE … is not null` statements are present (Drizzle emits `.where()`; if not, add the `WHERE` by hand).
 
-- [ ] **Step 5: Apply and verify the existing suite still passes.** `npm run db:migrate:test && npm test`. Expected: migration applies; full suite PASS (nothing references the new tables yet).
+- [x] **Step 5: Apply and verify the existing suite still passes.** `npm run db:migrate:test && npm test`. Expected: migration applies; full suite PASS (nothing references the new tables yet).
 
-- [ ] **Step 6: Commit.**
+- [x] **Step 6: Commit.**
 
 ```bash
 git add src/server/fiscal/schema.ts src/db/schema.ts drizzle/
