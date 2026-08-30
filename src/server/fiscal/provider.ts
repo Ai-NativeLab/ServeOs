@@ -1,4 +1,16 @@
 import type { EtaDocType, EtaEnvironment, EtaCodeSource, ProductTaxCode } from "./schema";
+import type { Order, OrderItem } from "@/server/ordering/schema";
+import type { Refund, RefundLine } from "@/server/pos/refund-schema";
+
+/** One tax-type breakdown row — used both as a document-level total
+ *  (`FiscalDocument.taxTotals`) and as a per-line breakdown
+ *  (`FiscalDocLine.taxes`). */
+export type FiscalTaxAmount = {
+  taxType: string;
+  taxSubType: string | null;
+  rate: string;
+  amount: string;
+};
 
 /** One line of a fiscal document, mapped from an order/refund line plus its
  *  resolved `product_tax_codes` row. */
@@ -13,6 +25,8 @@ export type FiscalDocLine = {
   quantity: number;
   /** `money(n)` numeric string, mapped verbatim — never recomputed. */
   unitPrice: string;
+  discountAmount: string;
+  taxes: FiscalTaxAmount[];
   lineTotal: string;
 };
 
@@ -37,6 +51,18 @@ export type FiscalDocument = {
   referenceOldUuid: string | null;
   buyer: FiscalBuyer | null;
   lines: FiscalDocLine[];
+  /**
+   * Semantic money slots mapped verbatim from the order's stored figures
+   * (orders.subtotal, discountAmount, vatAmount, serviceChargeAmount,
+   * deliveryFee, vatRateSnapshot — F9, never recomputed here).
+   * `EtaFiscalProvider` maps these to receipt v1.2's wire names at
+   * submit-build time; this contract itself stays wire-agnostic.
+   */
+  subtotal: string;
+  discountTotal: string;
+  /** Service charge + delivery fee etc. */
+  feesTotal: string;
+  taxTotals: FiscalTaxAmount[];
   /** `money(n)` string, mapped verbatim from the sale/refund. */
   total: string;
   currency: string;
@@ -46,14 +72,12 @@ export type FiscalDocument = {
 
 /**
  * The sale + its resolved `ProductTaxCode[]` + chain inputs needed to build
- * an e-receipt `FiscalDocument`.
- *
- * `order`/`items` stay `unknown` here — Task 3 tightens them to the real
- * ordering-domain shapes once the builder is implemented.
+ * an e-receipt `FiscalDocument`. Task 3 may ADD fields here as the builder's
+ * needs emerge — `order`/`items` are already the real row types.
  */
 export type FiscalSaleInput = {
-  order: unknown;
-  items: unknown[];
+  order: Order;
+  items: OrderItem[];
   taxCodes: ProductTaxCode[];
   previousUuid: string;
   deviceSerial: string | null;
@@ -62,23 +86,25 @@ export type FiscalSaleInput = {
 /**
  * The refund + its resolved `ProductTaxCode[]` + chain inputs needed to
  * build a return-receipt `FiscalDocument` (B2C refund; B2B credit_note is
- * deferred).
- *
- * `refund`/`lines` stay `unknown` here — Task 3 tightens them to the real
- * refund-domain shapes once the builder is implemented.
+ * deferred). Task 3 may ADD fields here as the builder's needs emerge —
+ * `refund`/`lines` are already the real row types.
  */
 export type FiscalRefundInput = {
   parentUuid: string;
-  refund: unknown;
-  lines: unknown[];
+  refund: Refund;
+  lines: RefundLine[];
   taxCodes: ProductTaxCode[];
   previousUuid: string;
   deviceSerial: string | null;
 };
 
+/**
+ * Mapping to `eta_submission_status`: a thrown error = retryable transport
+ * failure (worker records "failed" + backoff); "skipped" = no submission
+ * row is written at all; "submitted" = 202 accepted-for-processing,
+ * terminal accept/reject arrives via poll.
+ */
 export type FiscalSubmitResult = {
-  /** "submitted" = HTTP 202 accepted-for-processing; terminal accept/reject
-   *  arrives via poll(). */
   status: "accepted" | "rejected" | "submitted" | "skipped";
   etaUuid?: string;
   etaLongId?: string;
@@ -113,15 +139,22 @@ export type EtaConfig = {
   signingKey: string | null;
 };
 
+/**
+ * `buildCreditNote` (B2B e_invoice corrections) is deliberately absent —
+ * deferred with the B2B trigger; adding it later is a breaking change to
+ * every implementer, accepted cost.
+ */
 export interface FiscalProvider {
   readonly name: string; // "eta" | "noop"
   /** Pure: builds an e-receipt FiscalDocument, no I/O. */
   buildReceipt(input: FiscalSaleInput): FiscalDocument;
   /** Pure: builds a return-receipt FiscalDocument, no I/O. */
   buildReturnReceipt(input: FiscalRefundInput): FiscalDocument;
-  /** Submits a built document. May return a terminal result or, under the
-   *  202-then-poll model, a "submitted" result to be resolved via poll(). */
+  /** submit()/poll(): one document per submission — batching is out of
+   *  contract; a batch submission model would require poll to return
+   *  per-document results (`FiscalSubmitResult[]`). */
   submit(doc: FiscalDocument, cfg: EtaConfig): Promise<FiscalSubmitResult>;
-  /** Polls a prior "submitted" submission for its terminal accept/reject. */
+  /** Polls a prior "submitted" result for its terminal accept/reject — see
+   *  the one-document-per-submission note on submit(). */
   poll(submissionUuid: string, cfg: EtaConfig): Promise<FiscalSubmitResult>;
 }

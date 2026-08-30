@@ -68,6 +68,7 @@ in `docs/references/eta/` (see its README). Secondary/vendor claims are marked `
   Root CA** — the submit client must trust it (config/env, never `NODE_TLS_REJECT_UNAUTHORIZED=0`).
 - **Rate limits:** per-ERP/POS selective throttling; 429 + `Retry-After`; `X-Rate-Limit-*` headers.
 - **Retention:** Law 206/2020 Art. 38 — keep documents (incl. invoice copies) **5 years**; `requestJson`/`responseJson` satisfy this.
+- **Contract note:** `FiscalDocument` carries semantic money fields (`subtotal` / `discountTotal` / `feesTotal` / `taxTotals` + per-line `discountAmount` / `taxes`) mapped verbatim from the order's stored figures (F9); `EtaFiscalProvider` owns the mapping to receipt v1.2 wire names.
 
 ## 4. Registration boundary (why prod stays gated)
 
