@@ -14,6 +14,7 @@ import type { SyncReceipt } from "./sync-receipt";
 import { NoOpenShiftError, PosForbiddenError, PosSaleError } from "./errors";
 import type { PosCashierContext } from "./require-cashier";
 import { recordAuditEvent } from "@/server/audit/service";
+import { isFiscalEnabled, enqueueFiscalDocument } from "@/server/fiscal/enqueue";
 
 export const REASON_CODES = [
   "staff_meal", "comp_service", "promo", "manager_discretion",
@@ -372,6 +373,29 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
       }
     },
   });
+
+  // Fiscal (Spec 11): the sale is committed and returned regardless — the
+  // sale is authoritative and must never be blocked or rolled back by fiscal
+  // logic. This runs strictly AFTER placeOrder's own transaction has
+  // committed (never from inside onPlaced, which is still mid-transaction),
+  // so enqueueFiscalDocument opens its OWN withTenant here rather than
+  // reusing one. `!existing` is always true on this path (an idempotent
+  // replay returns early above, well before placeOrder is even called) —
+  // kept explicit anyway so the guard reads as an invariant rather than an
+  // assumption. EG tenants enqueue a pending e_receipt; the worker (Task 5)
+  // submits it to ETA asynchronously. A non-EG tenant enqueues nothing
+  // (country gate, F2) — no behavioural change. Caught and logged, never
+  // rethrown: unlike the refund path below (whose enqueue runs INSIDE the
+  // refund's own transaction for atomicity — see enqueueFiscalDocument's
+  // doc comment), a fiscal failure here must not undo money already taken
+  // and a receipt already printed.
+  try {
+    if (!existing && (await isFiscalEnabled(ctx.tenantId))) {
+      await enqueueFiscalDocument({ tenantId: ctx.tenantId }, { docType: "e_receipt", orderId: placed.orderId });
+    }
+  } catch (err) {
+    console.error("fiscal enqueue failed (sale unaffected)", err);
+  }
 
   // onPlaced always runs to completion before placeOrder resolves — see its
   // doc comment — so committedReceipt is set whenever we reach here.

@@ -379,18 +379,18 @@ The core non-HTTP surface. `enqueueFiscalDocument` inserts a `pending` `eta_subm
 - Create: `src/server/fiscal/enqueue.ts`
 - Create: `src/server/fiscal/effects.ts`
 - Modify: `src/server/pos/record-sale.ts`
-- Modify: Spec 3 `issueRefund` (`src/server/pos/refunds/service.ts` or wherever Spec 3 lands)
+- Modify: Spec 3 `issueRefund` (`src/server/pos/refunds/service.ts` or wherever Spec 3 lands) — **as-built: `src/server/pos/refund.ts`**, already on this branch.
 - Test: `src/server/fiscal/enqueue.test.ts`
 
 **Interfaces:**
 - Consumes: `etaSubmissions` (Task 1); `resolveFiscalProvider` (Task 2); `withTenant`; `tenants`.
 - Produces:
-  - `type EnqueueInput = { docType: "e_receipt" | "e_invoice" | "credit_note"; orderId?: string; refundId?: string }`
+  - `type EnqueueInput = { docType: "e_receipt" | "e_invoice" | "credit_note"; orderId?: string; refundId?: string }` — **as-built: a discriminated union, not an optional-fields bag** — `{ docType: "e_receipt" | "e_invoice"; orderId: string } | { docType: "return_receipt" | "credit_note"; refundId: string }` (`return_receipt` per the addendum — see Step 5's as-built note), so the parent XOR the `eta_submissions_parent_xor` CHECK enforces in the DB is unrepresentable-wrong at the type level too.
   - `function isFiscalEnabled(tenantId: string): Promise<boolean>`
   - `function enqueueFiscalDocument(ctx: { tenantId: string }, input: EnqueueInput, tx?: Tx): Promise<void>`
-  - `effects.ts`: `recordFiscalAudit(...)`, `notifyFiscalFailure(...)` — thin adapters that call Spec 4 `recordAuditEvent` / Spec 5 `notify` if present, else no-op.
+  - `effects.ts`: `recordFiscalAudit(...)`, `notifyFiscalFailure(...)` — thin adapters that call Spec 4 `recordAuditEvent` / Spec 5 `notify`. **As-built: no "if present, else no-op" indirection** — Specs 4/5 are both already on this branch, so effects.ts imports them directly (see Step 3's as-built note).
 
-- [ ] **Step 1: Write the failing tests.** Create `src/server/fiscal/enqueue.test.ts`:
+- [x] **Step 1: Write the failing tests.** Create `src/server/fiscal/enqueue.test.ts`:
   - An **EG** sale enqueues exactly one `pending e_receipt` for its `orderId`.
   - A **non-EG** sale enqueues **none** (country gate — the load-bearing test in the spec's Testing section).
   - A **re-enqueue** for the same `(orderId, docType)` is a **no-op** (unique index) — still exactly one row.
@@ -398,9 +398,11 @@ The core non-HTTP surface. `enqueueFiscalDocument` inserts a `pending` `eta_subm
 
 Seed tenants with `country: "EG"` / `"SA"` following `src/server/fiscal/provider.test.ts` and the audit plan's `seedTenant` shape.
 
-- [ ] **Step 2: Run to verify they fail.** `npx vitest run src/server/fiscal/enqueue.test.ts`. Expected: FAIL — module not found.
+  **as-built (2026-08-31):** the review-mandated regression pin added a fifth and sixth case beyond the four above: a **rejected-original re-enqueue** is still a no-op (the `eta_submissions_order_original`/`_refund_original` partial index ignores `status` — see schema.ts's JSDoc), and **`issueRefund` on an EG tenant** enqueues exactly one pending `return_receipt` atomically with the refund (non-EG: none). `seedPosContext` (src/server/pos/test-helpers.ts) always seeds an `"EG"` tenant, so it doubles as the EG fixture; non-EG cases flip `tenants.country` directly post-seed (a plain, non-RLS control table) rather than duplicating the fixture.
 
-- [ ] **Step 3: Implement `enqueueFiscalDocument`.** Create `src/server/fiscal/enqueue.ts`:
+- [x] **Step 2: Run to verify they fail.** `npx vitest run src/server/fiscal/enqueue.test.ts`. Expected: FAIL — module not found.
+
+- [x] **Step 3: Implement `enqueueFiscalDocument`.** Create `src/server/fiscal/enqueue.ts`:
 
 ```ts
 import { eq } from "drizzle-orm";
@@ -435,7 +437,9 @@ export async function enqueueFiscalDocument(ctx: { tenantId: string }, input: En
 }
 ```
 
-- [ ] **Step 4: Wire `recordSale`.** In `src/server/pos/record-sale.ts`, import `enqueueFiscalDocument` + `isFiscalEnabled`. **After** the final `db.insert(posOrderReceipts)` (the sale is fully done — line 176-181), before `return { … }`, add a non-blocking enqueue guarded by the EG gate. Wrap in try/catch that only logs — **a fiscal enqueue failure must never fail the sale**:
+  **as-built (2026-08-31):** the sketch above predates the addendum and a Task 1 review; four deltas. (1) `EnqueueInput` is the discriminated union from the Interfaces note above, not `{ orderId?, refundId? }` — `enqueueFiscalDocument` narrows on `input.docType` via a `switch` (TypeScript does not narrow a multi-literal discriminant through an `||`-joined `if`/ternary, nor through a nested closure that captures the already-narrowed parameter — both were tried and both fail `tsc`; the values/target/where are resolved to concrete, non-union locals *before* the `run(t: Tx)` closure is defined). (2) Idempotency targets the ORIGINAL-document partial indexes by name (`eta_submissions_order_original` / `_refund_original`), not a bare `.onConflictDoNothing()` — those indexes hold `status`-independent uniqueness; the plan's original `eta_submissions_order`/`_refund` pair (status-dependent) would let a rejected row's "corrected resubmission" collide with a same-status duplicate instead. (3) The conflict target's `where` must reproduce the index's exact predicate (`... is not null and reference_old_uuid is null`) or Postgres cannot infer the arbiter. **The plan text (and this task's own brief) called this drizzle option `targetWhere`; on the installed drizzle-orm 0.45.2, `onConflictDoNothing`'s config type is `{ target?, where? }` only — `targetWhere` exists solely on `onConflictDoUpdate`'s config type (verified directly against `node_modules/drizzle-orm/pg-core/query-builders/insert.d.ts`/`.js`).** Passing `where` renders identically (`(target) where <predicate> do nothing`) to what `targetWhere` would if it existed here — this is a naming correction, not a behavior change, but a literal `targetWhere` key would have been silently dropped (TS would in fact reject it as an excess property) rather than applying the predicate. (4) `tenantId`/`docType` are included in the conflict `target` column list (matching the index's actual columns), not just `orderId`/`refundId` alone.
+
+- [x] **Step 4: Wire `recordSale`.** In `src/server/pos/record-sale.ts`, import `enqueueFiscalDocument` + `isFiscalEnabled`. **After** the final `db.insert(posOrderReceipts)` (the sale is fully done — line 176-181), before `return { … }`, add a non-blocking enqueue guarded by the EG gate. Wrap in try/catch that only logs — **a fiscal enqueue failure must never fail the sale**:
 
 ```ts
   // Fiscal (Spec 11): the sale is committed and returned regardless. EG tenants
@@ -452,16 +456,24 @@ export async function enqueueFiscalDocument(ctx: { tenantId: string }, input: En
 
 The `SaleReceipt` return value is **unchanged**; the POS reads fiscal status separately via the Task 6 endpoint.
 
-- [ ] **Step 5: Wire the refund path (Spec 3).** In Spec 3's `issueRefund`, **inside** its existing `withTenant` transaction (after the `refunds`/`refund_lines`/`refund_payments` insert, alongside its `recordAuditEvent`), when `isFiscalEnabled(tenantId)`, call `enqueueFiscalDocument({ tenantId }, { docType: "credit_note", refundId }, tx)` so the credit-note enqueue commits atomically with the refund. If Spec 3 is not yet on the branch, add a `// TODO(fiscal): enqueue credit_note here — see plan Task 4 Step 5` marker in the fiscal effects module and cover it once Spec 3 lands (note it in Self-Review).
+  **as-built (2026-08-31):** `record-sale.ts` does not return inline (recordSale wraps its work in `placeOrder`'s `onPlaced` callback, itself inside `placeOrder`'s own transaction — the plan's flat "line 176-181, before `return { … }`" shape predates that structure). The enqueue is placed after `const placed = await placeOrder(...)` resolves — i.e. after `placeOrder`'s transaction has *actually* committed (`onPlaced` still runs mid-transaction, so calling the sale-path, own-`withTenant` `enqueueFiscalDocument` from inside it would open a second transaction while the first was still open) — and before the function's real final `return committedReceipt!;`. Same gate, same non-blocking try/catch, same `!existing` guard (`existing` is in closure scope from the idempotency check at the top of `recordSale`; always true structurally at this point, since a truthy `existing` returns early before `placeOrder` is ever called — kept explicit anyway per this task's brief, as a stated invariant rather than a live branch).
 
-- [ ] **Step 6: Run tests + full suite.** `npx vitest run src/server/fiscal/enqueue.test.ts && npm test && npx tsc --noEmit && npx eslint src/server/fiscal src/server/pos`. Expected: PASS, clean; existing `record-sale.test.ts` still green (non-EG fixtures enqueue nothing; EG fixtures gain one row).
+- [x] **Step 5: Wire the refund path (Spec 3).** In Spec 3's `issueRefund`, **inside** its existing `withTenant` transaction (after the `refunds`/`refund_lines`/`refund_payments` insert, alongside its `recordAuditEvent`), when `isFiscalEnabled(tenantId)`, call `enqueueFiscalDocument({ tenantId }, { docType: "credit_note", refundId }, tx)` so the credit-note enqueue commits atomically with the refund. If Spec 3 is not yet on the branch, add a `// TODO(fiscal): enqueue credit_note here — see plan Task 4 Step 5` marker in the fiscal effects module and cover it once Spec 3 lands (note it in Self-Review).
 
-- [ ] **Step 7: Commit.**
+  **as-built (2026-08-31): docType is `return_receipt`, not `credit_note`.** Spec 3 (`src/server/pos/refund.ts`) is already on this branch, so no TODO/degrade path was needed. Per the verified-findings addendum (§C4): on the e-receipt system a refund is a **Return Receipt** referencing the original receipt's UUID (within 540 days); `credit_note` stays reserved for the deferred B2B e-invoice correction and is never written by `issueRefund`. The enqueue call (`enqueueFiscalDocument({ tenantId: actor.tenantId }, { docType: "return_receipt", refundId: refund.id }, tx)`) sits immediately after the existing `recordAuditEvent` call (numbered step 10 in `issueRefund`'s own inline step comments) and before the transaction's `return`, exactly as this step describes — no try/catch, so a failed insert rolls the whole refund back with it (the refund has not yet been handed to a customer, unlike a completed sale).
+
+- [x] **Step 6: Run tests + full suite.** `npx vitest run src/server/fiscal/enqueue.test.ts && npm test && npx tsc --noEmit && npx eslint src/server/fiscal src/server/pos`. Expected: PASS, clean; existing `record-sale.test.ts` still green (non-EG fixtures enqueue nothing; EG fixtures gain one row).
+
+  **as-built (2026-08-31):** ran the scoped form (`npx vitest run src/server/pos/record-sale.test.ts src/server/pos/refund.test.ts src/server/fiscal/`) per this task's own instructions rather than the full `npm test` — 8 files / 203 tests passed (194 pre-existing + 9 new in `enqueue.test.ts`), plus the full `src/server/pos/` directory (20 files / 204 tests) as extra diligence since `record-sale.ts`/`refund.ts` are widely imported. `tsc --noEmit` and `eslint src/server/fiscal src/server/pos` both clean.
+
+- [x] **Step 7: Commit.**
 
 ```bash
 git add src/server/fiscal/enqueue.ts src/server/fiscal/effects.ts src/server/fiscal/enqueue.test.ts src/server/pos/record-sale.ts
 git commit -m "feat(fiscal): enqueueFiscalDocument + non-blocking after-commit e_receipt/credit_note enqueue"
 ```
+
+  **as-built (2026-08-31):** also stages `src/server/pos/refund.ts` (Step 5's wiring — not listed above, since the plan's sketch had it as a separate/deferred TODO). Actual commit message: `feat(fiscal): country-gated enqueue wired into recordSale + issueRefund (non-blocking sale, atomic refund)` — no `Co-Authored-By`/`Generated-with` trailers, per house convention.
 
 ---
 
