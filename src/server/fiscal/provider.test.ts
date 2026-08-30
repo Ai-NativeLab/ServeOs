@@ -136,12 +136,29 @@ describe("EtaFiscalProvider", () => {
     expect(new EtaFiscalProvider().name).toBe("eta");
   });
 
-  it("still throws not implemented for submit/poll — Task 3b wires the HTTP calls", async () => {
-    // build*/buildReturnReceipt now delegate to ./build-document; their mapping
-    // is covered in build-document.test.ts against real Order/Refund fixtures.
-    const eta = new EtaFiscalProvider();
-    await expect(eta.submit({} as FinalizedFiscalDocument, {} as EtaConfig)).rejects.toThrow("not implemented");
-    await expect(eta.poll("submission-uuid", {} as EtaConfig)).rejects.toThrow("not implemented");
+  it("routes submit/poll through its injectable fetch, starting at the identity service", async () => {
+    // build*/buildReturnReceipt delegate to ./build-document; their mapping is
+    // covered in build-document.test.ts against real Order/Refund fixtures.
+    // The submit/poll request and response mapping is covered in full in
+    // eta-provider.test.ts — asserted here is only that the HTTP seam exists,
+    // that nothing reaches the real network, and that a connection failure
+    // arrives as a typed (retryable) error rather than a raw one.
+    const urls: string[] = [];
+    const eta = new EtaFiscalProvider(async (input) => {
+      urls.push(String(input));
+      throw new Error("no network in this test");
+    });
+    const cfg: EtaConfig = {
+      rin: "200173707",
+      environment: "preprod",
+      erp: { clientId: "erp-client-id", clientSecret: "s3cret" },
+      device: null,
+      signingKey: null,
+    };
+
+    await expect(eta.poll("submission-uuid", cfg)).rejects.toThrow(/ETA request failed/);
+    // Authentication happens on the identity service, not the API host.
+    expect(urls).toEqual(["https://id.preprod.eta.gov.eg/connect/token"]);
   });
 });
 

@@ -18,8 +18,7 @@ import { stringifyWire } from "./serialize";
 import { toWireReceipt, finalizeReceipt, type WireContext } from "./eta-wire";
 import { addDecimal, sumDecimal } from "./decimal";
 import type {
-  FiscalSaleInput, FiscalRefundInput, FiscalDocument, FinalizedFiscalDocument,
-  FeeLineConfig, EtaConfig,
+  FiscalSaleInput, FiscalRefundInput, FiscalDocument, FeeLineConfig,
 } from "./provider";
 import type { ProductTaxCode } from "./schema";
 import type { Order, OrderItem } from "@/server/ordering/schema";
@@ -767,11 +766,9 @@ describe("EtaFiscalProvider", () => {
     expect(doc).toEqual(buildReturnReceipt(refundInput));
   });
 
-  it("still throws for submit/poll — Task 3b wires the HTTP calls", async () => {
-    const eta = new EtaFiscalProvider();
-    await expect(eta.submit({} as FinalizedFiscalDocument, {} as EtaConfig)).rejects.toThrow("not implemented");
-    await expect(eta.poll("submission-uuid", {} as EtaConfig)).rejects.toThrow("not implemented");
-  });
+  // submit/poll are HTTP, not building — their request/response mapping lives
+  // in eta-provider.test.ts against a mocked fetch, and the provider's HTTP
+  // seam is asserted in provider.test.ts. This file stays pure.
 });
 
 describe("FiscalDocumentError family", () => {
