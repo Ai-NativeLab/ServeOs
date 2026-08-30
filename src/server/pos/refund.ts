@@ -114,6 +114,20 @@ export async function issueRefund(
   const authorizedByUserId =
     authorizer === actor.actorUserId ? null : authorizer;
 
+  // Fiscal (Spec 11): read BEFORE the transaction — same reason as
+  // resolveAuthorizer just above, not just the same convention. `withTenant`
+  // below holds ONE pool connection for the whole transaction;
+  // isFiscalEnabled queries through the global `db`, i.e. a SECOND
+  // connection. pg-pool here defaults to max=10 with connectionTimeoutMillis
+  // =0 (wait forever for a free connection) — ten concurrent EG refunds each
+  // holding their tx's connection while blocked waiting on a second one
+  // deadlocks the whole pool permanently. Reading it here, before `tx`
+  // exists, means this path only ever holds one connection at a time.
+  // `country` is a stable tenant attribute (see isFiscalEnabled's own JSDoc)
+  // so a pre-transaction read is not a staleness risk. DO NOT move this back
+  // inside the transaction.
+  const fiscalEnabled = await isFiscalEnabled(actor.tenantId);
+
   const result = await withTenant(actor.tenantId, async (tx) => {
     // 1. SERIALIZE refunds per order. The net-paid ceiling is a read-then-write
     //    under READ COMMITTED; without a row lock two concurrent refunds on the
@@ -339,7 +353,9 @@ export async function issueRefund(
     //     ever diverging. docType is `return_receipt` — the addendum's B2C
     //     refund document (see eta_submissions' JSDoc) — never `credit_note`,
     //     which stays reserved for the deferred B2B e-invoice correction.
-    if (await isFiscalEnabled(actor.tenantId)) {
+    //     `fiscalEnabled` was read ABOVE the transaction (pool-deadlock
+    //     avoidance — see that comment); only the WRITE belongs in here.
+    if (fiscalEnabled) {
       await enqueueFiscalDocument({ tenantId: actor.tenantId }, { docType: "return_receipt", refundId: refund.id }, tx);
     }
 

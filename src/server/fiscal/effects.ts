@@ -39,6 +39,15 @@ export const FISCAL_AUDIT_ACTIONS = {
 } as const;
 
 /**
+ * The fixed `notify` shape for a terminal fiscal failure — see
+ * `notifyFiscalFailure` below for the rationale behind this exact
+ * type/severity pair. Named so Task 5's worker (and any other future caller)
+ * references THIS constant rather than restating the two literals inline —
+ * the other half of the "one event-name vocabulary" this file exists for.
+ */
+export const FISCAL_FAILURE_NOTIFICATION = { type: "system_alert", severity: "critical" } as const;
+
+/**
  * Thin wrapper over `recordAuditEvent`, `entityType` fixed to
  * `"eta_submission"` so every call site agrees on it (the caller supplies
  * `action` — see `FISCAL_AUDIT_ACTIONS` — plus `entityId`, `summary`, and
@@ -59,13 +68,13 @@ export async function recordFiscalAudit(
 /**
  * Thin wrapper over `notify` for a terminal fiscal failure (Task 5: retry
  * attempts exhausted, an unresolvable `MissingTaxCodeError`/`EtaConfigError`,
- * etc). Fixed to `type: "system_alert"` / `severity: "critical"` — the same
- * shape the notifications layer already uses for its own send-budget/tamper
- * failures (`notifications/worker.ts`, `notifications/email-events.ts`) —
- * so the dashboard's "critical" feed has one consistent type to filter on
- * rather than a bespoke fiscal one the `notification_type` enum does not
- * carry (adding a dedicated enum value is a schema change, out of scope
- * here).
+ * etc). Fixed to `FISCAL_FAILURE_NOTIFICATION` (`type: "system_alert"` /
+ * `severity: "critical"`) — the same shape the notifications layer already
+ * uses for its own send-budget/tamper failures (`notifications/worker.ts`,
+ * `notifications/email-events.ts`) — so the dashboard's "critical" feed has
+ * one consistent type to filter on rather than a bespoke fiscal one the
+ * `notification_type` enum does not carry (adding a dedicated enum value is
+ * a schema change, out of scope here).
  *
  * `tx` is optional, exactly like `notify` itself: pass it to keep the
  * notification atomic with the same-transaction status write; omit it to
@@ -76,5 +85,5 @@ export async function notifyFiscalFailure(
   event: Omit<NotifyEvent, "type" | "severity">,
   tx?: Tx,
 ): Promise<void> {
-  await notify(ctx, { ...event, type: "system_alert", severity: "critical" }, tx);
+  await notify(ctx, { ...event, ...FISCAL_FAILURE_NOTIFICATION }, tx);
 }
