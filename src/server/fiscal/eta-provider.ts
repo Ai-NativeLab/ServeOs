@@ -374,13 +374,19 @@ export class EtaFiscalProvider implements FiscalProvider {
  * The Authenticate POS login: four POS headers plus the credentials in the
  * form body.
  *
- * HEADERS. The page's header table lists exactly `posserial`, `pososversion`,
- * `posmodelframework` and `presharedkey` (lower-case, as transcribed here),
- * and ETA's Postman "1. Authenticate POS" request sends all four with real
- * values. The table has NO "required" column, but the error table defines a
- * dedicated rejection for each one — `invalid_posserial`,
- * `invalid_pososversion`, `invalid_posmodelframework`, `invalid_presharedkey`
- * — which is only meaningful for a header ETA reads and validates.
+ * HEADERS. Two legs of evidence, both from the page itself:
+ *   1. Its header table lists exactly `posserial`, `pososversion`,
+ *      `posmodelframework` and `presharedkey` (lower-case, as transcribed
+ *      here) as the headers of this call. The table has NO "required" column,
+ *      so requiredness is nowhere stated either way.
+ *   2. Its error table defines a dedicated rejection for every one of them —
+ *      `invalid_posserial`, `invalid_pososversion`, `invalid_posmodelframework`,
+ *      `invalid_presharedkey` — which is only meaningful for a header ETA
+ *      reads and validates.
+ * (ETA's Postman "1. Authenticate POS" request is NOT cited as a third leg:
+ * it carries `posmodelframework` with `"disabled": true`, so it demonstrates a
+ * call that sends only three of the four. That is evidence about their sample,
+ * not about what the API requires, and it is left out rather than leaned on.)
  *
  * SO A MISSING ONE FAILS FAST, IT IS NOT OMITTED. `presharedKey`, `osVersion`
  * and `modelFramework` are all nullable on `eta_pos_credentials` (the portal's
@@ -437,10 +443,18 @@ function posLogin(device: NonNullable<EtaConfig["device"]>): { headers: Record<s
  * The page's header table defines `Authorization` as "Must contain basic
  * authorization string created using issued Client ID and Client Secret for the
  * ERP system. The process of creating basic authorization string should follow
- * RFC 2617", and its body table lists only `grant_type` and an optional
- * `scope` ("Optional parameter asking for a specific access scope. In case of
- * external access to eInvoicing APIs this parameter can be omitted",
- * example `InvoicingAPI`).
+ * RFC 2617", and its body table lists exactly two parameters: `grant_type` and
+ * `scope`.
+ *
+ * `scope` IS SENT ON EVERY CALL, even though the page marks it OPTIONAL
+ * ("Optional parameter asking for a specific access scope. In case of external
+ * access to eInvoicing APIs this parameter can be omitted", example value
+ * `InvoicingAPI`). Sending it matches ETA's own Postman "1. Login as Taxpayer
+ * System", which always includes `scope=InvoicingAPI`, and it makes the granted
+ * scope explicit rather than dependent on a server-side default: the token
+ * response's `scope` is documented as "Optional if matches the requested scope.
+ * Otherwise contains information on scope granted to token", so asking for one
+ * turns a silent narrowing into a visible mismatch.
  *
  * KNOWN DIVERGENCE: ETA's Postman "1. Login as Taxpayer System" instead sends
  * `client_id`/`client_secret` in the form body with no Basic header. RFC 6749
@@ -599,16 +613,32 @@ function transportErrorFor(res: Response, body: ReadBody, what: string): EtaTran
 }
 
 /**
- * ETA's error code out of either documented error envelope: the Standard Error
- * Response shape `{"error": {"code": ..., "message": ...}}`, or the flat
- * `{"error": "Too many requests", "code": 429}` that APIs Governance publishes
- * for 429/503.
+ * ETA's error code out of either documented error envelope.
+ *
+ * Standard Error Response nests it: `{"error": {"code": "BadStructure",
+ * "message": ...}}`. APIs Governance publishes a FLAT variant for throttling
+ * whose code is a NUMBER, not a string — `{"error": "Too many requests",
+ * "message": "...", "code": 429}` for 429, and the same shape with `"code":
+ * 503`. A string-only read silently dropped those, losing the one
+ * machine-readable discriminator on exactly the two statuses a worker most
+ * needs to tell apart, so numbers are accepted and normalised to their decimal
+ * string ("429"). A nested string code still wins when both are present, since
+ * `BadStructure` says more than `400`.
  */
 function errorCodeOf(json: Record<string, unknown> | null): string | null {
   if (!json) return null;
   const error = asRecord(json.error);
-  if (error && typeof error.code === "string") return error.code;
-  if (typeof json.code === "string") return json.code;
+  if (error) {
+    const nested = codeToString(error.code);
+    if (nested !== null) return nested;
+  }
+  return codeToString(json.code);
+}
+
+/** A `code` field as a string, whether ETA sent it as one or as a number. */
+function codeToString(code: unknown): string | null {
+  if (typeof code === "string") return code;
+  if (typeof code === "number" && Number.isFinite(code)) return String(code);
   return null;
 }
 

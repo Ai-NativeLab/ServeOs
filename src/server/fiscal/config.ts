@@ -95,7 +95,10 @@ function resolveOptionalSecretRef(ref: string | null, column: string): string | 
  * on an HTTP response or a `responseJson`. Every caller is expected to keep
  * `EtaConfig` inside the server.
  *
- * @throws {EtaConfigError} when a `*Ref` column is set but its env key is not.
+ * @throws {EtaConfigError} when a `*Ref` column needed by the requested path is
+ * set but its env key is not. The tenant signing key and the device secrets
+ * resolve eagerly, so they throw from this call; `erp.clientSecret` resolves on
+ * first read instead — see its own comment for why.
  */
 export async function resolveEtaConfig(tenantId: string, deviceId?: string): Promise<EtaConfig | null> {
   const rows = await withTenant(tenantId, async (tx) => {
@@ -139,6 +142,8 @@ export async function resolveEtaConfig(tenantId: string, deviceId?: string): Pro
       }
     : null;
 
+  const clientSecretRef = tenantRow.clientSecretRef;
+
   return {
     // ETA calls it the Registration Identification Number; the column predates
     // that spelling. This is the only place the two names are bridged.
@@ -146,7 +151,35 @@ export async function resolveEtaConfig(tenantId: string, deviceId?: string): Pro
     environment: tenantRow.environment,
     erp: {
       clientId: tenantRow.clientId,
-      clientSecret: resolveSecretRef(tenantRow.clientSecretRef, "eta_tenant_config.client_secret_ref"),
+      /**
+       * RESOLVED LAZILY, on first read — the one deliberate exception to this
+       * function's otherwise-eager resolution.
+       *
+       * The ERP secret is used by exactly one code path: the Login as Taxpayer
+       * System call, which `EtaFiscalProvider` makes only when `device` is
+       * null (B2B `e_invoice` and the codes APIs — deferred today). E-receipt
+       * submission never touches it. Resolving it eagerly meant that a tenant
+       * whose ERP secret ref had gone stale could not submit RECEIPTS either:
+       * the whole resolution threw, naming a credential that the receipt path
+       * does not use and cannot be fixed by anyone looking at the till. That
+       * is an availability fault on the fiscal hot path caused by an unrelated,
+       * unused credential.
+       *
+       * Deferring it keeps the failure exactly where it belongs — at the ERP
+       * login that needs the secret — while the error, when it does fire,
+       * still names this precise column and env key. The property type is
+       * unchanged, so `EtaConfig` is untouched.
+       *
+       * The value is therefore NOT memoised and NOT held in memory until
+       * something asks for it. As with every other field here, it must never
+       * be logged, serialised or returned to a client — and note that reading
+       * it (including by spreading or inspecting `erp`) is what triggers
+       * resolution, which is another reason an `EtaConfig` must never be
+       * passed to `JSON.stringify`.
+       */
+      get clientSecret(): string {
+        return resolveSecretRef(clientSecretRef, "eta_tenant_config.client_secret_ref");
+      },
     },
     device,
     signingKey: resolveOptionalSecretRef(tenantRow.signingKeyRef, "eta_tenant_config.signing_key_ref"),

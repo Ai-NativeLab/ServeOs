@@ -126,45 +126,59 @@ export class EtaConfigError extends Error {
 }
 
 /**
- * Keys that must never survive into `eta_submissions.responseJson` or into an
- * error we persist. None of them appears in any documented ETA response body —
- * this is a belt-and-braces net for an undocumented field or a proxy that
- * echoes the request, not a substitute for simply never putting request
- * headers in here (which the provider does not).
+ * The shapes a secret-bearing key name takes, matched as a SUBSTRING at every
+ * depth and case-insensitively.
+ *
+ * Substring, not exact match, deliberately. An exact-match allowlist has to
+ * enumerate every spelling an upstream might use, and it will always be
+ * incomplete: `posPresharedKey`, `client-secret`, `X-Api-Key`, `apiKey`,
+ * `signingKey` and `clientSecret1` all name credentials and all slip past a
+ * fixed list of the obvious spellings. Since `responseJson` is PERSISTED to
+ * `eta_submissions`, a miss here is a durable leak, not a transient one — so
+ * the net is drawn wide and the cost of a false positive (one over-redacted
+ * field in a stored response body) is accepted without hesitation.
+ *
+ * Only KEY NAMES are tested; values are never inspected, so a legitimate value
+ * is never mangled by a coincidental substring.
+ *
+ * `token` covers access_token/refresh_token/id_token/tokenRef; `secret` covers
+ * client_secret/clientSecret1/clientSecret2/secretRef; `apikey` covers
+ * apiKey/X-Api-Key/api_key once separators are stripped. Nothing on this list
+ * appears in any documented ETA response body — this is the belt-and-braces
+ * net for an undocumented field or a proxy that echoes the request back, not a
+ * substitute for simply never putting request headers in here (which the
+ * provider does not).
  */
-const REDACTED_KEYS = new Set([
-  "authorization",
-  "presharedkey",
-  "preshared_key",
-  "client_secret",
-  "clientsecret",
-  "client_secret_1",
-  "client_secret_2",
-  "access_token",
-  "refresh_token",
-  "id_token",
-  "token",
-  "password",
-  "secret",
-]);
+const SECRET_KEY_PATTERN = /secret|token|password|presharedkey|authorization|apikey|signingkey/i;
 
 export const REDACTED = "[redacted]";
 
 /**
- * Deep copy of an ETA response body with any auth-shaped key replaced by
- * `[redacted]`. Matching is case-insensitive on the key name only; values are
- * never inspected, so a legitimate field is never mangled by a coincidental
- * substring.
+ * Whether a key name looks like it carries credential material.
  *
- * Arrays and nested objects are walked. Anything that is not a plain object or
- * array is returned as-is.
+ * Separators are stripped before matching so that `X-Api-Key`, `api_key`,
+ * `api key` and `apiKey` all reduce to `apikey`, and `pre-shared-key` /
+ * `preshared_key` / `posPresharedKey` all contain `presharedkey`. The regex is
+ * applied to BOTH the raw key and the stripped key, so a name that only
+ * matches in one form is still caught.
+ */
+function isSecretKey(key: string): boolean {
+  return SECRET_KEY_PATTERN.test(key) || SECRET_KEY_PATTERN.test(key.replace(/[-_\s.]/g, ""));
+}
+
+/**
+ * Deep copy of an ETA response body with every credential-shaped key replaced
+ * by `[redacted]`.
+ *
+ * Arrays and nested objects are walked to any depth. Anything that is not a
+ * plain object or array is returned as-is.
  */
 export function redactAuthMaterial<T>(value: T): T {
   if (Array.isArray(value)) return value.map((el) => redactAuthMaterial(el)) as unknown as T;
   if (value === null || typeof value !== "object") return value;
   const out: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    out[key] = REDACTED_KEYS.has(key.toLowerCase()) ? REDACTED : redactAuthMaterial(child);
+    out[key] = isSecretKey(key) ? REDACTED : redactAuthMaterial(child);
   }
   return out as unknown as T;
 }

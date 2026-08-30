@@ -143,17 +143,44 @@ describe("resolveEtaConfig — tenant-level config", () => {
     },
   );
 
-  it("throws a typed EtaConfigError when a ref is set but its env value is missing", async () => {
+  it("throws a typed EtaConfigError when an eagerly-resolved ref has no env value", async () => {
     setSecrets();
-    delete process.env[ERP_SECRET_KEY];
+    delete process.env[SIGNING_KEY];
     const tenant = await makeTenant("eta-missing-ref");
-    await seedTenantConfig(tenant.id);
+    await seedTenantConfig(tenant.id, { signingKeyRef: SIGNING_KEY });
 
     const error = await resolveEtaConfig(tenant.id).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(EtaConfigError);
     expect((error as EtaConfigError).code).toBe("missing-secret-ref");
-    // The env KEY is safe to name; the value never existed to leak.
-    expect((error as EtaConfigError).message).toContain(ERP_SECRET_KEY);
+    // The message names the exact column and env KEY that failed — the key is
+    // safe to name, and the value never existed to leak.
+    expect((error as EtaConfigError).message).toContain(SIGNING_KEY);
+    expect((error as EtaConfigError).message).toContain("eta_tenant_config.signing_key_ref");
+  });
+
+  it("does not fail a receipt-path resolution because the unused ERP secret ref is stale", async () => {
+    setSecrets();
+    delete process.env[ERP_SECRET_KEY];
+    const tenant = await makeTenant("eta-stale-erp");
+    const device = await makeDevice(tenant.id, "till-stale");
+    await seedTenantConfig(tenant.id);
+    await seedDeviceCredential(tenant.id, device.id);
+
+    // E-receipts authenticate with the DEVICE credential; a broken ERP secret
+    // (B2B only, unused here) must not take the till offline.
+    const cfg = await resolveEtaConfig(tenant.id, device.id);
+    expect(cfg!.device!.secret1).toBe("device-secret-1-value");
+
+    // It still fails, precisely and by name, at the moment something asks for it.
+    let thrown: unknown;
+    try {
+      void cfg!.erp.clientSecret;
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(EtaConfigError);
+    expect((thrown as EtaConfigError).message).toContain("eta_tenant_config.client_secret_ref");
+    expect((thrown as EtaConfigError).message).toContain(ERP_SECRET_KEY);
   });
 });
 

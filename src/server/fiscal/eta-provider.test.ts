@@ -346,6 +346,46 @@ describe("EtaFiscalProvider.submit", () => {
     expectNoAuthMaterial(result.responseJson);
   });
 
+  it("redacts credential-shaped keys in every spelling, at any depth", async () => {
+    // An exact-match key list missed all six of these. responseJson is
+    // PERSISTED to eta_submissions, so a miss is a durable leak — hence
+    // substring matching, and hence these probes.
+    const { http } = makeHttp({
+      api: [
+        () =>
+          jsonResponse(202, {
+            submissionUUID: "SUB-1",
+            posPresharedKey: PRESHARED_KEY,
+            deep: {
+              deeper: {
+                "client-secret": DEVICE_SECRET_1,
+                "X-Api-Key": "APIKEY-must-never-be-persisted",
+                apiKey: "APIKEY-must-never-be-persisted",
+                signingKey: "SIGNING-must-never-be-persisted",
+                list: [{ clientSecret1: DEVICE_SECRET_1, clientSecret2: DEVICE_SECRET_2 }],
+              },
+            },
+          }),
+      ],
+    });
+
+    const result = await new EtaFiscalProvider(http).submit(finalized, cfg);
+    const deeper = (result.responseJson.deep as { deeper: Record<string, unknown> }).deeper;
+    expect(result.responseJson.posPresharedKey).toBe(REDACTED);
+    expect(deeper["client-secret"]).toBe(REDACTED);
+    expect(deeper["X-Api-Key"]).toBe(REDACTED);
+    expect(deeper.apiKey).toBe(REDACTED);
+    expect(deeper.signingKey).toBe(REDACTED);
+    expect(deeper.list).toEqual([{ clientSecret1: REDACTED, clientSecret2: REDACTED }]);
+
+    expectNoAuthMaterial(result.responseJson);
+    expect(JSON.stringify(result.responseJson)).not.toContain("APIKEY-must-never-be-persisted");
+    expect(JSON.stringify(result.responseJson)).not.toContain("SIGNING-must-never-be-persisted");
+    // A field that merely mentions a receipt is untouched — only key NAMES are
+    // matched, never values.
+    expect(result.responseJson.submissionUUID).toBe("SUB-1");
+  });
+
   it("throws a retryable EtaTransportError with Retry-After seconds on a 429", async () => {
     const { http } = makeHttp({
       api: [
@@ -364,8 +404,27 @@ describe("EtaFiscalProvider.submit", () => {
     expect(transport.status).toBe(429);
     expect(transport.retryAfterSeconds).toBe(42);
     expect(transport.correlationId).toBe("JHDSJ8882POY72SG-2828");
+    // APIs Governance publishes the throttling body with a NUMERIC code; it
+    // must still reach the worker as a discriminator, not be dropped.
+    expect(transport.etaErrorCode).toBe("429");
     expectNoAuthMaterial(transport.body);
     expectNoAuthMaterial(transport.message);
+  });
+
+  it("prefers a nested string error code over a flat numeric one", async () => {
+    const { http } = makeHttp({
+      api: [
+        () =>
+          jsonResponse(400, {
+            error: { code: "MaximumSizeExceeded", message: "submission too large" },
+            code: 400,
+          }),
+      ],
+    });
+
+    const error = await new EtaFiscalProvider(http).submit(finalized, cfg).catch((e: unknown) => e);
+    // "MaximumSizeExceeded" says more than "400".
+    expect((error as EtaTransportError).etaErrorCode).toBe("MaximumSizeExceeded");
   });
 
   it("throws a retryable EtaTransportError on a 503", async () => {
@@ -377,6 +436,8 @@ describe("EtaFiscalProvider.submit", () => {
     expect(error).toBeInstanceOf(EtaTransportError);
     expect((error as EtaTransportError).status).toBe(503);
     expect((error as EtaTransportError).retryAfterSeconds).toBeNull();
+    // Same flat, numeric-coded envelope as the 429.
+    expect((error as EtaTransportError).etaErrorCode).toBe("503");
   });
 
   it("carries ETA's error code through a 400 BadStructure without calling it a rejection", async () => {
