@@ -127,15 +127,15 @@ describe("NoopFiscalProvider", () => {
   });
 });
 
-describe("EtaFiscalProvider (Task 2 stub)", () => {
+describe("EtaFiscalProvider", () => {
   it("is named eta", () => {
     expect(new EtaFiscalProvider().name).toBe("eta");
   });
 
-  it("every method throws not implemented", async () => {
+  it("still throws not implemented for submit/poll — Task 3b wires the HTTP calls", async () => {
+    // build*/buildReturnReceipt now delegate to ./build-document; their mapping
+    // is covered in build-document.test.ts against real Order/Refund fixtures.
     const eta = new EtaFiscalProvider();
-    expect(() => eta.buildReceipt({} as FiscalSaleInput)).toThrow("not implemented");
-    expect(() => eta.buildReturnReceipt({} as FiscalRefundInput)).toThrow("not implemented");
     await expect(eta.submit({} as FiscalDocument, {} as EtaConfig)).rejects.toThrow("not implemented");
     await expect(eta.poll("submission-uuid", {} as EtaConfig)).rejects.toThrow("not implemented");
   });

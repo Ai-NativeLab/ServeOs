@@ -93,6 +93,11 @@ export type FiscalRefundInput = {
   parentUuid: string;
   refund: Refund;
   lines: RefundLine[];
+  /** The PARENT order's items. `refund_lines` carry only an orderItemId,
+   *  quantity and amount, so the description/unit price/productId a document
+   *  line needs (and the productId the tax-code lookup keys on) come from
+   *  here. Added by Task 3, as this type's contract anticipated. */
+  items: OrderItem[];
   taxCodes: ProductTaxCode[];
   previousUuid: string;
   deviceSerial: string | null;

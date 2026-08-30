@@ -297,7 +297,7 @@ The **pure** mappers that turn a sale/refund into a `FiscalDocument` using the r
   - `function resolveEtaConfig(tenantId: string): Promise<EtaConfig | null>` — reads `eta_tenant_config` via `withTenant`, resolves `clientSecretRef`/`signingKeyRef` from `process.env` (or secret manager), returns `null` when `activationStatus !== "active"`.
   - `class EtaFiscalProvider implements FiscalProvider`.
 
-- [ ] **Step 1: Write the failing builder tests.** Create `src/server/fiscal/build-document.test.ts` — pure, no DB. Assert:
+- [x] **Step 1: Write the failing builder tests. (3a)** Create `src/server/fiscal/build-document.test.ts` — pure, no DB. Assert:
   - `buildReceipt` maps each order line to a `FiscalDocLine` with the correct `egsCode`/`taxType`/`taxSubType`/`unitType` from the supplied `product_tax_codes`, and the document `total` equals the sale's `orders.total` **to the cent** for a fixture with a discount, VAT, and a service charge (money-mapping parity, F9).
   - a line whose product has no tax code throws `MissingTaxCodeError` naming that `productId`.
   - `buildCreditNote` sets `referenceUuid` to the parent's `etaUuid`, negates each returned line's amount, and totals only the refunded lines/amount (not the whole receipt).
@@ -346,9 +346,11 @@ describe("buildCreditNote", () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify they fail.** `npx vitest run src/server/fiscal/build-document.test.ts`. Expected: FAIL — module not found.
+- [x] **Step 2: Run to verify they fail. (3a)** `npx vitest run src/server/fiscal/build-document.test.ts`. Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement the builder.** Create `src/server/fiscal/build-document.ts` — a `Map<productId, ProductTaxCode>` lookup; map each line; throw `MissingTaxCodeError` on a miss; carry `money(n)` strings verbatim (prefix `-` for credit-note amounts); set `docType`, `referenceUuid`, `total`, `currency`, `issuedAt`. **No `Number()` re-summation of the sale total** — take `order.total` / `refund.totalAmount` straight through.
+- [x] **Step 3: Implement the builder. (3a)** Create `src/server/fiscal/build-document.ts` — a `Map<productId, ProductTaxCode>` lookup; map each line; throw `MissingTaxCodeError` on a miss; carry `money(n)` strings verbatim (prefix `-` for credit-note amounts); set `docType`, `referenceUuid`, `total`, `currency`, `issuedAt`. **No `Number()` re-summation of the sale total** — take `order.total` / `refund.totalAmount` straight through.
+
+  **(3a) as-built, two deviations from the text above.** (1) Amounts are **not** negated: Return Receipt v1.2 (`sdk.invoicing.eta.gov.eg/documents/return-receipt-v1-2/`) describes `totalSales`/`netAmount`/`totalAmount` in the same words as the sale receipt and publishes no negative-amount convention — a return is identified by `documentType.receiptType = "r"` plus the Mandatory `referenceUUID`. (2) 3a also delivered the wire layer the plan folded into Step 4: `eta-wire.ts` (receipt v1.2 JSON mapping + `WireContext`), `serialize.ts` (ETA's canonical serialization, verified byte-for-byte against their published worked example, plus the SHA-256 uuid chain and QR url) and `decimal.ts` (exact decimal sums, so `money(n)` literals survive hashing). Step 4 keeps only the HTTP/config half.
 
 - [ ] **Step 4: Implement `EtaFiscalProvider` + `resolveEtaConfig`.** In `src/server/fiscal/eta-provider.ts`, `build*` delegate to the builder; `submit(doc, cfg)` obtains an OAuth2 client-credentials token, POSTs the document, and maps the response to `FiscalSubmitResult` (`accepted` → `etaUuid`/`etaLongId`/`qrPayload`; `rejected` → `responseJson` + errors). **Mark the request-body shape, signing, and `qrPayload` decoding `TODO(VERIFY)` per the Blocked section** — do not invent the field names. Create `src/server/fiscal/config.ts` with `resolveEtaConfig` reading the row via `withTenant` and resolving secret refs from `process.env`, returning `null` unless `activationStatus === "active"`.
 
