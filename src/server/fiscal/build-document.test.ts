@@ -5,10 +5,11 @@ import {
   MissingTaxCodeError,
   FeeLineConfigMissingError,
   IrreconcilableOrderError,
+  EmptyReturnReceiptError,
 } from "./build-document";
 import { EtaFiscalProvider } from "./eta-provider";
 import { finalizeReceipt, stringifyWire } from "./serialize";
-import { toWireReceipt, type WireContext } from "./eta-wire";
+import { toWireReceipt, UnsupportedTaxTypeError, BuyerIdRequiredError, type WireContext } from "./eta-wire";
 import { addDecimal } from "./decimal";
 import type { FiscalSaleInput, FiscalRefundInput, FiscalDocument, FeeLineConfig, EtaConfig } from "./provider";
 import type { ProductTaxCode } from "./schema";
@@ -166,6 +167,16 @@ const saleInput: FiscalSaleInput = {
   deviceSerial: "POS-001",
 };
 
+const wireCtx: WireContext = {
+  rin: "200173707",
+  sellerName: "ABC Corp",
+  branchCode: "ABC",
+  branchAddress: { country: "EG", governate: "Giza Governorate", regionCity: "Dokki", street: "17 Nabil Al Wakad", buildingNumber: "17" },
+  deviceSerial: "POS-001",
+  activityCode: "5610",
+  receiptNumber: "1042",
+};
+
 describe("buildReceipt", () => {
   it("builds an e_receipt with a null uuid and the supplied chain head", () => {
     const doc = buildReceipt(saleInput);
@@ -209,10 +220,14 @@ describe("buildReceipt", () => {
     expect(doc.subtotal).toBe("200.00");
   });
 
-  it("keeps the unit price verbatim under VAT-exclusive pricing", () => {
+  it("derives unitPrice from the line's own totalSale, not the stored column", () => {
+    // Main Calculations: "totalSale = quantity * unitPrice". For these lines
+    // the derived price coincides with the stored one (2 x 100.00 = 180.00 +
+    // 20.00 discount), but it is computed, never copied — see the modifier
+    // case below for why the stored column cannot be trusted.
     const doc = buildReceipt(saleInput);
-    expect(doc.lines[0].unitPrice).toBe("100.00");
-    expect(doc.lines[1].unitPrice).toBe("50.00");
+    expect(doc.lines[0].unitPrice).toBe("100.00000");
+    expect(doc.lines[1].unitPrice).toBe("50.00000");
   });
 
   it("throws MissingTaxCodeError naming the product when a line has no tax code", () => {
@@ -229,6 +244,56 @@ describe("buildReceipt", () => {
 
   it("issues at the order's placedAt as second-precision ISO UTC", () => {
     expect(buildReceipt(saleInput).issuedAt).toBe("2026-07-24T09:30:15Z");
+  });
+});
+
+describe("buildReceipt — modifier-priced lines (unitBasePrice excludes modifiers)", () => {
+  // ordering/service.ts stores the BASE price for a plain product line and
+  // keeps modifier price deltas only in selectedModifiers, while lineTotal
+  // includes them. Here: base 100.00 x 2 = 200.00, but the line was actually
+  // priced at 115.00 each (a 15.00 modifier), so lineTotal is 230.00.
+  const modified = item({
+    id: "m1",
+    productId: PRODUCT_A,
+    nameEn: "Shawarma Plate + extra meat",
+    unitBasePrice: "100.00",
+    quantity: 2,
+    lineTotal: "230.00",
+    discountAmount: "0.00",
+    selectedModifiers: [
+      { groupNameEn: "Extras", groupNameAr: "إضافات", optionNameEn: "Extra meat", optionNameAr: "لحم إضافي", priceDelta: "15.00" },
+    ],
+  });
+  const modOrder: Order = {
+    ...order,
+    discountAmount: "0.00",
+    subtotal: "230.00",
+    serviceChargeAmount: null,
+    deliveryFee: "0.00",
+    vatAmount: "32.20",
+    total: "262.20",
+  };
+  const input = { ...saleInput, order: modOrder, items: [modified], taxCodes: [taxCode(PRODUCT_A)], feeLines: undefined };
+
+  it("prices the line from lineTotal, so the stored base price is not used", () => {
+    // The buggy passthrough would have emitted 100.00 here, making
+    // totalSale (230.00) != quantity * unitPrice (200.00).
+    expect(buildReceipt(input).lines[0].unitPrice).toBe("115.00000");
+  });
+
+  it("satisfies totalSale = quantity * unitPrice on the emitted wire document", () => {
+    const wire = toWireReceipt(buildReceipt(input), wireCtx);
+    const line = (wire.itemData as Record<string, unknown>[])[0];
+    expect((line.totalSale as { literal: string }).literal).toBe("230.00");
+    expect((line.unitPrice as { literal: string }).literal).toBe("115.00000");
+  });
+
+  it("rejects a document whose unitPrice does not extend to its totalSale", () => {
+    // The regression guard itself: hand-build the pre-fix shape and confirm
+    // the wire boundary now refuses it.
+    const doc = buildReceipt(input);
+    const broken = { ...doc, lines: [{ ...doc.lines[0], unitPrice: "100.00" }] };
+    expect(() => toWireReceipt(broken, wireCtx)).toThrow(/totalSale = quantity \* unitPrice/);
   });
 });
 
@@ -298,8 +363,11 @@ describe("buildReceipt — per-line VAT allocation", () => {
   });
 
   it("leaves the delivery line untaxed — computeOrderTotals adds it after VAT", () => {
-    // ETA validates taxableItems[T1].amount = netSale * rate / 100, so a zero
-    // T1 entry on a non-zero netSale would be rejected; the line carries none.
+    // ETA validates taxableItems[T1].amount as
+    //   (t2 + netSale + TotalTaxableFees[T5-T12] + valueDifference + t3) * rate / 100,
+    // i.e. netSale * rate / 100 for ServeOS (we emit no T2/T3/T5-T12 or
+    // valueDifference), so a zero T1 entry on a non-zero netSale would be
+    // rejected; the line carries none at all.
     expect(doc.lines[3].taxes).toEqual([]);
   });
 
@@ -499,21 +567,38 @@ describe("buildReturnReceipt", () => {
     }
   });
 
+  it("throws EmptyReturnReceiptError for a header-only full refund", () => {
+    // issueRefund inserts refund_lines only when the caller named them, so a
+    // refund with no lines is reachable; itemData is Mandatory on the return.
+    try {
+      buildReturnReceipt({ ...refundInput, lines: [] });
+      expect.unreachable("buildReturnReceipt should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(EmptyReturnReceiptError);
+      expect((err as EmptyReturnReceiptError).refundId).toBe(refund.id);
+      expect((err as EmptyReturnReceiptError).message).toContain(refund.id);
+    }
+  });
+
+  it("maps a REAL refund through the wire as a v1.2 return receipt", () => {
+    const wire = toWireReceipt(buildReturnReceipt(refundInput), wireCtx);
+    expect(wire.documentType).toEqual({ receiptType: "r", typeVersion: "1.2" });
+    expect((wire.header as Record<string, unknown>).referenceUUID).toBe("d".repeat(64));
+
+    const json = stringifyWire(wire);
+    expect(json).toContain('"totalAmount":90.00');
+    expect(json).toContain('"netAmount":90.00');
+    // No VAT is reversed — refunds store no tax figures; see the builder's
+    // JSDoc and addendum section 6.
+    expect(json).not.toContain("taxTotals");
+    expect(json).not.toContain("taxableItems");
+  });
+
   it("throws when a refund line references an order item that was not supplied", () => {
     const orphan: RefundLine = { ...refundLines[0], orderItemId: "not-an-item" };
     expect(() => buildReturnReceipt({ ...refundInput, lines: [orphan] })).toThrow(/order item/i);
   });
 });
-
-const wireCtx: WireContext = {
-  rin: "200173707",
-  sellerName: "ABC Corp",
-  branchCode: "ABC",
-  branchAddress: { country: "EG", governate: "Giza Governorate", regionCity: "Dokki", street: "17 Nabil Al Wakad", buildingNumber: "17" },
-  deviceSerial: "POS-001",
-  activityCode: "5610",
-  receiptNumber: "1042",
-};
 
 /** Proves the two halves compose: a real order row through the builder, the
  *  v1.2 wire mapping, ETA's totals equation, the hash and the QR url. */
@@ -526,6 +611,13 @@ describe("buildReceipt -> finalizeReceipt", () => {
     const json = stringifyWire(wire);
 
     expect(json).toContain('"totalAmount":275.80');
+    // The remaining published aggregates, all Sum() over the emitted lines:
+    //   netAmount = Sum(netSale)                  156.52 + 43.48 + 20 + 25
+    //   totalSales = Sum(totalSale)               200.00 + 50 + 20 + 25
+    //   totalCommercialDiscount = Sum(discounts)   43.48 + 6.52
+    expect(json).toContain('"netAmount":245.00');
+    expect(json).toContain('"totalSales":295.00');
+    expect(json).toContain('"totalCommercialDiscount":50.00');
     expect(json).toContain('"feesAmount":0.00');
     expect(json).toContain('"adjustment":0.00');
     expect(json).toContain('"paymentMethod":"C"');
@@ -556,6 +648,53 @@ describe("buildReceipt -> finalizeReceipt", () => {
     const inclusive: Order = { ...order, vatAmount: "27.02", total: "245.00" };
     const doc = buildReceipt({ ...saleInput, order: inclusive });
     expect(stringifyWire(toWireReceipt(doc, wireCtx))).toContain('"totalAmount":245.00');
+  });
+});
+
+describe("wire-boundary fail-closed guards", () => {
+  it("rejects a T4-classified line — ETA SUBTRACTS T4 in the line-total equation", () => {
+    const t4 = { ...saleInput, taxCodes: [taxCode(PRODUCT_A, { taxType: "T4" }), taxCode(PRODUCT_B)] };
+    expect(() => toWireReceipt(buildReceipt(t4), wireCtx)).toThrow(UnsupportedTaxTypeError);
+  });
+
+  it("accepts the additive tax types either side of T4", () => {
+    for (const taxType of ["T3", "T5"]) {
+      // Every line has to agree, fee lines included, or the document's own
+      // taxTotals would no longer match the sum of its line taxes.
+      const codes = [taxCode(PRODUCT_A, { taxType }), taxCode(PRODUCT_B, { taxType })];
+      const fees = {
+        serviceCharge: feeConfig({ taxType }),
+        delivery: feeConfig({ taxType, itemCode: "10009000", description: "Delivery", internalCode: "DLV" }),
+      };
+      expect(() => toWireReceipt(buildReceipt({ ...saleInput, taxCodes: codes, feeLines: fees }), wireCtx)).not.toThrow();
+    }
+  });
+
+  it("requires a buyer id at or above ETA's 150,000 threshold for a P-type buyer", () => {
+    const big = { ...order, subtotal: "150000.00", serviceChargeAmount: null, deliveryFee: "0.00", discountAmount: "0.00", vatAmount: "0.00", total: "150000.00" };
+    const bigItems = [item({ id: "b1", productId: PRODUCT_A, lineTotal: "150000.00", unitBasePrice: "150000.00" })];
+    const doc = buildReceipt({ ...saleInput, order: big, items: bigItems, taxCodes: [taxCode(PRODUCT_A)], feeLines: undefined });
+    expect(() => toWireReceipt(doc, wireCtx)).toThrow(BuyerIdRequiredError);
+  });
+
+  it("allows the same receipt one piastre below the threshold", () => {
+    const under = { ...order, subtotal: "149999.99", serviceChargeAmount: null, deliveryFee: "0.00", discountAmount: "0.00", vatAmount: "0.00", total: "149999.99" };
+    const underItems = [item({ id: "u1", productId: PRODUCT_A, lineTotal: "149999.99", unitBasePrice: "149999.99" })];
+    const doc = buildReceipt({ ...saleInput, order: under, items: underItems, taxCodes: [taxCode(PRODUCT_A)], feeLines: undefined });
+    expect(() => toWireReceipt(doc, wireCtx)).not.toThrow();
+  });
+
+  it("allows an identified buyer above the threshold", () => {
+    const big = { ...order, subtotal: "150000.00", serviceChargeAmount: null, deliveryFee: "0.00", discountAmount: "0.00", vatAmount: "0.00", total: "150000.00" };
+    const bigItems = [item({ id: "b1", productId: PRODUCT_A, lineTotal: "150000.00", unitBasePrice: "150000.00" })];
+    const doc = buildReceipt({ ...saleInput, order: big, items: bigItems, taxCodes: [taxCode(PRODUCT_A)], feeLines: undefined });
+    const identified = { ...doc, buyer: { type: "P" as const, id: "29801011234567", name: "A Customer" } };
+    expect(() => toWireReceipt(identified, wireCtx)).not.toThrow();
+  });
+
+  it("honours a caller-supplied threshold", () => {
+    const doc = buildReceipt(saleInput); // total 275.80
+    expect(() => toWireReceipt(doc, { ...wireCtx, buyerIdThreshold: "100.00" })).toThrow(BuyerIdRequiredError);
   });
 });
 

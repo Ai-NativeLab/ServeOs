@@ -53,6 +53,22 @@ export class FeeLineConfigMissingError extends Error {
 }
 
 /**
+ * A refund with no lines cannot become a return receipt: `itemData` is
+ * Mandatory on the return document, and `refunds` may legitimately exist
+ * without `refund_lines` (a header-only full refund — see `issueRefund`,
+ * which inserts lines only when the caller named them).
+ */
+export class EmptyReturnReceiptError extends Error {
+  constructor(readonly refundId: string) {
+    super(
+      `fiscal: refund ${refundId} has no refund_lines, so there is no itemData to issue — ` +
+        "receipt v1.2 marks itemData Mandatory. A header-only full refund needs its lines resolved from the parent order first.",
+    );
+    this.name = "EmptyReturnReceiptError";
+  }
+}
+
+/**
  * The order's stored figures do not add up under either VAT convention, so no
  * document built from them could satisfy ETA's totalAmount equation.
  */
@@ -129,8 +145,6 @@ type LineDraft = {
   description: string;
   internalCode: string;
   quantity: number;
-  /** `money(n)` per unit as stored, or null for a fee line (priced as a whole). */
-  storedUnitPrice: string | null;
   /** The line's amount before VAT is separated out, after every discount. */
   base: string;
   /** Discounts to report on the line: the line's own, plus its share of any
@@ -150,7 +164,6 @@ function feeDraft(config: FeeLineConfig, amount: string, bearsVat: boolean): Lin
     description: config.description,
     internalCode: config.internalCode,
     quantity: 1,
-    storedUnitPrice: amount,
     base: amount,
     discounts: [],
     bearsVat,
@@ -160,9 +173,13 @@ function feeDraft(config: FeeLineConfig, amount: string, bearsVat: boolean): Lin
 /**
  * The sale's lines, with `orders.discountAmount` pushed down onto them.
  *
- * ETA computes tax per line from that line's `netSale` and validates
- * `taxableItems[T1].amount = netSale * rate / 100`, but ServeOS applies the
- * order-level discount BEFORE working out VAT. Reporting it as
+ * ETA computes tax per line from that line's own base and validates (Main
+ * Calculations) that
+ *   taxableItems[T1].amount =
+ *     (t2Amount + netSale + TotalTaxableFees[T5-T12] + valueDifference + t3Amount) * rate / 100
+ * which reduces to `netSale * rate / 100` for ServeOS today, because we emit
+ * no T2/T3 line taxes, no T5-T12 taxable fees and no valueDifference. ServeOS
+ * applies the order-level discount BEFORE working out VAT. Reporting it as
  * `extraReceiptDiscountData` (which ETA subtracts AFTER tax) would therefore
  * misstate the tax base; allocating it across the lines it actually reduced
  * keeps every published equation true.
@@ -189,7 +206,6 @@ function buildLineDrafts(input: FiscalSaleInput): LineDraft[] {
       description: item.nameEn,
       internalCode: item.productId,
       quantity: item.quantity,
-      storedUnitPrice: item.unitBasePrice,
       base: subtractDecimal("line base", item.lineTotal, share),
       discounts: [item.discountAmount, share].filter((amount) => !isZeroDecimal(amount)),
       bearsVat: true,
@@ -301,14 +317,15 @@ export function buildReceipt(input: FiscalSaleInput): FiscalDocument {
     const discountTotal = addDecimal("line discounts", ...draft.discounts, "0.00");
     // Main Calculations: "netSale = totalSale - Sum(commercialDiscountData.amount)".
     const totalSale = addDecimal("totalSale", netSale, discountTotal);
-    // Main Calculations: "totalSale = quantity * unitPrice". Under exclusive
-    // pricing the stored unit price already satisfies that; under inclusive
-    // pricing the net unit price has to be derived, at the 5 decimal places
-    // ETA permits.
-    const unitPrice =
-      mode === "inclusive" || draft.storedUnitPrice === null
-        ? divideDecimal("unitPrice", totalSale, String(draft.quantity), UNIT_PRICE_SCALE)
-        : draft.storedUnitPrice;
+    // Main Calculations: "totalSale = quantity * unitPrice" — so the unit
+    // price is ALWAYS derived from the line's own totalSale, never taken from
+    // the stored column. `order_items.unitBasePrice` excludes modifier price
+    // deltas for a plain product line (ordering/service.ts stores the base,
+    // with the deltas only in selectedModifiers) while `lineTotal` includes
+    // them, so passing it through would break the equation on any modified
+    // line; VAT-inclusive pricing needs a net price for the same reason.
+    // 5 decimal places is the precision ETA permits on unitPrice.
+    const unitPrice = divideDecimal("unitPrice", totalSale, String(draft.quantity), UNIT_PRICE_SCALE);
 
     return {
       itemCode: draft.itemCode,
@@ -373,12 +390,18 @@ export function buildReceipt(input: FiscalSaleInput): FiscalDocument {
  * A partial refund produces a partial document — only the refunded lines, at
  * the refunded quantity and amount.
  *
- * `taxTotals` is empty: `refunds`/`refund_lines` store a single amount per
- * line with no VAT split, so there is no stored tax figure to map and this
- * builder will not derive one (F9).
+ * NO VAT IS REVERSED — a live fiscal exposure, not an oversight. `refunds`
+ * and `refund_lines` store only an amount (no vatAmount, no rate, no per-line
+ * tax), so there is no stored figure to reverse and deriving one here would
+ * be inventing tax. The return therefore declares `netAmount == totalAmount`
+ * with no `taxableItems`, which means a tenant issuing returns
+ * OVER-DECLARES output VAT: the sale's VAT was reported in full and none of
+ * it is credited back. Fixing this properly needs VAT figures persisted at
+ * the refund layer (Spec 3); see addendum section 6.
  */
 export function buildReturnReceipt(input: FiscalRefundInput): FiscalDocument {
   const { refund, lines: refundLines, items, taxCodes } = input;
+  if (refundLines.length === 0) throw new EmptyReturnReceiptError(refund.id);
   const codes = taxCodeIndex(taxCodes);
   const itemsById = new Map(items.map((item) => [item.id, item]));
 

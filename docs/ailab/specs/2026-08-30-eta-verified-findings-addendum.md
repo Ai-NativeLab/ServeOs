@@ -106,8 +106,10 @@ Sources: `/document-serialization-approach/`, `/documents/receipt-v1-2/`, `/docu
   charge and delivery fee therefore ship as their **own `itemData` lines** (decision), classified by a
   per-tenant `FeeLineConfig`; a non-zero fee with no config is a `FeeLineConfigMissingError`, never a dropped
   charge. The wire's `feesAmount`/`adjustment` are hard-wired to `0.00`.
-- **Per-line VAT allocation (decision).** ETA validates tax per line
-  (`taxableItems[T1].amount = netSale * rate / 100`) and `totalAmount = Sum(itemData.total) - Sum(extraReceiptDiscountData.amount) + adjustment`,
+- **Per-line VAT allocation (decision).** ETA validates tax per line — the full published equation is
+  `taxableItems[T1].amount = (t2Amount + netSale + TotalTaxableFees[T5-T12] + valueDifference + t3Amount) * rate / 100`,
+  which reduces to `netSale * rate / 100` for ServeOS today because we emit no T2/T3 line taxes, no T5-T12
+  taxable fees and no `valueDifference` — and `totalAmount = Sum(itemData.total) - Sum(extraReceiptDiscountData.amount) + adjustment`,
   but ServeOS stores VAT once per order. `orders.vatAmount` is therefore split across the taxed lines by
   **largest remainder over scaled BigInt** (never floats). Invariants enforced in code and tests: the parts sum
   to `orders.vatAmount` exactly, and the emitted document satisfies ETA's `totalAmount` equation to the cent.
@@ -118,6 +120,33 @@ Sources: `/document-serialization-approach/`, `/documents/receipt-v1-2/`, `/docu
   derive a net `unitPrice` at the 5 decimals ETA permits; figures matching neither convention raise
   `IrreconcilableOrderError`. *Alternative deferred as a product decision: store per-line VAT at the ordering
   layer, which would remove the allocation entirely.*
+- **No VAT is reversed on returns — LIVE FISCAL EXPOSURE, routed to coordinator for a Spec 3 follow-up.**
+  `refunds` stores only `totalAmount`; `refund_lines` stores only `quantity` + `amount`. Neither table holds a
+  VAT amount, rate or per-line tax split (verified: zero `vat`/`tax` columns in `src/server/pos/refund-schema.ts`),
+  so there is nothing to allocate and deriving a reversal in the fiscal layer would be inventing tax. Return
+  receipts therefore declare `netAmount == totalAmount` with no `taxableItems`, which means **a tenant issuing
+  returns over-declares output VAT**: the sale's VAT was reported in full and none is credited back. Fixing it
+  properly needs VAT figures persisted at the refund layer (a `refunds.vatAmount` + per-line split, or a
+  documented re-derivation from the parent order), after which the same largest-remainder machinery and the
+  same exact invariants apply unchanged. Plan-level decision, not a mapper change.
+- **Wire-boundary fail-closed guards.** The mapper refuses rather than emits a document it cannot total
+  correctly: `UnsupportedTaxTypeError` for **T4** (ETA's line-total equation SUBTRACTS T4 where every other
+  type is added — withholding support is deliberate work, so T1/T2/T3/T5-T20 are allowed and T4 is rejected);
+  `BuyerIdRequiredError` for a `B` buyer or a `P` buyer at/above the threshold with no `buyer.id`;
+  `EmptyReturnReceiptError` for a header-only full refund (`issueRefund` inserts `refund_lines` only when the
+  caller names them, but `itemData` is Mandatory); and `EtaTotalsMismatchError` for `totalAmount`,
+  `taxTotals<taxType>` and `totalSale = quantity * unitPrice`. `unitPrice` is always DERIVED from the line's
+  own `totalSale`, never copied from `order_items.unitBasePrice` — that column excludes modifier price deltas
+  for a plain product line while `lineTotal` includes them, so a passthrough broke the equation on any
+  modified line.
+- **Golden vector in CI.** ETA's published serialization example (`one-doc.json` + `one-doc-serialized.json.txt`,
+  committed verbatim under `src/server/fiscal/__fixtures__/` with their source URLs) is asserted byte-for-byte
+  against the real serializer on every run.
+- **Contract changes were BREAKING, not additive** (honest correction): `FiscalDocument.paymentMethodCode`,
+  `FiscalSaleInput.payments` and `FiscalRefundInput.items` are all REQUIRED fields, so every implementer of
+  `FiscalProvider` must supply them. Blast radius was zero — the only call sites were inside
+  `src/server/fiscal/` — because Task 4 has not wired the sale/refund paths yet. `FiscalDocLine.internalCode`
+  and `FiscalSaleInput.feeLines` are genuinely additive (optional).
 - **VERIFY-9 (OPEN): uuid blanking rule.** The FAQ says the receipt "has empty receipt UUID" and that
   serialization flattens "all its properties" (implemented: the `uuid` key is kept with an empty value, so the
   hashed text contains `"UUID"""`), while the core-fields validator says "excluding the UUID itself", which

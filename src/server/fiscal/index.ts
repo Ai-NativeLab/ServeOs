@@ -1,7 +1,7 @@
 import type { Tenant } from "@/server/tenancy/schema";
 import type { FiscalProvider } from "./provider";
 import { NoopFiscalProvider } from "./noop-provider";
-import { EtaFiscalProvider } from "./eta-provider"; // Task 3 fills in the stub
+import { EtaFiscalProvider } from "./eta-provider";
 
 export * from "./provider";
 export { NoopFiscalProvider } from "./noop-provider";

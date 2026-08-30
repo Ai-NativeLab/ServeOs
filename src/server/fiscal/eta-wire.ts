@@ -1,5 +1,5 @@
 import type { FiscalDocument, FiscalDocLine, FiscalTaxAmount } from "./provider";
-import { addDecimal, subtractDecimal, compareDecimal, assertDecimal, isZeroDecimal } from "./decimal";
+import { addDecimal, subtractDecimal, multiplyDecimal, absDecimal, compareDecimal, assertDecimal, isZeroDecimal } from "./decimal";
 
 /**
  * `FiscalDocument` -> ETA receipt v1.2 JSON.
@@ -53,6 +53,51 @@ export class EtaTotalsMismatchError extends Error {
   }
 }
 
+/**
+ * A tax type this mapper does not know how to total correctly.
+ *
+ * Main Calculations gives the line total as
+ *   total = netSale + t1 + t2 + t3 + TotalTaxableFees[T5-T12]
+ *           - Sum(itemDiscountData) - Sum(additionalItemDiscount) - t4
+ *           + NonTotalTaxableFees[T13-T20]
+ * so T4 is SUBTRACTED while every other tax type is added. `lineTotal()` here
+ * only knows how to add, so a T4 classification would silently overstate the
+ * line (and the receipt) rather than fail. Supporting withholding tax is
+ * deliberate work, not a one-character change — until then it is refused.
+ */
+export class UnsupportedTaxTypeError extends Error {
+  constructor(readonly taxType: string) {
+    super(
+      `fiscal: tax type ${taxType} is not supported by this mapper. ` +
+        "ETA's line-total equation subtracts T4 (withholding) where every other type is added, so totalling it here would misstate the document.",
+    );
+    this.name = "UnsupportedTaxTypeError";
+  }
+}
+
+/**
+ * Receipt v1.2 makes `buyer.id`/`buyer.name` Mandatory for a business buyer,
+ * and for a natural person once the receipt reaches ETA's configured
+ * threshold. ServeOS issues walk-in `P` receipts with no id, so a large enough
+ * sale must fail here rather than be rejected by ETA after submission.
+ */
+export class BuyerIdRequiredError extends Error {
+  constructor(readonly buyerType: string, readonly total: string, readonly threshold: string) {
+    super(
+      `fiscal: buyer type ${buyerType} requires buyer.id and buyer.name on a receipt of ${total} (threshold ${threshold}). ` +
+        "Receipt v1.2 makes them Mandatory for type B, and for type P at or above the ETA-configured amount.",
+    );
+    this.name = "BuyerIdRequiredError";
+  }
+}
+
+/** Tax types whose amounts ETA ADDS in the line-total equation. T4 is absent
+ *  on purpose — it subtracts; see `UnsupportedTaxTypeError`. */
+const ADDITIVE_TAX_TYPES = new Set([
+  "T1", "T2", "T3", "T5", "T6", "T7", "T8", "T9", "T10",
+  "T11", "T12", "T13", "T14", "T15", "T16", "T17", "T18", "T19", "T20",
+]);
+
 /** Structural constants of the format itself — not tenant data. */
 const TYPE_VERSION = "1.2";
 const RECEIPT_TYPE_SALE = "s";
@@ -100,8 +145,15 @@ export type WireBranchAddress = {
  * `eta_tenant_config` / `pos_devices` / branch settings.
  */
 export type WireContext = {
-  /** `seller.rin` — the taxpayer registration number. Main Calculations:
-   *  "seller.rin length must be 9 digits". */
+  /**
+   * `seller.rin` — the taxpayer registration number.
+   *
+   * Main Calculations requires exactly 9 digits here (and 9 for a type-B
+   * `buyer.id`, 14 for a type-P national ID). Those shapes are NOT validated
+   * in this pure layer: the values come from tenant configuration, so Task
+   * 3b/6 validates them once at config-save time rather than on every
+   * receipt.
+   */
   rin: string;
   /** `seller.companyTradeName` — the registered company name. */
   sellerName: string;
@@ -131,9 +183,23 @@ export type WireContext = {
   /** `description` on the emitted discount objects, which ETA marks Mandatory.
    *  `orders.discountReason` is the natural source. */
   discountDescription?: string;
+  /** The amount at or above which a natural-person buyer must be identified.
+   *  Defaults to ETA's 150,000 EGP for v1.2; see `DEFAULT_BUYER_ID_THRESHOLD`. */
+  buyerIdThreshold?: string;
 };
 
 const DEFAULT_DISCOUNT_DESCRIPTION = "Discount";
+
+/** ETA's configured buyer-identification amount: 150,000 EGP for receipt v1.2
+ *  and newer (50,000 for 1.0-1.1), per the Receipt Issuance FAQ's National ID
+ *  Validator. Overridable because ETA can reconfigure it. */
+const DEFAULT_BUYER_ID_THRESHOLD = "150000";
+
+/** ETA's own rounding allowance on every published calculation is +/- 0.5.
+ *  This guard is far tighter: `unitPrice` is derived from `totalSale` at 5
+ *  decimals, so the only legitimate gap is that derivation's own rounding,
+ *  bounded by quantity * 0.00001. Anything larger is a real mapping bug. */
+const UNIT_PRICE_ROUNDING_BOUND = "0.00001";
 
 /** ETA's `itemType`: "Must be GS1 or EGS for this version". */
 function itemType(codeSource: FiscalDocLine["codeSource"]): string {
@@ -143,6 +209,7 @@ function itemType(codeSource: FiscalDocLine["codeSource"]): string {
 /** `taxableItems[]` — `subType` is Mandatory, so a line tax without one is a
  *  data error rather than something to paper over. */
 function toTaxableItem(tax: FiscalTaxAmount, index: number): Record<string, unknown> {
+  if (!ADDITIVE_TAX_TYPES.has(tax.taxType)) throw new UnsupportedTaxTypeError(tax.taxType);
   if (tax.taxSubType === null) {
     throw new Error(`fiscal: line tax #${index} (${tax.taxType}) has no taxSubType, which receipt v1.2 marks Mandatory on taxableItems`);
   }
@@ -206,6 +273,22 @@ function toItemData(line: FiscalDocLine, ctx: WireContext): Record<string, unkno
  *   taxTotals<taxType> = Sum(itemData.taxableItems[taxType].amount)
  */
 function assertTotalsReconcile(doc: FiscalDocument, extraDiscount: string): void {
+  for (const [index, line] of doc.lines.entries()) {
+    // A line's classification is refused even when no tax was allocated to
+    // it, so a T4-coded product can never reach a document at all.
+    if (!ADDITIVE_TAX_TYPES.has(line.taxType)) throw new UnsupportedTaxTypeError(line.taxType);
+
+    // "itemData[*].totalSale = itemData[*].quantity * itemData[*].unitPrice".
+    const quantity = String(line.quantity);
+    const totalSale = addDecimal("totalSale", line.lineTotal, line.discountAmount);
+    const extended = multiplyDecimal("totalSale", quantity, line.unitPrice);
+    const drift = absDecimal(subtractDecimal("totalSale", extended, totalSale));
+    const bound = multiplyDecimal("totalSale bound", quantity, UNIT_PRICE_ROUNDING_BOUND);
+    if (compareDecimal(drift, bound) > 0) {
+      throw new EtaTotalsMismatchError(totalSale, extended, `itemData[${index}].totalSale = quantity * unitPrice`);
+    }
+  }
+
   const summedLines = addDecimal("line totals", ...doc.lines.map(lineTotal), "0.00");
   const computed = subtractDecimal("totalAmount", summedLines, extraDiscount);
   if (compareDecimal(computed, doc.total) !== 0) {
@@ -225,6 +308,20 @@ function assertTotalsReconcile(doc: FiscalDocument, extraDiscount: string): void
 }
 
 /**
+ * Receipt v1.2's buyer rule: id + name are "Optional in all cases except when
+ * 1.type is B 2.type is P and totalAmount equals to or greater than a
+ * configured value (150000 EGP)".
+ */
+function assertBuyerIdentified(doc: FiscalDocument, threshold: string): void {
+  const buyer = doc.buyer;
+  if (!buyer || buyer.id) return;
+  if (buyer.type === "B") throw new BuyerIdRequiredError(buyer.type, doc.total, "0");
+  if (buyer.type === "P" && compareDecimal(doc.total, threshold) >= 0) {
+    throw new BuyerIdRequiredError(buyer.type, doc.total, threshold);
+  }
+}
+
+/**
  * Builds the receipt v1.2 / return receipt v1.2 JSON for one document.
  *
  * `header.uuid` is emitted as an empty string: the uuid is the hash of this
@@ -236,6 +333,8 @@ export function toWireReceipt(doc: FiscalDocument, ctx: WireContext): Record<str
   if (isReturn && !doc.referenceUuid) {
     throw new Error("fiscal: a return receipt requires referenceUUID — the uuid of the original sale receipt (Mandatory in v1.2)");
   }
+
+  assertBuyerIdentified(doc, ctx.buyerIdThreshold ?? DEFAULT_BUYER_ID_THRESHOLD);
 
   const extraDiscount = assertDecimal(doc.discountTotal, "discountTotal");
   assertTotalsReconcile(doc, extraDiscount);

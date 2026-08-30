@@ -106,9 +106,17 @@ export type FiscalSaleInput = {
   taxCodes: ProductTaxCode[];
   /** The sale's tenders, for the `paymentMethod` code. */
   payments: OrderPayment[];
-  /** Fiscal classification for the fee lines. Required only for the fees the
-   *  order actually carries — a non-zero fee with no config here is a
-   *  `FeeLineConfigMissingError`, never a silently dropped charge. */
+  /**
+   * Fiscal classification for the fee lines. Required only for the fees the
+   * order actually carries — a non-zero fee with no config here is a
+   * `FeeLineConfigMissingError`, never a silently dropped charge.
+   *
+   * NOTE: `delivery.taxType`/`taxSubType` are currently INERT. ServeOS's
+   * `computeOrderTotals` adds the delivery fee AFTER VAT, so the builder
+   * hard-codes the delivery line as non-taxable and emits no `taxableItems`
+   * for it whatever this config says. Configuring a taxable delivery fee
+   * would need the ordering layer to put it in the taxable base first.
+   */
   feeLines?: { serviceCharge?: FeeLineConfig; delivery?: FeeLineConfig };
   previousUuid: string;
   deviceSerial: string | null;

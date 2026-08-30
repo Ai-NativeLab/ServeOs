@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { canonicalSerialize, stringifyWire, computeReceiptUuid, buildQrUrl, finalizeReceipt } from "./serialize";
 import { toWireReceipt, dec, EtaTotalsMismatchError, type WireContext } from "./eta-wire";
 import type { FiscalDocument } from "./provider";
@@ -14,6 +16,48 @@ import type { FiscalDocument } from "./provider";
  * sub-object of the source maps to a contiguous slice of the published output
  * — each fixture below is one such sub-object paired with its published slice.
  */
+const FIXTURES = join(__dirname, "__fixtures__");
+
+/**
+ * Reads ETA's example document while keeping every number's EXACT source text.
+ *
+ * `JSON.parse` would turn `10.50` into the JS number `10.5`, destroying the
+ * one property this vector exists to prove — that values are serialized "just
+ * like those are in the input document". So numeric literals are tagged as
+ * strings first, then revived as `WireDecimal`s. If the tagging ever mangled
+ * the document the byte-exact assertion below would fail immediately, so the
+ * test verifies its own fixture handling.
+ */
+function readExampleDocument(): Record<string, unknown> {
+  const raw = readFileSync(join(FIXTURES, "one-doc.json"), "utf8");
+  const tagged = raw.replace(/(?<=[:[,]\s*)(-?\d+(?:\.\d+)?)(?=\s*[,\]}])/g, '"#DEC#$1"');
+  const revive = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(revive);
+    if (typeof value === "string") return value.startsWith("#DEC#") ? dec(value.slice(5)) : value;
+    if (value && typeof value === "object") {
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, revive(v)]));
+    }
+    return value;
+  };
+  return revive(JSON.parse(tagged)) as Record<string, unknown>;
+}
+
+describe("canonicalSerialize — ETA's full published golden vector", () => {
+  it("reproduces one-doc-serialized.json.txt byte for byte", () => {
+    // The strongest check available: ETA's own input document against ETA's
+    // own canonical output, ~5.7KB covering 2 invoice lines x 20 taxableItems,
+    // nested objects, empty strings and trailing-zero decimals.
+    // See __fixtures__/README.md for provenance.
+    const expected = readFileSync(join(FIXTURES, "one-doc-serialized.json.txt"), "utf8").trim();
+    expect(canonicalSerialize(readExampleDocument())).toBe(expected);
+  });
+
+  it("keeps trailing zeros through the fixture reader, proving the vector is meaningful", () => {
+    const doc = readExampleDocument() as { delivery: Record<string, unknown> };
+    expect((doc.delivery.grossWeight as { literal: string }).literal).toBe("10.50");
+  });
+});
+
 describe("canonicalSerialize — ETA's published worked example", () => {
   it("serializes the example's `issuer` object exactly (nesting + invariant uppercase)", () => {
     const issuer = {
@@ -186,7 +230,7 @@ const doc: FiscalDocument = {
       unitType: "EA",
       description: "Shawarma Plate",
       quantity: 2,
-      unitPrice: "100.00",
+      unitPrice: "85.00", // 2 x 85.00 = 170.00 = netSale 150.00 + discount 20.00
       discountAmount: "20.00",
       taxes: [{ taxType: "T1", taxSubType: "V001", rate: "14", amount: "21.00" }],
       lineTotal: "150.00",
@@ -288,7 +332,7 @@ describe("computeReceiptUuid", () => {
   it("changes when any money field changes", () => {
     // Moved coherently: the wire mapping refuses a document whose lines no
     // longer add up to its total, so one cent moves on the line AND the total.
-    const lines = [{ ...doc.lines[0], lineTotal: "150.01" }];
+    const lines = [{ ...doc.lines[0], lineTotal: "150.01", unitPrice: "85.005" }];
     const other = toWireReceipt({ ...doc, lines, subtotal: "150.01", total: "171.01" }, ctx);
     expect(computeReceiptUuid(other)).not.toBe(computeReceiptUuid(wire));
   });

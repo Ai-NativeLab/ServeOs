@@ -149,3 +149,17 @@ export function allocateLargestRemainder(field: string, total: string, weights: 
 
   return parts.map((part) => fromScaled(part, scale));
 }
+
+/** Exact product, at the combined scale of its inputs. Used only to VERIFY
+ *  ETA's `totalSale = quantity * unitPrice` equation, never to derive money. */
+export function multiplyDecimal(field: string, a: string, b: string): string {
+  assertDecimal(a, field);
+  assertDecimal(b, field);
+  const scale = scaleOf(a) + scaleOf(b);
+  return fromScaled(toScaled(a, scaleOf(a)) * toScaled(b, scaleOf(b)), scale);
+}
+
+/** Magnitude, keeping the input's scale. */
+export function absDecimal(value: string): string {
+  return value.startsWith("-") ? value.slice(1) : value;
+}

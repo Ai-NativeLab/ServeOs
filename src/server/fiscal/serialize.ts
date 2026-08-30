@@ -129,10 +129,10 @@ function emit(value: unknown, path: string): string {
  * The core-fields validator's looser phrasing ("a valid hash of the content of
  * the serialized receipt with all content excluding the UUID itself") could
  * also be read as dropping the property entirely, which would produce a
- * different hash. The wording above is the more specific and more recent of
- * the two, so it is what this implements — but it is the single assumption
- * worth confirming against ETA preprod before going live, and flipping it is
- * the one line below.
+ * different hash. The UUID-generation wording is the more specific of the
+ * two, so it is what this implements — but it is the single assumption worth
+ * confirming against ETA preprod before going live, and flipping it is the
+ * one line below.
  */
 export function computeReceiptUuid(wire: Record<string, unknown>): string {
   return createHash("sha256").update(canonicalSerialize(withBlankUuid(wire)), "utf8").digest("hex");
