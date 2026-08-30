@@ -1,5 +1,5 @@
 import type { FiscalDocument, FiscalDocLine, FiscalTaxAmount } from "./provider";
-import { addDecimal, assertDecimal, isZeroDecimal } from "./decimal";
+import { addDecimal, subtractDecimal, compareDecimal, assertDecimal, isZeroDecimal } from "./decimal";
 
 /**
  * `FiscalDocument` -> ETA receipt v1.2 JSON.
@@ -8,6 +8,7 @@ import { addDecimal, assertDecimal, isZeroDecimal } from "./decimal";
  * pages, not from memory:
  *   Receipt v1.2        https://sdk.invoicing.eta.gov.eg/documents/receipt-v1-2/
  *   Return Receipt v1.2 https://sdk.invoicing.eta.gov.eg/documents/return-receipt-v1-2/
+ *   Main Calculations   https://sdk.invoicing.eta.gov.eg/main-calculations/
  *   Sample batch JSON   https://sdk.invoicing.eta.gov.eg/files/BatchReceipt.json
  * The document pages caveat that "actual attribute naming could be different
  * for JSON structure", so the exact JSON spelling and the fact that
@@ -41,14 +42,14 @@ export function dec(literal: string, field = "amount"): WireDecimal {
   return new WireDecimal(assertDecimal(literal, field));
 }
 
-/** ETA rejects a fee it has nowhere to put; see `FEES_MUST_BE_ZERO`. */
-export class UnrepresentableFeesError extends Error {
-  constructor(readonly feesTotal: string) {
-    super(
-      `fiscal: receipt v1.2 feesAmount "accepts only zero values" but this document carries ${feesTotal} of service charge + delivery fee. ` +
-        "ETA has no receipt-level slot for it — the fees must be issued as their own itemData lines (deferred to the fiscal config work).",
-    );
-    this.name = "UnrepresentableFeesError";
+/**
+ * The emitted document breaks ETA's published totals equation, so it would be
+ * rejected (or worse, silently misfile tax). Thrown instead of transmitting.
+ */
+export class EtaTotalsMismatchError extends Error {
+  constructor(readonly expected: string, readonly actual: string, readonly equation: string) {
+    super(`fiscal: emitted document fails ETA's ${equation} — expected ${expected}, computed ${actual}`);
+    this.name = "EtaTotalsMismatchError";
   }
 }
 
@@ -56,9 +57,14 @@ export class UnrepresentableFeesError extends Error {
 const TYPE_VERSION = "1.2";
 const RECEIPT_TYPE_SALE = "s";
 const RECEIPT_TYPE_RETURN = "r";
-/** Receipt v1.2: "feesAmount and adjustment fields are reserved for future
- *  use, both accept only zero values". */
-const FEES_MUST_BE_ZERO = dec("0", "feesAmount");
+/**
+ * Receipt v1.2: "feesAmount and adjustment fields are reserved for future
+ * use, both accept only zero values". ServeOS's service charge and delivery
+ * fee therefore never land here — the builder issues them as their own
+ * `itemData` lines, and these two slots are hard-wired to zero.
+ */
+const FEES_AMOUNT = dec("0.00", "feesAmount");
+const ADJUSTMENT = dec("0.00", "adjustment");
 
 /** `seller.branchAddress` — Mandatory, and ServeOS's `branches.address` is a
  *  single free-text line, so every component has to be supplied. */
@@ -87,8 +93,6 @@ export type WireBranchAddress = {
 
 /**
  * Everything receipt v1.2 requires that a `FiscalDocument` does not carry.
- * This is per-DOCUMENT context, not per-tenant: `receiptNumber` and
- * `paymentMethodCode` vary by receipt.
  *
  * Nothing here is defaulted to a literal — a wrong RIN, branch or activity
  * code is a rejected (or misfiled) fiscal document, so each one is the
@@ -96,7 +100,8 @@ export type WireBranchAddress = {
  * `eta_tenant_config` / `pos_devices` / branch settings.
  */
 export type WireContext = {
-  /** `seller.rin` — the taxpayer registration number. */
+  /** `seller.rin` — the taxpayer registration number. Main Calculations:
+   *  "seller.rin length must be 9 digits". */
   rin: string;
   /** `seller.companyTradeName` — the registered company name. */
   sellerName: string;
@@ -109,15 +114,17 @@ export type WireContext = {
   /** `seller.activityCode` — Mandatory; from ETA's Activity Codes table.
    *  ServeOS stores no activity code, so the caller supplies it. */
   activityCode: string;
-  /** `header.receiptNumber` — Mandatory, "unique per branch within the same
-   *  submission". `orders.orderNumber` is the natural source. */
+  /**
+   * `header.receiptNumber` — Mandatory, String(50), "unique per branch within
+   * the same submission". Supplied by the caller, never derived here: Task 5's
+   * worker passes `orders.orderNumber`, which is sequential per tenant.
+   *
+   * OPEN FOR TASK 5: ETA scopes uniqueness to the branch within a submission,
+   * while the uuid chain is scoped per DEVICE. Two devices in one branch
+   * submitting concurrently could therefore reuse a number unless Task 5
+   * either scopes the counter per branch or qualifies it with the device.
+   */
   receiptNumber: string;
-  /** `paymentMethod` — Mandatory, from ETA's Payment Methods table
-   *  (C cash, V visa, CC/VC with contractor, VO vouchers, PR promotion,
-   *  GC gift card, P points, O others). ServeOS's `payment_method` enum
-   *  (cash/instapay/vodafone_cash/mobile_wallet) has no published mapping,
-   *  so the caller decides. */
-  paymentMethodCode: string;
   /** `seller.syndicateLicenseNumber` — Optional; "In case it is a company,
    *  the value should be 'C'". */
   syndicateLicenseNumber?: string;
@@ -147,28 +154,30 @@ function toTaxableItem(tax: FiscalTaxAmount, index: number): Record<string, unkn
   };
 }
 
+/** The line's `total` per Main Calculations: `netSale` plus its taxes (only
+ *  T1 VAT is in play here; T4 would subtract, T5-T20 add). */
+function lineTotal(line: FiscalDocLine): string {
+  return addDecimal("line total", line.lineTotal, ...line.taxes.map((tax) => tax.amount));
+}
+
 /**
- * One `itemData` element.
+ * One `itemData` element, satisfying Main Calculations:
+ *   totalSale = quantity * unitPrice
+ *   netSale   = totalSale - Sum(commercialDiscountData.amount)
+ *   total     = netSale + t1Amount (+ other tax types)
  *
- * `netSale` is the line after its own discount, which is exactly what
- * `order_items.lineTotal` stores; `totalSale` is "considering quantity and
- * unit price", i.e. before that discount, so it is the one derived value here
- * (an exact decimal sum, not a float multiply). `total` is the line after
- * taxes — with no per-line tax stored it equals `netSale`.
- *
- * `internalCode` is Mandatory and `FiscalDocLine` carries no internal
- * identifier, so the item code doubles as it ("can be used to simplify
- * references back to existing solution").
+ * `FiscalDocLine.lineTotal` already holds the tax-exclusive `netSale`, so
+ * `totalSale` is simply that plus the line's discounts.
  */
 function toItemData(line: FiscalDocLine, ctx: WireContext): Record<string, unknown> {
   const netSale = assertDecimal(line.lineTotal, "lineTotal");
   const discount = assertDecimal(line.discountAmount, "line discountAmount");
   const totalSale = addDecimal("totalSale", netSale, discount);
   const lineTax = line.taxes.map(toTaxableItem);
-  const total = addDecimal("line total", netSale, ...line.taxes.map((tax) => tax.amount));
 
   return {
-    internalCode: line.itemCode,
+    // Mandatory; the product id where we have one, else the item code.
+    internalCode: line.internalCode ?? line.itemCode,
     description: line.description,
     itemType: itemType(line.codeSource),
     itemCode: line.itemCode,
@@ -177,7 +186,7 @@ function toItemData(line: FiscalDocLine, ctx: WireContext): Record<string, unkno
     unitPrice: dec(line.unitPrice, "unitPrice"),
     netSale: dec(netSale, "netSale"),
     totalSale: dec(totalSale, "totalSale"),
-    total: dec(total, "line total"),
+    total: dec(lineTotal(line), "line total"),
     ...(isZeroDecimal(discount)
       ? {}
       : {
@@ -190,34 +199,51 @@ function toItemData(line: FiscalDocLine, ctx: WireContext): Record<string, unkno
 }
 
 /**
+ * Guards the two equations ETA publishes and validates, on the document we
+ * are actually about to emit:
+ *
+ *   totalAmount = Sum(itemData.total) - Sum(extraReceiptDiscountData.amount) + adjustment
+ *   taxTotals<taxType> = Sum(itemData.taxableItems[taxType].amount)
+ */
+function assertTotalsReconcile(doc: FiscalDocument, extraDiscount: string): void {
+  const summedLines = addDecimal("line totals", ...doc.lines.map(lineTotal), "0.00");
+  const computed = subtractDecimal("totalAmount", summedLines, extraDiscount);
+  if (compareDecimal(computed, doc.total) !== 0) {
+    throw new EtaTotalsMismatchError(doc.total, computed, "totalAmount = Sum(itemData.total) - Sum(extraReceiptDiscountData.amount)");
+  }
+
+  for (const total of doc.taxTotals) {
+    const summedTax = addDecimal(
+      "taxTotals",
+      ...doc.lines.flatMap((line) => line.taxes.filter((tax) => tax.taxType === total.taxType).map((tax) => tax.amount)),
+      "0.00",
+    );
+    if (compareDecimal(summedTax, total.amount) !== 0) {
+      throw new EtaTotalsMismatchError(total.amount, summedTax, `taxTotals[${total.taxType}] = Sum(itemData.taxableItems[${total.taxType}].amount)`);
+    }
+  }
+}
+
+/**
  * Builds the receipt v1.2 / return receipt v1.2 JSON for one document.
  *
  * `header.uuid` is emitted as an empty string: the uuid is the hash of this
  * very document, so `finalizeReceipt` (./serialize) computes it from the
  * blank-uuid form and writes it back into this same key, in place.
- *
- * TOTALS RECONCILIATION — known gap. ETA defines
- * "totalAmount = sum of all receipt line total - total extraDiscountAmount"
- * and validates it. `totalAmount` here is `orders.total` verbatim (F9), which
- * also includes VAT, service charge and delivery. Because ServeOS stores VAT
- * only per order, the emitted lines carry no `taxableItems`, so the sum of
- * line totals is VAT-exclusive and will not reconcile while VAT is non-zero.
- * Closing that needs a per-line VAT allocation decided at the ordering layer
- * — it is not something this mapper may invent.
  */
 export function toWireReceipt(doc: FiscalDocument, ctx: WireContext): Record<string, unknown> {
-  if (!isZeroDecimal(doc.feesTotal)) throw new UnrepresentableFeesError(doc.feesTotal);
-
   const isReturn = doc.docType === "return_receipt";
   if (isReturn && !doc.referenceUuid) {
     throw new Error("fiscal: a return receipt requires referenceUUID — the uuid of the original sale receipt (Mandatory in v1.2)");
   }
 
+  const extraDiscount = assertDecimal(doc.discountTotal, "discountTotal");
+  assertTotalsReconcile(doc, extraDiscount);
+
   const lines = doc.lines.map((line) => toItemData(line, ctx));
-  const netAmount = addDecimal("netAmount", ...doc.lines.map((line) => line.lineTotal));
-  const totalSales = addDecimal("totalSales", ...doc.lines.map((line) => addDecimal("totalSale", line.lineTotal, line.discountAmount)));
-  const lineDiscounts = addDecimal("totalCommercialDiscount", ...doc.lines.map((line) => line.discountAmount));
-  const orderDiscount = assertDecimal(doc.discountTotal, "discountTotal");
+  const netAmount = addDecimal("netAmount", ...doc.lines.map((line) => line.lineTotal), "0.00");
+  const totalSales = addDecimal("totalSales", ...doc.lines.map((line) => addDecimal("totalSale", line.lineTotal, line.discountAmount)), "0.00");
+  const lineDiscounts = addDecimal("totalCommercialDiscount", ...doc.lines.map((line) => line.discountAmount), "0.00");
 
   return {
     header: {
@@ -254,21 +280,23 @@ export function toWireReceipt(doc: FiscalDocument, ctx: WireContext): Record<str
     itemData: lines,
     totalSales: dec(totalSales, "totalSales"),
     ...(isZeroDecimal(lineDiscounts) ? {} : { totalCommercialDiscount: dec(lineDiscounts, "totalCommercialDiscount") }),
-    // An order-level discount is ETA's "extra receipt level discount" — the
-    // one deducted after the line totals in their totalAmount definition.
-    ...(isZeroDecimal(orderDiscount)
+    // A receipt-level discount is one ETA subtracts AFTER tax. ServeOS
+    // discounts before VAT, so the builder pushes its order discount onto the
+    // lines instead and this stays empty — see buildLineDrafts.
+    ...(isZeroDecimal(extraDiscount)
       ? {}
       : {
           extraReceiptDiscountData: [
-            { amount: dec(orderDiscount, "extraReceiptDiscountData.amount"), description: ctx.discountDescription ?? DEFAULT_DISCOUNT_DESCRIPTION },
+            { amount: dec(extraDiscount, "extraReceiptDiscountData.amount"), description: ctx.discountDescription ?? DEFAULT_DISCOUNT_DESCRIPTION },
           ],
         }),
     netAmount: dec(netAmount, "netAmount"),
-    feesAmount: FEES_MUST_BE_ZERO,
+    feesAmount: FEES_AMOUNT,
     totalAmount: dec(doc.total, "totalAmount"),
     ...(doc.taxTotals.length > 0
       ? { taxTotals: doc.taxTotals.map((tax) => ({ taxType: tax.taxType, amount: dec(tax.amount, "taxTotals.amount") })) }
       : {}),
-    paymentMethod: ctx.paymentMethodCode,
+    paymentMethod: doc.paymentMethodCode,
+    adjustment: ADJUSTMENT,
   };
 }

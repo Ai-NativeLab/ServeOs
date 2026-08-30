@@ -91,3 +91,49 @@ inquiry tool) remains an operational check, not a build blocker.
 | 6 Auth details | **RESOLVED** — C6 + §3 |
 | 7 Per-tenant applicability | **OPERATIONAL** — RIN inquiry tool per tenant; not a build blocker |
 | 8 Resubmit / idempotency | **RESOLVED** — C3 (`referenceOldUUID`, new UUID) + poll by `submissionUUID` |
+
+## 6. Wire-level findings (Task 3a, verified against SDK)
+
+Sources: `/document-serialization-approach/`, `/documents/receipt-v1-2/`, `/documents/return-receipt-v1-2/`,
+`/receiptissuancefaq/`, `/main-calculations/`, `/codes/payment-methods/`, `/files/one-doc*.json`,
+`/files/BatchReceipt.json`.
+
+- **Returns are POSITIVE amounts.** Return Receipt v1.2 is its own document type: `receiptType` `"r"`,
+  `typeVersion` `"1.2"`, plus a Mandatory `referenceUUID` naming the sale receipt. Its totals are described in
+  the same words as the sale receipt and no negative-amount convention is published anywhere. The plan's
+  "negate the credit-note lines" text is **dead**.
+- **`feesAmount` / `adjustment` accept only zero.** Stated twice on both document pages. ServeOS's service
+  charge and delivery fee therefore ship as their **own `itemData` lines** (decision), classified by a
+  per-tenant `FeeLineConfig`; a non-zero fee with no config is a `FeeLineConfigMissingError`, never a dropped
+  charge. The wire's `feesAmount`/`adjustment` are hard-wired to `0.00`.
+- **Per-line VAT allocation (decision).** ETA validates tax per line
+  (`taxableItems[T1].amount = netSale * rate / 100`) and `totalAmount = Sum(itemData.total) - Sum(extraReceiptDiscountData.amount) + adjustment`,
+  but ServeOS stores VAT once per order. `orders.vatAmount` is therefore split across the taxed lines by
+  **largest remainder over scaled BigInt** (never floats). Invariants enforced in code and tests: the parts sum
+  to `orders.vatAmount` exactly, and the emitted document satisfies ETA's `totalAmount` equation to the cent.
+  Consequences: the **order-level discount is pushed down onto the lines** it actually reduced (ServeOS
+  discounts *before* VAT, whereas `extraReceiptDiscountData` is subtracted *after* tax, so reporting it at
+  receipt level would misstate the tax base); the **delivery fee line carries no `taxableItems`**, because
+  `computeOrderTotals` adds it after VAT and a zero T1 entry would fail the per-line rule. VAT-inclusive orders
+  derive a net `unitPrice` at the 5 decimals ETA permits; figures matching neither convention raise
+  `IrreconcilableOrderError`. *Alternative deferred as a product decision: store per-line VAT at the ordering
+  layer, which would remove the allocation entirely.*
+- **VERIFY-9 (OPEN): uuid blanking rule.** The FAQ says the receipt "has empty receipt UUID" and that
+  serialization flattens "all its properties" (implemented: the `uuid` key is kept with an empty value, so the
+  hashed text contains `"UUID"""`), while the core-fields validator says "excluding the UUID itself", which
+  could mean dropping the property — **a different hash**. ETA's own sample receipt carries a placeholder uuid,
+  so it cannot settle it. One line in `computeReceiptUuid`; confirm against preprod once a registered profile
+  exists.
+- **Buyer id threshold: 150,000 EGP** for `type` `P` in v1.2 (50,000 for 1.0–1.1). Above it `buyer.id` + `name`
+  become Mandatory and Main Calculations requires a **14-digit** national ID (`seller.rin` must be 9 digits).
+  The walk-in default would be rejected above the threshold.
+- **Payment method is a single code, not a list.** `paymentMethod` is String(50); a split payment resolves to
+  the largest tender. Mapping to `/codes/payment-methods/`: `cash` → `C` (Cash), `card` → `V` (Visa — the
+  table's only card row), everything else → `O` (Others). Web orders have no `order_payments` rows and fall
+  back to `orders.paymentMethod`.
+- **Task 6 config inputs now known:** `seller.activityCode`; a **structured `branchAddress`**
+  (country/governate/regionCity/street/buildingNumber — `branches.address` is one free-text line and cannot
+  fill it; **same gap ZATCA PRD-003 found, schema change likely**); the fee line configs; the payment-method
+  mapping; and the discount `description`. `receiptNumber` is a caller-supplied parameter — Task 5 passes
+  `orders.orderNumber` and must settle branch-vs-device uniqueness (ETA scopes it per branch per submission,
+  while the uuid chain is per device).

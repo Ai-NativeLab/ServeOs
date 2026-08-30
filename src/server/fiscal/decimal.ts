@@ -68,3 +68,84 @@ export function addDecimal(field: string, ...values: string[]): string {
 export function isZeroDecimal(value: string): boolean {
   return DECIMAL.test(value) && toScaled(value, scaleOf(value)) === ZERO;
 }
+
+/** Exact difference, at the widest scale of its inputs. */
+export function subtractDecimal(field: string, a: string, b: string): string {
+  assertDecimal(a, field);
+  assertDecimal(b, field);
+  const scale = Math.max(scaleOf(a), scaleOf(b));
+  return fromScaled(toScaled(a, scale) - toScaled(b, scale), scale);
+}
+
+/** -1 / 0 / 1, comparing exactly rather than through Number(). */
+export function compareDecimal(a: string, b: string): number {
+  const scale = Math.max(scaleOf(a), scaleOf(b));
+  const left = toScaled(a, scale);
+  const right = toScaled(b, scale);
+  return left === right ? 0 : left < right ? -1 : 1;
+}
+
+/** `a / b` at exactly `scale` decimal places, half-up. Only used where ETA's
+ *  own equation forces a division (a VAT-inclusive unit price) — never on a
+ *  total. */
+export function divideDecimal(field: string, a: string, b: string, scale: number): string {
+  assertDecimal(a, field);
+  assertDecimal(b, field);
+  const divisorScale = scaleOf(b);
+  const divisor = toScaled(b, divisorScale);
+  if (divisor === ZERO) throw new Error(`fiscal: ${field} divided by zero`);
+  // Scaling the numerator by 10^(scale + divisorScale) makes the integer
+  // quotient land exactly `scale` places; the doubled remainder rounds half-up.
+  const numerator = toScaled(a, scale + divisorScale);
+  const quotient = numerator / divisor;
+  const remainder = numerator % divisor;
+  const rounded = remainder * BigInt(2) >= divisor ? quotient + BigInt(1) : quotient;
+  return fromScaled(rounded, scale);
+}
+
+/**
+ * Splits `total` across `weights` proportionally, by the largest-remainder
+ * method, so the parts sum to `total` EXACTLY — no rounding drift, no float.
+ *
+ * Each part is `floor(total * weight_i / Σweights)`; the cents left over by
+ * flooring go to the largest remainders, ties broken by lowest index so the
+ * split is deterministic (the same sale must always hash to the same uuid).
+ */
+export function allocateLargestRemainder(field: string, total: string, weights: string[]): string[] {
+  assertDecimal(total, field);
+  weights.forEach((w) => assertDecimal(w, `${field} weight`));
+  if (weights.length === 0) return [];
+
+  const scale = scaleOf(total);
+  const weightScale = Math.max(0, ...weights.map(scaleOf));
+  const scaledWeights = weights.map((w) => toScaled(w, weightScale));
+  const weightSum = scaledWeights.reduce((sum, w) => sum + w, ZERO);
+  const scaledTotal = toScaled(total, scale);
+
+  if (weightSum === ZERO) {
+    if (scaledTotal !== ZERO) {
+      throw new Error(`fiscal: cannot allocate ${field} of ${total} — every weight is zero`);
+    }
+    return weights.map(() => fromScaled(ZERO, scale));
+  }
+
+  const floors = scaledWeights.map((w) => (scaledTotal * w) / weightSum);
+  const remainders = scaledWeights.map((w, i) => (scaledTotal * w) - (floors[i] * weightSum));
+  const distributed = floors.reduce((sum, f) => sum + f, ZERO);
+
+  // Hand out the leftover units to the biggest remainders first.
+  const order = remainders
+    .map((remainder, index) => ({ remainder, index }))
+    .sort((a, b) => (a.remainder === b.remainder ? a.index - b.index : a.remainder > b.remainder ? -1 : 1));
+
+  const parts = [...floors];
+  let leftover = scaledTotal - distributed;
+  for (const { index } of order) {
+    if (leftover === ZERO) break;
+    const step = leftover > ZERO ? BigInt(1) : BigInt(-1);
+    parts[index] += step;
+    leftover -= step;
+  }
+
+  return parts.map((part) => fromScaled(part, scale));
+}

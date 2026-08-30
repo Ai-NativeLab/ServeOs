@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { canonicalSerialize, stringifyWire, computeReceiptUuid, buildQrUrl, finalizeReceipt } from "./serialize";
-import { toWireReceipt, dec, type WireContext } from "./eta-wire";
+import { toWireReceipt, dec, EtaTotalsMismatchError, type WireContext } from "./eta-wire";
 import type { FiscalDocument } from "./provider";
 
 /**
@@ -168,7 +168,6 @@ const ctx: WireContext = {
   deviceSerial: "POS-001",
   activityCode: "5610",
   receiptNumber: "1042",
-  paymentMethodCode: "C",
 };
 
 const doc: FiscalDocument = {
@@ -189,15 +188,16 @@ const doc: FiscalDocument = {
       quantity: 2,
       unitPrice: "100.00",
       discountAmount: "20.00",
-      taxes: [],
-      lineTotal: "180.00",
+      taxes: [{ taxType: "T1", taxSubType: "V001", rate: "14", amount: "21.00" }],
+      lineTotal: "150.00",
     },
   ],
   subtotal: "150.00",
-  discountTotal: "30.00",
+  discountTotal: "0.00",
   feesTotal: "0.00",
   taxTotals: [{ taxType: "T1", taxSubType: "V001", rate: "14", amount: "21.00" }],
   total: "171.00",
+  paymentMethodCode: "C",
   currency: "EGP",
   issuedAt: "2026-07-24T09:30:15Z",
 };
@@ -229,14 +229,31 @@ describe("toWireReceipt", () => {
     expect(stringifyWire(wire)).toContain('"totalAmount":171.00');
   });
 
+  it("emits the payment method code the builder resolved", () => {
+    expect(stringifyWire(toWireReceipt(doc, ctx))).toContain('"paymentMethod":"C"');
+  });
+
   it("omits optional fields rather than emitting null", () => {
     const json = stringifyWire(toWireReceipt(doc, ctx));
     expect(json).not.toContain("null");
     expect(json).not.toContain("syndicateLicenseNumber");
   });
 
-  it("refuses a non-zero fees total — v1.2 feesAmount 'accepts only zero values'", () => {
-    expect(() => toWireReceipt({ ...doc, feesTotal: "45.00" }, ctx)).toThrow(/feesAmount/);
+  it("always emits zero feesAmount and adjustment, whatever the document carries", () => {
+    // Receipt v1.2: "feesAmount and adjustment fields are reserved for future
+    // use, both accept only zero values" — fees ship as itemData lines instead.
+    const json = stringifyWire(toWireReceipt({ ...doc, feesTotal: "45.00" }, ctx));
+    expect(json).toContain('"feesAmount":0.00');
+    expect(json).toContain('"adjustment":0.00');
+  });
+
+  it("refuses a document that breaks ETA's totalAmount equation", () => {
+    expect(() => toWireReceipt({ ...doc, total: "999.99" }, ctx)).toThrow(EtaTotalsMismatchError);
+  });
+
+  it("refuses a document whose taxTotals disagree with its line taxes", () => {
+    const skewed = { ...doc, taxTotals: [{ taxType: "T1", taxSubType: "V001", rate: "14", amount: "99.00" }] };
+    expect(() => toWireReceipt(skewed, ctx)).toThrow(EtaTotalsMismatchError);
   });
 });
 
@@ -269,7 +286,10 @@ describe("computeReceiptUuid", () => {
   });
 
   it("changes when any money field changes", () => {
-    const other = toWireReceipt({ ...doc, total: "171.01" }, ctx);
+    // Moved coherently: the wire mapping refuses a document whose lines no
+    // longer add up to its total, so one cent moves on the line AND the total.
+    const lines = [{ ...doc.lines[0], lineTotal: "150.01" }];
+    const other = toWireReceipt({ ...doc, lines, subtotal: "150.01", total: "171.01" }, ctx);
     expect(computeReceiptUuid(other)).not.toBe(computeReceiptUuid(wire));
   });
 

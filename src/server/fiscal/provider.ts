@@ -1,6 +1,7 @@
 import type { EtaDocType, EtaEnvironment, EtaCodeSource, ProductTaxCode } from "./schema";
 import type { Order, OrderItem } from "@/server/ordering/schema";
 import type { Refund, RefundLine } from "@/server/pos/refund-schema";
+import type { OrderPayment } from "@/server/pos/tender-schema";
 
 /** One tax-type breakdown row — used both as a document-level total
  *  (`FiscalDocument.taxTotals`) and as a per-line breakdown
@@ -17,6 +18,11 @@ export type FiscalTaxAmount = {
 export type FiscalDocLine = {
   /** GS1 or EGS item code (`product_tax_codes.itemCode`). */
   itemCode: string;
+  /** Our own reference for the item, mapped to receipt v1.2's Mandatory
+   *  `internalCode` ("can be used to simplify references back to existing
+   *  solution"). The product's id for a sale line; the configured code for a
+   *  fee line. Added by Task 3a. */
+  internalCode?: string;
   codeSource: EtaCodeSource; // "gs1" | "egs"
   taxType: string;
   taxSubType: string | null;
@@ -65,6 +71,10 @@ export type FiscalDocument = {
   taxTotals: FiscalTaxAmount[];
   /** `money(n)` string, mapped verbatim from the sale/refund. */
   total: string;
+  /** ETA Payment Methods code (C/V/CC/VC/VO/PR/GC/P/O), derived from the
+   *  sale's tenders. Receipt v1.2 carries ONE `paymentMethod` per document,
+   *  so a split payment resolves to its largest tender. Added by Task 3a. */
+  paymentMethodCode: string;
   currency: string;
   /** ISO-8601 UTC. */
   issuedAt: string;
@@ -75,10 +85,31 @@ export type FiscalDocument = {
  * an e-receipt `FiscalDocument`. Task 3 may ADD fields here as the builder's
  * needs emerge — `order`/`items` are already the real row types.
  */
+/**
+ * The fiscal classification of a fee that ETA has no receipt-level slot for
+ * (service charge, delivery) and which therefore ships as its own receipt
+ * line. Mirrors `ProductTaxCode`, but for a charge with no product row.
+ */
+export type FeeLineConfig = {
+  itemCode: string;
+  codeSource: EtaCodeSource;
+  taxType: string;
+  taxSubType: string | null;
+  unitType: string;
+  description: string;
+  internalCode: string;
+};
+
 export type FiscalSaleInput = {
   order: Order;
   items: OrderItem[];
   taxCodes: ProductTaxCode[];
+  /** The sale's tenders, for the `paymentMethod` code. */
+  payments: OrderPayment[];
+  /** Fiscal classification for the fee lines. Required only for the fees the
+   *  order actually carries — a non-zero fee with no config here is a
+   *  `FeeLineConfigMissingError`, never a silently dropped charge. */
+  feeLines?: { serviceCharge?: FeeLineConfig; delivery?: FeeLineConfig };
   previousUuid: string;
   deviceSerial: string | null;
 };

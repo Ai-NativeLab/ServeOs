@@ -58,6 +58,7 @@ class FakeFiscalProvider implements FiscalProvider {
       feesTotal: "15.00",
       taxTotals: TAX_BREAKDOWN,
       total: "129.00", // subtotal - discountTotal + feesTotal + tax(14.00)
+      paymentMethodCode: "C",
       currency: "EGP",
       issuedAt: "2026-07-24T00:00:00.000Z",
     };
@@ -77,6 +78,7 @@ class FakeFiscalProvider implements FiscalProvider {
       feesTotal: "15.00",
       taxTotals: TAX_BREAKDOWN,
       total: "129.00",
+      paymentMethodCode: "C",
       currency: "EGP",
       issuedAt: "2026-07-24T00:00:00.000Z",
     };
