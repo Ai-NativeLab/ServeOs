@@ -102,7 +102,11 @@ describe("resolveEtaConfig — tenant-level config", () => {
     // ETA calls it the RIN; the column predates that spelling.
     expect(cfg!.rin).toBe("200173707");
     expect(cfg!.environment).toBe("preprod");
-    expect(cfg!.erp).toEqual({ clientId: "erp-client-id", clientSecret: "erp-secret-value" });
+    expect(cfg!.erp.clientId).toBe("erp-client-id");
+    expect(cfg!.erp.clientSecret()).toBe("erp-secret-value");
+    // The thunk is why an accidental serialization cannot leak the ERP secret:
+    // JSON.stringify drops function values outright.
+    expect(JSON.stringify(cfg!.erp)).toBe('{"clientId":"erp-client-id"}');
     expect(cfg!.signingKey).toBe("signing-key-value");
     // No deviceId asked for, so no device credential is loaded.
     expect(cfg!.device).toBeNull();
@@ -123,7 +127,7 @@ describe("resolveEtaConfig — tenant-level config", () => {
     await seedTenantConfig(tenant.id, { clientSecretRef: `env://${ERP_SECRET_KEY}` });
 
     const cfg = await resolveEtaConfig(tenant.id);
-    expect(cfg!.erp.clientSecret).toBe("erp-secret-value");
+    expect(cfg!.erp.clientSecret()).toBe("erp-secret-value");
   });
 
   it("returns null for a tenant with no eta_tenant_config row at all", async () => {
@@ -174,7 +178,7 @@ describe("resolveEtaConfig — tenant-level config", () => {
     // It still fails, precisely and by name, at the moment something asks for it.
     let thrown: unknown;
     try {
-      void cfg!.erp.clientSecret;
+      cfg!.erp.clientSecret();
     } catch (e) {
       thrown = e;
     }

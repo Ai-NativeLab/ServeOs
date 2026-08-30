@@ -151,7 +151,7 @@ describe("EtaFiscalProvider", () => {
     const cfg: EtaConfig = {
       rin: "200173707",
       environment: "preprod",
-      erp: { clientId: "erp-client-id", clientSecret: "s3cret" },
+      erp: { clientId: "erp-client-id", clientSecret: () => "s3cret" },
       device: null,
       signingKey: null,
     };

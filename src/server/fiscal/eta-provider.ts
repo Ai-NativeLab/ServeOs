@@ -78,13 +78,28 @@ const TOKEN_ERROR_STATUS = 400;
  * provider, which is the process-wide cache; a test that constructs its own
  * provider gets its own empty cache and needs no reset hook. Tokens are held in
  * memory only: never written to a database, never logged, never returned to a
- * caller, and gone when the process exits.
+ * caller, and gone when the process exits. Entries evict themselves as soon as
+ * a lookup finds them expired, so a device that stops trading stops occupying
+ * the map rather than pinning a dead token until process exit.
+ *
+ * OPERATIONAL NOTE — because that singleton is shared, this is a process-wide,
+ * CROSS-TENANT token store. The keying is correct (environment + client id +
+ * POS serial, so no tenant can ever be handed another's token), but the
+ * blast radius of a memory disclosure is not one tenant: a heap dump, a core
+ * file or a debugger attached to this process holds every currently-trading
+ * tenant's live ETA bearer token. Treat heap dumps from a fiscal-serving
+ * process as credential material.
+ *
+ * SINGLE FLIGHT. `#logins` holds the in-flight login promise per cache key, so
+ * N concurrent submissions for one device issue ONE `/connect/token` call and
+ * share its result instead of racing N logins against ETA's rate limits.
  */
 export class EtaFiscalProvider implements FiscalProvider {
   readonly name = "eta";
 
   readonly #http: FetchLike;
   readonly #tokens = new Map<string, CachedToken>();
+  readonly #logins = new Map<string, Promise<string>>();
 
   /**
    * @param http Injectable `fetch`. The default delegates to the global one at
@@ -138,6 +153,8 @@ export class EtaFiscalProvider implements FiscalProvider {
 
     const json = body.json;
     if (!json) {
+      // See the note on the missing-submissionUUID throw below: retrying an
+      // unparseable 202 can resubmit a receipt ETA already holds.
       throw new EtaTransportError("fiscal: ETA returned 202 for a receipt submission with no JSON body", {
         status: res.status,
         correlationId: correlationIdOf(res),
@@ -154,6 +171,20 @@ export class EtaFiscalProvider implements FiscalProvider {
     if (!submissionUuid) {
       // Without it there is nothing to poll, so the document would be stranded
       // in "submitted" forever. Treat it as a transport failure and retry.
+      //
+      // KNOWN TRADE, and the reason this throw is worth reading twice: a 202
+      // means ETA ACCEPTED the submission. Throwing here loses our handle on
+      // something ETA is already processing, and the retry re-POSTs it. Inside
+      // ETA's duplicate window that is harmless — "identical submission
+      // detected based on the previous submissions sent by the same taxpayer
+      // within the past 10 minutes" comes back as 422 DuplicateSubmission —
+      // but a retry that lands OUTSIDE that ~10-minute window can file a
+      // second copy of a receipt ETA already holds. Task 5 must therefore
+      // choose its attempt cap and backoff knowing that retries of THIS
+      // failure stop being idempotent after roughly ten minutes; the
+      // alternative (swallowing the failure) strands the receipt permanently,
+      // which is worse, so the failure is raised and the caveat documented
+      // rather than silently traded away.
       throw new EtaTransportError("fiscal: ETA returned 202 for a receipt submission with no submissionUUID", {
         status: res.status,
         correlationId: correlationIdOf(res),
@@ -292,16 +323,59 @@ export class EtaFiscalProvider implements FiscalProvider {
         ...(init.body === undefined ? {} : { body: init.body }),
       });
 
-    const res = await send(await this.#token(cfg));
+    const used = await this.#token(cfg);
+    const res = await send(used);
     if (res.status !== 401) return res;
 
-    this.#tokens.delete(tokenCacheKey(cfg));
+    // Invalidate ONLY the entry this call actually used. A blind delete would
+    // race: while this request was in flight another concurrent caller may
+    // already have hit its own 401, re-logged in and cached a FRESH token, and
+    // dropping that would send every concurrent request back to
+    // `/connect/token` in a loop. Comparing the cached token to the one that
+    // was rejected means a token someone else has since replaced is left
+    // alone, and this call simply picks it up.
+    const key = tokenCacheKey(cfg);
+    if (this.#tokens.get(key)?.token === used) this.#tokens.delete(key);
+
     return send(await this.#token(cfg));
   }
 
   /**
-   * A live bearer token for `cfg`, from cache when one is still comfortably
-   * valid.
+   * A live bearer token for `cfg` — cached when one is still comfortably
+   * valid, and single-flighted when it is not.
+   *
+   * SINGLE FLIGHT. A till that submits a burst of queued receipts, or a worker
+   * that drains several rows for one device at once, would otherwise fire one
+   * `/connect/token` per submission the moment the cache is cold: N logins
+   * racing each other, N-1 of them wasted, straight into ETA's throttling. The
+   * first caller to miss the cache starts the login and parks its promise in
+   * `#logins`; every caller arriving while it is in flight awaits that same
+   * promise. The entry is removed in `finally`, so a FAILED login is not
+   * cached — the next call after a failure logs in again rather than
+   * replaying a rejection forever.
+   */
+  async #token(cfg: EtaConfig): Promise<string> {
+    const key = tokenCacheKey(cfg);
+    const cached = this.#tokens.get(key);
+    if (cached) {
+      if (cached.expiresAtMs - TOKEN_EXPIRY_MARGIN_MS > Date.now()) return cached.token;
+      // Past its usable life: drop it here rather than leaving a dead token
+      // pinned in the map (and in the heap) until the process exits.
+      this.#tokens.delete(key);
+    }
+
+    const inFlight = this.#logins.get(key);
+    if (inFlight) return inFlight;
+
+    // Nothing between the miss above and this `set` awaits, so a concurrent
+    // caller cannot slip past and start a second login.
+    const login = this.#login(cfg, key).finally(() => this.#logins.delete(key));
+    this.#logins.set(key, login);
+    return login;
+  }
+
+  /**
+   * One actual `/connect/token` round trip, plus caching of its result.
    *
    * Which login is used is decided by `cfg.device`, not by a flag: a device
    * credential means the receipt path, which authenticates through Authenticate
@@ -309,12 +383,11 @@ export class EtaFiscalProvider implements FiscalProvider {
    * System. `eta_tenant_config`'s own JSDoc makes the same split ("E-receipt
    * submission does NOT use this: each POS device authenticates with its own
    * credential instead").
+   *
+   * Call this only through `#token`, which owns the cache and the single-flight
+   * guard.
    */
-  async #token(cfg: EtaConfig): Promise<string> {
-    const key = tokenCacheKey(cfg);
-    const cached = this.#tokens.get(key);
-    if (cached && cached.expiresAtMs - TOKEN_EXPIRY_MARGIN_MS > Date.now()) return cached.token;
-
+  async #login(cfg: EtaConfig, key: string): Promise<string> {
     const { headers, form } = cfg.device ? posLogin(cfg.device) : erpLogin(cfg.erp);
     const res = await this.#fetch(`${getEtaEnv(cfg.environment).identityBase}${TOKEN_PATH}`, {
       method: "POST",
@@ -468,7 +541,11 @@ function posLogin(device: NonNullable<EtaConfig["device"]>): { headers: Record<s
  * `e_invoice` is deferred, so nothing currently reaches this branch.
  */
 function erpLogin(erp: EtaConfig["erp"]): { headers: Record<string, string>; form: URLSearchParams } {
-  const basic = Buffer.from(`${erp.clientId}:${erp.clientSecret}`, "utf8").toString("base64");
+  // Calling the thunk is what resolves the secret — and what can throw
+  // EtaConfigError if its env ref is stale. That is deliberate: this is the
+  // only path that needs it, so the failure lands here rather than taking the
+  // receipt path down with it.
+  const basic = Buffer.from(`${erp.clientId}:${erp.clientSecret()}`, "utf8").toString("base64");
   return {
     headers: { Authorization: `Basic ${basic}` },
     form: new URLSearchParams({ grant_type: "client_credentials", scope: "InvoicingAPI" }),

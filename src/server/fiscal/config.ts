@@ -97,8 +97,8 @@ function resolveOptionalSecretRef(ref: string | null, column: string): string | 
  *
  * @throws {EtaConfigError} when a `*Ref` column needed by the requested path is
  * set but its env key is not. The tenant signing key and the device secrets
- * resolve eagerly, so they throw from this call; `erp.clientSecret` resolves on
- * first read instead — see its own comment for why.
+ * resolve eagerly, so they throw from this call; `erp.clientSecret` is a THUNK
+ * that resolves when called instead — see its own comment for why.
  */
 export async function resolveEtaConfig(tenantId: string, deviceId?: string): Promise<EtaConfig | null> {
   const rows = await withTenant(tenantId, async (tx) => {
@@ -152,7 +152,7 @@ export async function resolveEtaConfig(tenantId: string, deviceId?: string): Pro
     erp: {
       clientId: tenantRow.clientId,
       /**
-       * RESOLVED LAZILY, on first read — the one deliberate exception to this
+       * RESOLVED LAZILY, when CALLED — the one deliberate exception to this
        * function's otherwise-eager resolution.
        *
        * The ERP secret is used by exactly one code path: the Login as Taxpayer
@@ -163,23 +163,19 @@ export async function resolveEtaConfig(tenantId: string, deviceId?: string): Pro
        * the whole resolution threw, naming a credential that the receipt path
        * does not use and cannot be fixed by anyone looking at the till. That
        * is an availability fault on the fiscal hot path caused by an unrelated,
-       * unused credential.
+       * unused credential. Deferring keeps the failure where it belongs — at
+       * the ERP login that needs the secret — and the error still names this
+       * precise column and env key when it fires.
        *
-       * Deferring it keeps the failure exactly where it belongs — at the ERP
-       * login that needs the secret — while the error, when it does fire,
-       * still names this precise column and env key. The property type is
-       * unchanged, so `EtaConfig` is untouched.
-       *
-       * The value is therefore NOT memoised and NOT held in memory until
-       * something asks for it. As with every other field here, it must never
-       * be logged, serialised or returned to a client — and note that reading
-       * it (including by spreading or inspecting `erp`) is what triggers
-       * resolution, which is another reason an `EtaConfig` must never be
-       * passed to `JSON.stringify`.
+       * A THUNK rather than a getter, deliberately: `() => string` is visible
+       * at the call site, so nobody is surprised by a property read throwing,
+       * and `JSON.stringify` DROPS a function value outright instead of
+       * invoking it. The secret is not memoised and is not held in memory
+       * until something asks for it. As with every other field here, the
+       * resolved value must never be logged, persisted or returned to a
+       * client.
        */
-      get clientSecret(): string {
-        return resolveSecretRef(clientSecretRef, "eta_tenant_config.client_secret_ref");
-      },
+      clientSecret: () => resolveSecretRef(clientSecretRef, "eta_tenant_config.client_secret_ref"),
     },
     device,
     signingKey: resolveOptionalSecretRef(tenantRow.signingKeyRef, "eta_tenant_config.signing_key_ref"),

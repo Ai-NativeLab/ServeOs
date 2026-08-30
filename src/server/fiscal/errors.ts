@@ -14,6 +14,10 @@
  * receipt already printed by the time any of this runs. It surfaces to the
  * tenant's owner as an alert to fix configuration (a missing tax code, an
  * unconfigured fee line), not to the cashier as a checkout error.
+ *
+ * This is ONE of three failure families — see the FAILURE TAXONOMY table on
+ * `FiscalProvider` in `./provider` for all three and the worker behaviour each
+ * one requires.
  */
 export abstract class FiscalDocumentError extends Error {
   abstract readonly code: string;

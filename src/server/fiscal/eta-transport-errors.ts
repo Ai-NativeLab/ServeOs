@@ -12,6 +12,11 @@
  *                      fault. Worker: fail the row without backoff and alert
  *                      the owner — retrying cannot invent a missing secret.
  *
+ * The authoritative version of that mapping — all three families, with the
+ * exact worker behaviour each requires — is the FAILURE TAXONOMY table on
+ * `FiscalProvider` in `./provider`. The summary above is a convenience; that
+ * table is the contract.
+ *
  * Neither ever carries a secret. Messages name the *reference* (an env key, a
  * column) or an HTTP status, never a token, a client secret or a pre-shared
  * key, because these strings reach `eta_submissions.lastError` and the logs.
@@ -50,6 +55,14 @@
  * Retry-After in seconds" — and lands here with `retryAfterSeconds` set.
  */
 export class EtaTransportError extends Error {
+  /**
+   * OUR code, so that all three failure families expose the same `code`
+   * discriminator and a worker can log or branch on it uniformly. There is one
+   * value because the family has one meaning: retry this. ETA's OWN code —
+   * `BadStructure`, `DuplicateSubmission`, `429`, ... — lives in
+   * `etaErrorCode`, which is the field to switch on for per-code handling.
+   */
+  readonly code = "eta-transport";
   /** HTTP status, or null when the request never got a response (DNS, TLS,
    *  connection reset, abort). */
   readonly status: number | null;

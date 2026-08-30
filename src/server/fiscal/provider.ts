@@ -165,10 +165,15 @@ export type FinalizedFiscalDocument = {
 };
 
 /**
- * Mapping to `eta_submission_status`: a thrown error = retryable transport
- * failure (worker records "failed" + backoff); "skipped" = no submission
- * row is written at all; "submitted" = 202 accepted-for-processing,
- * terminal accept/reject arrives via poll.
+ * Mapping to `eta_submission_status` for a RETURNED result:
+ *   "accepted"  terminal pass — only ever from `poll`.
+ *   "rejected"  terminal refusal; `responseJson` carries ETA's errors.
+ *   "submitted" 202 accepted-for-processing; the verdict arrives via `poll`.
+ *   "skipped"   no submission row is written at all (non-EG tenants).
+ *
+ * A THROWN error is not one of these — see the FAILURE TAXONOMY on
+ * `FiscalProvider` below for which of the three families it is and what the
+ * worker must do with each.
  */
 export type FiscalSubmitResult = {
   status: "accepted" | "rejected" | "submitted" | "skipped";
@@ -203,7 +208,15 @@ export type EtaConfig = {
    *  maps the two. */
   rin: string;
   environment: EtaEnvironment; // "preprod" | "prod"
-  erp: { clientId: string; clientSecret: string };
+  /**
+   * The ERP-level credential. `clientSecret` is a THUNK, not a string: it is
+   * read by exactly one code path (the ERP login, used only when `device` is
+   * null — B2B `e_invoice` and the codes APIs), so resolving it eagerly let a
+   * stale ERP secret ref take the receipt path down with it. Calling it
+   * resolves the secret and may throw `EtaConfigError`; see
+   * `resolveEtaConfig` for the full rationale.
+   */
+  erp: { clientId: string; clientSecret: () => string };
   device: EtaDeviceCredentials | null;
   /** e-seal signing material — B2B only; unused for receipts today. */
   signingKey: string | null;
@@ -225,6 +238,39 @@ export type EtaConfig = {
  * touch the network. The `WireContext` step 2 needs is resolved by the worker
  * per tenant/branch/device (RIN, trade name, branch code + address, activity
  * code, device serial), with `receiptNumber` resolved per document.
+ *
+ * FAILURE TAXONOMY — the complete contract for what a thrown error means and
+ * what Task 5's worker must do about it. Three families, three behaviours;
+ * this table is the single place they are written down, because a worker that
+ * gets this wrong either retries something that can never succeed or gives up
+ * on something that would have.
+ *
+ *   FiscalDocumentError  (`./errors`)
+ *     PERMANENT — a document-construction failure: these inputs cannot produce
+ *     a valid ETA document, so retrying is pointless. Worker: `status =
+ *     "failed"`, `lastError = message`, NO backoff, NO further attempts.
+ *     Owner-facing alert to fix data (a missing tax code, an unconfigured fee
+ *     line). Never blocks the sale — the money is taken and the receipt printed
+ *     before any of this runs.
+ *
+ *   EtaConfigError       (`./eta-transport-errors`)
+ *     PERMANENT — a CONFIGURATION failure: an unresolvable secret ref, a device
+ *     missing its pre-shared key, or ETA refusing the credentials outright.
+ *     The document is fine; the account is not. Worker: same no-retry handling
+ *     as above (`"failed"`, no backoff), but the alert is owner-ACTIONABLE
+ *     ("finish ETA setup"), not a data fix — so the two must stay
+ *     distinguishable rather than being collapsed into one branch.
+ *
+ *   EtaTransportError    (`./eta-transport-errors`)
+ *     RETRYABLE — the call did not land: throttled, gateway error, network
+ *     failure, or a malformed body where a documented shape was promised.
+ *     Worker: `attempts++` and back off, honouring `retryAfterSeconds` as a
+ *     FLOOR when ETA sent one, up to the attempt cap.
+ *
+ * Discriminate with `instanceof` on the three classes, and switch on `code`
+ * for alert copy. All three expose a `code`; `EtaTransportError` additionally
+ * carries `etaErrorCode`, which is ETA's own code (`BadStructure`, `429`, ...)
+ * rather than ours.
  */
 export interface FiscalProvider {
   readonly name: string; // "eta" | "noop"

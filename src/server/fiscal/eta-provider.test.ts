@@ -28,7 +28,7 @@ const SUBMIT_URL = `${PREPROD.apiBase}/api/v1/receiptsubmissions`;
 const cfg: EtaConfig = {
   rin: "200173707",
   environment: "preprod",
-  erp: { clientId: "erp-client-id", clientSecret: ERP_SECRET },
+  erp: { clientId: "erp-client-id", clientSecret: () => ERP_SECRET },
   device: {
     serial: "POS-001",
     clientId: "device-client-id",
@@ -481,6 +481,57 @@ describe("EtaFiscalProvider.submit", () => {
     // Fresh login, not the cached token: token, submit(401), token, submit(202).
     expect(tokenCalls()).toBe(2);
     expect(calls).toHaveLength(4);
+  });
+
+  it("issues ONE login when concurrent submissions race a cold cache", async () => {
+    // A till flushing a queue of offline receipts hits submit N times at once.
+    // Without single-flighting, that is N logins racing each other into ETA's
+    // throttling, N-1 of them wasted.
+    const { http, calls, tokenCalls } = makeHttp({
+      api: [
+        () => jsonResponse(202, { submissionUUID: "SUB-1" }),
+        () => jsonResponse(202, { submissionUUID: "SUB-2" }),
+        () => jsonResponse(202, { submissionUUID: "SUB-3" }),
+      ],
+    });
+    const provider = new EtaFiscalProvider(http);
+
+    const results = await Promise.all([
+      provider.submit(finalized, cfg),
+      provider.submit(finalized, cfg),
+      provider.submit(finalized, cfg),
+    ]);
+
+    expect(tokenCalls()).toBe(1);
+    expect(results.map((r) => r.status)).toEqual(["submitted", "submitted", "submitted"]);
+    // All three shared the one token.
+    const submits = calls.filter((c) => !c.url.endsWith("/connect/token"));
+    expect(submits.map((c) => headersOf(c).Authorization)).toEqual(Array(3).fill(`Bearer ${ACCESS_TOKEN}`));
+  });
+
+  it("does not double-login when concurrent calls both hit a 401", async () => {
+    // Both requests carry the same expired token and both come back 401. Only
+    // the caller whose token is still the cached one may invalidate it — a
+    // blind delete would drop the replacement a sibling had just cached and
+    // send everyone back to /connect/token again.
+    let issued = 0;
+    const { http, tokenCalls } = makeHttp({
+      token: () =>
+        jsonResponse(200, { access_token: `${ACCESS_TOKEN}-${++issued}`, token_type: "Bearer", expires_in: 3600 }),
+      api: [
+        () => jsonResponse(401, { error: { code: "Unauthorized", message: "token expired" } }),
+        () => jsonResponse(401, { error: { code: "Unauthorized", message: "token expired" } }),
+        () => jsonResponse(202, { submissionUUID: "SUB-A" }),
+        () => jsonResponse(202, { submissionUUID: "SUB-B" }),
+      ],
+    });
+    const provider = new EtaFiscalProvider(http);
+
+    const results = await Promise.all([provider.submit(finalized, cfg), provider.submit(finalized, cfg)]);
+
+    // One cold-cache login plus exactly one refresh — never a third.
+    expect(tokenCalls()).toBe(2);
+    expect(results.map((r) => r.submissionUuid).sort()).toEqual(["SUB-A", "SUB-B"]);
   });
 });
 
