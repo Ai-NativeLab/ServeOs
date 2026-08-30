@@ -199,7 +199,7 @@ The abstraction, shaped exactly like `BillingProvider` (`src/server/billing/prov
   - `class NoopFiscalProvider` — `name = "noop"`; `build*` throw (never called for non-EG); `submit` returns `{ status: "skipped", responseJson: {} }`.
   - `function resolveFiscalProvider(tenant: Pick<Tenant, "country">): FiscalProvider`.
 
-- [ ] **Step 1: Write the failing tests.** Create `src/server/fiscal/provider.test.ts`:
+- [x] **Step 1: Write the failing tests.** Create `src/server/fiscal/provider.test.ts`:
 
 ```ts
 import { describe, it, expect } from "vitest";
@@ -241,9 +241,9 @@ describe("FiscalProvider contract (fake)", () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify they fail.** `npx vitest run src/server/fiscal/provider.test.ts`. Expected: FAIL — module not found.
+- [x] **Step 2: Run to verify they fail.** `npx vitest run src/server/fiscal/provider.test.ts`. Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement.** Create `src/server/fiscal/provider.ts` (the types + interface above), `src/server/fiscal/noop-provider.ts` (`NoopFiscalProvider`), and `src/server/fiscal/index.ts`:
+- [x] **Step 3: Implement.** Create `src/server/fiscal/provider.ts` (the types + interface above), `src/server/fiscal/noop-provider.ts` (`NoopFiscalProvider`), and `src/server/fiscal/index.ts`:
 
 ```ts
 import type { Tenant } from "@/server/tenancy/schema";
@@ -266,9 +266,9 @@ export function resolveFiscalProvider(tenant: Pick<Tenant, "country">): FiscalPr
 
 Note: `index.ts` imports `EtaFiscalProvider` from Task 3 — implement a minimal stub class there first (name `"eta"`, `build*`/`submit` throwing `"not implemented"`) so this task compiles, then fill it in Task 3.
 
-- [ ] **Step 4: Run to verify they pass.** `npx vitest run src/server/fiscal/provider.test.ts && npx tsc --noEmit`. Expected: PASS, clean.
+- [x] **Step 4: Run to verify they pass.** `npx vitest run src/server/fiscal/provider.test.ts && npx tsc --noEmit`. Expected: PASS, clean.
 
-- [ ] **Step 5: Commit.**
+- [x] **Step 5: Commit.**
 
 ```bash
 git add src/server/fiscal/provider.ts src/server/fiscal/noop-provider.ts src/server/fiscal/index.ts src/server/fiscal/provider.test.ts src/server/fiscal/eta-provider.ts
