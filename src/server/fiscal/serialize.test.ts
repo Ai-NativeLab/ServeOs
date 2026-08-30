@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { canonicalSerialize, stringifyWire, computeReceiptUuid, buildQrUrl, finalizeReceipt } from "./serialize";
-import { toWireReceipt, dec, EtaTotalsMismatchError, type WireContext } from "./eta-wire";
+import { canonicalSerialize, stringifyWire, computeReceiptUuid, buildQrUrl } from "./serialize";
+import { toWireReceipt, finalizeReceipt, type WireContext } from "./eta-wire";
+import { dec } from "./decimal";
+import { EtaTotalsMismatchError } from "./errors";
 import type { FiscalDocument } from "./provider";
 
 /**
@@ -224,6 +226,7 @@ const doc: FiscalDocument = {
   lines: [
     {
       itemCode: "10007020",
+      internalCode: "11111111-1111-4111-8111-111111111111",
       codeSource: "gs1",
       taxType: "T1",
       taxSubType: "V001",

@@ -8,7 +8,14 @@ import type {
 import type { ProductTaxCode } from "./schema";
 import type { Order } from "@/server/ordering/schema";
 import type { OrderPayment } from "@/server/pos/tender-schema";
-import { addDecimal, subtractDecimal, compareDecimal, divideDecimal, allocateLargestRemainder, isZeroDecimal, assertDecimal } from "./decimal";
+import {
+  addDecimal, sumDecimal, subtractDecimal, compareDecimal, divideDecimal,
+  allocateLargestRemainder, isZeroDecimal, assertDecimal,
+} from "./decimal";
+import {
+  MissingTaxCodeError, FeeLineConfigMissingError, IrreconcilableOrderError,
+  EmptyReturnReceiptError, RefundLineOrphanError,
+} from "./errors";
 
 /**
  * PURE document builders: a sale or refund plus its resolved
@@ -22,62 +29,6 @@ import { addDecimal, subtractDecimal, compareDecimal, divideDecimal, allocateLar
  * of them run on scaled `bigint`s — never floats. See `allocateVat` for the
  * one place a stored total is split.
  */
-
-/** A product with no `product_tax_codes` row cannot appear on a fiscal
- *  document at all: ETA's itemData requires itemCode/itemType/unitType/taxType
- *  and we will not guess them. The worker turns this into a `failed`
- *  submission row plus an owner alert — never a blocked sale. */
-export class MissingTaxCodeError extends Error {
-  constructor(readonly productId: string) {
-    super(`fiscal: product ${productId} has no product_tax_codes row — cannot build a fiscal document line`);
-    this.name = "MissingTaxCodeError";
-  }
-}
-
-/**
- * A non-zero service charge or delivery fee with no fiscal classification.
- *
- * Receipt v1.2's own `feesAmount` slot "accepts only zero values", so a fee
- * can only reach ETA as its own `itemData` line — which needs an item code,
- * tax type and unit type exactly like a product does. Rather than drop the
- * money or invent a code, the build fails here and the tenant configures it.
- */
-export class FeeLineConfigMissingError extends Error {
-  constructor(readonly fee: "serviceCharge" | "delivery", readonly amount: string) {
-    super(
-      `fiscal: order carries a ${fee} of ${amount} but no feeLines.${fee} configuration. ` +
-        "Receipt v1.2's feesAmount accepts only zero values, so a fee must be issued as its own receipt line with its own item/tax codes.",
-    );
-    this.name = "FeeLineConfigMissingError";
-  }
-}
-
-/**
- * A refund with no lines cannot become a return receipt: `itemData` is
- * Mandatory on the return document, and `refunds` may legitimately exist
- * without `refund_lines` (a header-only full refund — see `issueRefund`,
- * which inserts lines only when the caller named them).
- */
-export class EmptyReturnReceiptError extends Error {
-  constructor(readonly refundId: string) {
-    super(
-      `fiscal: refund ${refundId} has no refund_lines, so there is no itemData to issue — ` +
-        "receipt v1.2 marks itemData Mandatory. A header-only full refund needs its lines resolved from the parent order first.",
-    );
-    this.name = "EmptyReturnReceiptError";
-  }
-}
-
-/**
- * The order's stored figures do not add up under either VAT convention, so no
- * document built from them could satisfy ETA's totalAmount equation.
- */
-export class IrreconcilableOrderError extends Error {
-  constructor(readonly orderId: string, readonly detail: string) {
-    super(`fiscal: order ${orderId} cannot be reconciled into a receipt — ${detail}`);
-    this.name = "IrreconcilableOrderError";
-  }
-}
 
 /** ServeOS is single-currency; ETA requires an ISO 4217 code and, for a local
  *  Egyptian issuer, an exchangeRate only when the currency is not EGP. */
@@ -246,7 +197,7 @@ function allocateVat(order: Order, drafts: LineDraft[]): string[] {
 
   // Invariant, not decoration: ETA re-derives taxTotals as the sum of the
   // line taxes, so a drifting split would be rejected.
-  const summed = addDecimal("vat split", ...zeroed);
+  const summed = sumDecimal("vat split", zeroed);
   if (compareDecimal(summed, order.vatAmount) !== 0) {
     throw new IrreconcilableOrderError(order.id, `allocated VAT ${summed} does not equal stored vatAmount ${order.vatAmount}`);
   }
@@ -314,7 +265,7 @@ export function buildReceipt(input: FiscalSaleInput): FiscalDocument {
     // have their allocated tax taken back out; exclusive prices pass through
     // untouched (F9).
     const netSale = mode === "inclusive" ? subtractDecimal("netSale", draft.base, vat) : draft.base;
-    const discountTotal = addDecimal("line discounts", ...draft.discounts, "0.00");
+    const discountTotal = sumDecimal("line discounts", draft.discounts);
     // Main Calculations: "netSale = totalSale - Sum(commercialDiscountData.amount)".
     const totalSale = addDecimal("totalSale", netSale, discountTotal);
     // Main Calculations: "totalSale = quantity * unitPrice" — so the unit
@@ -407,9 +358,7 @@ export function buildReturnReceipt(input: FiscalRefundInput): FiscalDocument {
 
   const lines: FiscalDocLine[] = refundLines.map((refundLine) => {
     const item = itemsById.get(refundLine.orderItemId);
-    if (!item) {
-      throw new Error(`fiscal: refund line ${refundLine.id} references order item ${refundLine.orderItemId}, which was not supplied`);
-    }
+    if (!item) throw new RefundLineOrphanError(refundLine.id, refundLine.orderItemId);
     const code = requireTaxCode(codes, item.productId);
     return {
       itemCode: code.itemCode,
@@ -435,7 +384,7 @@ export function buildReturnReceipt(input: FiscalRefundInput): FiscalDocument {
     referenceOldUuid: null,
     buyer: { type: "P" },
     lines,
-    subtotal: addDecimal("subtotal", ...lines.map((line) => line.lineTotal), "0.00"),
+    subtotal: sumDecimal("subtotal", lines.map((line) => line.lineTotal)),
     discountTotal: "0.00",
     feesTotal: "0.00",
     taxTotals: [],

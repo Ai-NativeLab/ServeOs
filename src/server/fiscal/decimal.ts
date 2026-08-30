@@ -64,6 +64,21 @@ export function addDecimal(field: string, ...values: string[]): string {
   return fromScaled(total, scale);
 }
 
+/**
+ * Exact sum over an ARRAY, never narrower than `minScale` decimal places.
+ *
+ * The array form exists because most fiscal sums are over a mapped
+ * collection, where the spread form (`addDecimal(f, ...xs, "0.00")`) needed a
+ * trailing zero purely to pin the scale of an empty list. `minScale` says that
+ * directly: an empty document still totals "0.00", not "0".
+ */
+export function sumDecimal(field: string, values: string[], minScale = 2): string {
+  values.forEach((v) => assertDecimal(v, field));
+  const scale = Math.max(minScale, 0, ...values.map(scaleOf));
+  const total = values.reduce((sum, v) => sum + toScaled(v, scale), ZERO);
+  return fromScaled(total, scale);
+}
+
 /** True for "0", "0.00", "-0.000" — any spelling of zero. */
 export function isZeroDecimal(value: string): boolean {
   return DECIMAL.test(value) && toScaled(value, scaleOf(value)) === ZERO;
@@ -78,7 +93,9 @@ export function subtractDecimal(field: string, a: string, b: string): string {
 }
 
 /** -1 / 0 / 1, comparing exactly rather than through Number(). */
-export function compareDecimal(a: string, b: string): number {
+export function compareDecimal(a: string, b: string, field = "comparison"): number {
+  assertDecimal(a, field);
+  assertDecimal(b, field);
   const scale = Math.max(scaleOf(a), scaleOf(b));
   const left = toScaled(a, scale);
   const right = toScaled(b, scale);
@@ -130,6 +147,12 @@ export function allocateLargestRemainder(field: string, total: string, weights: 
   }
 
   const floors = scaledWeights.map((w) => (scaledTotal * w) / weightSum);
+  // Remainders are kept UNNORMALIZED — the numerator of the fractional part
+  // (total*w - floor*sum) rather than the fraction itself. Every remainder
+  // shares the same implicit denominator (weightSum), so ordering by these
+  // integers is identical to ordering by the true fractions, while staying in
+  // exact bigint arithmetic; dividing here would reintroduce the rounding the
+  // whole method exists to avoid.
   const remainders = scaledWeights.map((w, i) => (scaledTotal * w) - (floors[i] * weightSum));
   const distributed = floors.reduce((sum, f) => sum + f, ZERO);
 
@@ -162,4 +185,25 @@ export function multiplyDecimal(field: string, a: string, b: string): string {
 /** Magnitude, keeping the input's scale. */
 export function absDecimal(value: string): string {
   return value.startsWith("-") ? value.slice(1) : value;
+}
+
+/**
+ * A decimal that must reach ETA as an unquoted JSON number while keeping its
+ * exact literal text.
+ *
+ * ETA's serialization takes "all property values ... without any processing,
+ * just like those are in the input document", and their own worked example
+ * serializes `10.50` as `"10.50"` — a JS `number` cannot carry that trailing
+ * zero, and `Number("115.00")` is `115`. So a money value travels as its
+ * original `money(n)` characters all the way to the wire and is only unquoted
+ * at emit time (see ../fiscal/serialize.ts `stringifyWire`).
+ */
+export class WireDecimal {
+  constructor(readonly literal: string) {}
+}
+
+/** Wraps a `money(n)` string as a wire decimal, rejecting anything that is not
+ *  a plain decimal numeral. */
+export function dec(literal: string, field = "amount"): WireDecimal {
+  return new WireDecimal(assertDecimal(literal, field));
 }

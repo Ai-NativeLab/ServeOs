@@ -1,17 +1,26 @@
 import { describe, it, expect } from "vitest";
+import { buildReceipt, buildReturnReceipt } from "./build-document";
 import {
-  buildReceipt,
-  buildReturnReceipt,
+  FiscalDocumentError,
   MissingTaxCodeError,
   FeeLineConfigMissingError,
   IrreconcilableOrderError,
   EmptyReturnReceiptError,
-} from "./build-document";
+  RefundLineOrphanError,
+  UnsupportedTaxTypeError,
+  BuyerIdRequiredError,
+  MissingTaxSubTypeError,
+  MissingReferenceUuidError,
+  EtaTotalsMismatchError,
+} from "./errors";
 import { EtaFiscalProvider } from "./eta-provider";
-import { finalizeReceipt, stringifyWire } from "./serialize";
-import { toWireReceipt, UnsupportedTaxTypeError, BuyerIdRequiredError, type WireContext } from "./eta-wire";
-import { addDecimal } from "./decimal";
-import type { FiscalSaleInput, FiscalRefundInput, FiscalDocument, FeeLineConfig, EtaConfig } from "./provider";
+import { stringifyWire } from "./serialize";
+import { toWireReceipt, finalizeReceipt, type WireContext } from "./eta-wire";
+import { addDecimal, sumDecimal } from "./decimal";
+import type {
+  FiscalSaleInput, FiscalRefundInput, FiscalDocument, FinalizedFiscalDocument,
+  FeeLineConfig, EtaConfig,
+} from "./provider";
 import type { ProductTaxCode } from "./schema";
 import type { Order, OrderItem } from "@/server/ordering/schema";
 import type { Refund, RefundLine } from "@/server/pos/refund-schema";
@@ -349,7 +358,7 @@ describe("buildReceipt — per-line VAT allocation", () => {
   const vatOf = (index: number) => doc.lines[index].taxes[0]?.amount ?? "0.00";
 
   it("splits orders.vatAmount across the taxed lines so the parts sum EXACTLY", () => {
-    const summed = addDecimal("vat", ...doc.lines.flatMap((line) => line.taxes.map((tax) => tax.amount)), "0.00");
+    const summed = sumDecimal("vat", doc.lines.flatMap((line) => line.taxes.map((tax) => tax.amount)));
     expect(summed).toBe(order.vatAmount);
     expect(summed).toBe("30.80");
   });
@@ -407,7 +416,7 @@ describe("buildReceipt — per-line VAT allocation", () => {
     const odd = buildReceipt({ ...saleInput, order: oddOrder, items: oddItems, taxCodes: [taxCode(PRODUCT_A)], feeLines: undefined });
 
     expect(odd.lines.map((line) => line.taxes[0]?.amount ?? "0.00")).toEqual(["1.40", "2.80", "0.00"]);
-    expect(addDecimal("vat", ...odd.lines.flatMap((line) => line.taxes.map((t) => t.amount)), "0.00")).toBe("4.20");
+    expect(sumDecimal("vat", odd.lines.flatMap((line) => line.taxes.map((t) => t.amount)))).toBe("4.20");
   });
 
   it("allocates nothing when the order carries no VAT", () => {
@@ -430,7 +439,7 @@ describe("buildReceipt — VAT-inclusive pricing", () => {
   });
 
   it("still sums the allocated VAT to the stored figure exactly", () => {
-    expect(addDecimal("vat", ...doc.lines.flatMap((line) => line.taxes.map((t) => t.amount)), "0.00")).toBe("27.02");
+    expect(sumDecimal("vat", doc.lines.flatMap((line) => line.taxes.map((t) => t.amount)))).toBe("27.02");
   });
 
   it("derives a net unit price at the 5 decimals ETA permits", () => {
@@ -594,9 +603,15 @@ describe("buildReturnReceipt", () => {
     expect(json).not.toContain("taxableItems");
   });
 
-  it("throws when a refund line references an order item that was not supplied", () => {
+  it("throws RefundLineOrphanError when a refund line's order item was not supplied", () => {
     const orphan: RefundLine = { ...refundLines[0], orderItemId: "not-an-item" };
-    expect(() => buildReturnReceipt({ ...refundInput, lines: [orphan] })).toThrow(/order item/i);
+    try {
+      buildReturnReceipt({ ...refundInput, lines: [orphan] });
+      expect.unreachable("buildReturnReceipt should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RefundLineOrphanError);
+      expect((err as RefundLineOrphanError).orderItemId).toBe("not-an-item");
+    }
   });
 });
 
@@ -754,7 +769,67 @@ describe("EtaFiscalProvider", () => {
 
   it("still throws for submit/poll — Task 3b wires the HTTP calls", async () => {
     const eta = new EtaFiscalProvider();
-    await expect(eta.submit({} as FiscalDocument, {} as EtaConfig)).rejects.toThrow("not implemented");
+    await expect(eta.submit({} as FinalizedFiscalDocument, {} as EtaConfig)).rejects.toThrow("not implemented");
     await expect(eta.poll("submission-uuid", {} as EtaConfig)).rejects.toThrow("not implemented");
+  });
+});
+
+describe("FiscalDocumentError family", () => {
+  // Task 5 maps `instanceof FiscalDocumentError` to a "failed" submission row
+  // with no retry, and switches on `code` for owner-facing alerts — so both
+  // the base class and the exact code strings are a contract, not decoration.
+  const errors: FiscalDocumentError[] = [
+    new MissingTaxCodeError("p1"),
+    new FeeLineConfigMissingError("serviceCharge", "20.00"),
+    new IrreconcilableOrderError("o1", "detail"),
+    new EmptyReturnReceiptError("r1"),
+    new RefundLineOrphanError("rl1", "oi1"),
+    new EtaTotalsMismatchError("1.00", "2.00", "equation"),
+    new UnsupportedTaxTypeError("T4"),
+    new MissingTaxSubTypeError("T1", 0),
+    new MissingReferenceUuidError(),
+    new BuyerIdRequiredError("B", "10.00", "0", ["name"]),
+  ];
+
+  it("every member extends the base and is a real Error", () => {
+    for (const err of errors) {
+      expect(err).toBeInstanceOf(FiscalDocumentError);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).not.toBe("");
+    }
+  });
+
+  it("pins each stable kebab-case code", () => {
+    expect(errors.map((err) => err.code)).toEqual([
+      "missing-tax-code",
+      "fee-line-config-missing",
+      "irreconcilable-order",
+      "empty-return-receipt",
+      "refund-line-orphan",
+      "eta-totals-mismatch",
+      "unsupported-tax-type",
+      "missing-tax-sub-type",
+      "missing-reference-uuid",
+      "buyer-id-required",
+    ]);
+  });
+
+  it("keeps codes unique, so the worker can switch on them", () => {
+    const codes = errors.map((err) => err.code);
+    expect(new Set(codes).size).toBe(codes.length);
+  });
+
+  it("carries every real build failure through the family", () => {
+    // The paths that actually throw, not just constructed instances.
+    const thrown = [
+      () => buildReceipt({ ...saleInput, taxCodes: [] }),
+      () => buildReceipt({ ...saleInput, feeLines: {} }),
+      () => buildReceipt({ ...saleInput, order: { ...order, total: "999.99" } }),
+      () => buildReturnReceipt({ ...refundInput, lines: [] }),
+      () => toWireReceipt(buildReceipt({ ...saleInput, taxCodes: [taxCode(PRODUCT_A, { taxType: "T4" }), taxCode(PRODUCT_B)] }), wireCtx),
+    ];
+    for (const run of thrown) {
+      expect(run).toThrow(FiscalDocumentError);
+    }
   });
 });

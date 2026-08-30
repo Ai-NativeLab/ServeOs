@@ -1,10 +1,14 @@
 import { createHash } from "node:crypto";
-import type { FiscalDocument } from "./provider";
-import { WireDecimal, toWireReceipt, type WireContext } from "./eta-wire";
+import { WireDecimal } from "./decimal";
 
 /**
  * ETA's canonical document serialization, the receipt uuid derived from it,
  * and the QR url that carries it. All pure.
+ *
+ * This module knows nothing about receipts, orders or ETA's document schema —
+ * it turns a plain object into ETA's canonical text, hashes it, and formats a
+ * url. `./eta-wire` owns the document shape and composes these into
+ * `finalizeReceipt`.
  *
  *   Serialization  https://sdk.invoicing.eta.gov.eg/document-serialization-approach/
  *   UUID + QR      https://sdk.invoicing.eta.gov.eg/receiptissuancefaq/
@@ -163,30 +167,4 @@ function withBlankUuid(wire: Record<string, unknown>): Record<string, unknown> {
 export function buildQrUrl(params: { portalBase: string; uuid: string; dateUtc: string; total: string; rin: string }): string {
   const base = params.portalBase.replace(/\/+$/, "");
   return `${base}/receipts/search/${params.uuid}/share/${params.dateUtc}#Total:${params.total},IssuerRIN:${params.rin}`;
-}
-
-/**
- * Wire document + uuid + QR url for one fiscal document, in the order the
- * chain requires: map to v1.2 JSON (carrying previousUUID / referenceUUID /
- * referenceOldUUID), hash the blank-uuid form, write the uuid back, then build
- * the QR from that same uuid. Pure — same inputs, same uuid, every time.
- */
-export function finalizeReceipt(
-  doc: FiscalDocument,
-  ctx: WireContext,
-  opts: { portalBase: string },
-): { wire: Record<string, unknown>; uuid: string; qrUrl: string } {
-  const wire = toWireReceipt(doc, ctx);
-  const uuid = computeReceiptUuid(wire);
-
-  // Assigning in place keeps `uuid` at its original position in `header`,
-  // which is what makes the transmitted document hash back to this same uuid.
-  const header = wire.header as Record<string, unknown>;
-  header.uuid = uuid;
-
-  return {
-    wire,
-    uuid,
-    qrUrl: buildQrUrl({ portalBase: opts.portalBase, uuid, dateUtc: doc.issuedAt, total: doc.total, rin: ctx.rin }),
-  };
 }

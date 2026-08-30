@@ -3,6 +3,7 @@ import type {
   FiscalSaleInput,
   FiscalRefundInput,
   FiscalDocument,
+  FinalizedFiscalDocument,
   FiscalSubmitResult,
   EtaConfig,
 } from "./provider";
@@ -28,7 +29,7 @@ export class EtaFiscalProvider implements FiscalProvider {
     return buildReturnReceipt(input);
   }
 
-  async submit(_doc: FiscalDocument, _cfg: EtaConfig): Promise<FiscalSubmitResult> {
+  async submit(_finalized: FinalizedFiscalDocument, _cfg: EtaConfig): Promise<FiscalSubmitResult> {
     throw new Error("not implemented");
   }
 

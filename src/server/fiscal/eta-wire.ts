@@ -1,5 +1,13 @@
-import type { FiscalDocument, FiscalDocLine, FiscalTaxAmount } from "./provider";
-import { addDecimal, subtractDecimal, multiplyDecimal, absDecimal, compareDecimal, assertDecimal, isZeroDecimal } from "./decimal";
+import type { FiscalDocument, FiscalDocLine, FiscalTaxAmount, FinalizedFiscalDocument } from "./provider";
+import {
+  addDecimal, sumDecimal, subtractDecimal, multiplyDecimal, absDecimal,
+  compareDecimal, assertDecimal, isZeroDecimal, dec,
+} from "./decimal";
+import { computeReceiptUuid, buildQrUrl } from "./serialize";
+import {
+  EtaTotalsMismatchError, UnsupportedTaxTypeError, BuyerIdRequiredError,
+  MissingTaxSubTypeError, MissingReferenceUuidError,
+} from "./errors";
 
 /**
  * `FiscalDocument` -> ETA receipt v1.2 JSON.
@@ -21,81 +29,6 @@ import { addDecimal, subtractDecimal, multiplyDecimal, absDecimal, compareDecima
  * in the same order, which is what keeps the transmitted bytes and the hashed
  * text in agreement.
  */
-
-/**
- * A decimal that must reach ETA as an unquoted JSON number while keeping its
- * exact literal text.
- *
- * ETA's serialization takes "all property values ... without any processing,
- * just like those are in the input document", and their own worked example
- * serializes `10.50` as `"10.50"` — a JS `number` cannot carry that trailing
- * zero, and `Number("115.00")` is `115`. So every money value travels as its
- * original `money(n)` characters and is only unquoted at emit time.
- */
-export class WireDecimal {
-  constructor(readonly literal: string) {}
-}
-
-/** Wraps a `money(n)` string as a wire decimal, rejecting anything that is not
- *  a plain decimal numeral. */
-export function dec(literal: string, field = "amount"): WireDecimal {
-  return new WireDecimal(assertDecimal(literal, field));
-}
-
-/**
- * The emitted document breaks ETA's published totals equation, so it would be
- * rejected (or worse, silently misfile tax). Thrown instead of transmitting.
- */
-export class EtaTotalsMismatchError extends Error {
-  constructor(readonly expected: string, readonly actual: string, readonly equation: string) {
-    super(`fiscal: emitted document fails ETA's ${equation} — expected ${expected}, computed ${actual}`);
-    this.name = "EtaTotalsMismatchError";
-  }
-}
-
-/**
- * A tax type this mapper does not know how to total correctly.
- *
- * Main Calculations gives the line total as
- *   total = netSale + t1 + t2 + t3 + TotalTaxableFees[T5-T12]
- *           - Sum(itemDiscountData) - Sum(additionalItemDiscount) - t4
- *           + NonTotalTaxableFees[T13-T20]
- * so T4 is SUBTRACTED while every other tax type is added. `lineTotal()` here
- * only knows how to add, so a T4 classification would silently overstate the
- * line (and the receipt) rather than fail. Supporting withholding tax is
- * deliberate work, not a one-character change — until then it is refused.
- */
-export class UnsupportedTaxTypeError extends Error {
-  constructor(readonly taxType: string) {
-    super(
-      `fiscal: tax type ${taxType} is not supported by this mapper. ` +
-        "ETA's line-total equation subtracts T4 (withholding) where every other type is added, so totalling it here would misstate the document.",
-    );
-    this.name = "UnsupportedTaxTypeError";
-  }
-}
-
-/**
- * Receipt v1.2 makes `buyer.id`/`buyer.name` Mandatory for a business buyer,
- * and for a natural person once the receipt reaches ETA's configured
- * threshold. ServeOS issues walk-in `P` receipts with no id, so a large enough
- * sale must fail here rather than be rejected by ETA after submission.
- */
-export class BuyerIdRequiredError extends Error {
-  constructor(
-    readonly buyerType: string,
-    readonly total: string,
-    readonly threshold: string,
-    readonly missing: string[],
-  ) {
-    super(
-      `fiscal: buyer type ${buyerType} is missing ${missing.map((field) => `buyer.${field}`).join(" and ")} ` +
-        `on a receipt of ${total} (threshold ${threshold}). ` +
-        "Receipt v1.2 makes BOTH id and name Mandatory for type B, and for type P at or above the ETA-configured amount.",
-    );
-    this.name = "BuyerIdRequiredError";
-  }
-}
 
 /** Tax types whose amounts ETA ADDS in the line-total equation. T4 is absent
  *  on purpose — it subtracts; see `UnsupportedTaxTypeError`. */
@@ -219,9 +152,7 @@ function itemType(codeSource: FiscalDocLine["codeSource"]): string {
  *  data error rather than something to paper over. */
 function toTaxableItem(tax: FiscalTaxAmount, index: number): Record<string, unknown> {
   if (!ADDITIVE_TAX_TYPES.has(tax.taxType)) throw new UnsupportedTaxTypeError(tax.taxType);
-  if (tax.taxSubType === null) {
-    throw new Error(`fiscal: line tax #${index} (${tax.taxType}) has no taxSubType, which receipt v1.2 marks Mandatory on taxableItems`);
-  }
+  if (tax.taxSubType === null) throw new MissingTaxSubTypeError(tax.taxType, index);
   return {
     taxType: tax.taxType,
     subType: tax.taxSubType,
@@ -252,8 +183,8 @@ function toItemData(line: FiscalDocLine, ctx: WireContext): Record<string, unkno
   const lineTax = line.taxes.map(toTaxableItem);
 
   return {
-    // Mandatory; the product id where we have one, else the item code.
-    internalCode: line.internalCode ?? line.itemCode,
+    // Mandatory; the product id for a sale line, the configured code for a fee line.
+    internalCode: line.internalCode,
     description: line.description,
     itemType: itemType(line.codeSource),
     itemCode: line.itemCode,
@@ -298,17 +229,16 @@ function assertTotalsReconcile(doc: FiscalDocument, extraDiscount: string): void
     }
   }
 
-  const summedLines = addDecimal("line totals", ...doc.lines.map(lineTotal), "0.00");
+  const summedLines = sumDecimal("line totals", doc.lines.map(lineTotal));
   const computed = subtractDecimal("totalAmount", summedLines, extraDiscount);
   if (compareDecimal(computed, doc.total) !== 0) {
     throw new EtaTotalsMismatchError(doc.total, computed, "totalAmount = Sum(itemData.total) - Sum(extraReceiptDiscountData.amount)");
   }
 
   for (const total of doc.taxTotals) {
-    const summedTax = addDecimal(
+    const summedTax = sumDecimal(
       "taxTotals",
-      ...doc.lines.flatMap((line) => line.taxes.filter((tax) => tax.taxType === total.taxType).map((tax) => tax.amount)),
-      "0.00",
+      doc.lines.flatMap((line) => line.taxes.filter((tax) => tax.taxType === total.taxType).map((tax) => tax.amount)),
     );
     if (compareDecimal(summedTax, total.amount) !== 0) {
       throw new EtaTotalsMismatchError(total.amount, summedTax, `taxTotals[${total.taxType}] = Sum(itemData.taxableItems[${total.taxType}].amount)`);
@@ -345,9 +275,7 @@ function assertBuyerIdentified(doc: FiscalDocument, threshold: string): void {
  */
 export function toWireReceipt(doc: FiscalDocument, ctx: WireContext): Record<string, unknown> {
   const isReturn = doc.docType === "return_receipt";
-  if (isReturn && !doc.referenceUuid) {
-    throw new Error("fiscal: a return receipt requires referenceUUID — the uuid of the original sale receipt (Mandatory in v1.2)");
-  }
+  if (isReturn && !doc.referenceUuid) throw new MissingReferenceUuidError();
 
   assertBuyerIdentified(doc, ctx.buyerIdThreshold ?? DEFAULT_BUYER_ID_THRESHOLD);
 
@@ -355,9 +283,9 @@ export function toWireReceipt(doc: FiscalDocument, ctx: WireContext): Record<str
   assertTotalsReconcile(doc, extraDiscount);
 
   const lines = doc.lines.map((line) => toItemData(line, ctx));
-  const netAmount = addDecimal("netAmount", ...doc.lines.map((line) => line.lineTotal), "0.00");
-  const totalSales = addDecimal("totalSales", ...doc.lines.map((line) => addDecimal("totalSale", line.lineTotal, line.discountAmount)), "0.00");
-  const lineDiscounts = addDecimal("totalCommercialDiscount", ...doc.lines.map((line) => line.discountAmount), "0.00");
+  const netAmount = sumDecimal("netAmount", doc.lines.map((line) => line.lineTotal));
+  const totalSales = sumDecimal("totalSales", doc.lines.map((line) => addDecimal("totalSale", line.lineTotal, line.discountAmount)));
+  const lineDiscounts = sumDecimal("totalCommercialDiscount", doc.lines.map((line) => line.discountAmount));
 
   return {
     header: {
@@ -412,5 +340,39 @@ export function toWireReceipt(doc: FiscalDocument, ctx: WireContext): Record<str
       : {}),
     paymentMethod: doc.paymentMethodCode,
     adjustment: ADJUSTMENT,
+  };
+}
+
+/**
+ * Wire document + uuid + QR url for one fiscal document, in the order the
+ * chain requires: map to v1.2 JSON (carrying previousUUID / referenceUUID /
+ * referenceOldUUID), hash the blank-uuid form, write the uuid back, then build
+ * the QR from that same uuid. Pure — same inputs, same uuid, every time.
+ *
+ * `opts.portalBase` is the eInvoicing portal the QR url points at. Task 3b
+ * derives it from `cfg.environment` through a single preprod/prod constant
+ * map; it is deliberately NOT on `EtaConfig`, which carries credentials
+ * rather than presentation.
+ */
+export function finalizeReceipt(
+  doc: FiscalDocument,
+  ctx: WireContext,
+  opts: { portalBase: string },
+): FinalizedFiscalDocument {
+  const wire = toWireReceipt(doc, ctx);
+  const uuid = computeReceiptUuid(wire);
+
+  // `toWireReceipt` just built this object and nothing else holds a reference
+  // to it yet, so mutating it here is unobservable — and it keeps `uuid` at
+  // the exact key position the hash was taken over, which rebuilding the
+  // object would have to reproduce by hand.
+  const header = wire.header as Record<string, unknown>;
+  header.uuid = uuid;
+
+  return {
+    docType: doc.docType,
+    wire,
+    uuid,
+    qrUrl: buildQrUrl({ portalBase: opts.portalBase, uuid, dateUtc: doc.issuedAt, total: doc.total, rin: ctx.rin }),
   };
 }

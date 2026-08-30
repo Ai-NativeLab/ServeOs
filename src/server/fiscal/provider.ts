@@ -21,8 +21,9 @@ export type FiscalDocLine = {
   /** Our own reference for the item, mapped to receipt v1.2's Mandatory
    *  `internalCode` ("can be used to simplify references back to existing
    *  solution"). The product's id for a sale line; the configured code for a
-   *  fee line. Added by Task 3a. */
-  internalCode?: string;
+   *  fee line. Required, because the wire slot is Mandatory and there is no
+   *  honest fallback. */
+  internalCode: string;
   codeSource: EtaCodeSource; // "gs1" | "egs"
   taxType: string;
   taxSubType: string | null;
@@ -143,6 +144,27 @@ export type FiscalRefundInput = {
 };
 
 /**
+ * A `FiscalDocument` that has been mapped to its ETA wire JSON, hashed into
+ * its uuid and given its QR url — i.e. everything `submit` needs and nothing
+ * it does not.
+ *
+ * `submit` takes THIS rather than a `FiscalDocument` because the uuid is the
+ * SHA-256 of the exact bytes transmitted: re-deriving the wire document inside
+ * the provider would risk it diverging from the document that was hashed. The
+ * uuid and qrUrl are also what the caller persists on `eta_submissions`
+ * whether or not the HTTP call succeeds.
+ */
+export type FinalizedFiscalDocument = {
+  docType: EtaDocType;
+  /** The receipt v1.2 JSON, property order preserved — see `stringifyWire`. */
+  wire: Record<string, unknown>;
+  /** 64-hex, self-computed; the document's fiscal identity. */
+  uuid: string;
+  /** The portal url the printed receipt's QR encodes. */
+  qrUrl: string;
+};
+
+/**
  * Mapping to `eta_submission_status`: a thrown error = retryable transport
  * failure (worker records "failed" + backoff); "skipped" = no submission
  * row is written at all; "submitted" = 202 accepted-for-processing,
@@ -175,7 +197,11 @@ export type EtaDeviceCredentials = {
  * e-receipt submission (null until a device is registered).
  */
 export type EtaConfig = {
-  registrationNumber: string;
+  /** Taxpayer Registration Identification Number — ETA's own name for it, and
+   *  the same value as `WireContext.rin`. The DB column stays
+   *  `eta_tenant_config.registration_number`; Task 3b's `resolveEtaConfig`
+   *  maps the two. */
+  rin: string;
   environment: EtaEnvironment; // "preprod" | "prod"
   erp: { clientId: string; clientSecret: string };
   device: EtaDeviceCredentials | null;
@@ -187,6 +213,18 @@ export type EtaConfig = {
  * `buildCreditNote` (B2B e_invoice corrections) is deliberately absent —
  * deferred with the B2B trigger; adding it later is a breaking change to
  * every implementer, accepted cost.
+ *
+ * COMPOSITION — the worker (Task 5) drives these in order:
+ *
+ *   1. `buildReceipt` / `buildReturnReceipt`  -> FiscalDocument   (pure)
+ *   2. `finalizeReceipt(doc, wireCtx, opts)`  -> FinalizedFiscalDocument (pure)
+ *   3. `submit(finalized, cfg)`               -> FiscalSubmitResult (HTTP)
+ *   4. `poll(submissionUuid, cfg)`            -> terminal accept/reject
+ *
+ * Steps 1-2 are pure and live in `./build-document` + `./eta-wire`; only 3-4
+ * touch the network. The `WireContext` step 2 needs is resolved by the worker
+ * per tenant/branch/device (RIN, trade name, branch code + address, activity
+ * code, device serial), with `receiptNumber` resolved per document.
  */
 export interface FiscalProvider {
   readonly name: string; // "eta" | "noop"
@@ -197,7 +235,7 @@ export interface FiscalProvider {
   /** submit()/poll(): one document per submission — batching is out of
    *  contract; a batch submission model would require poll to return
    *  per-document results (`FiscalSubmitResult[]`). */
-  submit(doc: FiscalDocument, cfg: EtaConfig): Promise<FiscalSubmitResult>;
+  submit(finalized: FinalizedFiscalDocument, cfg: EtaConfig): Promise<FiscalSubmitResult>;
   /** Polls a prior "submitted" result for its terminal accept/reject — see
    *  the one-document-per-submission note on submit(). */
   poll(submissionUuid: string, cfg: EtaConfig): Promise<FiscalSubmitResult>;

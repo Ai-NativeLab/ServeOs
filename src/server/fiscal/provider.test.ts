@@ -9,6 +9,7 @@ import type {
   FiscalSaleInput,
   FiscalRefundInput,
   FiscalSubmitResult,
+  FinalizedFiscalDocument,
   EtaConfig,
 } from "./provider";
 
@@ -25,6 +26,7 @@ const TAX_BREAKDOWN: FiscalDocument["taxTotals"] = [{ taxType: "T1", taxSubType:
  *  the document's subtotal below. */
 const FIXTURE_LINE: FiscalDocLine = {
   itemCode: "0000000000017",
+  internalCode: "test-product",
   codeSource: "gs1",
   taxType: "T1",
   taxSubType: null,
@@ -113,7 +115,7 @@ describe("resolveFiscalProvider", () => {
 
 describe("NoopFiscalProvider", () => {
   it("submit returns skipped and writes nothing", async () => {
-    const res = await new NoopFiscalProvider().submit({} as FiscalDocument, {} as EtaConfig);
+    const res = await new NoopFiscalProvider().submit({} as FinalizedFiscalDocument, {} as EtaConfig);
     expect(res).toEqual({ status: "skipped", responseJson: {} });
   });
 
@@ -138,7 +140,7 @@ describe("EtaFiscalProvider", () => {
     // build*/buildReturnReceipt now delegate to ./build-document; their mapping
     // is covered in build-document.test.ts against real Order/Refund fixtures.
     const eta = new EtaFiscalProvider();
-    await expect(eta.submit({} as FiscalDocument, {} as EtaConfig)).rejects.toThrow("not implemented");
+    await expect(eta.submit({} as FinalizedFiscalDocument, {} as EtaConfig)).rejects.toThrow("not implemented");
     await expect(eta.poll("submission-uuid", {} as EtaConfig)).rejects.toThrow("not implemented");
   });
 });

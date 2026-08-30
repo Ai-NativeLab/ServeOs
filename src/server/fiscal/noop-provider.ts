@@ -3,6 +3,7 @@ import type {
   FiscalSaleInput,
   FiscalRefundInput,
   FiscalDocument,
+  FinalizedFiscalDocument,
   FiscalSubmitResult,
   EtaConfig,
 } from "./provider";
@@ -30,7 +31,7 @@ export class NoopFiscalProvider implements FiscalProvider {
     throw new Error("NoopFiscalProvider.buildReturnReceipt: non-EG tenants never build fiscal documents");
   }
 
-  async submit(_doc: FiscalDocument, _cfg: EtaConfig): Promise<FiscalSubmitResult> {
+  async submit(_finalized: FinalizedFiscalDocument, _cfg: EtaConfig): Promise<FiscalSubmitResult> {
     return { status: "skipped", responseJson: {} };
   }
 
