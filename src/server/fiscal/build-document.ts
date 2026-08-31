@@ -343,7 +343,7 @@ export function buildReceipt(input: FiscalSaleInput): FiscalDocument {
  * line's amount, under `"net"` it goes ON TOP — so the choice is what decides
  * whether ETA's `totalAmount = Sum(itemData.total)` holds.
  */
-type ReturnAmountBasis = "gross" | "net";
+export type ReturnAmountBasis = "gross" | "net";
 
 /** The tax a line of `amount` may carry under `basis`, per Main Calculations
  *  rule 42 (`amount = netSale * rate / 100`), 2dp half-up:
@@ -355,7 +355,7 @@ type ReturnAmountBasis = "gross" | "net";
  *  It is a CEILING as much as a value: a line cannot honestly report more tax
  *  than the money it accounts for contains, and reporting more is precisely
  *  what ETA's per-line equation rejects. */
-function lineTaxCapacity(amount: string, rate: string, basis: ReturnAmountBasis): string {
+export function lineTaxCapacity(amount: string, rate: string, basis: ReturnAmountBasis): string {
   return divideDecimal(
     "line tax capacity",
     multiplyDecimal("line tax capacity", amount, rate),
@@ -365,7 +365,7 @@ function lineTaxCapacity(amount: string, rate: string, basis: ReturnAmountBasis)
 }
 
 /** One return line before its VAT is settled. */
-type ReturnDraft = {
+export type ReturnDraft = {
   line: Omit<FiscalDocLine, "unitPrice" | "taxes" | "lineTotal">;
   /** The money this line accounts for — `refund_lines.amount`, or the
    *  unattributed remainder, verbatim. Read under `ReturnAmountBasis`. */
@@ -387,8 +387,11 @@ type ReturnDraft = {
  * `unreported` is what no line could take. It is zero for every refund whose
  * money and VAT agree; see THE DOCUMENT'S VAT CEILING on `buildReturnReceipt`
  * for the one shape where it is not.
+ *
+ * Exported for the property hammer in `build-document.test.ts`; the builder is
+ * the only caller.
  */
-function attributeReturnVat(
+export function attributeReturnVat(
   drafts: ReturnDraft[], headerVat: string, rate: string, basis: ReturnAmountBasis,
 ): { vats: string[]; unreported: string } {
   const caps = drafts.map((draft) => lineTaxCapacity(draft.amount, rate, basis));
@@ -403,20 +406,42 @@ function attributeReturnVat(
     // resolved lines of a headerless one are built to sum to it), so this is a
     // corrupted row rather than a shape to honour. Shrink to the header
     // proportionally rather than reporting past it; every part only moves down,
-    // so no line is pushed over its cap, and `assertTotalsReconcile` still has
-    // the last word on whether the result is emittable at all.
-    return { vats: allocateLargestRemainder("refunds.vatAmount", headerVat, base), unreported: "0.00" };
+    // so no line is pushed over its cap, and the proportionality assert still
+    // has the last word on whether the result is emittable at all.
+    return { vats: shareOverPositive(headerVat, base), unreported: "0.00" };
   }
 
   const headroom = base.map((vat, index) => subtractDecimal("return VAT headroom", caps[index], vat));
   const available = sumDecimal("return VAT headroom", headroom);
   const placed = compareDecimal(residual, available) > 0 ? available : residual;
-  const extra = allocateLargestRemainder("return VAT residual", placed, headroom);
+  const extra = shareOverPositive(placed, headroom);
 
   return {
     vats: base.map((vat, index) => addDecimal("return line VAT", vat, extra[index])),
     unreported: subtractDecimal("unreported return VAT", residual, placed),
   };
+}
+
+/**
+ * `allocateLargestRemainder`, with the ZERO weights held out of the draw.
+ *
+ * A zero weight has a remainder of zero, so it sorts last — but a split with
+ * enough leftover cents and few enough distinct remainders can still reach it,
+ * and one cent handed to a line whose capacity (or headroom) is zero is exactly
+ * the rule-42 breach the caps exist to prevent. Holding them out makes
+ * "no line above its cap" true by construction rather than by argument, and it
+ * is the same reasoning `refund-vat.ts`'s `floorLineVatsAt0` records for its own
+ * re-spread.
+ *
+ * `total` must be within Σ weights, which both call sites guarantee.
+ */
+function shareOverPositive(total: string, weights: string[]): string[] {
+  const taking = weights.map((weight, index) => ({ weight, index })).filter((w) => compareDecimal(w.weight, "0") > 0);
+  if (taking.length === 0 || isZeroDecimal(total)) return weights.map(() => "0.00");
+
+  const shares = allocateLargestRemainder("return VAT share", total, taking.map((w) => w.weight));
+  const byIndex = new Map(taking.map((w, position) => [w.index, shares[position]]));
+  return weights.map((_, index) => byIndex.get(index) ?? "0.00");
 }
 
 /**
@@ -438,8 +463,11 @@ function attributeReturnVat(
  * runs first, on the one input shape that reaches it, and names the cause and
  * the remedy instead. The two use the SAME drift and the SAME published
  * tolerance, so this never refuses a document the wire would have accepted.
+ *
+ * Exported for the property hammer in `build-document.test.ts`; the builder is
+ * the only caller.
  */
-function assertLinesCarryTheirOwnVat(
+export function assertLinesCarryTheirOwnVat(
   lines: FiscalDocLine[], drafts: ReturnDraft[], refundId: string, rate: string,
 ): void {
   for (const [index, line] of lines.entries()) {
@@ -460,6 +488,25 @@ function assertLinesCarryTheirOwnVat(
 
 /**
  * A refund as an ETA return receipt.
+ *
+ * THE PIPELINE. Five stages, each stated with what it MAY and MAY NOT change
+ * (the standard `@/server/pos/refund-vat` sets for the half that runs at
+ * issuance — this is the half that runs at document time):
+ *
+ *   refunds.totalAmount + refunds.vatAmount   (the stored pair, authoritative)
+ *        │
+ *   [1] DRAFT        one line per refund_lines row, money + stored VAT verbatim
+ *        │           MAY refuse an orphan or negative row; MAY NOT alter a stored figure.
+ *   [2] BASIS        net or gross, from the order's vatMode where it reconciles
+ *        │           MAY decide whether tax sits IN a line or ON TOP of it; MAY NOT move money.
+ *   [3] FEE MONEY    the money no refund_lines row names becomes its own line
+ *        │           MAY issue the order-level charge the refund returned; MAY NOT invent money.
+ *   [4] ATTRIBUTE    cap each line at rule 42, re-offer the rest to the headroom
+ *        │           MAY move tax BETWEEN lines; MAY NOT report above the stored header.
+ *   [5] MATERIALIZE  netSale / unitPrice / taxes, then the proportionality assert
+ *        ▼           MAY refuse a document ETA would reject; MAY NOT repair one.
+ *
+ *   Σ itemData.total == refunds.totalAmount   and   Σ taxableItems == taxTotals
  *
  * AMOUNTS ARE POSITIVE. Return Receipt v1.2 describes totalSales / netAmount /
  * totalAmount in exactly the same words as the sale receipt and defines no

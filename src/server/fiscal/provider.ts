@@ -270,7 +270,14 @@ export type EtaConfig = {
  * Steps 1-2 are pure and live in `./build-document` + `./eta-wire`; only 3-4
  * touch the network. The `WireContext` step 2 needs is resolved by the worker
  * per tenant/branch/device (RIN, trade name, branch code + address, activity
- * code, device serial), with `receiptNumber` resolved per document.
+ * code, device serial), with `receiptNumber` resolved per document. STEP 1's
+ * OWN inputs are likewise resolved per document, not per tenant — the rows the
+ * document is built from PLUS the tenant configuration that document needs
+ * (tax codes, fee-line classifications, the parent order behind a refund): see
+ * `FiscalSaleInput` / `FiscalRefundInput`, and `./finalize`'s
+ * `buildSaleDocument` / `buildReturnDocument` for the assembly. A third builder
+ * (B2B `e_invoice`) takes the same shape — its own `Fiscal*Input`, assembled
+ * there, rather than widening either of these.
  *
  * FAILURE TAXONOMY — the complete contract for what a thrown error means and
  * what Task 5's worker must do about it. Three families, three behaviours;

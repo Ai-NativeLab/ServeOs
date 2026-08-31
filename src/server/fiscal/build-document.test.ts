@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { buildReceipt, buildReturnReceipt } from "./build-document";
+import {
+  buildReceipt, buildReturnReceipt, attributeReturnVat, lineTaxCapacity, assertLinesCarryTheirOwnVat,
+  type ReturnDraft, type ReturnAmountBasis,
+} from "./build-document";
 import {
   FiscalDocumentError,
   MissingTaxCodeError,
@@ -18,9 +21,9 @@ import {
 import { EtaFiscalProvider } from "./eta-provider";
 import { stringifyWire } from "./serialize";
 import { toWireReceipt, finalizeReceipt, type WireContext } from "./eta-wire";
-import { addDecimal, sumDecimal } from "./decimal";
+import { addDecimal, sumDecimal, compareDecimal, isZeroDecimal, subtractDecimal } from "./decimal";
 import type {
-  FiscalSaleInput, FiscalRefundInput, FiscalDocument, FeeLineConfig,
+  FiscalSaleInput, FiscalRefundInput, FiscalDocument, FiscalDocLine, FeeLineConfig,
 } from "./provider";
 import type { ProductTaxCode } from "./schema";
 import type { Order, OrderItem } from "@/server/ordering/schema";
@@ -687,6 +690,38 @@ const returnInput = (over: Partial<FiscalRefundInput>): FiscalRefundInput => ({
   ...over,
 });
 
+/**
+ * `refund-vat.ts` stage [5]'s floored shape, reached for real: 190.00/10.00
+ * items refunded in full with INVERTED line amounts (10.00/190.00) after a
+ * goodwill refund already took most of the VAT, leaving 0.56/0.00 against a
+ * 0.56 header. The 10.00 line's money contains 1.23, so reporting 0.56 on it is
+ * 0.67 out — past ETA's 0.5 — and no attribution can fix it, because the
+ * refund's own amounts and VAT point in opposite directions.
+ */
+const invertedOrder: Order = {
+  ...order,
+  discountAmount: "0.00", discountReason: null,
+  subtotal: "200.00", serviceChargeAmount: "0.00", deliveryFee: "0.00",
+  vatAmount: "24.56", total: "200.00",
+};
+
+const invertedItems: OrderItem[] = [
+  { ...items[0], quantity: 1, lineTotal: "190.00", unitBasePrice: "190.00", discountAmount: "0.00" },
+  { ...items[1], quantity: 1, lineTotal: "10.00", unitBasePrice: "10.00" },
+];
+
+const disproportionateRefund: FiscalRefundInput = {
+  ...refundInput,
+  feeLines,
+  order: invertedOrder,
+  items: invertedItems,
+  refund: { ...refund, kind: "full", totalAmount: "200.00", vatAmount: "0.56" },
+  lines: [
+    { ...refundLines[0], id: "rl-inv-a", orderItemId: invertedItems[0].id, quantity: 1, amount: "10.00", vatAmount: "0.56" },
+    { ...refundLines[0], id: "rl-inv-b", orderItemId: invertedItems[1].id, quantity: 1, amount: "190.00", vatAmount: "0.00" },
+  ],
+};
+
 /** Every taxableItems amount the wire actually emits, in line order. */
 function wireLineTaxes(wire: Record<string, unknown>): (string | undefined)[] {
   return (wire.itemData as Record<string, unknown>[]).map((line) => {
@@ -882,31 +917,8 @@ describe("buildReturnReceipt — VAT reversal", () => {
   });
 
   it("names the CAUSE when a refund's line amounts are disproportionate to its stored VAT", () => {
-    // `refund-vat.ts` stage [5]'s floored shape, reached for real: 190.00/10.00
-    // items refunded in full with INVERTED line amounts (10.00/190.00) after a
-    // goodwill refund already took most of the VAT, leaving 0.56/0.00 against a
-    // 0.56 header. The 10.00 line's money contains 1.23, so reporting 0.56 on
-    // it is 0.67 out — past ETA's 0.5 — and no attribution can fix it, because
-    // the refund's own amounts and VAT point in opposite directions.
-    const invertedOrder: Order = {
-      ...inclusiveOrder, subtotal: "200.00", serviceChargeAmount: "0.00", vatAmount: "24.56", total: "200.00",
-    };
-    const invertedItems: OrderItem[] = [
-      { ...items[0], quantity: 1, lineTotal: "190.00", unitBasePrice: "190.00", discountAmount: "0.00" },
-      { ...items[1], quantity: 1, lineTotal: "10.00", unitBasePrice: "10.00" },
-    ];
-    const input = returnInput({
-      order: invertedOrder,
-      items: invertedItems,
-      refund: vatRefund({ kind: "full", totalAmount: "200.00", vatAmount: "0.56" }),
-      lines: [
-        vatRefundLine({ orderItemId: invertedItems[0].id, amount: "10.00", vatAmount: "0.56" }),
-        vatRefundLine({ orderItemId: invertedItems[1].id, amount: "190.00", vatAmount: "0.00" }),
-      ],
-    });
-
     try {
-      buildReturnReceipt(input);
+      buildReturnReceipt(disproportionateRefund);
       expect.unreachable("buildReturnReceipt should have refused the disproportionate refund");
     } catch (err) {
       expect(err).toBeInstanceOf(DisproportionateRefundLineError);
@@ -1153,6 +1165,169 @@ describe("EtaFiscalProvider", () => {
   // seam is asserted in provider.test.ts. This file stays pure.
 });
 
+/* ──────────────────────────────────────────────────────────────────────────
+ * The return-attribution hammer.
+ *
+ * `attributeReturnVat` is where the two coordinator invariants actually live —
+ * Σ emitted == the stored header, and no line above what ETA's rule 42 lets it
+ * carry — and its inputs come from rows `issueRefund` does not fully validate
+ * (a full refund's line amounts are never checked against its tenders or its
+ * items). The pinned cases above cover the shapes we can name; this covers the
+ * ones we cannot, on the same seeded-LCG-and-counters pattern
+ * `@/server/pos/refund-vat.test.ts` established, in this file rather than a new
+ * one because the function under test is this module's.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/** A tiny deterministic LCG (Numerical Recipes constants) — no dependency, and
+ *  the same sequence on every machine and every run. */
+function lcg(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+const ATTRIBUTION_SEED = 20260901;
+const ATTRIBUTION_CASES = 10_000;
+
+const pick = <T,>(rnd: () => number, xs: readonly T[]): T => xs[Math.floor(rnd() * xs.length)];
+const int = (rnd: () => number, maxInclusive: number): number => Math.floor(rnd() * (maxInclusive + 1));
+
+/** Integer cents → the `money(n)` spelling, by string surgery so no fixture
+ *  ever rounds a float. */
+const cents = (n: number): string => `${Math.floor(Math.abs(n) / 100)}.${String(Math.abs(n) % 100).padStart(2, "0")}`;
+
+const MONEY_2DP = /^\d+\.\d{2}$/; // no leading "-": an emitted tax is never negative
+
+type AttributionCase = {
+  drafts: ReturnDraft[];
+  headerVat: string;
+  rate: string;
+  basis: ReturnAmountBasis;
+};
+
+/**
+ * An ADMISSIBLE case: `buildReturnReceipt` only reaches this function with a
+ * non-zero header (the zero path short-circuits), so `headerVat` is always
+ * positive. Everything else is deliberately pathological — zero-money lines
+ * (zero capacity), stored VAT far above or far below what the money holds, and
+ * headers that no distribution of these amounts can satisfy.
+ */
+function generateAttributionCase(rnd: () => number): AttributionCase {
+  const basis: ReturnAmountBasis = rnd() < 0.5 ? "gross" : "net";
+  const rate = pick(rnd, ["14", "14.00", "5", "0.50", "10.000"]);
+  const n = 1 + int(rnd, 5);
+
+  const drafts: ReturnDraft[] = Array.from({ length: n }, (_, i) => {
+    // Exact zeros, single cents, ties (a repeated constant) and ordinary money.
+    const amount = pick(rnd, [0, 1, 2, 10_00, 10_00, 100_00, 190_00, 1_000_00]);
+    const capacity = Math.round((amount * Number(rate)) / (basis === "net" ? 100 : 100 + Number(rate)));
+    return {
+      line: {
+        itemCode: "1", internalCode: `i${i}`, codeSource: "gs1" as const, taxType: "T1",
+        taxSubType: "V001", unitType: "EA", description: `Line ${i}`, quantity: 1, discountAmount: "0.00",
+      },
+      amount: cents(amount),
+      // Around the capacity on purpose: at it, over it (the top-up shape),
+      // under it (the floored shape), and exactly zero.
+      storedVat: cents(pick(rnd, [0, capacity, capacity, Math.max(0, capacity - 1 - int(rnd, 500)), capacity + 1 + int(rnd, 500)])),
+    };
+  });
+
+  const storedTotal = drafts.reduce((s, d) => s + Math.round(Number(d.storedVat) * 100), 0);
+  // Usually the stored sum (what issueRefund actually writes), sometimes above
+  // it (the un-placeable residual) and sometimes below (the corrupted-row
+  // shrink). Never zero: that path never reaches this function.
+  const headerCents = Math.max(1, pick(rnd, [
+    storedTotal, storedTotal, storedTotal + 1 + int(rnd, 2_000), Math.max(0, storedTotal - 1 - int(rnd, 2_000)),
+  ]));
+
+  return { drafts, headerVat: cents(headerCents), rate, basis };
+}
+
+describe(`return VAT attribution hammer (LCG seed ${ATTRIBUTION_SEED}, deterministic)`, () => {
+  it(`holds every invariant over ${ATTRIBUTION_CASES.toLocaleString()} pathological attributions`, () => {
+    const rnd = lcg(ATTRIBUTION_SEED);
+    const seen = { capSaturated: 0, negativeResidual: 0, allCapped: 0, zeroCapacity: 0, unreported: 0, refused: 0 };
+
+    for (let n = 0; n < ATTRIBUTION_CASES; n++) {
+      const input = generateAttributionCase(rnd);
+      const { vats, unreported } = attributeReturnVat(input.drafts, input.headerVat, input.rate, input.basis);
+      const where = `case ${n}: ${JSON.stringify(input)} → ${JSON.stringify({ vats, unreported })}`;
+      const caps = input.drafts.map((d) => lineTaxCapacity(d.amount, input.rate, input.basis));
+
+      // 1. One figure per draft, in the order they were given.
+      expect(vats.length, where).toBe(input.drafts.length);
+
+      // 2. Every figure is a plain, non-negative 2dp numeral — no line may
+      //    report an invented input tax credit.
+      for (const vat of vats) expect(vat, where).toMatch(MONEY_2DP);
+      expect(unreported, where).toMatch(MONEY_2DP);
+
+      // 3. NO LINE ABOVE ITS RULE-42 CAPACITY. This is the invariant the whole
+      //    de-top exists to hold, and the one a leftover cent could break.
+      for (const [i, vat] of vats.entries()) {
+        expect(compareDecimal(vat, caps[i]), `${where} (line ${i} cap ${caps[i]})`).toBeLessThanOrEqual(0);
+      }
+
+      // 4. CONVERGENCE ON THE STORED HEADER: what is reported plus what could
+      //    not be placed is the refund's own figure, to the cent — except on
+      //    the corrupted-row shrink, where reporting BELOW it is the point.
+      const reported = sumDecimal("reported", vats);
+      const accounted = addDecimal("accounted", reported, unreported);
+      // The shrink is chosen on the CAPPED sum, not the stored one: a line
+      // storing more than its money holds is capped first, so a refund can
+      // store above its header and still leave a positive residual.
+      const cappedSum = sumDecimal("capped", input.drafts.map((d, i) =>
+        compareDecimal(d.storedVat, caps[i]) > 0 ? caps[i] : d.storedVat));
+      if (compareDecimal(cappedSum, input.headerVat) > 0) {
+        seen.negativeResidual++;
+        expect(reported, where).toBe(input.headerVat);
+        expect(unreported, where).toBe("0.00");
+      } else {
+        expect(accounted, where).toBe(input.headerVat);
+      }
+
+      // 5. Deterministic — the same refund must always hash to the same document.
+      if (n % 10 === 0) {
+        expect(attributeReturnVat(input.drafts, input.headerVat, input.rate, input.basis), where)
+          .toEqual({ vats, unreported });
+      }
+
+      // 6. And whatever comes out either survives the proportionality check or
+      //    is refused BY NAME — never with a bare Error.
+      const lines: FiscalDocLine[] = input.drafts.map((draft, i) => ({
+        ...draft.line,
+        unitPrice: "0.00000",
+        taxes: isZeroDecimal(vats[i])
+          ? []
+          : [{ taxType: draft.line.taxType, taxSubType: draft.line.taxSubType, rate: input.rate, amount: vats[i] }],
+        lineTotal: input.basis === "net" ? draft.amount : subtractDecimal("netSale", draft.amount, vats[i]),
+      }));
+      try {
+        assertLinesCarryTheirOwnVat(lines, input.drafts, "r1", input.rate);
+      } catch (err) {
+        expect(err, where).toBeInstanceOf(DisproportionateRefundLineError);
+        seen.refused++;
+      }
+
+      if (vats.some((vat, i) => !isZeroDecimal(caps[i]) && compareDecimal(vat, caps[i]) === 0)) seen.capSaturated++;
+      if (vats.every((vat, i) => compareDecimal(vat, caps[i]) === 0)) seen.allCapped++;
+      if (caps.some((cap) => isZeroDecimal(cap))) seen.zeroCapacity++;
+      if (!isZeroDecimal(unreported)) seen.unreported++;
+    }
+
+    // The hammer is only worth committing if it actually reaches the corners.
+    expect(seen.capSaturated).toBeGreaterThan(100);
+    expect(seen.negativeResidual).toBeGreaterThan(100);
+    expect(seen.allCapped).toBeGreaterThan(100);
+    expect(seen.zeroCapacity).toBeGreaterThan(100);
+    expect(seen.unreported).toBeGreaterThan(100);
+    expect(seen.refused).toBeGreaterThan(100);
+  });
+});
+
 describe("FiscalDocumentError family", () => {
   // Task 5 maps `instanceof FiscalDocumentError` to a "failed" submission row
   // with no retry, and switches on `code` for owner-facing alerts — so both
@@ -1168,6 +1343,8 @@ describe("FiscalDocumentError family", () => {
     new MissingTaxSubTypeError("T1", 0),
     new MissingReferenceUuidError(),
     new BuyerIdRequiredError("B", "10.00", "0", ["name"]),
+    new DisproportionateRefundLineError("r1", "10.00", "0.56", "1.32"),
+    new NonPositiveLineTaxError(0, "T1", "-1.00"),
   ];
 
   it("every member extends the base and is a real Error", () => {
@@ -1190,6 +1367,8 @@ describe("FiscalDocumentError family", () => {
       "missing-tax-sub-type",
       "missing-reference-uuid",
       "buyer-id-required",
+      "disproportionate-refund-line",
+      "non-positive-line-tax",
     ]);
   });
 
@@ -1205,10 +1384,25 @@ describe("FiscalDocumentError family", () => {
       () => buildReceipt({ ...saleInput, feeLines: {} }),
       () => buildReceipt({ ...saleInput, order: { ...order, total: "999.99" } }),
       () => buildReturnReceipt({ ...refundInput, lines: [] }),
+      () => buildReturnReceipt(disproportionateRefund),
       () => toWireReceipt(buildReceipt({ ...saleInput, taxCodes: [taxCode(PRODUCT_A, { taxType: "T4" }), taxCode(PRODUCT_B)] }), wireCtx),
     ];
     for (const run of thrown) {
       expect(run).toThrow(FiscalDocumentError);
     }
+  });
+
+  it("has ONE member with no reachable throw site, and says which", () => {
+    // `NonPositiveLineTaxError` is unreachable from stored figures: both
+    // builders OMIT a zero-amount taxableItems entry rather than emitting one,
+    // and `refund-vat.ts` floors every stored line VAT at zero, so nothing can
+    // hand the wire a non-positive amount. It is asserted by DIRECT
+    // CONSTRUCTION above and by a hand-tampered document in `toWireReceipt —
+    // per-line tax equation`, which is the honest coverage: the guard exists
+    // for a future allocation bug, not for a path that exists today.
+    const err = new NonPositiveLineTaxError(2, "T1", "0.00");
+    expect(err).toBeInstanceOf(FiscalDocumentError);
+    expect(err.message).toContain("itemData[2].taxableItems[T1].amount is 0.00");
+    expect(err.message).toContain("rule 42");
   });
 });
