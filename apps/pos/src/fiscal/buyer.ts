@@ -39,11 +39,28 @@
  * refused by `buildInvoice` inside the worker, which is the exact failure this
  * form exists to prevent.
  *
+ * ONE HALF OF THE MIRROR IS GUARDED, AND ONLY FROM THE OTHER SIDE. The
+ * registration number's pattern is pinned by a static scan in
+ * `src/server/fiscal/config-service.test.ts` ("the buyer RIN regex does not
+ * drift across the server/till boundary"), which reads THIS FILE as text and
+ * asserts `BUYER_RIN_RE`'s declaration carries the same literal `rinSchema`'s
+ * does. Breaking either side fails it, with the message naming the other file.
+ *
+ * It has to live over there and it has to read source rather than import it: a
+ * test in THIS package cannot reach `rinSchema` at all, so asserting
+ * `BUYER_RIN_RE` against nine digits would only be asserting the regex against
+ * itself and would stay green through any change to the server's rule. That is
+ * what `buyer.test.ts` used to claim it was doing, and the claim was the
+ * problem — a comment asserting a guard exists is what stops anyone writing one.
+ *
+ * The other rules below are NOT scanned — they are shape, not a literal, and a
+ * text scan for them would be noise. They are prose-linked and nothing more.
+ *
  * The rules mirrored, one for one:
- *   - `rin`      — `rinSchema`, `/^\d{9}$/` after trimming. The buyer's number
- *                  is checked to exactly the shape the SELLER's is; a document
- *                  naming a 9-digit issuer and an 8-digit receiver is not well
- *                  formed.
+ *   - `rin`      — `rinSchema`, `/^\d{9}$/` after trimming (this one is the
+ *                  scanned half). The buyer's number is checked to exactly the
+ *                  shape the SELLER's is; a document naming a 9-digit issuer and
+ *                  an 8-digit receiver is not well formed.
  *   - `name`     — non-empty after trimming (`requiredText`).
  *   - the five mandatory address components — non-empty after trimming.
  *   - the five optional components — carried verbatim, trimmed, omitted when
@@ -51,8 +68,17 @@
  *     form cannot set is a field the tenant cannot comply with.
  */
 
-/** ETA's Registration Identification Number: exactly nine digits. Exported so a
- *  test can pin that this is the same expression `rinSchema` uses. */
+/**
+ * ETA's Registration Identification Number: exactly nine digits.
+ *
+ * THE NAME AND THE ONE-LINE SPELLING ARE BOTH LOAD-BEARING.
+ * `config-service.test.ts`'s drift scan reads this file as text and looks for
+ * EXACTLY ONE line matching `const BUYER_RIN_RE =` (anchored at the line start,
+ * so a mention in a comment is not one), then requires the literal on that same
+ * line. It FAILS LOUDLY — it does not silently disarm — if the constant is
+ * renamed, declared twice, or wrapped so the pattern sits on the next line. All
+ * three are fine changes to make; make them in the scan too, in one commit.
+ */
 export const BUYER_RIN_RE = /^\d{9}$/;
 
 /** What the form holds while it is being typed — every field a string, because

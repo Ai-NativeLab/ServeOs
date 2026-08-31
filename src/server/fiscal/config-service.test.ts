@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { readFileSync } from "node:fs";
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
@@ -1632,5 +1633,144 @@ describe("requestB2bInvoice — the happy path", () => {
     // client — but it is what the finalize wrote under a configured e-seal ref,
     // so it is walked too.
     expectNoRefValues(await invoiceRows(s.tenantId), "eta_submissions after the trigger");
+  });
+});
+
+/**
+ * THE BUYER REGISTRATION NUMBER CROSSES A MODULE-GRAPH BOUNDARY, AND NOTHING
+ * ELSE CAN CATCH IT DRIFTING.
+ *
+ * `rinSchema` (config-service.ts) is the authority on what an ETA Registration
+ * Identification Number looks like, and `apps/pos/src/fiscal/buyer.ts`'s
+ * `BUYER_RIN_RE` is a hand-written copy of it — the till validates the buyer
+ * BEFORE the sale is sent, because the alternative is discovering a mistyped
+ * number inside the worker as a permanent failure hours after the customer has
+ * left.
+ *
+ * THE COPY CANNOT BE REPLACED BY AN IMPORT. The renderer is a separate Electron
+ * bundle with its own tsconfig and no path into the Next.js server tree, and
+ * pulling `config-service.ts` across would put zod, an audit writer and 1,300
+ * lines of configuration onto the module graph of every till transaction.
+ *
+ * NOR CAN IT BE CHECKED FROM EITHER SIDE ALONE. `buyer.test.ts` cannot reach
+ * `rinSchema`: asserting `BUYER_RIN_RE` against nine digits only asserts the
+ * regex against ITSELF, and stays green through any change to the server's rule
+ * — a guard that cannot fail is not a guard. The only mechanism that can fail on
+ * drift is one that reads the other file as TEXT, which is what this does, in
+ * the same shape as `sign-invoice.test.ts`'s unreachability scan.
+ *
+ * THE CONSEQUENCE OF UNDETECTED DRIFT IS SPECIFIC: the till accepts a number the
+ * server's own schema would refuse, the sale is filed as a B2B invoice anyway
+ * (the sale path carries no zod, by design), and `buildInvoice` refuses it into
+ * a `failed` row — the exact failure the till form exists to prevent,
+ * reintroduced silently.
+ */
+describe("the buyer RIN regex does not drift across the server/till boundary", () => {
+  const SERVER_MODULE = "src/server/fiscal/config-service.ts";
+  const TILL_MODULE = "apps/pos/src/fiscal/buyer.ts";
+
+  /** The pattern as it is SPELLED IN SOURCE. `String.raw` so the backslash here
+   *  is the same character the two files carry. */
+  const RIN_LITERAL = String.raw`/^\d{9}$/`;
+
+  /**
+   * The DECLARATION lines for a name — `const X =` / `export const X =`,
+   * anchored to the start of the line so a mention inside a comment or a doc
+   * block is not one.
+   *
+   * ANCHORING IS NOT TIDINESS, it is the difference between a live guard and a
+   * dead one, and this test found that out by failing: a substring search takes
+   * the FIRST line naming the constant, and the moment `buyer.ts` grew a doc
+   * comment mentioning `BUYER_RIN_RE` above the declaration, that comment
+   * shadowed it and the scan reported drift that did not exist. The same
+   * mechanism in reverse is how it would have rotted into a green no-op — a
+   * comment carrying the old literal above a changed declaration.
+   */
+  const declarationLines = (source: string, name: string): string[] =>
+    source
+      .split("\n")
+      .filter((line) => new RegExp(String.raw`^\s*(export\s+)?const\s+${name}\s*=`).test(line));
+
+  /** The scan, as one function, so the liveness checks below run the SAME
+   *  predicate against planted sources rather than a lookalike of it. */
+  const declaresRinLiteral = (source: string, name: string): boolean => {
+    const lines = declarationLines(source, name);
+    // EXACTLY ONE, so a second declaration added elsewhere cannot satisfy this
+    // while the real one drifts — and so a rename that leaves no declaration at
+    // all fails rather than passing vacuously.
+    return lines.length === 1 && lines[0].includes(RIN_LITERAL);
+  };
+
+  it("is the same literal in `rinSchema` and in the till's `BUYER_RIN_RE`", () => {
+    const server = readFileSync(SERVER_MODULE, "utf8");
+    const till = readFileSync(TILL_MODULE, "utf8");
+
+    // Non-vacuity first: a scan that read nothing — or read a file since renamed
+    // away — proves nothing. Floors rather than pins, so ordinary growth passes.
+    expect(server.length).toBeGreaterThan(10_000);
+    expect(till.length).toBeGreaterThan(1_000);
+
+    // Pinned to each DECLARATION rather than to the file, so moving the pattern
+    // onto some unrelated line — or leaving a stale copy in a comment above a
+    // changed declaration — does not satisfy it.
+    expect(
+      declaresRinLiteral(server, "rinSchema"),
+      `${SERVER_MODULE}'s rinSchema no longer declares ${RIN_LITERAL}. It is the authority on ETA's ` +
+        `Registration Identification Number, and ${TILL_MODULE} carries a hand-written copy that cannot ` +
+        "import it (separate Electron bundle; zod must stay off the sale path). Change BOTH, in one commit.",
+    ).toBe(true);
+
+    expect(
+      declaresRinLiteral(till, "BUYER_RIN_RE"),
+      `${TILL_MODULE}'s BUYER_RIN_RE no longer declares ${RIN_LITERAL}, so the till now accepts (or refuses) ` +
+        `buyer registration numbers that ${SERVER_MODULE}'s rinSchema does not. The till validates BEFORE the ` +
+        "sale is sent and the sale path carries no zod, so drift here surfaces as a `failed` invoice row hours " +
+        "later — the exact failure that form exists to prevent. Change BOTH, in one commit.",
+    ).toBe(true);
+  });
+
+  it("the scan is live in BOTH directions — a changed literal fails, a lookalike does not pass", () => {
+    // Catches the real declarations, in both spellings.
+    expect(declaresRinLiteral(String.raw`const rinSchema = z.string().regex(/^\d{9}$/, "…");`, "rinSchema")).toBe(true);
+    expect(declaresRinLiteral(String.raw`export const BUYER_RIN_RE = /^\d{9}$/;`, "BUYER_RIN_RE")).toBe(true);
+
+    // FAILS on the drift it exists to find: a different digit count, a relaxed
+    // pattern, or the declaration removed outright.
+    expect(declaresRinLiteral(String.raw`const rinSchema = z.string().regex(/^\d{8}$/, "…");`, "rinSchema")).toBe(false);
+    expect(declaresRinLiteral(String.raw`export const BUYER_RIN_RE = /^\d+$/;`, "BUYER_RIN_RE")).toBe(false);
+    expect(declaresRinLiteral("const rinSchema = z.string().min(9);", "rinSchema")).toBe(false);
+    expect(declaresRinLiteral("const somethingElse = 1;", "rinSchema")).toBe(false);
+
+    // A COMMENT IS NOT A DECLARATION, in either direction — and this pair is
+    // here because the naive substring version of this predicate got both wrong
+    // when it was first run against the real files.
+    //
+    // (1) A stale copy carrying the OLD literal above a changed declaration must
+    //     not satisfy the scan: that is how this guard would rot into a green
+    //     no-op while the till quietly accepted eight-digit numbers.
+    const staleComment = [
+      String.raw`// was /^\d{9}$/ before we relaxed it`,
+      String.raw`export const BUYER_RIN_RE = /^\d{8}$/;`,
+    ].join("\n");
+    expect(declaresRinLiteral(staleComment, "BUYER_RIN_RE")).toBe(false);
+
+    // (2) And a doc block that merely NAMES the constant above a correct
+    //     declaration must not fail it — the false alarm this predicate
+    //     actually produced before it was anchored. `buyer.ts` carries exactly
+    //     this shape today.
+    const documented = [
+      " * `BUYER_RIN_RE` is scanned from the server side; do not rename it.",
+      " */",
+      String.raw`export const BUYER_RIN_RE = /^\d{9}$/;`,
+    ].join("\n");
+    expect(declaresRinLiteral(documented, "BUYER_RIN_RE")).toBe(true);
+
+    // TWO declarations is a failure, not a pass: a second copy added elsewhere
+    // must not cover for the real one drifting.
+    const duplicated = [
+      String.raw`export const BUYER_RIN_RE = /^\d{9}$/;`,
+      String.raw`const BUYER_RIN_RE = /^\d{8}$/;`,
+    ].join("\n");
+    expect(declaresRinLiteral(duplicated, "BUYER_RIN_RE")).toBe(false);
   });
 });

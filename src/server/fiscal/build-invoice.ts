@@ -168,6 +168,13 @@ export function buildInvoice(input: FiscalInvoiceInput): FiscalDocument {
  * swallows it, the row stays queued), but the owner's alert said
  * "Cannot read properties of undefined" rather than naming the field to fix,
  * which is the entire value this function has.
+ *
+ * IT ALSO CHANGES THE WORKER'S CLASSIFICATION, which is the larger half: an
+ * unrecognised `TypeError` falls into the TRANSIENT family, so the row burned
+ * all six attempts and its backoff re-deriving the same undefined before anyone
+ * was told, whereas `BuyerIdRequiredError` is PERMANENT — failed immediately,
+ * with the owner alert naming the fields. Six wasted retries versus one honest
+ * refusal.
  */
 function assertReceiverComplete(rin: unknown, name: unknown, address: FiscalInvoiceAddressLike): void {
   const blank = (value: unknown): boolean => typeof value !== "string" || value.trim() === "";

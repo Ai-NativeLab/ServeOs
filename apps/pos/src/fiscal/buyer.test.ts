@@ -72,10 +72,22 @@ describe("validateBuyerDraft", () => {
     }
   });
 
-  it("uses the same expression the exported regex names", () => {
-    // So a change to one is visibly a change to the other.
+  it("routes the rin rule through the exported regex, not a second copy of it", () => {
+    // WHAT THIS DOES AND DOES NOT PROVE, stated because the obvious reading is
+    // wrong. It proves `validateBuyerDraft` and `BUYER_RIN_RE` agree — one rule,
+    // not two. It does NOT prove either matches the server's `rinSchema`: this
+    // package cannot import from the Next.js server tree at all, so an assertion
+    // here can only ever check the regex against itself and would stay green
+    // through any change to the server's rule.
+    //
+    // THE REAL CROSS-BOUNDARY GUARD LIVES SERVER-SIDE, beside `rinSchema`, and
+    // reads this file as text: `config-service.test.ts`'s "the buyer RIN regex
+    // does not drift across the server/till boundary".
     expect(BUYER_RIN_RE.test("123456789")).toBe(true);
     expect(BUYER_RIN_RE.test("12345678")).toBe(false);
+    for (const rin of ["123456789", "12345678", "1234567890", "abcdefghi"]) {
+      expect(validateBuyerDraft({ ...complete, rin }).rin === undefined).toBe(BUYER_RIN_RE.test(rin));
+    }
   });
 });
 
