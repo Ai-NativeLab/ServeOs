@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, integer, jsonb, pgEnum, uniqueIndex, index, check } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, integer, json, jsonb, pgEnum, uniqueIndex, index, check } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { tenants } from "@/server/tenancy/schema";
 import { orders } from "@/server/ordering/schema";
@@ -52,10 +52,34 @@ export const etaSubmissions = pgTable("eta_submissions", {
   referenceOldUuid: text("reference_old_uuid"),
   qrPayload: text("qr_payload"),
   hashOrSignature: text("hash_or_signature"),
-  /** requestJson/responseJson are the fiscal document payload and ETA's raw
-   *  response. Bearer tokens and auth headers must NEVER be persisted into
-   *  either column. */
-  requestJson: jsonb("request_json").$type<Record<string, unknown>>().notNull().default({}),
+  /**
+   * requestJson/responseJson are the fiscal document payload and ETA's raw
+   * response. Bearer tokens and auth headers must NEVER be persisted into
+   * either column.
+   *
+   * `json`, NOT `jsonb`, and this is load-bearing rather than a style choice.
+   * A receipt's uuid is the SHA-256 of its serialized document, and ETA's
+   * serialization walks properties IN DOCUMENT ORDER — so property order is
+   * part of the fiscal identity. `jsonb` normalizes: it sorts keys by length
+   * then bytes (verified against this deployment, not assumed), which means a
+   * document written to a `jsonb` column comes back in a DIFFERENT order and
+   * can never be re-serialized into the bytes that were hashed. Since the
+   * common path finalizes a receipt at sale time and submits it minutes later
+   * from the worker, that round trip is unavoidable — so the column has to be
+   * the one Postgres stores verbatim.
+   *
+   * `json` also preserves decimal literals (`114.00` does not collapse to
+   * `114`), which matters for the same reason: ETA re-derives the uuid from
+   * the bytes it receives.
+   *
+   * CONSEQUENCE FOR WRITERS: never hand this column a plain object built from
+   * the wire — `JSON.stringify` turns a `WireDecimal` into `{"literal":"..."}`.
+   * Write `sql`${stringifyWire(wire)}::json`` and read it back with
+   * `request_json::text` + `parseWire` (see ./finalize and ./parse-wire).
+   * Nothing indexes this column or uses a jsonb operator on it, so the type
+   * change costs nothing.
+   */
+  requestJson: json("request_json").$type<Record<string, unknown>>().notNull().default({}),
   responseJson: jsonb("response_json").$type<Record<string, unknown>>(),
   attempts: integer("attempts").notNull().default(0),
   /** Backoff clock, same role as notification_outbox.nextAttemptAt: attempts
@@ -131,6 +155,73 @@ export const productTaxCodes = pgTable("product_tax_codes", {
 ]);
 
 /**
+ * The stored half of `WireContext` (`./eta-wire`) — every receipt v1.2 field
+ * that is tenant CONFIGURATION rather than sale data or a credential.
+ *
+ * Written out here rather than imported from `./eta-wire` so this schema
+ * module keeps its one-way dependency (schema -> nothing fiscal). Drift is a
+ * COMPILE error, not a silent one: `./finalize` assembles a real `WireContext`
+ * (and `FiscalSaleInput["feeLines"]`) out of these fields, so a field added to
+ * or renamed on either of those types fails to typecheck at that assembly
+ * site.
+ *
+ * Deliberately NOT split per branch: ServeOS has no ETA branch registry, so
+ * one branch code + address serves the tenant. A multi-branch EG tenant needs
+ * this promoted to a per-branch row — noted rather than pre-built.
+ *
+ * VALIDATION belongs to the config service (Task 6), which runs it ONCE with
+ * the operator in front of it (the same division `resolveEtaConfig` documents).
+ * The worker consumes this column verbatim and only reports what it cannot
+ * assemble at all.
+ */
+export type EtaWireContextConfig = {
+  /** `seller.companyTradeName`. */
+  sellerName: string;
+  /** `seller.activityCode`, from ETA's Activity Codes table. */
+  activityCode: string;
+  /** `seller.branchCode` as registered with ETA. */
+  branchCode: string;
+  /** `seller.branchAddress` — Mandatory nested structure; `branches.address`
+   *  is one free-text line and cannot fill it. */
+  branchAddress: {
+    country: string;
+    governate: string;
+    regionCity: string;
+    street: string;
+    buildingNumber: string;
+    postalCode?: string;
+    floor?: string;
+    room?: string;
+    landmark?: string;
+    additionalInformation?: string;
+  };
+  /** `seller.syndicateLicenseNumber` — Optional; "C" for a company. */
+  syndicateLicenseNumber?: string;
+  /** Fiscal classification for the fee lines a receipt may carry. Receipt
+   *  v1.2's own `feesAmount` accepts only zero, so a service charge or
+   *  delivery fee ships as its own `itemData` line and needs item/tax codes
+   *  exactly like a product does. */
+  feeLines?: {
+    serviceCharge?: EtaFeeLineConfig;
+    delivery?: EtaFeeLineConfig;
+  };
+  /** The amount at or above which a natural-person (`P`) buyer must be
+   *  identified. Omitted = ETA's published 150,000 EGP for v1.2. */
+  buyerIdThreshold?: string;
+};
+
+/** One fee's fiscal classification — mirrors `FeeLineConfig` (`./provider`). */
+export type EtaFeeLineConfig = {
+  itemCode: string;
+  codeSource: EtaCodeSource;
+  taxType: string;
+  taxSubType: string | null;
+  unitType: string;
+  description: string;
+  internalCode: string;
+};
+
+/**
  * One row per EG tenant — the ERP-LEVEL ETA credential, used for B2B
  * e_invoice submission and the codes (GS1/EGS) APIs. E-receipt submission
  * does NOT use this: each POS device authenticates with its own credential
@@ -151,6 +242,32 @@ export const etaTenantConfig = pgTable("eta_tenant_config", {
   signingKeyRef: text("signing_key_ref"),
   environment: etaEnvironmentEnum("environment").notNull().default("preprod"),
   activationStatus: etaActivationStatusEnum("activation_status").notNull().default("not_configured"),
+  /**
+   * The POS device an ONLINE order's receipt is issued from.
+   *
+   * ETA scopes the e-receipt uuid chain and the submission credential to a
+   * registered POS device, but a web/WhatsApp order was rung on no device at
+   * all. Rather than invent a chain per channel, the tenant nominates one
+   * registered device to carry every deviceless sale, so those receipts join
+   * a real chain under a real credential.
+   *
+   * RESTRICT, not cascade or set-null: deleting the nominated device out from
+   * under this column would silently strand every future online sale (or, on
+   * cascade, take the whole config row with it). The tenant must nominate a
+   * replacement first.
+   *
+   * Null is a legitimate state (a tenant that sells only at the till); an
+   * online order on a tenant with no nomination fails its submission with a
+   * permanent, owner-actionable `EtaConfigError` rather than guessing.
+   */
+  onlineDeviceId: uuid("online_device_id").references(() => posDevices.id, { onDelete: "restrict" }),
+  /**
+   * The non-credential half of what receipt v1.2 requires and ServeOS does
+   * not otherwise store — see `EtaWireContextConfig`. Null until the tenant
+   * completes fiscal setup; a submission with no wire context fails
+   * permanently rather than emitting a document with invented seller data.
+   */
+  wireContextJson: jsonb("wire_context_json").$type<EtaWireContextConfig>(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("eta_tenant_config_tenant").on(t.tenantId),
