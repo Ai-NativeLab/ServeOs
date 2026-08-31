@@ -413,7 +413,7 @@ describe("drainEtaSubmissions — accept path", () => {
     expect(row.etaLongId).toBe("LONG-LATE");
   });
 
-  it("submits a row exactly once when two drains race it — the claim lease's regression pin", async () => {
+  it("submits a row exactly once when two drains race it — the claim's exclusivity pin", async () => {
     const s = await seedSale({ configureFirst: true });
     const [pending] = await rowsFor(s.tenantId);
     const uuid = pending.etaUuid!;
@@ -425,11 +425,10 @@ describe("drainEtaSubmissions — accept path", () => {
       drainEtaSubmissions({ provider, reconcile: false }),
     ]);
 
-    // THE INVARIANT. `eta_submissions` has no in-flight status to flip, so
-    // exclusivity rides entirely on the claim pushing nextAttemptAt out by a
-    // lease; if that ever stops working, this row gets POSTed twice and the
-    // tenant files two legal documents for one sale. Counted by uuid because a
-    // drain visits every EG tenant, and sibling tests leave rows behind.
+    // this catches losing claim exclusivity (drop SKIP LOCKED -> two submits);
+    // it does NOT catch neutering the lease alone, because in-pass row locks
+    // serialize the two claims anyway — the lease's cross-pass job is pinned by
+    // the notify-once race tests below.
     expect(provider.submitted.filter((doc) => doc.uuid === uuid)).toHaveLength(1);
 
     const rows = await rowsFor(s.tenantId);
