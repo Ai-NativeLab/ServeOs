@@ -29,6 +29,11 @@ export const products = pgTable("products", {
   // — one number, one meaning per row, no second price column.
   unitOfMeasure: unitOfMeasureEnum("unit_of_measure"),
   basePrice: numeric("base_price").notNull(),
+  salePrice: numeric("sale_price"),
+  discountPercent: integer("discount_percent"),
+  discountStartsAt: timestamp("discount_starts_at", { withTimezone: true }),
+  discountEndsAt: timestamp("discount_ends_at", { withTimezone: true }),
+  discountActive: boolean("discount_active").notNull().default(false),
   imageUrl: text("image_url"),
   brand: text("brand"),
   sku: text("sku"),
@@ -137,6 +142,9 @@ export interface PublishedMenu {
       descriptionEn: string | null;
       descriptionAr: string | null;
       effectivePrice: number;
+      originalPrice: number;
+      discountPercent: number | null;
+      hasDiscount: boolean;
       /** P4: set only for dimensional products — effectivePrice is then the
        *  price PER UNIT OF MEASURE, not a fixed each-price. */
       unitOfMeasure: UnitOfMeasure | null;

@@ -69,13 +69,28 @@ export function ProductSheet({
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           <SheetHeader>
-            <SheetTitle className="text-xl sm:text-2xl">{product.nameEn}</SheetTitle>
+            <div className="flex items-start justify-between gap-2">
+              <SheetTitle className="text-xl sm:text-2xl">{product.nameEn}</SheetTitle>
+              {product.hasDiscount && product.discountPercent && (
+                <span className="sf-badge bg-destructive text-destructive-foreground font-bold shadow-sm shrink-0">
+                  {`-${product.discountPercent}%`}
+                </span>
+              )}
+            </div>
             {/* The Arabic name comes along too. The grid card already shows both
                 names, so a detail sheet that drops to English-only — and then
                 carries an Arabic description under it — reads like a bug. */}
             {product.nameAr && (
               <span dir="rtl" className="block text-sm text-muted-foreground">{product.nameAr}</span>
             )}
+            <div className="flex items-baseline gap-2 pt-1">
+              <span className="font-display text-lg font-bold text-ink">{formatMoney(unitPrice, currency)}</span>
+              {product.hasDiscount && (
+                <span className="text-sm text-muted-foreground line-through font-sans">
+                  {formatMoney(product.originalPrice + deltas, currency)}
+                </span>
+              )}
+            </div>
             {product.descriptionEn && <SheetDescription>{product.descriptionEn}</SheetDescription>}
             {arabicDescription(product.descriptionEn, product.descriptionAr) && (
               <SheetDescription dir="rtl">

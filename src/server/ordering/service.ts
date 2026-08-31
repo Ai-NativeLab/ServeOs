@@ -7,6 +7,7 @@ import { deductForOrderLine, reverseOrderDeductions } from "@/server/inventory/s
 import { computeOrderTotals, computeLineTotal } from "@/lib/order-totals";
 import { computeDimensionalUnitPrice } from "@/server/catalog/dimensional-pricing";
 import { isDimensionalUom } from "@/server/catalog/uom";
+import { computeEffectivePrice } from "@/server/catalog/pricing";
 import { customers } from "@/server/customers/schema";
 import { prescriptions } from "@/server/prescriptions/schema";
 import { isBranchOrderableAt, isWithinSchedulingHorizon, MIN_LEAD_MINUTES } from "@/server/branches/slots";
@@ -226,7 +227,16 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       const [avail] = await tx.select().from(branchProductAvailability)
         .where(and(eq(branchProductAvailability.branchId, input.branchId), eq(branchProductAvailability.productId, product.id))).limit(1);
       if (avail && !avail.isAvailable) throw new OrderValidationError("product unavailable at branch");
-      const effectiveBase = avail?.priceOverride ?? product.basePrice;
+      const baseBeforeDiscount = avail?.priceOverride ?? product.basePrice;
+      const promoPricing = computeEffectivePrice({
+        basePrice: baseBeforeDiscount,
+        salePrice: product.salePrice,
+        discountPercent: product.discountPercent,
+        discountStartsAt: product.discountStartsAt,
+        discountEndsAt: product.discountEndsAt,
+        discountActive: product.discountActive,
+      }, now);
+      const effectiveBase = promoPricing.effectivePrice;
 
       const requiresRxReview = Boolean(product.requiresPrescription && caps.pharmacistReview);
 
