@@ -106,6 +106,29 @@ export class EtaTotalsMismatchError extends FiscalDocumentError {
 }
 
 /**
+ * A `taxableItems` entry whose amount is not strictly positive.
+ *
+ * Main Calculations pins a line's tax to its own base — rule 42:
+ * `taxableItems[T1].amount = (... + netSale + ...) * rate / 100` — so a ZERO
+ * amount at a non-zero rate is arithmetically false and a NEGATIVE one is an
+ * invented input tax credit on a document that is already a reversal. Round 1
+ * settled the zero case by OMITTING the entry entirely (a line with no tax
+ * carries no `taxableItems`), which leaves nothing legitimate for this to
+ * refuse: it is the belt-and-braces guard that a future allocation bug cannot
+ * quietly file negative tax.
+ */
+export class NonPositiveLineTaxError extends FiscalDocumentError {
+  readonly code = "non-positive-line-tax";
+  constructor(readonly lineIndex: number, readonly taxType: string, readonly amount: string) {
+    super(
+      `fiscal: itemData[${lineIndex}].taxableItems[${taxType}].amount is ${amount} — ETA derives a line's tax from its own netSale ` +
+        "(Main Calculations rule 42), so a zero-amount entry is omitted rather than emitted and a negative one would claim tax back that was never charged.",
+    );
+    this.name = "NonPositiveLineTaxError";
+  }
+}
+
+/**
  * A tax type this mapper does not know how to total correctly.
  *
  * Main Calculations gives the line total as

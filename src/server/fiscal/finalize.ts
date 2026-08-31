@@ -15,8 +15,8 @@ import { getEtaEnv } from "./eta-env";
 import { EtaConfigError } from "./eta-transport-errors";
 import { IrreconcilableOrderError } from "./errors";
 import {
-  allocateLargestRemainder, assertDecimal, compareDecimal, divideDecimal, multiplyDecimal,
-  subtractDecimal, sumDecimal,
+  allocateLargestRemainder, assertDecimal, compareDecimal, divideDecimal, isZeroDecimal,
+  multiplyDecimal, subtractDecimal, sumDecimal,
 } from "./decimal";
 import { enqueueFiscalDocument } from "./enqueue";
 import type { FiscalDocument, FiscalSaleInput } from "./provider";
@@ -172,7 +172,7 @@ export async function finalizeSubmissionRow(tenantId: string, submissionId: stri
 
     // (d) Build the document, then the wire + uuid + QR.
     const built = row.docType === "return_receipt"
-      ? await buildReturnDocument(tx, tenantId, row, previousUuid, deviceSerial, parentUuid!)
+      ? await buildReturnDocument(tx, tenantId, row, previousUuid, deviceSerial, parentUuid!, config.wireContext)
       : await buildSaleDocument(tx, tenantId, row, previousUuid, deviceSerial, config.wireContext);
 
     const doc: FiscalDocument = row.referenceOldUuid
@@ -538,7 +538,7 @@ async function buildSaleDocument(
 
 async function buildReturnDocument(
   tx: Tx, tenantId: string, row: EtaSubmission,
-  previousUuid: string, deviceSerial: string, parentUuid: string,
+  previousUuid: string, deviceSerial: string, parentUuid: string, wireContext: EtaWireContextConfig,
 ): Promise<BuiltDocument> {
   const [refund] = await tx.select().from(refunds)
     .where(and(eq(refunds.tenantId, tenantId), eq(refunds.id, row.refundId!))).limit(1);
@@ -552,7 +552,14 @@ async function buildReturnDocument(
   const lines = stored.length > 0 ? stored : await resolveFullRefundLines(tx, tenantId, refund, items);
 
   return {
-    doc: buildReturnReceipt({ parentUuid, refund, lines, items, taxCodes, previousUuid, deviceSerial }),
+    doc: buildReturnReceipt({
+      parentUuid, refund, lines, items, order, taxCodes,
+      // Only the service-charge classification is ever consulted on a return —
+      // see `FiscalRefundInput.feeLines`.
+      ...(wireContext.feeLines ? { feeLines: wireContext.feeLines } : {}),
+      previousUuid,
+      deviceSerial,
+    }),
     receiptNumber: await returnReceiptNumber(tx, tenantId, order, refund.id),
   };
 }
@@ -587,15 +594,24 @@ async function buildReturnDocument(
  * rule the wire mapper applies — a document we cannot total honestly is not
  * emitted.
  *
- * WHAT THE AMOUNTS MEAN. `buildReturnReceipt` declares `netAmount ==
- * totalAmount` with no `taxableItems` (the documented no-VAT-reversal
- * exposure), so each line's amount is the GROSS the customer got back, not a
- * tax-exclusive figure. Splitting the refunded total across the remaining
- * items' `lineTotal`s therefore also spreads the order's VAT, discount, service
- * charge and delivery fee across them pro rata. That is a simplification and is
- * recorded as one: ETA needs `itemData`, a returned service charge has no
- * product line to sit on, and the document's total — the number that is
- * actually reported — is the stored refund total either way.
+ * WHAT THE AMOUNTS MEAN. Each line's amount is the GROSS the customer got
+ * back, not a tax-exclusive figure (`buildReturnReceipt` takes the reversed VAT
+ * back out of it to get `netSale`). Splitting the refunded total across the
+ * remaining items' `lineTotal`s therefore also spreads the order's discount,
+ * service charge and delivery fee across them pro rata. That is a
+ * simplification and is recorded as one: ETA needs `itemData`, a returned
+ * service charge has no product line to sit on, and the document's total — the
+ * number that is actually reported — is the stored refund total either way.
+ *
+ * AND WHAT THE VAT MEANS. A headerless refund writes no `refund_lines`, so its
+ * VAT lives on `refunds.vatAmount` ALONE (`refund-schema.ts` says so in as many
+ * words) and there is no per-line figure to map. The header is therefore split
+ * across these synthetic lines by the same largest-remainder over the same
+ * amounts, so the parts sum to the stored header EXACTLY and each line's share
+ * is proportional to the money it returns — which, for a refund of the whole
+ * outstanding balance, is precisely the VAT that money contains and precisely
+ * what ETA's per-line equation re-derives. The split is an ATTRIBUTION across
+ * lines the refund never named; the reported total is the stored figure.
  */
 async function resolveFullRefundLines(
   tx: Tx, tenantId: string, refund: Refund, items: OrderItem[],
@@ -648,6 +664,15 @@ async function resolveFullRefundLines(
   );
   const amounts = allocateLargestRemainder("refund totalAmount", refund.totalAmount, weights);
 
+  // The header VAT spread over exactly those amounts — see AND WHAT THE VAT
+  // MEANS above. Guarded rather than assumed: a zero (or legacy `'0'`) header
+  // has nothing to spread, and `allocateLargestRemainder` refuses a non-zero
+  // total against all-zero weights, which the equality check above already
+  // makes unreachable for a positive refund.
+  const vats = isZeroDecimal(refund.vatAmount)
+    ? amounts.map(() => "0.00")
+    : allocateLargestRemainder("refunds.vatAmount", assertDecimal(refund.vatAmount, "refunds.vatAmount"), amounts);
+
   return remaining.map(({ item, quantity }, index) => ({
     // Synthetic rows: they are the document's lines, never persisted. `id`
     // carries the order item so an error naming a line is still traceable.
@@ -657,11 +682,7 @@ async function resolveFullRefundLines(
     orderItemId: item.id,
     quantity,
     amount: amounts[index],
-    // A resolved line has no STORED VAT — the refund it stands for was written
-    // headerless, so its VAT lives on `refunds.vatAmount` alone. Zero here keeps
-    // the synthetic row type-complete without inventing a per-line figure;
-    // splitting the header's VAT across these lines is round 2 Task 2's job.
-    vatAmount: "0.00",
+    vatAmount: vats[index],
     restock: false,
   }));
 }

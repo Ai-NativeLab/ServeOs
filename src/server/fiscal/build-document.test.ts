@@ -12,6 +12,7 @@ import {
   MissingTaxSubTypeError,
   MissingReferenceUuidError,
   EtaTotalsMismatchError,
+  NonPositiveLineTaxError,
 } from "./errors";
 import { EtaFiscalProvider } from "./eta-provider";
 import { stringifyWire } from "./serialize";
@@ -500,9 +501,10 @@ const refund: Refund = {
   reasonCode: "damaged",
   reasonText: null,
   totalAmount: "90.00",
-  // Type-completeness only: `buildReturnReceipt` still reverses no VAT (round
-  // 1's documented exposure). Round 2 Task 2 is what makes these figures mean
-  // something on the wire.
+  // Zero on purpose: this fixture is the NO-VAT refund, which must keep
+  // emitting no taxableItems and no taxTotals (round 1's omission rule). The
+  // VAT reversal itself is exercised by `buildReturnReceipt — VAT reversal`
+  // below, against refunds that store one.
   vatAmount: "0.00",
   byUserId: "4a4a4a4a-4a4a-4a4a-8a4a-4a4a4a4a4a4a",
   authorizedByUserId: null,
@@ -530,6 +532,7 @@ const refundInput: FiscalRefundInput = {
   refund,
   lines: refundLines,
   items,
+  order,
   taxCodes,
   previousUuid: "e".repeat(64),
   deviceSerial: "POS-001",
@@ -616,6 +619,337 @@ describe("buildReturnReceipt", () => {
       expect(err).toBeInstanceOf(RefundLineOrphanError);
       expect((err as RefundLineOrphanError).orderItemId).toBe("not-an-item");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAT reversal on the return receipt (round 2 Task 2). Every figure below is
+// arithmetically consistent with what `issueRefund` + `refund-vat.ts` actually
+// store, so the mapper is exercised against rows a real refund would produce.
+// ---------------------------------------------------------------------------
+
+/**
+ * A VAT-INCLUSIVE order: 150.00 of items plus a 15.00 service charge is
+ * 165.00 gross, of which 165 * 14/114 = 20.26 is VAT. `vatMode` reads this as
+ * "inclusive" (total == subtotal + serviceCharge + delivery).
+ */
+const inclusiveOrder: Order = {
+  ...order,
+  discountAmount: "0.00",
+  discountReason: null,
+  subtotal: "150.00",
+  serviceChargeAmount: "15.00",
+  deliveryFee: "0.00",
+  vatAmount: "20.26",
+  total: "165.00",
+};
+
+/** The same two products, priced to that order: 100.00 and 50.00 gross. */
+const inclusiveItems: OrderItem[] = [
+  { ...items[0], quantity: 1, lineTotal: "100.00", unitBasePrice: "100.00", discountAmount: "0.00" },
+  { ...items[1], quantity: 1, lineTotal: "50.00" },
+];
+
+/**
+ * A VAT-EXCLUSIVE order — ServeOS's DEFAULT (`pricesIncludeVat ?? false`):
+ * one 100.00 item plus 14.00 of VAT is 114.00. `order_items.lineTotal` is
+ * 100.00 here, which is the NET figure both refund surfaces copy into a
+ * refund line's amount.
+ */
+const exclusiveOrder: Order = {
+  ...order,
+  discountAmount: "0.00",
+  discountReason: null,
+  subtotal: "100.00",
+  serviceChargeAmount: "0.00",
+  deliveryFee: "0.00",
+  vatAmount: "14.00",
+  total: "114.00",
+};
+
+const exclusiveItems: OrderItem[] = [
+  { ...items[0], quantity: 1, lineTotal: "100.00", unitBasePrice: "100.00", discountAmount: "0.00" },
+];
+
+const vatRefund = (over: Partial<Refund>): Refund => ({ ...refund, ...over });
+
+const vatRefundLine = (over: Partial<RefundLine> & Pick<RefundLine, "orderItemId" | "amount" | "vatAmount">): RefundLine => ({
+  ...refundLines[0],
+  id: `rl-${over.orderItemId}`,
+  quantity: 1,
+  ...over,
+});
+
+const returnInput = (over: Partial<FiscalRefundInput>): FiscalRefundInput => ({
+  ...refundInput,
+  feeLines,
+  ...over,
+});
+
+/** Every taxableItems amount the wire actually emits, in line order. */
+function wireLineTaxes(wire: Record<string, unknown>): (string | undefined)[] {
+  return (wire.itemData as Record<string, unknown>[]).map((line) => {
+    const taxes = line.taxableItems as { amount: { literal: string } }[] | undefined;
+    return taxes?.[0]?.amount.literal;
+  });
+}
+
+describe("buildReturnReceipt — VAT reversal", () => {
+  it("reports each line's STORED VAT and totals to the refund's own figure, to the cent", () => {
+    // An itemised partial of both lines of the inclusive order: the refund
+    // domain splits 18.42 (the item bucket of 20.26) as 12.28 / 6.14, and each
+    // of those IS the VAT inside that line's money — so both ship verbatim.
+    const doc = buildReturnReceipt(returnInput({
+      order: inclusiveOrder,
+      items: inclusiveItems,
+      refund: vatRefund({ kind: "partial", totalAmount: "150.00", vatAmount: "18.42" }),
+      lines: [
+        vatRefundLine({ orderItemId: inclusiveItems[0].id, amount: "100.00", vatAmount: "12.28" }),
+        vatRefundLine({ orderItemId: inclusiveItems[1].id, amount: "50.00", vatAmount: "6.14" }),
+      ],
+    }));
+
+    expect(doc.lines.map((line) => line.taxes.map((tax) => tax.amount))).toEqual([["12.28"], ["6.14"]]);
+    expect(doc.lines.map((line) => line.taxes.map((tax) => tax.rate))).toEqual([["14"], ["14"]]);
+    // String-exact against `refunds.vatAmount`, not merely close to it.
+    expect(sumDecimal("vat", doc.lines.flatMap((line) => line.taxes.map((tax) => tax.amount)))).toBe("18.42");
+    expect(doc.taxTotals).toHaveLength(1);
+    expect(doc.taxTotals[0].amount).toBe("18.42");
+    // netSale is the money less the tax inside it; the line's TOTAL is back to
+    // the money, which is what keeps totalAmount = refunds.totalAmount.
+    expect(doc.lines.map((line) => line.lineTotal)).toEqual(["87.72", "43.86"]);
+    expect(doc.total).toBe("150.00");
+    expect(toWireReceipt(doc, wireCtx)).toBeTruthy();
+  });
+
+  it("un-does the itemised-full top-up onto a service-charge line rather than breaking rule 42", () => {
+    // What `refund-vat.ts` stage [4] actually stores for a full refund of the
+    // whole 165.00 balance: the raw item VAT 12.28 / 6.14 topped up by the
+    // service charge's 1.84, spread over the line amounts, to 13.51 / 6.75.
+    const doc = buildReturnReceipt(returnInput({
+      order: inclusiveOrder,
+      items: inclusiveItems,
+      refund: vatRefund({ kind: "full", totalAmount: "165.00", vatAmount: "20.26" }),
+      lines: [
+        vatRefundLine({ orderItemId: inclusiveItems[0].id, amount: "100.00", vatAmount: "13.51" }),
+        vatRefundLine({ orderItemId: inclusiveItems[1].id, amount: "50.00", vatAmount: "6.75" }),
+      ],
+    }));
+
+    // Three lines: the two products, capped back to the VAT their own money
+    // contains, plus the 15.00 of service charge no refund_lines row named.
+    expect(doc.lines).toHaveLength(3);
+    expect(doc.lines[2]).toMatchObject({ description: "Service charge", internalCode: "SVC", quantity: 1 });
+    expect(doc.lines.map((line) => line.taxes[0].amount)).toEqual(["12.28", "6.14", "1.84"]);
+    // The header is still reversed in full — the top-up moved, it did not shrink.
+    expect(sumDecimal("vat", doc.lines.map((line) => line.taxes[0].amount))).toBe("20.26");
+    expect(doc.taxTotals[0].amount).toBe("20.26");
+    expect(doc.total).toBe("165.00");
+
+    // And the whole thing satisfies every published equation, netAmount
+    // included: 165.00 - 20.26 = 144.74.
+    const json = stringifyWire(toWireReceipt(doc, wireCtx));
+    expect(json).toContain('"totalAmount":165.00');
+    expect(json).toContain('"netAmount":144.74');
+    expect(json).toContain('"taxTotals":[{"taxType":"T1","amount":20.26}]');
+  });
+
+  it("proves the un-de-topped shape is what ETA's rule 42 rejects", () => {
+    // The same refund emitted VERBATIM — 13.51 on a 100.00 line — reports
+    // netSale 86.49, which rule 42 prices at 12.11. 1.40 of drift, nearly
+    // three times ETA's (± 0.5) tolerance.
+    const doc = buildReturnReceipt(returnInput({
+      order: inclusiveOrder,
+      items: inclusiveItems,
+      refund: vatRefund({ kind: "partial", totalAmount: "100.00", vatAmount: "12.28" }),
+      lines: [vatRefundLine({ orderItemId: inclusiveItems[0].id, amount: "100.00", vatAmount: "12.28" })],
+    }));
+    // Still a totals-consistent document — 86.49 + 13.51 is the same 100.00 —
+    // so it is the PER-LINE equation, and nothing else, that refuses it.
+    const verbatim: FiscalDocument = {
+      ...doc,
+      lines: [{
+        ...doc.lines[0],
+        lineTotal: "86.49",
+        unitPrice: "86.49000",
+        taxes: [{ ...doc.lines[0].taxes[0], amount: "13.51" }],
+      }],
+      taxTotals: [{ ...doc.taxTotals[0], amount: "13.51" }],
+    };
+
+    try {
+      toWireReceipt(verbatim, wireCtx);
+      expect.unreachable("toWireReceipt should have refused the un-de-topped line");
+    } catch (err) {
+      expect(err).toBeInstanceOf(EtaTotalsMismatchError);
+      expect((err as EtaTotalsMismatchError).equation).toContain("taxableItems[T1].amount = netSale * rate / 100");
+      expect((err as EtaTotalsMismatchError).expected).toBe("13.51");
+      expect((err as EtaTotalsMismatchError).actual).toBe("12.11");
+    }
+  });
+
+  it("refuses to invent a fee classification for the money the lines do not name", () => {
+    const input = returnInput({
+      order: inclusiveOrder,
+      items: inclusiveItems,
+      feeLines: undefined,
+      refund: vatRefund({ kind: "full", totalAmount: "165.00", vatAmount: "20.26" }),
+      lines: [vatRefundLine({ orderItemId: inclusiveItems[0].id, amount: "150.00", vatAmount: "20.26" })],
+    });
+    try {
+      buildReturnReceipt(input);
+      expect.unreachable("buildReturnReceipt should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(FeeLineConfigMissingError);
+      expect((err as FeeLineConfigMissingError).fee).toBe("serviceCharge");
+      expect((err as FeeLineConfigMissingError).amount).toBe("15.00");
+    }
+  });
+
+  it("adds the tax ON TOP of a VAT-EXCLUSIVE order's line amounts", () => {
+    // ServeOS's default pricing. The POS refund screen builds the line from
+    // `order_items.lineTotal` (100.00, net) while the tender is the gross
+    // 114.00 — so the line's amount IS its netSale and the 14.00 rides on top.
+    const doc = buildReturnReceipt(returnInput({
+      order: exclusiveOrder,
+      items: exclusiveItems,
+      refund: vatRefund({ kind: "full", totalAmount: "114.00", vatAmount: "14.00" }),
+      lines: [vatRefundLine({ orderItemId: exclusiveItems[0].id, amount: "100.00", vatAmount: "14.00" })],
+    }));
+
+    expect(doc.lines).toHaveLength(1);
+    expect(doc.lines[0].lineTotal).toBe("100.00");
+    expect(doc.lines[0].taxes[0].amount).toBe("14.00");
+    expect(doc.taxTotals[0].amount).toBe("14.00");
+    expect(doc.total).toBe("114.00");
+    // netSale 100.00 * 14 / 100 = 14.00 — rule 42 to the cent, and
+    // totalAmount = 100.00 + 14.00.
+    const json = stringifyWire(toWireReceipt(doc, wireCtx));
+    expect(json).toContain('"netAmount":100.00');
+    expect(json).toContain('"totalAmount":114.00');
+  });
+
+  it("reports only the VAT the refunded money contains when the stored figure exceeds it", () => {
+    // The same exclusive order, refunded PARTIALLY at the item's net 100.00
+    // (the POS requires the tender to equal the line amounts), so the refund
+    // domain attributes the item's whole 14.00 to money that contains 12.28.
+    // Reporting 14.00 would claim credit for tax the customer never got back
+    // — and ETA would reject it. See THE DOCUMENT'S VAT CEILING.
+    const doc = buildReturnReceipt(returnInput({
+      order: exclusiveOrder,
+      items: exclusiveItems,
+      refund: vatRefund({ kind: "partial", totalAmount: "100.00", vatAmount: "14.00" }),
+      lines: [vatRefundLine({ orderItemId: exclusiveItems[0].id, amount: "100.00", vatAmount: "14.00" })],
+    }));
+
+    expect(doc.lines[0].taxes[0].amount).toBe("12.28");
+    expect(doc.lines[0].lineTotal).toBe("87.72");
+    expect(doc.taxTotals[0].amount).toBe("12.28");
+    expect(doc.total).toBe("100.00");
+    expect(toWireReceipt(doc, wireCtx)).toBeTruthy();
+  });
+
+  it("emits no taxableItems and no taxTotals for a zero-VAT refund", () => {
+    const wire = toWireReceipt(buildReturnReceipt(refundInput), wireCtx);
+    expect(wireLineTaxes(wire)).toEqual([undefined]);
+    expect(wire.taxTotals).toBeUndefined();
+  });
+
+  it("emits no taxableItems for the LEGACY '0' written before the column existed", () => {
+    // Scale-0 zero, not "0.00" — the column default for every refund issued
+    // before round 2, and `isZeroDecimal` has to read it as zero.
+    const doc = buildReturnReceipt(returnInput({
+      order: inclusiveOrder,
+      items: inclusiveItems,
+      refund: vatRefund({ totalAmount: "100.00", vatAmount: "0" }),
+      lines: [vatRefundLine({ orderItemId: inclusiveItems[0].id, amount: "100.00", vatAmount: "0" })],
+    }));
+    expect(doc.lines[0].taxes).toEqual([]);
+    expect(doc.taxTotals).toEqual([]);
+    expect(wireLineTaxes(toWireReceipt(doc, wireCtx))).toEqual([undefined]);
+  });
+
+  it("refuses a stored line VAT below zero", () => {
+    const input = returnInput({
+      order: inclusiveOrder,
+      items: inclusiveItems,
+      refund: vatRefund({ totalAmount: "100.00", vatAmount: "12.28" }),
+      lines: [vatRefundLine({ orderItemId: inclusiveItems[0].id, amount: "100.00", vatAmount: "-0.01" })],
+    });
+    expect(() => buildReturnReceipt(input)).toThrow(IrreconcilableOrderError);
+    expect(() => buildReturnReceipt(input)).toThrow("-0.01");
+  });
+
+  it("shrinks to the header rather than reporting past it when the lines store more", () => {
+    // Unreachable from `issueRefund` (Σ lines IS the header), so this is the
+    // corrupted-row guard: the document may never reverse more than the refund
+    // itself recorded.
+    const doc = buildReturnReceipt(returnInput({
+      order: inclusiveOrder,
+      items: inclusiveItems,
+      refund: vatRefund({ kind: "partial", totalAmount: "150.00", vatAmount: "10.00" }),
+      lines: [
+        vatRefundLine({ orderItemId: inclusiveItems[0].id, amount: "100.00", vatAmount: "12.28" }),
+        vatRefundLine({ orderItemId: inclusiveItems[1].id, amount: "50.00", vatAmount: "6.14" }),
+      ],
+    }));
+    expect(doc.lines.map((line) => line.taxes[0].amount)).toEqual(["6.67", "3.33"]);
+    expect(doc.taxTotals[0].amount).toBe("10.00");
+  });
+
+  it("refuses lines that account for more money than the refund recorded", () => {
+    const input = returnInput({
+      order: inclusiveOrder,
+      items: inclusiveItems,
+      refund: vatRefund({ totalAmount: "100.00", vatAmount: "12.28" }),
+      lines: [
+        vatRefundLine({ orderItemId: inclusiveItems[0].id, amount: "100.00", vatAmount: "12.28" }),
+        vatRefundLine({ orderItemId: inclusiveItems[1].id, amount: "50.00", vatAmount: "0.00" }),
+      ],
+    });
+    expect(() => buildReturnReceipt(input)).toThrow(IrreconcilableOrderError);
+    expect(() => buildReturnReceipt(input)).toThrow("150.00");
+  });
+});
+
+describe("toWireReceipt — per-line tax equation", () => {
+  const doc = buildReturnReceipt(returnInput({
+    order: inclusiveOrder,
+    items: inclusiveItems,
+    refund: vatRefund({ kind: "partial", totalAmount: "100.00", vatAmount: "12.28" }),
+    lines: [vatRefundLine({ orderItemId: inclusiveItems[0].id, amount: "100.00", vatAmount: "12.28" })],
+  }));
+
+  /** The same document with a different line tax, and `total` moved with it so
+   *  the DOCUMENT equations still hold — leaving the per-line one as the only
+   *  thing under test. */
+  const tampered = (amount: string): FiscalDocument => ({
+    ...doc,
+    lines: [{ ...doc.lines[0], taxes: [{ ...doc.lines[0].taxes[0], amount }] }],
+    taxTotals: [{ ...doc.taxTotals[0], amount }],
+    total: addDecimal("total", doc.lines[0].lineTotal, amount),
+  });
+
+  it("rejects a NEGATIVE line tax — a return may not invent an input tax credit", () => {
+    try {
+      toWireReceipt(tampered("-1.00"), wireCtx);
+      expect.unreachable("toWireReceipt should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(NonPositiveLineTaxError);
+      expect((err as NonPositiveLineTaxError).amount).toBe("-1.00");
+      expect((err as NonPositiveLineTaxError).taxType).toBe("T1");
+    }
+  });
+
+  it("rejects a ZERO line tax — round 1's rule is to OMIT the entry, not emit it", () => {
+    expect(() => toWireReceipt(tampered("0.00"), wireCtx)).toThrow(NonPositiveLineTaxError);
+  });
+
+  it("accepts drift inside ETA's own (± 0.5) tolerance rather than a stricter bound of ours", () => {
+    // 12.28 is exact; 12.70 is 0.42 out and still inside the published
+    // allowance, so it must pass even though it is not what we would emit.
+    expect(() => toWireReceipt(tampered("12.70"), wireCtx)).not.toThrow();
+    expect(() => toWireReceipt(tampered("12.90"), wireCtx)).toThrow(EtaTotalsMismatchError);
   });
 });
 

@@ -11,7 +11,9 @@ import { notifications } from "@/server/notifications/schema";
 import { seedPosContext, openShiftForCtx } from "@/server/pos/test-helpers";
 import { recordSale } from "@/server/pos/record-sale";
 import { issueRefund, type RefundActor } from "@/server/pos/refund";
-import { refundLines } from "@/server/pos/refund-schema";
+import { refundLines, refunds } from "@/server/pos/refund-schema";
+import { getCheckoutPricing, setPricesIncludeVat, setServiceChargeRate } from "@/server/tenancy/settings";
+import { computeCartTotals } from "@/lib/order-totals";
 import type { PosCashierContext } from "@/server/pos/require-cashier";
 import {
   etaSubmissions, etaTenantConfig, etaPosCredentials, etaDeviceChains, productTaxCodes,
@@ -59,6 +61,15 @@ const WIRE_CONTEXT: EtaWireContextConfig = {
   branchAddress: {
     country: "EG", governate: "Cairo", regionCity: "Nasr City",
     street: "Test Street", buildingNumber: "12",
+  },
+  // Receipt v1.2's own feesAmount "accepts only zero values", so a service
+  // charge ships as its own itemData line on the SALE — and, once a refund
+  // returns it, on the return receipt too.
+  feeLines: {
+    serviceCharge: {
+      itemCode: "1234567890124", codeSource: "gs1", taxType: "T1",
+      taxSubType: "V009", unitType: "EA", description: "Service", internalCode: "SVC",
+    },
   },
 };
 
@@ -941,7 +952,87 @@ describe("drainEtaSubmissions — headerless full refunds", () => {
     expect(header(ret.requestJson).referenceUUID).toBe(
       (await rowsFor(s.tenantId)).find((row) => row.orderId === s.receipt.orderId)!.etaUuid,
     );
+
+    // AND IT REVERSES THE VAT (round 2 Task 2). The refund stored no
+    // refund_lines, so its VAT is on `refunds.vatAmount` alone; `finalize`
+    // splits that header across the lines it resolved from the order, and the
+    // wire carries it as taxableItems + taxTotals.
+    const stored = await refundVatAmount(s.tenantId, refund.refundId);
+    expect(stored).toBe("14.00"); // 100.00 product, VAT-exclusive 14% -> 114.00 paid
+    expect(items[0].taxableItems).toEqual([{ taxType: "T1", subType: "V009", amount: 14, rate: 14 }]);
+    expect(ret.requestJson.taxTotals).toEqual([{ taxType: "T1", amount: 14 }]);
+    // ETA's published aggregates hold on the return exactly as on the sale:
+    // netAmount = Sum(netSale) = totalAmount - the tax reversed.
+    expect(Number(ret.requestJson.netAmount)).toBeCloseTo(s.receipt.paidAmount - 14, 2);
+    expect(await storedWireText(s.tenantId, ret.id)).toContain('"amount":14.00');
   });
+
+  it("de-tops an itemised full refund's service-charge VAT onto its own return line", () => runWithServiceCharge());
+
+  /**
+   * The de-top decision, end to end on real rows: a VAT-INCLUSIVE order under a
+   * 10% service charge, refunded in full with ONE item line.
+   *
+   * `refund-vat.ts` stage [4] tops that line up to the whole remaining 13.51 so
+   * the service charge's share is not orphaned — but 13.51 on a 100.00 line
+   * reports netSale 86.49, which Main Calculations rule 42 prices at 12.11 and
+   * ETA rejects (1.40 out, against a published tolerance of 0.5). So the wire
+   * caps the item line at the 12.28 its own money contains and issues the
+   * remaining 1.23 on the service-charge line that carries the 10.00 no
+   * `refund_lines` row named.
+   */
+  async function runWithServiceCharge() {
+    const s = await seedPosContext("owner");
+    await openShiftForCtx(s.ctx);
+    await setPricesIncludeVat(s.tenantId, true);
+    await setServiceChargeRate(s.tenantId, 10);
+    await seedTaxCode(s.tenantId, s.productId);
+    await seedFiscalConfig(s.tenantId);
+    await seedDeviceCredential(s.tenantId, s.ctx.deviceId);
+
+    // Priced AFTER the settings change, so the fixture asserts against the
+    // server's own totals rather than a hardcoded number.
+    const pricing = await getCheckoutPricing(s.tenantId);
+    const total = computeCartTotals(pricing, [{ unitPrice: 100, quantity: 1 }], 0).total;
+    expect(total).toBeCloseTo(110, 2);
+
+    const receipt = await recordSale(s.ctx, {
+      clientOrderId: "sale-svc",
+      lines: [{ productId: s.productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: total,
+      payments: [{ clientPaymentId: "p-1", method: "cash", amount: total, tenderedAmount: total }],
+    });
+    await acceptTheSale(s.tenantId);
+
+    const [orderItemId] = await orderItemIds(s.tenantId, receipt.orderId);
+    const refund = await issueRefund(actorFrom(s.ctx), {
+      orderId: receipt.orderId,
+      kind: "full",
+      // Exactly what the POS refund screen builds: the line's own lineTotal,
+      // with the tender covering the whole outstanding balance.
+      lines: [{ orderItemId, quantity: 1, amount: 100, restock: false }],
+      payments: [{ method: "cash", amount: total }],
+      reasonCode: "other",
+      clientRefundId: "r-svc",
+    });
+    // The stored figure IS the topped-up one — this test exists because the
+    // wire cannot report it as stored.
+    expect(await refundVatAmount(s.tenantId, refund.refundId)).toBe("13.51");
+
+    await makeEligibleAll(s.tenantId);
+    await drainEtaSubmissions({ provider: new FakeEta([accepted202("sub-return")]), reconcile: false });
+
+    const ret = (await rowsFor(s.tenantId)).find((row) => row.refundId === refund.refundId)!;
+    expect(ret.status).toBe("submitted");
+    const items = ret.requestJson.itemData as Record<string, unknown>[];
+    expect(items).toHaveLength(2);
+    expect(items[1].description).toBe("Service");
+    expect(items.map((line) => (line.taxableItems as { amount: number }[])[0].amount)).toEqual([12.28, 1.23]);
+    // Still the stored header, to the cent — the top-up moved, it did not shrink.
+    expect(ret.requestJson.taxTotals).toEqual([{ taxType: "T1", amount: 13.51 }]);
+    expect(Number(ret.requestJson.totalAmount)).toBeCloseTo(110, 2);
+    expect(Number(ret.requestJson.netAmount)).toBeCloseTo(96.49, 2);
+  }
 
   it("resolves a full refund that FOLLOWS a partial one from what is left", async () => {
     // Two units, so a partial can take one and the headerless full refund can
@@ -1038,6 +1129,14 @@ function makeEligibleAll(tenantId: string) {
   return withTenant(tenantId, (tx) => tx.update(etaSubmissions)
     .set({ nextAttemptAt: new Date(Date.now() - 1000) })
     .where(eq(etaSubmissions.tenantId, tenantId)));
+}
+
+/** The VAT `issueRefund` stored against a refund — the figure the return
+ *  receipt reverses, asserted as a STRING so cent-level drift cannot hide. */
+async function refundVatAmount(tenantId: string, refundId: string): Promise<string> {
+  const rows = await withTenant(tenantId, (tx) => tx.select({ vatAmount: refunds.vatAmount })
+    .from(refunds).where(and(eq(refunds.tenantId, tenantId), eq(refunds.id, refundId))));
+  return rows[0].vatAmount;
 }
 
 /** How many refund_lines a refund actually stored — the whole point of the

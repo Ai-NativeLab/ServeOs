@@ -128,22 +128,51 @@ Sources: `/document-serialization-approach/`, `/documents/receipt-v1-2/`, `/docu
   derive a net `unitPrice` at the 5 decimals ETA permits; figures matching neither convention raise
   `IrreconcilableOrderError`. *Alternative deferred as a product decision: store per-line VAT at the ordering
   layer, which would remove the allocation entirely.*
-- **No VAT is reversed on returns — LIVE FISCAL EXPOSURE, routed to coordinator for a Spec 3 follow-up.**
-  `refunds` stores only `totalAmount`; `refund_lines` stores only `quantity` + `amount`. Neither table holds a
-  VAT amount, rate or per-line tax split (verified: zero `vat`/`tax` columns in `src/server/pos/refund-schema.ts`),
-  so there is nothing to allocate and deriving a reversal in the fiscal layer would be inventing tax. Return
-  receipts therefore declare `netAmount == totalAmount` with no `taxableItems`, which means **a tenant issuing
-  returns over-declares output VAT**: the sale's VAT was reported in full and none is credited back. Fixing it
-  properly needs VAT figures persisted at the refund layer (a `refunds.vatAmount` + per-line split, or a
-  documented re-derivation from the parent order), after which the same largest-remainder machinery and the
-  same exact invariants apply unchanged. Plan-level decision, not a mapper change.
+- **~~No VAT is reversed on returns — LIVE FISCAL EXPOSURE~~ — RESOLVED 2026-08-31 (round 2, Tasks 1 + 2).**
+  *The exposure as found:* `refunds` stored only `totalAmount` and `refund_lines` only `quantity` + `amount`
+  (zero `vat`/`tax` columns in `src/server/pos/refund-schema.ts`), so return receipts declared
+  `netAmount == totalAmount` with no `taxableItems` and **a tenant issuing returns over-declared output VAT** —
+  the sale's VAT was reported in full and none was credited back.
+  *The mechanism now:* round 2 Task 1 persists `refunds.vatAmount` + `refund_lines.vatAmount`, computed ONCE at
+  issuance from the order's own stored figures (`src/server/pos/refund-vat.ts` — largest-remainder over the
+  same `computeOrderTotals` basis, service charge in its own bucket, floored at zero per line). Task 2 maps
+  those stored figures onto the wire: `buildReturnReceipt` emits per-line `taxableItems` and a document
+  `taxTotals`, `netSale` is the line's money less the tax it carries (or the money itself when the order was
+  priced VAT-exclusive and the tax rides on top — `vatMode`, the same fork the sale builder uses), and
+  `assertTotalsReconcile` now enforces Main Calculations **rule 42**
+  (`taxableItems[T1].amount = netSale * rate / 100`, within ETA's published `± 0.5`) on every line of every
+  document, sales included, plus an explicit refusal of non-positive line taxes.
+  *The de-top decision, and why it was needed:* `refund-vat.ts` stage [4] tops an itemised FULL refund's line
+  VATs up with the service charge's share, because that share has no product line of its own. Emitted verbatim
+  that breaks rule 42 — 13.51 on a 100.00 line reports `netSale` 86.49, which the rule prices at 12.11, 1.40
+  out against a 0.5 tolerance, i.e. rejected. So the top-up is **un-done at the wire**: each product line is
+  capped at the tax its own money contains, and the money the refund returned that no `refund_lines` row names
+  (`refunds.totalAmount − Σ line amounts` — the service charge) becomes its OWN return line carrying the
+  remainder, using the tenant's `feeLines.serviceCharge` classification and failing with the existing
+  `FeeLineConfigMissingError` when there is none. Same fees-as-item-lines decision as the sale side (§6 above).
+  The header is still reversed in full and to the cent: 12.28 + 1.23 = the stored 13.51.
+  *Headerless refunds* (the commonest shape — no `refund_lines` at all) carry their VAT on the header alone;
+  `finalize.ts` `resolveFullRefundLines` splits it largest-remainder across the lines it resolves from the
+  parent order, over the same amounts.
+  *Zero and legacy:* `vatAmount` of `0.00` or the legacy `'0'` emits no `taxableItems` and no `taxTotals`
+  (round 1's omission rule — a zero amount at a non-zero rate fails rule 42).
+  *One honest residual, carried forward:* the POS refund screen builds a line from `order_items.lineTotal`
+  (`apps/pos/src/screens/SalesHistory.tsx`) and requires a PARTIAL refund's tender to equal it, so a
+  VAT-exclusive tenant refunding one 100.00 item pays back 100.00 while the refund domain attributes that
+  item's whole 14.00 of VAT. 100.00 of money contains 12.28, so the document reports 12.28 and `taxTotals`
+  follows the lines (which is ETA's own definition of it). Under-reversing is the safe side; reporting 14.00
+  would claim credit for tax the customer never got back and be rejected outright. Closing the gap properly
+  means the POS offering the GROSS line amount on a partial refund — a POS-layer change, not a mapper one.
 - **Wire-boundary fail-closed guards.** The mapper refuses rather than emits a document it cannot total
   correctly: `UnsupportedTaxTypeError` for **T4** (ETA's line-total equation SUBTRACTS T4 where every other
   type is added — withholding support is deliberate work, so T1/T2/T3/T5-T20 are allowed and T4 is rejected);
   `BuyerIdRequiredError` for a `B` buyer or a `P` buyer at/above the threshold with no `buyer.id`;
   `EmptyReturnReceiptError` for a header-only full refund (`issueRefund` inserts `refund_lines` only when the
-  caller names them, but `itemData` is Mandatory); and `EtaTotalsMismatchError` for `totalAmount`,
-  `taxTotals<taxType>` and `totalSale = quantity * unitPrice`. `unitPrice` is always DERIVED from the line's
+  caller names them, but `itemData` is Mandatory); `NonPositiveLineTaxError` for a zero or negative
+  `taxableItems` amount (round 2 — zero is OMITTED per the rule above, negative would be an invented input tax
+  credit); and `EtaTotalsMismatchError` for `totalAmount`, `taxTotals<taxType>`,
+  `totalSale = quantity * unitPrice` and (round 2) the per-line rule 42
+  `taxableItems.amount = netSale * rate / 100`. `unitPrice` is always DERIVED from the line's
   own `totalSale`, never copied from `order_items.unitBasePrice` — that column excludes modifier price deltas
   for a plain product line while `lineTotal` includes them, so a passthrough broke the equation on any
   modified line.

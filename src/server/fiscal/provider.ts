@@ -138,7 +138,25 @@ export type FiscalRefundInput = {
    *  line needs (and the productId the tax-code lookup keys on) come from
    *  here. Added by Task 3, as this type's contract anticipated. */
   items: OrderItem[];
+  /**
+   * The PARENT order. Read for ONE field — `vatRateSnapshot`, the rate the sale
+   * declared its VAT at — which the return receipt must echo on every
+   * `taxableItems` entry it emits, and which is the only way to state a tax
+   * amount ETA's per-line equation will accept (Main Calculations rule 42).
+   * `refunds`/`refund_lines` store an amount and no rate, so the rate can only
+   * come from the sale being reversed. Added by round 2 Task 2.
+   */
+  order: Order;
   taxCodes: ProductTaxCode[];
+  /**
+   * Fiscal classification for the SERVICE CHARGE, needed when a refund returns
+   * more money than its `refund_lines` name — the order-level charge has no
+   * `order_items` row and therefore no `refund_lines` row either, so it ships
+   * as its own return line exactly as it ships as its own sale line. Only
+   * `serviceCharge` is consulted: the delivery fee is outside ServeOS's taxable
+   * base and outside `refund_lines` alike, so it is never separated out here.
+   */
+  feeLines?: { serviceCharge?: FeeLineConfig };
   previousUuid: string;
   deviceSerial: string | null;
 };

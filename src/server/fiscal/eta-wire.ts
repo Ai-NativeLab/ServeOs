@@ -1,12 +1,12 @@
 import type { FiscalDocument, FiscalDocLine, FiscalTaxAmount, FinalizedFiscalDocument } from "./provider";
 import {
-  addDecimal, sumDecimal, subtractDecimal, multiplyDecimal, absDecimal,
-  compareDecimal, assertDecimal, isZeroDecimal, dec,
+  addDecimal, sumDecimal, subtractDecimal, multiplyDecimal, divideDecimal, absDecimal,
+  compareDecimal, assertDecimal, isZeroDecimal, hundredAtRateScale, dec,
 } from "./decimal";
 import { computeReceiptUuid, buildQrUrl } from "./serialize";
 import {
   EtaTotalsMismatchError, UnsupportedTaxTypeError, BuyerIdRequiredError,
-  MissingTaxSubTypeError, MissingReferenceUuidError,
+  MissingTaxSubTypeError, MissingReferenceUuidError, NonPositiveLineTaxError,
 } from "./errors";
 
 /**
@@ -143,6 +143,12 @@ const DEFAULT_BUYER_ID_THRESHOLD = "150000";
  *  documented rather than guarded.) */
 const UNIT_PRICE_ROUNDING_BOUND = "0.00001";
 
+/** ETA's own allowance on every published calculation: "All the above
+ *  calculations are subject to (± 0.5) tolerance" (Main Calculations). Used
+ *  verbatim for the per-line tax equation, where a tighter bound of our own
+ *  would refuse documents ETA accepts. */
+const LINE_TAX_TOLERANCE = "0.5";
+
 /** ETA's `itemType`: "Must be GS1 or EGS for this version". */
 function itemType(codeSource: FiscalDocLine["codeSource"]): string {
   return codeSource.toUpperCase();
@@ -206,11 +212,20 @@ function toItemData(line: FiscalDocLine, ctx: WireContext): Record<string, unkno
 }
 
 /**
- * Guards the two equations ETA publishes and validates, on the document we
- * are actually about to emit:
+ * Guards the equations ETA publishes and validates, on the document we are
+ * actually about to emit:
  *
  *   totalAmount = Sum(itemData.total) - Sum(extraReceiptDiscountData.amount) + adjustment
  *   taxTotals<taxType> = Sum(itemData.taxableItems[taxType].amount)
+ *   itemData[*].totalSale = itemData[*].quantity * itemData[*].unitPrice
+ *   itemData[*].taxableItems[*].amount = ... netSale ... * rate / 100   (rule 42)
+ *
+ * The per-line TAX equation is checked on sales and returns alike — it is one
+ * published rule, not a return-specific one — and it is what makes the return
+ * receipt's VAT reversal safe: a return line's tax is attributed from stored
+ * refund figures (`build-document`'s `buildReturnReceipt`), so this is the
+ * assertion that proves the attribution ETA will re-derive matches the one we
+ * emitted, before the document is transmitted rather than after it is rejected.
  */
 function assertTotalsReconcile(doc: FiscalDocument, extraDiscount: string): void {
   for (const [index, line] of doc.lines.entries()) {
@@ -227,6 +242,8 @@ function assertTotalsReconcile(doc: FiscalDocument, extraDiscount: string): void
     if (compareDecimal(drift, bound) > 0) {
       throw new EtaTotalsMismatchError(totalSale, extended, `itemData[${index}].totalSale = quantity * unitPrice`);
     }
+
+    assertLineTaxesDerivable(line, index);
   }
 
   const summedLines = sumDecimal("line totals", doc.lines.map(lineTotal));
@@ -242,6 +259,51 @@ function assertTotalsReconcile(doc: FiscalDocument, extraDiscount: string): void
     );
     if (compareDecimal(summedTax, total.amount) !== 0) {
       throw new EtaTotalsMismatchError(total.amount, summedTax, `taxTotals[${total.taxType}] = Sum(itemData.taxableItems[${total.taxType}].amount)`);
+    }
+  }
+}
+
+/**
+ * Main Calculations rule 42, on one line's `taxableItems`:
+ *
+ *   "if itemData[*].taxableItems[*].taxtype=T1, then itemData[*].taxableItems[*].amount
+ *    = (itemData[*].taxableItems[taxType="T2"].amount + itemData[*].netSale
+ *    + TotalTaxableFees [Sum(itemData[*].taxableItems[taxType=T5-T12].amount)]
+ *    + itemData[*].valueDifference + itemData[*].taxableItems[taxType="T3"].amount)
+ *    * itemData[*].taxableItems[TaxableItem<T1>].Rate / 100"
+ *
+ * ServeOS emits no T2, no T3, no T5-T12 taxable fees and no valueDifference on
+ * any document, so every term but `netSale` is zero and the rule reduces to
+ * `amount = netSale * rate / 100`. ETA's own allowance applies —
+ * "All the above calculations are subject to (± 0.5) tolerance" — so this
+ * checks the published bound rather than a stricter one of our own: the point
+ * is to refuse only what ETA would refuse.
+ *
+ * NON-POSITIVE AMOUNTS ARE REFUSED OUTRIGHT, before the equation. A zero
+ * amount at a non-zero rate is arithmetically false (round 1's rule is to OMIT
+ * the entry instead, which both builders do), and a negative one on a return
+ * would claim back tax that was never charged. Neither is reachable from the
+ * stored figures today — `refund-vat.ts` floors every line at zero — which is
+ * exactly why it is asserted rather than assumed.
+ */
+function assertLineTaxesDerivable(line: FiscalDocLine, index: number): void {
+  for (const tax of line.taxes) {
+    if (compareDecimal(tax.amount, "0") <= 0) throw new NonPositiveLineTaxError(index, tax.taxType, tax.amount);
+
+    const expected = divideDecimal(
+      "taxableItems.amount",
+      multiplyDecimal("taxableItems.amount", assertDecimal(line.lineTotal, "netSale"), assertDecimal(tax.rate, "taxableItems.rate")),
+      // `100` at the rate's own scale — see `hundredAtRateScale`.
+      hundredAtRateScale(tax.rate),
+      2,
+    );
+    const drift = absDecimal(subtractDecimal("taxableItems.amount", tax.amount, expected));
+    if (compareDecimal(drift, LINE_TAX_TOLERANCE) > 0) {
+      throw new EtaTotalsMismatchError(
+        tax.amount,
+        expected,
+        `itemData[${index}].taxableItems[${tax.taxType}].amount = netSale * rate / 100 (± ${LINE_TAX_TOLERANCE})`,
+      );
     }
   }
 }

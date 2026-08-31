@@ -121,6 +121,22 @@ export function divideDecimal(field: string, a: string, b: string, scale: number
 }
 
 /**
+ * `100` written at `rate`'s own scale — the divisor for a `x * rate / 100`
+ * equation.
+ *
+ * `divideDecimal` needs its target scale plus the divisor's scale to cover the
+ * numerator's, and a numerator of `amount * rate` picks up the rate's decimals
+ * — which are real: `orders.vatRateSnapshot` is a numeric column, so the stored
+ * rate reads back as `"14.00"`, not `"14"`, and a literal `"100"` divisor makes
+ * `divideDecimal` throw on the scale mismatch. Writing the divisor at the
+ * rate's scale is the same alignment `100 + rate` gives a VAT-inclusive
+ * division for free.
+ */
+export function hundredAtRateScale(rate: string): string {
+  return addDecimal("tax rate base", "100", multiplyDecimal("tax rate base", rate, "0"));
+}
+
+/**
  * Splits `total` across `weights` proportionally, by the largest-remainder
  * method, so the parts sum to `total` EXACTLY — no rounding drift, no float.
  *
