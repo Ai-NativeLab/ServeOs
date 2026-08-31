@@ -14,6 +14,8 @@ import type { SyncReceipt } from "./sync-receipt";
 import { NoOpenShiftError, PosForbiddenError, PosSaleError } from "./errors";
 import type { PosCashierContext } from "./require-cashier";
 import { recordAuditEvent } from "@/server/audit/service";
+import { isFiscalEnabled } from "@/server/fiscal/enqueue";
+import { enqueueAndFinalizeReceipt } from "@/server/fiscal/finalize";
 
 export const REASON_CODES = [
   "staff_meal", "comp_service", "promo", "manager_discretion",
@@ -372,6 +374,40 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
       }
     },
   });
+
+  // Fiscal (Spec 11): the sale is committed and returned regardless — the
+  // sale is authoritative and must never be blocked or rolled back by fiscal
+  // logic. This runs strictly AFTER placeOrder's own transaction has
+  // committed (never from inside onPlaced, which is still mid-transaction),
+  // so enqueueAndFinalizeReceipt opens its OWN withTenant here rather than
+  // reusing one. `!existing` is always true on this path (an idempotent
+  // replay returns early above, well before placeOrder is even called) —
+  // kept explicit anyway so the guard reads as an invariant rather than an
+  // assumption. EG tenants enqueue a pending e_receipt AND finalize it in
+  // place — a local chain read, serialize and hash, no network — so the
+  // printed customer copy carries its ETA uuid and QR at issuance, which the
+  // post-clearance model requires; the worker submits it asynchronously and a
+  // finalization that fails here is retried there (see
+  // enqueueAndFinalizeReceipt). A non-EG tenant enqueues nothing (country
+  // gate, F2) — no behavioural change. Caught and logged, never rethrown:
+  // unlike the refund path below (whose enqueue runs INSIDE the refund's own
+  // transaction for atomicity — see enqueueFiscalDocument's doc comment), a
+  // fiscal failure here must not undo money already taken and a receipt
+  // already printed.
+  try {
+    if (!existing && (await isFiscalEnabled(ctx.tenantId))) {
+      await enqueueAndFinalizeReceipt({ tenantId: ctx.tenantId }, placed.orderId);
+    }
+  } catch (err) {
+    // Identifiers, not a bare message: this is the ONLY trace a failure here
+    // leaves (no row, no audit event — see the plan's Task 5 Step 0
+    // reconciliation-sweep note), so tenant/order must be readable straight
+    // off the log line. Plain console.error, not notify(): notify writes to
+    // the DB, which is exactly the failure mode already in play here, and an
+    // awaited call inside this catch would itself risk the iron rule (the
+    // sale must never be blocked by fiscal logic).
+    console.error(`[fiscal] enqueue failed for tenant ${ctx.tenantId} order ${placed.orderId} (sale unaffected)`, err);
+  }
 
   // onPlaced always runs to completion before placeOrder resolves — see its
   // doc comment — so committedReceipt is set whenever we reach here.

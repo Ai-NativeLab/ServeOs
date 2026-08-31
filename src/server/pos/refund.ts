@@ -12,6 +12,7 @@ import { resolveAuthorizer } from "./grants";
 import { REASON_CODES, type ReasonCode } from "./record-sale";
 import { PosRefundError } from "./errors";
 import type { Permission } from "@/server/rbac/permissions";
+import { isFiscalEnabled, enqueueFiscalDocument } from "@/server/fiscal/enqueue";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -63,7 +64,11 @@ export type RefundResult = {
  * pos:refund through resolveAuthorizer (a manager grant lets a pos:sell-only
  * cashier refund, captured as authorizedByUserId). The original order is never
  * mutated: only the three refund tables are written plus the DERIVED
- * payment_status on the order. Any failure rolls back the whole refund.
+ * payment_status on the order. Any failure rolls back the whole refund —
+ * including, for an EG tenant, its fiscal `return_receipt` enqueue (step 10
+ * below): unlike the sale path's after-commit, catch-and-log enqueue
+ * (record-sale.ts), this one runs INSIDE the refund's own transaction on
+ * purpose, because the refund has not yet been handed to a customer.
  */
 export async function issueRefund(
   actor: RefundActor,
@@ -108,6 +113,20 @@ export async function issueRefund(
   );
   const authorizedByUserId =
     authorizer === actor.actorUserId ? null : authorizer;
+
+  // Fiscal (Spec 11): read BEFORE the transaction — same reason as
+  // resolveAuthorizer just above, not just the same convention. `withTenant`
+  // below holds ONE pool connection for the whole transaction;
+  // isFiscalEnabled queries through the global `db`, i.e. a SECOND
+  // connection. pg-pool here defaults to max=10 with connectionTimeoutMillis
+  // =0 (wait forever for a free connection) — ten concurrent EG refunds each
+  // holding their tx's connection while blocked waiting on a second one
+  // deadlocks the whole pool permanently. Reading it here, before `tx`
+  // exists, means this path only ever holds one connection at a time.
+  // `country` is a stable tenant attribute (see isFiscalEnabled's own JSDoc)
+  // so a pre-transaction read is not a staleness risk. DO NOT move this back
+  // inside the transaction.
+  const fiscalEnabled = await isFiscalEnabled(actor.tenantId);
 
   const result = await withTenant(actor.tenantId, async (tx) => {
     // 1. SERIALIZE refunds per order. The net-paid ceiling is a read-then-write
@@ -322,6 +341,23 @@ export async function issueRefund(
       },
       tx,
     );
+
+    // 10. Fiscal (Spec 11): enqueue a pending return_receipt IN THIS SAME
+    //     transaction, atomic with the refund — deliberately unlike the sale
+    //     path (record-sale.ts), whose enqueue runs AFTER commit and
+    //     swallows its own errors. Here a failed insert rolls the refund
+    //     back WITH it, which is correct: unlike a completed sale, this
+    //     refund has not yet been handed to a customer, so refusing the
+    //     whole operation on a fiscal-write failure is safe and keeps "a
+    //     refund exists" and "its fiscal record was durably queued" from
+    //     ever diverging. docType is `return_receipt` — the addendum's B2C
+    //     refund document (see eta_submissions' JSDoc) — never `credit_note`,
+    //     which stays reserved for the deferred B2B e-invoice correction.
+    //     `fiscalEnabled` was read ABOVE the transaction (pool-deadlock
+    //     avoidance — see that comment); only the WRITE belongs in here.
+    if (fiscalEnabled) {
+      await enqueueFiscalDocument({ tenantId: actor.tenantId }, { docType: "return_receipt", refundId: refund.id }, tx);
+    }
 
     return {
       refundId: refund.id,

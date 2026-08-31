@@ -4,6 +4,23 @@ import { readFileSync } from "node:fs";
  * The domain service modules whose mutating functions must each emit an audit
  * event (or be justified in AUDIT_ALLOWLIST). The coverage-guardrail test scans
  * exactly these. The audit module itself is not listed — it is the writer.
+ *
+ * WHAT LISTING A FILE DOES AND DOES NOT BUY. `enumerateMutatingSymbols` finds
+ * EXPORTED functions only. A module that keeps its DB writes in private
+ * top-level helpers and exposes one orchestrating entry point therefore
+ * contributes ZERO symbols to the scan, and listing it is forward coverage —
+ * the day someone exports a mutating function from it, the guardrail catches
+ * that — rather than a statement about today. Three worker-shaped modules here
+ * are in exactly that position: `notifications/worker.ts`,
+ * `whatsapp/status-worker.ts` and `fiscal/worker.ts`, each of which drains a
+ * queue through private per-row helpers.
+ *
+ * Widening the scan to private top-level functions was measured (2026-08-31):
+ * 14 additional flagged writers repo-wide, 8 of them outside fiscal
+ * (inventory ×6, inventory/recipes, tenancy/settings). That is a real
+ * improvement and a real piece of work — other domains' justifications to
+ * write — so it is deferred, not forgotten: see the post-review follow-up in
+ * docs/ailab/plans/2026-07-24-eta-einvoicing-and-ereceipts.md (Task 5).
  */
 export const AUDITED_SERVICE_FILES = [
   "src/server/whatsapp/linking.ts",
@@ -23,6 +40,22 @@ export const AUDITED_SERVICE_FILES = [
   "src/server/pos/shifts.ts",
   "src/server/pos/cash-movements.ts",
   "src/server/pos/sync-ingest.ts",
+  "src/server/fiscal/enqueue.ts",
+  "src/server/fiscal/finalize.ts",
+  // Contributes no symbols today: drainEtaSubmissions is its only export and it
+  // writes nothing directly — every status write lives in a private per-row
+  // helper, and each of those calls recordFiscalAudit beside its write. Listed
+  // for the forward coverage described at the head of this list.
+  "src/server/fiscal/worker.ts",
+  // Real present coverage, unlike the three worker-shaped modules above: both
+  // of its writers are exported, both are owner actions on a compliance
+  // surface, and both emit (eta.config.updated / eta.device_credentials.updated).
+  "src/server/fiscal/config-service.ts",
+  // Read-only today — it is the cashier-reachable half of the fiscal API and
+  // writes nothing at all, so it contributes zero symbols. Listed purely as
+  // forward coverage: a read module that grows a writer is exactly the change
+  // that should have to justify itself.
+  "src/server/fiscal/read-model.ts",
   "src/server/catalog/service.ts",
   "src/server/catalog/variants.ts",
   "src/server/inventory/service.ts",
@@ -161,7 +194,35 @@ export const AUDIT_ALLOWLIST: Record<string, string> = {
   "cashier.resolveCashier": "expiry sweep of an already-inert row; auth.cashier_signed_in emitted by signInCashier",
   "grants.issueGrant": "authz.manager_granted emitted by the authorize route beside this call",
   "grants.consumeGrant": "the gated action's own audit event carries authorizedByUserId",
+  // Fiscal (Spec 11). enqueueFiscalDocument's insert is bookkeeping attached
+  // to a sale/refund that is already audited at its own call site
+  // (sale.recorded / refund.issued) — it names no new domain fact. The
+  // submission's own lifecycle (submitted/accepted/rejected) is emitted by the
+  // worker, on the row this insert creates.
+  "enqueue.enqueueFiscalDocument": "the eta_submissions row is bookkeeping for a sale/refund already audited as sale.recorded / refund.issued; eta.* events land with Task 5's worker",
+  // enqueueCorrectedResubmission takes no actor — its `ctx` is `{ tenantId }`
+  // — so an event emitted here would be attributed to the system, which is a
+  // lie: correcting a rejected document is a deliberate human decision. The
+  // row it inserts is not invisible either; the worker audits its
+  // submitted/accepted/rejected lifecycle exactly like the original's. The
+  // missing fact is WHO asked for it, and that belongs to the dashboard route
+  // that knows the user (Task 6).
+  "enqueue.enqueueCorrectedResubmission": "no actor in scope; the correction's own lifecycle is audited by the worker, and the who-asked-for-it event belongs to Task 6's dashboard route",
+  // finalizeSubmissionRow assigns a queued document its fiscal identity — wire
+  // JSON, self-computed uuid, QR, and the device's chain head. That is the
+  // document being PREPARED, not a domain fact reaching anyone: nothing has
+  // been declared to ETA and nothing is user-visible until the worker submits
+  // it, and the worker audits that lifecycle (submitted/accepted/rejected) on
+  // the same row. It also runs from the sale path, where an event would be
+  // attributed to a system actor beside the sale.recorded that already names
+  // the cashier. `eta.submission.*` is the whole fiscal vocabulary
+  // (fiscal/effects.ts) and none of it describes "hashed, not yet sent".
+  "finalize.finalizeSubmissionRow": "prepares a queued document (uuid/QR/chain head); the submission lifecycle it feeds is audited as eta.submission.* by the worker on the same row",
   // Forward references — land with later specs; the guardrail enforces they emit then.
   "forward:refund.*": "Spec 3 refunds must emit refund.* via recordAuditEvent",
-  "forward:eta.*": "Spec 11 fiscal submissions must emit eta.*",
+  // NOTE: `forward:eta.*` was retired here — Spec 11's worker emits
+  // eta.submission.submitted/accepted/rejected for real (fiscal/worker.ts), so
+  // the promissory note has been paid. It was also never enforced: the
+  // stale-entry test `continue`s on every `forward:` key, so a forward entry is
+  // documentation, and documentation of a thing that now exists is just stale.
 };

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { RefundSaleInput, ReprintReceipt, SaleDetail, SalesRow } from "../../electron/preload";
+import type { RefundSaleInput, ReprintReceipt, SaleDetail, SaleFiscalStatus, SalesRow } from "../../electron/preload";
+import { fetchSaleFiscal } from "../fiscal/sale-fiscal";
+import { ReceiptFiscalFooter } from "./Receipt";
 import { ManagerAuthModal } from "./ManagerAuthModal";
 
 const REASON_CODES = ["staff_meal", "comp_service", "promo", "manager_discretion", "wrong_item", "customer_changed_mind", "other"] as const;
@@ -68,6 +70,10 @@ export function SalesHistory({ offline }: { offline: boolean }) {
   const [clientRefundId, setClientRefundId] = useState("");
 
   const [reprint, setReprint] = useState<ReprintReceipt | null>(null);
+  // The reprinted sale's STORED fiscal identity. Read once when the slip opens
+  // — a reprint is a read, never a resubmission, and there is nothing to wait
+  // for: whatever the row holds now is what the original receipt carried.
+  const [reprintFiscal, setReprintFiscal] = useState<SaleFiscalStatus | null>(null);
   const [busySale, setBusySale] = useState<string | null>(null);
 
   const searchRef = useRef(search);
@@ -116,13 +122,19 @@ export function SalesHistory({ offline }: { offline: boolean }) {
   async function doReprint(sale: SaleDetail) {
     setBusySale(sale.id);
     setError(null);
+    setReprintFiscal(null);
     try {
       setReprint(await window.pos.reprintReceipt(sale.id));
     } catch {
       setError("Could not reprint the receipt");
+      return;
     } finally {
       setBusySale(null);
     }
+    // Off the critical path on purpose: the slip is already on screen and
+    // printable, the read swallows its own failures, and a footer that never
+    // arrives costs the QR — never the reprint.
+    setReprintFiscal(await fetchSaleFiscal(sale.id));
   }
 
   function openRefund(sale: SaleDetail) {
@@ -576,6 +588,7 @@ export function SalesHistory({ offline }: { offline: boolean }) {
               )}
               <div className="mt-4 text-center text-xs text-muted-foreground">{reprint.sale.customerName}</div>
               <div className="mt-1 text-center text-xs text-muted-foreground">Thank you!</div>
+              <ReceiptFiscalFooter fiscal={reprintFiscal} />
             </div>
 
             <div className="no-print mt-4 flex gap-2">

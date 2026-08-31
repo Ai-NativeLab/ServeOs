@@ -2,7 +2,18 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { enumerateMutatingSymbols, extractFunctionBody, basename, AUDIT_ALLOWLIST } from "./coverage";
 
-const EMIT_RE = /recordAuditEvent\s*\(|recordAuthEvent\s*\(|recordFinancialView\s*\(|recordCustomerPiiView\s*\(/;
+/**
+ * The calls that count as emitting an audit event.
+ *
+ * `recordFiscalAudit` (`fiscal/effects.ts`) is on the list because it IS an
+ * emission: a thin named wrapper that calls `recordAuditEvent` on the caller's
+ * transaction with `entityType` fixed to `"eta_submission"`. Recognising a real
+ * emitter is not a loophole — a domain that funnels its events through one
+ * named wrapper is exactly what this guardrail wants to see, and the wrapper is
+ * the reason the fiscal event vocabulary lives in one file instead of being
+ * restated at every call site.
+ */
+const EMIT_RE = /recordAuditEvent\s*\(|recordAuthEvent\s*\(|recordFinancialView\s*\(|recordCustomerPiiView\s*\(|recordFiscalAudit\s*\(/;
 
 describe("audit coverage guardrail", () => {
   it("every mutating service function emits an audit event (or is allowlisted)", () => {

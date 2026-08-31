@@ -124,3 +124,63 @@ describe("device file is scoped to the backend it was paired against", () => {
     expect(new PosMain().isPaired()).toBe(true);
   });
 });
+
+/**
+ * The one place the fiscal read's WIRE is checked. `saleFiscalStatus` never
+ * throws by design — a non-2xx, an unreachable backend and the endpoint's own
+ * literal `null` body all answer `null`, because the receipt does the same thing
+ * with all of them — so a typo in the path or a missing auth header would not
+ * surface as an error anywhere. It would present as a receipt that quietly never
+ * grows a fiscal footer, on every EG sale, forever. This pin is the only thing
+ * that would catch it.
+ */
+describe("saleFiscalStatus", () => {
+  async function signedInPos(baseUrl: string) {
+    const pos = await pairedPos(baseUrl);
+    // One success-path stub, for the login itself. Everything sign-in fires
+    // afterwards — the engine's connectivity probe, the drawer adoption — gets
+    // no queued response and swallows its own failure; "offline" is a perfectly
+    // good state to read a fiscal record from a stubbed fetch in.
+    stubFetch(
+      jsonResponse(200, { cashierToken: "cashier-token", userId: "user-1", name: "Nadia", permissions: ["pos:sell"] }),
+    );
+    await pos.signInCashier("cashier@example.com", "pw123456");
+    // The probe above is fired with `void`, not awaited: let it settle before
+    // the fetch mock is swapped, so it cannot land on the next test's stub.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return pos;
+  }
+
+  it("calls the sale's fiscal endpoint with both the device and cashier tokens", async () => {
+    const pos = await signedInPos(BACKEND_A);
+    const body = {
+      status: "pending",
+      etaUuid: "uuid-1",
+      qrPayload: "payload-1",
+      qrImageDataUrl: "data:image/png;base64,iVBORw0KGgo",
+    };
+    const fetchMock = stubFetch(jsonResponse(200, body));
+
+    await expect(pos.saleFiscalStatus("order-9")).resolves.toEqual(body);
+
+    const call = fetchMock.mock.calls.find((args) => String(args[0]).endsWith("/fiscal"));
+    expect(call).toBeDefined();
+    const [url, init] = call as [string, RequestInit];
+    // `[id]`, not `[orderId]`: Next refuses two slug names at one dynamic
+    // position, so the fiscal route shares its siblings' segment name.
+    expect(url).toBe(`${BACKEND_A}/api/pos/v1/sales/order-9/fiscal`);
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe(`Bearer device-token-for-${BACKEND_A}`);
+    expect(headers["X-POS-Cashier"]).toBe("cashier-token");
+  });
+
+  it("asks nothing at all when no cashier is signed in", async () => {
+    // The route is `pos:sell`-gated, so a device token alone cannot read it —
+    // and a signed-out till has no receipt on screen to decorate anyway.
+    const pos = await pairedPos(BACKEND_A);
+    const fetchMock = stubFetch();
+
+    await expect(pos.saleFiscalStatus("order-9")).resolves.toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
