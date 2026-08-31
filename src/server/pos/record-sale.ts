@@ -394,7 +394,14 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
       await enqueueFiscalDocument({ tenantId: ctx.tenantId }, { docType: "e_receipt", orderId: placed.orderId });
     }
   } catch (err) {
-    console.error("fiscal enqueue failed (sale unaffected)", err);
+    // Identifiers, not a bare message: this is the ONLY trace a failure here
+    // leaves (no row, no audit event — see the plan's Task 5 Step 0
+    // reconciliation-sweep note), so tenant/order must be readable straight
+    // off the log line. Plain console.error, not notify(): notify writes to
+    // the DB, which is exactly the failure mode already in play here, and an
+    // awaited call inside this catch would itself risk the iron rule (the
+    // sale must never be blocked by fiscal logic).
+    console.error(`[fiscal] enqueue failed for tenant ${ctx.tenantId} order ${placed.orderId} (sale unaffected)`, err);
   }
 
   // onPlaced always runs to completion before placeOrder resolves — see its

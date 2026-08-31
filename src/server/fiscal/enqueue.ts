@@ -81,49 +81,26 @@ const REFUND_ORIGINAL_WHERE = sql`${etaSubmissions.refundId} is not null and ${e
  *     rather than let it propagate (see `record-sale.ts`).
  */
 export async function enqueueFiscalDocument(ctx: { tenantId: string }, input: EnqueueInput, tx?: Tx): Promise<void> {
-  // Narrowed and resolved to plain, concrete values HERE — not inside the
-  // `run` closure below (TypeScript does not carry a parameter's narrowing
-  // into a nested function that captures it, so `run` must close over
-  // already-resolved values, never re-narrow `input` itself).
-  //
-  // A `switch` on `input.docType`, one `case` per literal, rather than an
-  // `if (input.docType === "e_receipt" || input.docType === "e_invoice")`:
-  // each member's `docType` is itself a two-literal union, and TypeScript's
-  // narrowing of a multi-literal discriminant does not survive an `||` of
-  // two single-literal checks — a `switch` with a fall-through case group
-  // narrows each literal individually and unions the two case labels
-  // correctly.
-  let values: typeof etaSubmissions.$inferInsert;
-  let target: (
-    | typeof etaSubmissions.tenantId
-    | typeof etaSubmissions.docType
-    | typeof etaSubmissions.orderId
-    | typeof etaSubmissions.refundId
-  )[];
-  let where: typeof ORDER_ORIGINAL_WHERE;
+  // `"orderId" in input` narrows the discriminated union by shape rather
+  // than by comparing `docType`'s (multi-literal) value, and — unlike that
+  // comparison — survives being read inside the `run` closure below.
+  const run = (tx: Tx) =>
+    "orderId" in input
+      ? tx.insert(etaSubmissions).values({
+          tenantId: ctx.tenantId, docType: input.docType, orderId: input.orderId, refundId: null,
+          status: "pending" as const, attempts: 0, requestJson: {},
+        }).onConflictDoNothing({
+          target: [etaSubmissions.tenantId, etaSubmissions.docType, etaSubmissions.orderId],
+          where: ORDER_ORIGINAL_WHERE,
+        })
+      : tx.insert(etaSubmissions).values({
+          tenantId: ctx.tenantId, docType: input.docType, orderId: null, refundId: input.refundId,
+          status: "pending" as const, attempts: 0, requestJson: {},
+        }).onConflictDoNothing({
+          target: [etaSubmissions.tenantId, etaSubmissions.docType, etaSubmissions.refundId],
+          where: REFUND_ORIGINAL_WHERE,
+        });
 
-  switch (input.docType) {
-    case "e_receipt":
-    case "e_invoice":
-      values = {
-        tenantId: ctx.tenantId, docType: input.docType, orderId: input.orderId, refundId: null,
-        status: "pending", attempts: 0, requestJson: {},
-      };
-      target = [etaSubmissions.tenantId, etaSubmissions.docType, etaSubmissions.orderId];
-      where = ORDER_ORIGINAL_WHERE;
-      break;
-    case "return_receipt":
-    case "credit_note":
-      values = {
-        tenantId: ctx.tenantId, docType: input.docType, orderId: null, refundId: input.refundId,
-        status: "pending", attempts: 0, requestJson: {},
-      };
-      target = [etaSubmissions.tenantId, etaSubmissions.docType, etaSubmissions.refundId];
-      where = REFUND_ORIGINAL_WHERE;
-      break;
-  }
-
-  const run = (t: Tx) => t.insert(etaSubmissions).values(values).onConflictDoNothing({ target, where });
   if (tx) {
     await run(tx);
     return;

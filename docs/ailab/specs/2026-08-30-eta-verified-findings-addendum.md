@@ -166,3 +166,4 @@ Sources: `/document-serialization-approach/`, `/documents/receipt-v1-2/`, `/docu
   mapping; and the discount `description`. `receiptNumber` is a caller-supplied parameter — Task 5 passes
   `orders.orderNumber` and must settle branch-vs-device uniqueness (ETA scopes it per branch per submission,
   while the uuid chain is per device).
+- **Sale-path enqueue failures are row-less; the Task 5 reconciliation sweep is the detection surface.**

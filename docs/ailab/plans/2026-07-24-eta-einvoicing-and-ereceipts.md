@@ -491,6 +491,8 @@ Mirrors Spec 5's outbox worker. Claims `pending|failed` rows (`SELECT … FOR UP
   - `const MAX_ATTEMPTS = 6` (or config).
   - `function drainEtaSubmissions(opts?: { provider?: FiscalProvider; limit?: number }): Promise<{ processed: number }>` — `provider` injectable so tests pass a **fake**.
 
+- [ ] **Step 0 (added 2026-08-31, review finding): reconciliation sweep** — the worker pass must also detect EG orders older than a threshold with NO eta_submissions row (a thrown sale-path enqueue leaves no row, so no row-based monitoring can see it) and enqueue them, closing the only gap where "never block the sale" trades away the compliance guarantee.
+
 - [ ] **Step 1: Write the failing tests.** Create `src/server/fiscal/worker.test.ts`, injecting a stubbed provider (accept / reject / throw variants):
   - **Accept:** a `pending e_receipt` → the worker records `etaUuid`/`qrPayload`, sets `status='accepted'` + `acceptedAt`, and emits the `eta.submission.accepted` audit event.
   - **Reject:** the provider returns `rejected` → `status='rejected'`, `responseJson` captured, `lastError` set, owner notified, and `eta.submission.rejected` emitted. The sale stands.

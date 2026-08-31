@@ -23,6 +23,7 @@ export const AUDITED_SERVICE_FILES = [
   "src/server/pos/shifts.ts",
   "src/server/pos/cash-movements.ts",
   "src/server/pos/sync-ingest.ts",
+  "src/server/fiscal/enqueue.ts",
   "src/server/catalog/service.ts",
   "src/server/catalog/variants.ts",
   "src/server/inventory/service.ts",
@@ -161,6 +162,12 @@ export const AUDIT_ALLOWLIST: Record<string, string> = {
   "cashier.resolveCashier": "expiry sweep of an already-inert row; auth.cashier_signed_in emitted by signInCashier",
   "grants.issueGrant": "authz.manager_granted emitted by the authorize route beside this call",
   "grants.consumeGrant": "the gated action's own audit event carries authorizedByUserId",
+  // Fiscal (Spec 11). enqueueFiscalDocument's insert is bookkeeping attached
+  // to a sale/refund that is already audited at its own call site
+  // (sale.recorded / refund.issued) — it names no new domain fact. The
+  // submission's own lifecycle (submitted/accepted/rejected) is a Task 5
+  // concern; see the forward:eta.* entry below for that.
+  "enqueue.enqueueFiscalDocument": "the eta_submissions row is bookkeeping for a sale/refund already audited as sale.recorded / refund.issued; eta.* events land with Task 5's worker",
   // Forward references — land with later specs; the guardrail enforces they emit then.
   "forward:refund.*": "Spec 3 refunds must emit refund.* via recordAuditEvent",
   "forward:eta.*": "Spec 11 fiscal submissions must emit eta.*",
