@@ -414,7 +414,19 @@ function isWireDocument(requestJson: Record<string, unknown>): boolean {
   return Array.isArray(requestJson.invoiceLines);
 }
 
-/** The buyer the B2B trigger staged. See THE BUYER READ SEAM above. */
+/**
+ * The buyer the B2B trigger staged. See THE BUYER READ SEAM above.
+ *
+ * CARRY-FORWARD FOR TASK 4 — VALIDATE AT THE DASHBOARD BOUNDARY, NOT HERE. This
+ * function checks only that SOMETHING was staged; `buildInvoice` then refuses an
+ * incomplete receiver with `BuyerIdRequiredError`. Both of those run inside the
+ * WORKER, where the only way to report a bad TRN is a `failed` submission row
+ * and an owner alert hours after the fact — which is the wrong surface for a
+ * typo. Task 4's zod (`rin: /^\d{9}$/`, non-empty name, the five address
+ * components) belongs at the trigger, in front of the operator, so a malformed
+ * buyer is a FORM error at capture time and `BuyerIdRequiredError` stays what it
+ * should be: an unreachable backstop for data that got in some other way.
+ */
 function stagedBuyer(row: EtaSubmission): FiscalInvoiceBuyer {
   const staged = row.requestJson.buyer;
   if (!staged || typeof staged !== "object" || Array.isArray(staged)) {

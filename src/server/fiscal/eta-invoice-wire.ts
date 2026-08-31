@@ -217,10 +217,11 @@ function toInvoiceLine(line: FiscalDocLine): Record<string, unknown> {
  * `unitValue` — invoice v1.0's Value structure, where the receipt family carries
  * a bare `unitPrice`.
  *
- * `amountSold` and `currencyExchangeRate` are Conditional: "Mandatory if
- * currencySold <> EGP. Should not have value otherwise". ServeOS is
- * single-currency EGP, so both are OMITTED — "should not have value" is a
- * prohibition, and emitting them as zero would both break that and change the
+ * `amountSold` and `currencyExchangeRate` carry their own rule in the page's
+ * prose — "Mandatory if currencySold <> EGP. Should not have value otherwise" —
+ * which is the authority here rather than any Cardinality label. ServeOS is
+ * single-currency EGP, so both are OMITTED: "should not have value" is a
+ * prohibition, and emitting them as zero would both break it and change the
  * signed bytes.
  */
 function unitValue(line: FiscalDocLine): Record<string, unknown> {

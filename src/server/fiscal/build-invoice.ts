@@ -77,14 +77,17 @@ import { BuyerIdRequiredError } from "./errors";
  * ---------------------------------------------------------------------------
  * THE RECEIVER, and every field of it that ServeOS cannot supply.
  *
- * Invoice v1.0 marks `receiver.id`, `receiver.name` and `receiver.address`
- * Conditional — "Optional if person buyer and invoice amount less than threshold
- * limit defined" — so for the type-`B` receiver a B2B invoice exists to name,
- * all three are Mandatory, and Receiver Address makes `country`, `governate`,
- * `regionCity`, `street` and `buildingNumber` Mandatory within it. `orders`
- * stores a `customerName` and a `customerPhone`; it stores no registration
- * number and no structured address, and `deliveryAddressText` is one free-text
- * line that cannot be decomposed into five components without guessing.
+ * Invoice v1.0 leaves the Cardinality cell BLANK for `receiver.id`,
+ * `receiver.name` and `receiver.address`, stating the rule only in prose:
+ * "Optional if person buyer and invoice amount less than threshold limit
+ * defined". OUR READING — conservative, and not a label ETA applied — is the
+ * contrapositive: for the type-`B` receiver a B2B invoice exists to name, all
+ * three are required. (Receiver Address separately DOES label `country`,
+ * `governate`, `regionCity`, `street` and `buildingNumber` Mandatory within
+ * itself; that word is the page's own.) `orders` stores a `customerName` and a
+ * `customerPhone`; it stores no registration number and no structured address,
+ * and `deliveryAddressText` is one free-text line that cannot be decomposed into
+ * five components without guessing.
  *
  * So all seven are captured as `FiscalInvoiceInput["buyer"]` and validated by
  * the trigger (round 2 Task 4's zod), never invented here. What this builder

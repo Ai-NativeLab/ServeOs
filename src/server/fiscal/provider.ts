@@ -72,10 +72,12 @@ export type FiscalAddress = {
 };
 
 /**
- * `address` is B2B-only and carried for invoice v1.0's `receiver`, which marks
- * it Conditional — "Optional if person buyer and invoice amount less than
- * threshold limit defined", i.e. Mandatory for a type-B receiver. Receipt v1.2
- * has no buyer-address slot at all, so `toWireReceipt` ignores it.
+ * `address` is B2B-only and carried for invoice v1.0's `receiver`. The page
+ * leaves that field's Cardinality cell BLANK and gives the rule only in prose —
+ * "Optional if person buyer and invoice amount less than threshold limit
+ * defined" — which we read contrapositively as required for a type-B receiver;
+ * see `FiscalInvoiceBuyer`. Receipt v1.2 has no buyer-address slot at all, so
+ * `toWireReceipt` ignores it.
  */
 export type FiscalBuyer = { type: "B" | "P" | "F"; id?: string; name?: string; address?: FiscalAddress };
 
@@ -207,12 +209,18 @@ export type FiscalRefundInput = {
  * EVERY FIELD HERE IS AN INPUT, not something derived from the order, and that
  * is the whole point of the type. `orders` stores a `customerName` and a
  * `customerPhone` and nothing else about the buyer: no registration number, no
- * structured address, not even a free-text one for a POS sale. Invoice v1.0
- * marks the receiver's `id`, `name` and `address` Conditional — "Optional if
- * person buyer and invoice amount less than threshold limit defined" — so for a
- * type-B receiver all three are Mandatory, and inside `address` the five fields
- * on `FiscalAddress` are Mandatory in their own right. None of them can be
- * filled from ServeOS data, so they are captured at the trigger instead.
+ * structured address, not even a free-text one for a POS sale.
+ *
+ * MANDATORY-FOR-B IS OUR READING, NOT A LABEL ETA APPLIED. Invoice v1.0 leaves
+ * the Cardinality cell BLANK for `receiver.id`, `receiver.name` and
+ * `receiver.address`; the only rule it states is prose, "Optional if person
+ * buyer and invoice amount less than threshold limit defined". Read
+ * contrapositively that makes all three required for the type-`B` receiver a
+ * B2B invoice exists to name — the conservative reading, and the one
+ * implemented, because a rejected invoice costs more than an over-strict form
+ * field. (Inside `address`, the five fields on `FiscalAddress` ARE labelled
+ * Mandatory in their own right; that part is the page's own word.) None of them
+ * can be filled from ServeOS data, so they are captured at the trigger instead.
  *
  * VALIDATION IS NOT HERE. Round 2's Task 4 owns the zod schema at the capture
  * boundary (a 9-digit RIN, a non-empty name, the five address components) and

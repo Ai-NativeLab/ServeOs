@@ -225,10 +225,12 @@ describe("buildInvoice — identity and the receiver block", () => {
   /**
    * THE MANDATORY-RECEIVER-FIELD LIST, pinned as a test rather than only as
    * prose, because round 2 Task 4's zod has to validate exactly this set at the
-   * capture boundary. Invoice v1.0 marks `receiver.id`/`name`/`address`
-   * Conditional ("Optional if person buyer and invoice amount less than
-   * threshold limit defined"), so all three are Mandatory for a type-B receiver,
-   * and Receiver Address marks these five Mandatory within it.
+   * capture boundary. Invoice v1.0 leaves the Cardinality cell BLANK for
+   * `receiver.id`/`name`/`address` and states only the prose rule ("Optional if
+   * person buyer and invoice amount less than threshold limit defined"); read
+   * contrapositively — OUR conservative reading, not the page's label — all
+   * three are required for a type-B receiver. Receiver Address does label these
+   * five Mandatory within itself.
    *
    * NONE of them is derivable from ServeOS's own order data — `orders` stores a
    * customerName and a customerPhone and nothing else about a buyer.
@@ -386,8 +388,8 @@ describe("toWireInvoice — structural oracle against ETA's published invoice", 
 
     const unit = sharedOrder(line.unitValue, (referenceLine as Record<string, unknown>).unitValue);
     expect(unit.emitted).toEqual(unit.expected);
-    // Conditional and prohibited for EGP: "Mandatory if currencySold <> EGP.
-    // Should not have value otherwise".
+    // Prohibited for EGP by the page's own prose: "Mandatory if currencySold
+    // <> EGP. Should not have value otherwise".
     expect(unit.emitted).toEqual(["currencySold", "amountEGP"]);
 
     const tax = sharedOrder(

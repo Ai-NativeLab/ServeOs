@@ -79,9 +79,16 @@ import type { InvoiceSignature } from "./eta-invoice-wire";
  *       SEQUENCE {                   -- ESSCertIDv2, TWO elements
  *         OCTET STRING (32 byte)     -- certHash = SHA-256 of the DER cert
  *         SEQUENCE {                 -- issuerSerial
- *           SEQUENCE { [0] { issuer DN } }   -- GeneralNames[0] directoryName
+ *           SEQUENCE { [0] { issuer DN } }   -- GeneralNames, and see VERIFY-11
  *           INTEGER                  -- the certificate's serialNumber
  *   } } } }
+ *
+ * VERIFY-11 — THE ONE PLACE THIS MODULE DELIBERATELY DIVERGES FROM THE SAMPLE.
+ * ETA wraps that issuer DN in tag `[0]`; this module emits `[4]`, RFC 5280's
+ * `directoryName`. Both were measured off real bytes, not inferred. The full
+ * reasoning, and the one-line flip if preprod disagrees, are at the call site in
+ * `signingCertificateV2`; the divergence is tracked in the findings addendum's
+ * §5 ledger and the round-1 plan's Blocked section.
  *
  * NOTE the ESSCertIDv2 has TWO elements, not three: its `hashAlgorithm` field
  * is absent, taking RFC 5035's DEFAULT of sha256. Emitting an explicit
@@ -89,7 +96,7 @@ import type { InvoiceSignature } from "./eta-invoice-wire";
  * the one ETA published, so it is omitted. The `policies` field of
  * SigningCertificateV2 is likewise absent (Optional).
  *
- * The ONE thing the dump cannot settle: the `issuer` inside `issuerSerial` is
+ * The one thing the dump cannot settle: the `issuer` inside `issuerSerial` is
  * printed as the CA's DN ("Egypt Trust Corporate CA G2"), which is the
  * certificate's ISSUER rather than its subject — consistent with RFC 5035, and
  * implemented that way. For a self-issued test certificate the two coincide, so
@@ -327,8 +334,32 @@ function signingCertificateV2(certificate: pkijs.Certificate, certificateDer: Bu
     value: [
       new asn1js.OctetString({ valueHex: bytesOf(createHash("sha256").update(certificateDer).digest()) }),
       new pkijs.IssuerSerial({
-        // GeneralName type 4 is `directoryName`, which is the `[0]` the dump
-        // shows wrapping the DN.
+        // ===================================================================
+        // VERIFY-11 — A DELIBERATE DIVERGENCE FROM ETA'S SAMPLE. ONE LINE.
+        // ===================================================================
+        // `type: 4` is RFC 5280's `directoryName` CHOICE alternative, so this
+        // emits the DN under tag `[4]` (first byte 0xa4).
+        //
+        // ETA'S PUBLISHED SIGNED SAMPLE DOES NOT. Decoding the `signatures[0]
+        // .value` of /files/one-doc-I.json shows the same DN under tag `[0]`
+        // (first byte 0xa0) — measured, not inferred. `[0]` is the `otherName`
+        // alternative, whose contents are `SEQUENCE { type-id OID, [0] ANY }`;
+        // what ETA actually put inside it is an RDNSequence, so their encoder
+        // emitted a directoryName under the wrong tag number. Their container
+        // is therefore self-consistent but not RFC-5280-conformant here.
+        //
+        // WE KEEP THE RFC-CORRECT [4], for two reasons. Signature validation is
+        // not deployed, so nothing on ETA's side judges this today; and copying
+        // a known-wrong tag to match a sample would be guessing that their
+        // VALIDATOR shares their ENCODER's bug — which the sample cannot tell
+        // us, because it was produced by the encoder.
+        //
+        // IF PREPROD REJECTS A SIGNED v1.0 DOCUMENT, THIS IS THE FIRST THING TO
+        // TRY: change `4` to `0` here and nothing else. `sign-invoice.test.ts`
+        // pins the emitted tag as 0xa4 so the flip can only ever be deliberate.
+        // Tracked as VERIFY-11 in the findings addendum's §5 ledger and in the
+        // round-1 plan's "Blocked — VERIFY with ETA" section; test BOTH forms
+        // against preprod before any tenant configures a real seal.
         issuer: new pkijs.GeneralNames({ names: [new pkijs.GeneralName({ type: 4, value: certificate.issuer })] }),
         serialNumber: certificate.serialNumber,
       }).toSchema(),
@@ -437,8 +468,19 @@ export class PemBundleSigner implements InvoiceSigner {
  * verifies against its own key — and it proves NOTHING about compliance,
  * validity, or whether ETA will accept a document signed this way.
  *
- * NEVER CONSTRUCT ONE OUTSIDE A TEST. `resolveInvoiceSigner` cannot reach it:
- * the only way to a real signer is a tenant's configured `signing_key_ref`.
+ * NEVER CONSTRUCT ONE OUTSIDE A TEST. `resolveInvoiceSigner` cannot reach it
+ * today: the only route to a signer is a tenant's configured `signing_key_ref`,
+ * which is parsed by `PemBundleSigner` and never by this class. Nothing
+ * constructs a `TestCertSigner` outside `*.test.ts`.
+ *
+ * CARRY-FORWARD FOR TASKS 4/5 — THAT UNREACHABILITY IS CURRENTLY A CONVENTION,
+ * NOT AN ASSERTION, and it is the one property in this module worth a guardrail:
+ * a self-issued seal reaching a production document would attach a meaningless
+ * signature to a legal record and look, from every surface ServeOS has, exactly
+ * like a correctly signed one. Whichever of Tasks 4/5 lands the config-write
+ * surface owes a test that no production path can construct this class — the
+ * repo's existing static-scan style (`src/server/audit/coverage.ts`) is the
+ * natural fit: assert that no non-test module imports `TestCertSigner`.
  *
  * The profile is minimal on purpose — version 3, a serial, matching issuer and
  * subject DNs, a validity window, the public key — because everything ETA's

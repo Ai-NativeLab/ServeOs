@@ -196,6 +196,30 @@ describe("signInvoice — the CAdES-BES container, parsed back from its own outp
     expect(certHash).toEqual(createHash("sha256").update(signer.certificate()).digest());
   });
 
+  /**
+   * VERIFY-11, pinned as bytes so the divergence cannot drift silently.
+   *
+   * We emit the issuerSerial DN under `[4]` (RFC 5280 `directoryName`, first
+   * byte 0xa4). ETA's own published signed sample carries the same DN under
+   * `[0]` (0xa0) — their encoder tagged a directoryName as `otherName`.
+   * Signature validation is undeployed so nothing judges it today; the flip is
+   * one line in `signingCertificateV2`, and this test is what makes taking it a
+   * decision rather than an accident.
+   */
+  it("emits the issuerSerial DN under RFC 5280's [4] directoryName, NOT the sample's [0]", async () => {
+    const { signerInfo } = parseContainer((await signInvoice(invoiceDigest(wire()), signer)).value);
+    const essCertIDv2 = (
+      (signerInfo.signedAttrs!.attributes[3].values[0] as asn1js.Sequence).valueBlock.value[0] as asn1js.Sequence
+    ).valueBlock.value[0] as asn1js.Sequence;
+    const generalName = (
+      (essCertIDv2.valueBlock.value[1] as asn1js.Sequence).valueBlock.value[0] as asn1js.Sequence
+    ).valueBlock.value[0] as asn1js.BaseBlock;
+
+    expect(generalName.idBlock.tagClass).toBe(3); // context-specific
+    expect(generalName.idBlock.tagNumber).toBe(4); // directoryName, not 0
+    expect(Buffer.from(generalName.toBER(false)).subarray(0, 1).toString("hex")).toBe("a4");
+  });
+
   it("THE SIGNATURE VERIFIES over the SET-OF signed attributes, against the certificate's public key", async () => {
     const { signerInfo } = parseContainer((await signInvoice(invoiceDigest(wire()), signer)).value);
     const signature = Buffer.from(signerInfo.signature.valueBlock.valueHexView);

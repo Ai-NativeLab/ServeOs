@@ -99,6 +99,7 @@ inquiry tool) remains an operational check, not a build blocker.
 | 8 Resubmit / idempotency | **RESOLVED** — C3 (`referenceOldUUID`, new UUID) + poll by `submissionUUID` |
 | 9 uuid blanking rule | **OPEN** — FAQ vs core-fields validator disagree on whether the uuid key is blanked or dropped; one line in `computeReceiptUuid`. See §6. |
 | 10 Offline issuance without QR | **OPEN** — an EG offline/unsynced sale prints with no QR (the chain is computed server-side at sync); the reprint carries it once synced. Whether handing the customer a QR-less copy at sale time is compliant is an ETA/tax-adviser question (ETA's own offline toolkit implies local issuance is the sanctioned model); mirrors ZATCA PRD-003 Q3. Raised by Task 7 (POS receipt footer). |
+| 11 issuerSerial GeneralName tag | **OPEN** — ETA's published signed sample (`/files/one-doc-I.json`) wraps the `signingCertificateV2` issuerSerial DN in `[0]` (0xa0, the `otherName` alternative) while RFC 5280 spells `directoryName` `[4]`; both measured off real bytes, not inferred. ServeOS emits the RFC-correct `[4]`, because copying a known-wrong tag assumes ETA's VALIDATOR shares its ENCODER's bug — which the sample cannot tell us. Signature validation is undeployed, so nothing judges it today. **One line in `sign-invoice.ts`** (`type: 4` → `0` in `signingCertificateV2`), pinned as bytes by `sign-invoice.test.ts` so a flip is deliberate. **Test BOTH forms against preprod before any tenant configures a real seal.** Raised by round 2 Task 3 spec review. See §6. |
 
 ## 6. Wire-level findings (Task 3a, verified against SDK)
 
@@ -222,11 +223,15 @@ Sources: `/document-serialization-approach/`, `/documents/receipt-v1-2/`, `/docu
   deprecation column. It is one preprod submission away from being settled and cannot be settled by reading.
   **The mandatory receiver fields Task 4's zod must own** (none derivable from ServeOS data — `orders` stores
   a `customerName` and a `customerPhone` and nothing else about a buyer): `id` (9-digit registration number),
-  `name`, and `address.{country, governate, regionCity, street, buildingNumber}` — invoice v1.0 marks
-  `receiver.id`/`name`/`address` Conditional ("Optional if person buyer and invoice amount less than threshold
-  limit defined"), i.e. Mandatory for the type-`B` receiver a B2B invoice exists to name, and Receiver Address
-  marks those five Mandatory within it. `buildInvoice` refuses an incomplete one by name
-  (`BuyerIdRequiredError`) rather than filing a misidentified legal document.
+  `name`, and `address.{country, governate, regionCity, street, buildingNumber}`. **"Mandatory for type `B`"
+  is OUR reading, not ETA's label, and the distinction is worth keeping:** the invoice v1.0 page leaves the
+  Cardinality cell **blank** for `receiver.id`/`name`/`address` and states the rule only in prose — "Optional
+  if person buyer and invoice amount less than threshold limit defined" — which read contrapositively makes
+  all three required for the type-`B` receiver a B2B invoice exists to name. That is the conservative reading
+  and the one implemented, because a rejected invoice costs more than an over-strict form field; if preprod
+  proves otherwise the fields become optional, not the reverse. Receiver Address separately DOES label those
+  five Mandatory within itself — that word is the page's own. `buildInvoice` refuses an incomplete receiver by
+  name (`BuyerIdRequiredError`) rather than filing a misidentified legal document.
   **Two page-vs-sample naming conflicts**, resolved and recorded: `internalID`/`branchID` follow ETA's own
   samples (capital `D`) over the pages' `internalId`/`branchId`, per round 1's rule that working JSON wins on
   spelling; `documentType` is emitted `"I"` following both samples, though the page's prose says "Must be `i`"
