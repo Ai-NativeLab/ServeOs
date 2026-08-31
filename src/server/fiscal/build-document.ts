@@ -51,6 +51,55 @@ function toEtaUtc(at: Date): string {
   return `${at.toISOString().slice(0, 19)}Z`;
 }
 
+/**
+ * `allocateLargestRemainder`, with the ZERO weights held out of the draw.
+ *
+ * READ THE SIGN RULE BEFORE ASSUMING THIS FIXES A BUG — IT DOES NOT, HERE.
+ * A cent landing on a line that weighed nothing is never harmless: it is money
+ * or tax attributed to a line whose own figures cannot carry it (a negative
+ * `netSale`, a tax above what rule 42 permits). But whether the allocator can
+ * DO that depends entirely on the sign of the total, and every call site in this
+ * module passes a non-negative one:
+ *
+ *   POSITIVE total — IMPOSSIBLE. A zero weight's remainder is exactly zero.
+ *     With `leftover = k` cents to hand out, Σ remainders is `k * weightSum` and
+ *     every remainder is strictly below `weightSum`, so at least `k + 1` entries
+ *     hold a POSITIVE remainder; the k cents are taken by the top k of those and
+ *     never reach a zero. (Verified by brute force over ~312k random splits with
+ *     zero weights present: zero hits.)
+ *
+ *   NEGATIVE total — CONSTANT. Every remainder is then ≤ 0, so a remainder of
+ *     zero is the LARGEST and a zero weight sorts FIRST, taking a `-1` cent
+ *     immediately. This is real and reached often (~73% of the same sample) —
+ *     it is exactly the case `@/server/pos/refund-vat`'s `floorLineVatsAt0`
+ *     already excludes zero weights for, and its comment says so.
+ *
+ * So this is HARDENING, not a repair: it makes "no part exceeds its own weight"
+ * true by CONSTRUCTION and independent of the total's sign, rather than resting
+ * on the counting argument above plus the fact that nothing here happens to pass
+ * a negative total today. A future split that does — netting one refund against
+ * another, say, which is precisely what the refund domain already does — cannot
+ * reintroduce the class at these four sites. The counting argument is written
+ * down because without it the next reader cannot tell whether removing this is
+ * safe.
+ *
+ * WHAT IT DOES NOT DO. A `total` larger than Σ weights still over-fills the
+ * positive lines — the method cannot invent capacity, and each call site is
+ * responsible for its own precondition (documented there). And when EVERY
+ * weight is zero this returns all zeros instead of throwing
+ * "cannot allocate — every weight is zero": the callers that care catch that as
+ * a sum mismatch and refuse the document by name, which is a better error than
+ * the allocator's.
+ */
+function shareOverPositive(total: string, weights: string[]): string[] {
+  const taking = weights.map((weight, index) => ({ weight, index })).filter((w) => compareDecimal(w.weight, "0") > 0);
+  if (taking.length === 0 || isZeroDecimal(total)) return weights.map(() => "0.00");
+
+  const shares = allocateLargestRemainder("proportional share", total, taking.map((w) => w.weight));
+  const byIndex = new Map(taking.map((w, position) => [w.index, shares[position]]));
+  return weights.map((_, index) => byIndex.get(index) ?? "0.00");
+}
+
 function taxCodeIndex(taxCodes: ProductTaxCode[]): Map<string, ProductTaxCode> {
   return new Map(taxCodes.map((code) => [code.productId, code]));
 }
@@ -140,8 +189,18 @@ function buildLineDrafts(input: FiscalSaleInput): LineDraft[] {
   const { order, items, taxCodes } = input;
   const codes = taxCodeIndex(taxCodes);
 
-  const productShares = allocateLargestRemainder(
-    "orderDiscount",
+  // ZERO-WEIGHT SITE (1 of 4). A cent of order discount handed to a
+  // zero-`lineTotal` item — a comped line, or one whose own discount already
+  // took it to nothing — would make that line's base NEGATIVE: a free line on
+  // an otherwise ordinary discounted order, and a `netSale` ETA has no meaning
+  // for. NOT REACHABLE TODAY: `orders.discountAmount` is non-negative, and the
+  // sign rule on `shareOverPositive` shows a positive total can never reach a
+  // zero weight. Held out anyway so the property does not depend on that.
+  // PRECONDITION: `discountAmount <= Σ lineTotal`, which the ordering layer
+  // guarantees — `placeOrder` stores `subtotal = Σ lineTotal - orderDiscount`
+  // and a negative subtotal is not a shape it can produce (an order whose
+  // figures contradict that is caught by `vatMode`, which runs first).
+  const productShares = shareOverPositive(
     assertDecimal(order.discountAmount, "orders.discountAmount"),
     items.map((item) => item.lineTotal),
   );
@@ -188,21 +247,42 @@ function buildLineDrafts(input: FiscalSaleInput): LineDraft[] {
  * Splits `orders.vatAmount` across the VAT-bearing lines in proportion to
  * their amounts, by largest remainder, so the parts sum to the stored figure
  * EXACTLY. Lines outside ServeOS's taxable base get nothing.
+ *
+ * ZERO-WEIGHT SITE (2 of 4), with two would-be consequences. A VAT cent handed
+ * to the DELIVERY line (weighed `0.00` because it sits outside the taxable
+ * base) was zeroed back out immediately below, which would make the split stop
+ * summing to `orders.vatAmount` — the invariant would fire and a perfectly
+ * legitimate sale would be refused PERMANENTLY, the whole receipt lost over a
+ * cent of placement. A cent handed to a VAT-bearing line whose own base is
+ * `0.00` would be quieter: under VAT-inclusive pricing that line's
+ * `netSale = base - vat` goes NEGATIVE and ships.
+ *
+ * NEITHER IS REACHABLE — `orders.vatAmount` is positive here (the zero case
+ * returns above), and the sign rule on `shareOverPositive` shows a positive
+ * total never reaches a zero weight. The guard is there so that stays true
+ * without the counting argument; the zeroing pass it replaced is now provably a
+ * no-op, so it is gone rather than left to imply a hazard it never covered.
+ *
+ * PRECONDITION: `vatAmount <= Σ bearing base`. `computeOrderTotals` derives VAT
+ * as `taxable * rate/100` (exclusive) or `taxable * rate/(100+rate)`
+ * (inclusive) over exactly these lines, so it holds for any rate below 100%.
+ * The invariant below is what catches it if it ever does not.
  */
 function allocateVat(order: Order, drafts: LineDraft[]): string[] {
   const bearing = drafts.map((draft) => (draft.bearsVat ? draft.base : "0.00"));
   if (isZeroDecimal(order.vatAmount)) return drafts.map(() => "0.00");
 
-  const shares = allocateLargestRemainder("vatAmount", order.vatAmount, bearing);
-  const zeroed = shares.map((share, index) => (drafts[index].bearsVat ? share : "0.00"));
+  const shares = shareOverPositive(order.vatAmount, bearing);
 
   // Invariant, not decoration: ETA re-derives taxTotals as the sum of the
-  // line taxes, so a drifting split would be rejected.
-  const summed = sumDecimal("vat split", zeroed);
+  // line taxes, so a drifting split would be rejected. It also stands in for
+  // the allocator's "every weight is zero" throw — VAT charged against a
+  // wholly zero base is genuinely irreconcilable, and this names the order.
+  const summed = sumDecimal("vat split", shares);
   if (compareDecimal(summed, order.vatAmount) !== 0) {
     throw new IrreconcilableOrderError(order.id, `allocated VAT ${summed} does not equal stored vatAmount ${order.vatAmount}`);
   }
-  return zeroed;
+  return shares;
 }
 
 /**
@@ -408,40 +488,27 @@ export function attributeReturnVat(
     // proportionally rather than reporting past it; every part only moves down,
     // so no line is pushed over its cap, and the proportionality assert still
     // has the last word on whether the result is emittable at all.
+    //
+    // ZERO-WEIGHT SITE (3 of 4): a cent handed to a line already holding no tax
+    // would put it above a capacity of zero. Same sign rule — `headerVat` is
+    // positive, so unreachable; held out anyway. PRECONDITION
+    // `headerVat < Σ base` is this branch's own condition.
     return { vats: shareOverPositive(headerVat, base), unreported: "0.00" };
   }
 
   const headroom = base.map((vat, index) => subtractDecimal("return VAT headroom", caps[index], vat));
   const available = sumDecimal("return VAT headroom", headroom);
   const placed = compareDecimal(residual, available) > 0 ? available : residual;
+  // ZERO-WEIGHT SITE (4 of 4): a cent handed to a line with no headroom left is
+  // the rule-42 breach the caps exist to prevent. Same sign rule — `placed` is
+  // non-negative, so unreachable; held out anyway. PRECONDITION
+  // `placed <= Σ headroom` is enforced on the line above.
   const extra = shareOverPositive(placed, headroom);
 
   return {
     vats: base.map((vat, index) => addDecimal("return line VAT", vat, extra[index])),
     unreported: subtractDecimal("unreported return VAT", residual, placed),
   };
-}
-
-/**
- * `allocateLargestRemainder`, with the ZERO weights held out of the draw.
- *
- * A zero weight has a remainder of zero, so it sorts last — but a split with
- * enough leftover cents and few enough distinct remainders can still reach it,
- * and one cent handed to a line whose capacity (or headroom) is zero is exactly
- * the rule-42 breach the caps exist to prevent. Holding them out makes
- * "no line above its cap" true by construction rather than by argument, and it
- * is the same reasoning `refund-vat.ts`'s `floorLineVatsAt0` records for its own
- * re-spread.
- *
- * `total` must be within Σ weights, which both call sites guarantee.
- */
-function shareOverPositive(total: string, weights: string[]): string[] {
-  const taking = weights.map((weight, index) => ({ weight, index })).filter((w) => compareDecimal(w.weight, "0") > 0);
-  if (taking.length === 0 || isZeroDecimal(total)) return weights.map(() => "0.00");
-
-  const shares = allocateLargestRemainder("return VAT share", total, taking.map((w) => w.weight));
-  const byIndex = new Map(taking.map((w, position) => [w.index, shares[position]]));
-  return weights.map((_, index) => byIndex.get(index) ?? "0.00");
 }
 
 /**

@@ -21,7 +21,7 @@ import {
 import { EtaFiscalProvider } from "./eta-provider";
 import { stringifyWire } from "./serialize";
 import { toWireReceipt, finalizeReceipt, type WireContext } from "./eta-wire";
-import { addDecimal, sumDecimal, compareDecimal, isZeroDecimal, subtractDecimal } from "./decimal";
+import { addDecimal, sumDecimal, compareDecimal, isZeroDecimal, subtractDecimal, allocateLargestRemainder } from "./decimal";
 import type {
   FiscalSaleInput, FiscalRefundInput, FiscalDocument, FiscalDocLine, FeeLineConfig,
 } from "./provider";
@@ -1325,6 +1325,180 @@ describe(`return VAT attribution hammer (LCG seed ${ATTRIBUTION_SEED}, determini
     expect(seen.zeroCapacity).toBeGreaterThan(100);
     expect(seen.unreported).toBeGreaterThan(100);
     expect(seen.refused).toBeGreaterThan(100);
+  });
+});
+
+describe("allocateLargestRemainder — the zero-weight sign rule", () => {
+  // This is WHY the four `shareOverPositive` call sites are hardening rather
+  // than repairs, and it is pinned rather than argued because the whole
+  // question is whether removing that guard would be safe.
+  const hasZeroWeightShare = (total: string, weights: string[]): boolean =>
+    allocateLargestRemainder("probe", total, weights)
+      .some((part, i) => isZeroDecimal(weights[i]) && !isZeroDecimal(part));
+
+  it("never hands a leftover cent to a zero weight when the total is POSITIVE", () => {
+    // A zero weight's remainder is exactly zero; with k cents left over, Σ
+    // remainders is k * Σweights and each is below Σweights, so at least k + 1
+    // entries hold a positive remainder and take them first.
+    const rnd = lcg(20260903);
+    let checked = 0;
+    for (let n = 0; n < 20_000; n++) {
+      const count = 2 + int(rnd, 4);
+      const weights = Array.from({ length: count }, () => cents(rnd() < 0.4 ? 0 : int(rnd, 20_000)));
+      if (!weights.some((w) => isZeroDecimal(w)) || weights.every((w) => isZeroDecimal(w))) continue;
+      const sum = sumDecimal("sum", weights);
+      const total = cents(int(rnd, Math.round(Number(sum) * 100)));
+      checked++;
+      expect(hasZeroWeightShare(total, weights), `weights ${weights} total ${total}`).toBe(false);
+    }
+    expect(checked).toBeGreaterThan(5_000);
+  });
+
+  it("DOES hand one to a zero weight when the total is negative — the case that made this a rule", () => {
+    // Every remainder is then ≤ 0, so a remainder of zero is the LARGEST and a
+    // zero weight sorts FIRST. `@/server/pos/refund-vat`'s `floorLineVatsAt0`
+    // already excludes zero weights for exactly this reason; nothing in THIS
+    // module passes a negative total, which is what makes the four guards
+    // structural rather than corrective.
+    expect(allocateLargestRemainder("probe", "-0.07", ["0.00", "0.01", "0.01", "0.01"])[0]).toBe("-0.01");
+  });
+});
+
+const SALE_SEED = 20260902;
+const SALE_CASES = 10_000;
+
+/**
+ * An ADMISSIBLE sale: the figures are shaped the way `computeOrderTotals` would
+ * leave them (VAT derived from `subtotal + serviceCharge`, delivery outside the
+ * base, `total` on one of the two conventions `vatMode` recognises), while the
+ * LINES are deliberately degenerate — zero-`lineTotal` items, single cents,
+ * repeated constants that tie the remainders, and order discounts big enough to
+ * take a line to nothing. Those are the shapes that used to hand a leftover cent
+ * to a zero weight.
+ */
+function generateSaleCase(rnd: () => number): FiscalSaleInput {
+  const rate = pick(rnd, ["14.00", "14", "5", "10.000"]);
+  const rateNumber = Number(rate);
+  const inclusive = rnd() < 0.5;
+  const n = 1 + int(rnd, 4);
+
+  const lineCents = Array.from({ length: n }, () => pick(rnd, [0, 0, 1, 2, 33_33, 100_00, 100_00, 190_00]));
+  const gross = lineCents.reduce((s, c) => s + c, 0);
+  const discount = gross > 0 && rnd() < 0.55 ? int(rnd, gross) : 0;
+  const subtotal = gross - discount;
+  const serviceCharge = rnd() < 0.4 ? Math.round(subtotal * pick(rnd, [0.05, 0.1, 0.125])) : 0;
+  const taxable = subtotal + serviceCharge;
+  const delivery = pick(rnd, [0, 0, 1, 25_00]);
+  const vat = rnd() < 0.15
+    ? 0 // vatEnabled off — the omission path
+    : Math.round(inclusive ? (taxable * rateNumber) / (100 + rateNumber) : (taxable * rateNumber) / 100);
+  const total = inclusive ? taxable + delivery : taxable + vat + delivery;
+
+  const saleItems: OrderItem[] = lineCents.map((line, i) => ({
+    ...items[0],
+    id: `sale-item-${String(i).padStart(2, "0")}`,
+    productId: `sale-product-${String(i).padStart(2, "0")}`,
+    nameEn: `Line ${i}`,
+    quantity: 1 + int(rnd, 2),
+    lineTotal: cents(line),
+    unitBasePrice: cents(line),
+    discountAmount: cents(rnd() < 0.25 ? pick(rnd, [1, 100, 500]) : 0),
+  }));
+
+  return {
+    order: {
+      ...order,
+      discountAmount: cents(discount),
+      subtotal: cents(subtotal),
+      serviceChargeAmount: cents(serviceCharge),
+      deliveryFee: cents(delivery),
+      vatRateSnapshot: rate,
+      vatAmount: cents(vat),
+      total: cents(total),
+    },
+    items: saleItems,
+    taxCodes: saleItems.map((saleItem) => taxCode(saleItem.productId)),
+    payments: [payment({ id: "p1", method: "cash", amount: cents(total) })],
+    feeLines,
+    previousUuid: "c".repeat(64),
+    deviceSerial: "POS-001",
+  };
+}
+
+describe(`sale allocation hammer (LCG seed ${SALE_SEED}, deterministic)`, () => {
+  it(`holds every invariant over ${SALE_CASES.toLocaleString()} degenerate sales`, () => {
+    const rnd = lcg(SALE_SEED);
+    const seen = { built: 0, refused: 0, zeroWeightDiscount: 0, nonBearingWithVat: 0, zeroVat: 0, inclusive: 0 };
+
+    for (let n = 0; n < SALE_CASES; n++) {
+      const input = generateSaleCase(rnd);
+      const where = `case ${n}: ${JSON.stringify(input.order)} / ${JSON.stringify(input.items.map((i) => [i.lineTotal, i.quantity, i.discountAmount]))}`;
+      const rate = input.order.vatRateSnapshot;
+
+      if (input.items.some((i) => isZeroDecimal(i.lineTotal)) && !isZeroDecimal(input.order.discountAmount)) {
+        seen.zeroWeightDiscount++;
+      }
+      if (!isZeroDecimal(input.order.deliveryFee) && !isZeroDecimal(input.order.vatAmount)) seen.nonBearingWithVat++;
+      if (isZeroDecimal(input.order.vatAmount)) seen.zeroVat++;
+
+      let doc: FiscalDocument;
+      try {
+        doc = buildReceipt(input);
+        // The wire's own equations — totalAmount, taxTotals, totalSale and the
+        // per-line rule 42 — on the document we would actually transmit.
+        toWireReceipt(doc, wireCtx);
+      } catch (err) {
+        // The ONLY tolerated failure is a NAMED one. A bare Error would mean an
+        // allocation could not honour its target.
+        expect(err, where).toBeInstanceOf(FiscalDocumentError);
+        seen.refused++;
+        continue;
+      }
+      seen.built++;
+      if (compareDecimal(input.order.total, addDecimal("x", input.order.subtotal, input.order.serviceChargeAmount ?? "0.00", input.order.deliveryFee)) === 0) {
+        seen.inclusive++;
+      }
+
+      // 1. NO NEGATIVE BASE. A line's netSale — and the totalSale it is derived
+      //    from — is money that was actually charged; a discount cent landing on
+      //    a line that weighed nothing used to push this below zero.
+      for (const line of doc.lines) {
+        expect(compareDecimal(line.lineTotal, "0"), `${where} (netSale ${line.lineTotal})`).toBeGreaterThanOrEqual(0);
+        expect(compareDecimal(addDecimal("totalSale", line.lineTotal, line.discountAmount), "0"), where)
+          .toBeGreaterThanOrEqual(0);
+      }
+
+      // 2. Σ LINE VAT == orders.vatAmount, to the cent — the figure ETA
+      //    re-derives taxTotals from. A cent dropped on a non-bearing line used
+      //    to break this and refuse the whole sale.
+      const lineVat = sumDecimal("vat", doc.lines.flatMap((line) => line.taxes.map((tax) => tax.amount)));
+      expect(lineVat, where).toBe(isZeroDecimal(input.order.vatAmount) ? "0.00" : input.order.vatAmount);
+      if (isZeroDecimal(input.order.vatAmount)) expect(doc.taxTotals, where).toEqual([]);
+
+      // 3. NO LINE ABOVE ITS RULE-42 CAPACITY, asserted here and not merely
+      //    delegated to the wire.
+      for (const line of doc.lines) {
+        for (const tax of line.taxes) {
+          expect(compareDecimal(tax.amount, "0"), where).toBeGreaterThan(0);
+          const capacity = lineTaxCapacity(line.lineTotal, rate, "net");
+          const drift = subtractDecimal("drift", tax.amount, capacity);
+          expect(compareDecimal(drift.startsWith("-") ? drift.slice(1) : drift, "0.5"), `${where} (tax ${tax.amount} vs ${capacity})`)
+            .toBeLessThanOrEqual(0);
+        }
+      }
+
+      // 4. Deterministic — the same sale must always hash to the same document.
+      if (n % 10 === 0) expect(buildReceipt(input), where).toEqual(doc);
+    }
+
+    // The hammer is only worth committing if it actually reaches the corners —
+    // and if it is mostly BUILDING documents rather than refusing them, which a
+    // vacuous generator would not.
+    expect(seen.built).toBeGreaterThan(SALE_CASES * 0.9);
+    expect(seen.zeroWeightDiscount).toBeGreaterThan(100);
+    expect(seen.nonBearingWithVat).toBeGreaterThan(100);
+    expect(seen.zeroVat).toBeGreaterThan(100);
+    expect(seen.inclusive).toBeGreaterThan(100);
   });
 });
 
