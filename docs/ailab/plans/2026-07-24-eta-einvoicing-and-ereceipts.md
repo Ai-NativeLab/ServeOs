@@ -802,7 +802,7 @@ _No commit for this section — it is a gate, not a change. Do not remove a `TOD
   - [x] Confirm `GET /api/dashboard/fiscal/config` **never** returns a secret; a `manager`/`staff` user gets **403**. *(Evidence: mutation-verified deep masking walk over every read surface + audit rows; route 403 tests; `redactedCause` log-redaction test.)*
   - [ ] Confirm the Vercel plan tier supports sub-daily cron (`*/15` fiscal worker) BEFORE enabling any EG tenant — Hobby tier silently runs daily; see `/api/fiscal/worker/route.ts` comment.
 
-- [ ] **Step 3: Open the PR.** *(As-built body below — supersedes the original template, which predated the addendum and carried an attribution footer contrary to repo commit policy.)*
+- [x] **Step 3: Open the PR.** *(Opened 2026-08-31 as https://github.com/Ai-NativeLab/ServeOs/pull/198 with the as-built body below — it supersedes the original template, which predated the addendum and carried an attribution footer contrary to repo commit policy.)*
 
 ```bash
 git push -u origin HEAD
