@@ -561,7 +561,8 @@ async function seedPricedPaidSale(opts: {
 const refundRows = (tenantId: string) =>
   withTenant(tenantId, (tx) => tx.select().from(refunds).orderBy(refunds.createdAt));
 const refundLineRows = (tenantId: string, refundId: string) =>
-  withTenant(tenantId, (tx) => tx.select().from(refundLines).where(eq(refundLines.refundId, refundId)));
+  withTenant(tenantId, (tx) =>
+    tx.select().from(refundLines).where(eq(refundLines.refundId, refundId)).orderBy(refundLines.orderItemId));
 const orderRow = (tenantId: string, orderId: string) =>
   withTenant(tenantId, async (tx) => (await tx.select().from(orders).where(eq(orders.id, orderId)))[0]);
 
