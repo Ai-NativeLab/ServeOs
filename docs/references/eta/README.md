@@ -8,6 +8,7 @@ Kept in-repo deliberately (same rationale as `docs/references/zatca/`): ETA repu
 |---|---|---|
 | `ereceipt-registration-guide.pdf` | دليل الممول للاستعداد لمنظومة الإيصال الإلكتروني — الجزء الأول: التسجيل (ETA taxpayer registration guide, 46 pp, Arabic) | The two registration routes (tax office vs e-seal self-registration), the **dual preprod+prod invitations**, ERP registration issuing Client ID + Secret 1/2, per-POS device registration (accredited model + serial), B2B/B2C tagging |
 | `einv-selfreg.pdf` | E-invoicing self-registration steps (ETA, English) | The e-seal-signed online self-registration flow (ITIDA Web Sign Client, Windows-only) |
+| `regulations.md` | **The full regulatory research** (verified 2026-08-30): legal framework, wave catalog, enforcement economics, registration & e-seal boundary, sandbox verdict, accreditation program, and the OFFICIAL / SECONDARY / COULD-NOT-VERIFY evidence lists | The compliance reference behind Spec 11; the debunked 250k-threshold claim's durable refutation |
 
 Source URLs (fetched 2026-08-30):
 

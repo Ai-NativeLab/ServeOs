@@ -4,7 +4,8 @@
 Where this addendum and the original spec/plan disagree, **this addendum wins.**
 
 Every claim below was verified 2026-08-30 against official pages — eta.gov.eg, sdk.invoicing.eta.gov.eg,
-pos.eta.gov.eg, itida.gov.eg — with verbatim quotes captured in the research session. Primary-source PDFs are
+pos.eta.gov.eg, itida.gov.eg — with verbatim quotes now captured durably in
+`docs/references/eta/regulations.md` (the full regulatory research + evidence classification). Primary-source PDFs are
 in `docs/references/eta/` (see its README). Secondary/vendor claims are marked `[S]`; everything else is official.
 
 ## 1. Corrections to the original spec
