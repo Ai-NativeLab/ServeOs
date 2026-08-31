@@ -938,6 +938,10 @@ export class PosMain {
    * the same thing to the receipt: print it exactly as a non-fiscal till would.
    * Mirrors `getOrders`, which swallows for the same reason — the till is
    * offline-first and no fiscal read may cost a cashier a printed receipt.
+   *
+   * THE COLLAPSE IS DELIBERATE BUT NOT FREE: a future consumer that needs to
+   * tell non-EG from not-yet from transport-failure must WIDEN THIS RETURN TYPE
+   * — never infer meaning from `null`, which says only "nothing to print".
    */
   async saleFiscalStatus(orderId: string): Promise<SaleFiscalStatus | null> {
     if (!this.device || !this.cashier) return null;

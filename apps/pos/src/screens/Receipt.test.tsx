@@ -47,10 +47,11 @@ const baseline = renderToStaticMarkup(
 const render = (f: ReceiptFiscal | null) =>
   renderToStaticMarkup(<Receipt data={SALE} fiscal={f} onPrint={() => {}} onNewOrder={() => {}} />);
 
+const FOOTER_RE = /<div class="mt-4 border-t border-dashed border-border pt-3 text-center">.*?<\/div>/;
+
 /** Strips the fiscal block — which contains no nested `div` — so the rest of the
  *  receipt can be compared against the baseline character for character. */
-const withoutFooter = (html: string) =>
-  html.replace(/<div class="mt-4 border-t border-dashed border-border pt-3 text-center">.*?<\/div>/, "");
+const withoutFooter = (html: string) => html.replace(FOOTER_RE, "");
 
 describe("no fiscal record", () => {
   it("renders the receipt exactly as it did before ETA — the country gate's guarantee", () => {
@@ -60,6 +61,19 @@ describe("no fiscal record", () => {
     expect(baseline).not.toContain("ETA");
     expect(baseline).not.toContain("Fiscal receipt");
     expect(baseline).not.toContain("<img");
+  });
+});
+
+describe("the footer's own shape", () => {
+  it("nests no `div` — the invariant `withoutFooter` depends on", () => {
+    // The strip above is non-greedy, so it stops at the FIRST `</div>`. Let the
+    // footer grow a nested div and it would cut short, and every "unchanged
+    // apart from the footer" comparison below would fail at once for a reason
+    // none of them names. This one names it.
+    const footer = render(fiscal({ status: "rejected" })).match(FOOTER_RE)?.[0];
+    expect(footer).toBeDefined();
+    expect(footer!.match(/<div/g)).toHaveLength(1);
+    expect(footer!.match(/<\/div>/g)).toHaveLength(1);
   });
 });
 

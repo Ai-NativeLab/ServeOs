@@ -53,7 +53,9 @@ export function sameFiscal(a: SaleFiscalStatus | null, b: SaleFiscalStatus | nul
  * One read, never throwing. `null` covers both "this sale has no fiscal record"
  * (a non-EG tenant, or an enqueue that has not landed) and "the read did not get
  * through" — the receipt treats them the same, because in both cases all it can
- * honestly print is the receipt it would have printed anyway.
+ * honestly print is the receipt it would have printed anyway. A caller that
+ * needs to tell them apart must widen the type at the source
+ * (`PosMain.saleFiscalStatus`) rather than read meaning into `null`.
  */
 export async function fetchSaleFiscal(orderId: string): Promise<SaleFiscalStatus | null> {
   try {

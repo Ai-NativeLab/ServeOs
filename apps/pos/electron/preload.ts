@@ -66,7 +66,9 @@ export interface PosBridge {
   reprintReceipt(orderId: string): Promise<ReprintReceipt>;
   /** The sale's ETA e-receipt state for the receipt footer. `null` = no fiscal
    *  record (non-EG tenant, enqueue not landed yet) OR the read did not get
-   *  through — both print the receipt unchanged. Never rejects. */
+   *  through — both print the receipt unchanged. Never rejects. Telling those
+   *  apart needs a wider return type, not a reading of `null`: see
+   *  `PosMain.saleFiscalStatus`. */
   saleFiscalStatus(orderId: string): Promise<SaleFiscalStatus | null>;
   refundSale(input: RefundSaleInput): Promise<RefundSaleResult>;
   signInCashier(email: string, password: string): Promise<CashierInfo>;
