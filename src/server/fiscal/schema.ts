@@ -14,6 +14,42 @@ export const etaCodeSourceEnum = pgEnum("eta_code_source", ["gs1", "egs"]);
 export const etaPosCredentialStatusEnum = pgEnum("eta_pos_credential_status", ["registered", "active", "expired", "retired"]);
 
 /**
+ * The stored half of invoice v1.0's `receiver` block — the B2B buyer a
+ * dashboard or till operator types in at the trigger.
+ *
+ * Written out here rather than imported from `./provider` for the same reason
+ * `EtaWireContextConfig` is: this schema module keeps its one-way dependency
+ * (schema -> nothing fiscal). Drift is a COMPILE error rather than a silent one
+ * — `./finalize` reads this column straight into a `FiscalInvoiceBuyer`, so a
+ * field added to or renamed on that type fails to typecheck at the read site.
+ *
+ * VALIDATION belongs to `./config-service`'s `requestB2bInvoice`, which runs it
+ * ONCE with the operator in front of the form (the same division
+ * `EtaWireContextConfig` documents for the seller half). The worker consumes
+ * this column verbatim.
+ */
+export type EtaSubmissionBuyer = {
+  /** `receiver.id` — the buyer's ETA registration number, 9 digits. */
+  rin: string;
+  /** `receiver.name` — registration name of the company. */
+  name: string;
+  /** `receiver.address` — Mandatory for a type-`B` receiver; the five
+   *  components below are Mandatory in their own right, the rest Optional. */
+  address: {
+    country: string;
+    governate: string;
+    regionCity: string;
+    street: string;
+    buildingNumber: string;
+    postalCode?: string;
+    floor?: string;
+    room?: string;
+    landmark?: string;
+    additionalInformation?: string;
+  };
+};
+
+/**
  * One row per fiscal document submitted to ETA (e-receipt, e-invoice, credit
  * note, or return receipt). Mirrors notification_outbox's shape (status +
  * attempts + lastError + nextAttemptAt backoff clock, Spec 5) so the same
@@ -83,6 +119,33 @@ export const etaSubmissions = pgTable("eta_submissions", {
    */
   requestJson: json("request_json").$type<Record<string, unknown>>().notNull().default({}),
   responseJson: jsonb("response_json").$type<Record<string, unknown>>(),
+  /**
+   * The B2B receiver captured at the dashboard trigger, for `e_invoice` rows
+   * only. Null everywhere else — a receipt has no buyer block at all, and a
+   * return receipt inherits its parent's.
+   *
+   * WHY A COLUMN AND NOT `request_json`. Invoice v1.0 makes the receiver
+   * Mandatory for a business buyer and ServeOS stores none of it (registration
+   * number, name, five address components — see `EtaSubmissionBuyer`), so it has
+   * to travel from the operator's form to the worker's pure-read finalizer
+   * somehow. Staging it inside `request_json` worked (round 1, Task 3's
+   * temporary seam) but overloaded one column with two meanings — "what the
+   * trigger captured" before finalization and "the bytes we filed" after it —
+   * so `finalizeInvoiceRow` had to tell them apart by SHAPE. Its own column
+   * keeps finalization a pure read of two independent fields and leaves
+   * `request_json` meaning exactly one thing.
+   *
+   * `jsonb`, NOT `json`, and the difference from `request_json` two lines up is
+   * the whole point: that column is the hashed/serialized document, so property
+   * order is part of the fiscal identity. This one is INPUT. It is read back
+   * into a `FiscalInvoiceBuyer` and re-emitted by `toWireInvoice` in the wire's
+   * own order, so jsonb's key normalization cannot touch anything ETA sees.
+   *
+   * NOT overwritten at finalization: the wire document's `receiver` block is the
+   * authoritative record of what was filed, and this stays as the record of what
+   * was CAPTURED. The two agreeing is a property worth being able to check.
+   */
+  buyerJson: jsonb("buyer_json").$type<EtaSubmissionBuyer>(),
   attempts: integer("attempts").notNull().default(0),
   /** Backoff clock, same role as notification_outbox.nextAttemptAt: attempts
    *  alone cannot express "eligible again at T" across worker restarts. */

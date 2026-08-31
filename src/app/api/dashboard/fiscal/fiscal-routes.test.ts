@@ -49,6 +49,7 @@ import { GET as getDevice, PUT as putDevice } from "./devices/[deviceId]/route";
 import { GET as getTaxCodes } from "./tax-codes/route";
 import { PUT as putTaxCode } from "./tax-codes/[productId]/route";
 import { POST as postResubmit } from "./submissions/[id]/resubmit/route";
+import { POST as postInvoice } from "./orders/[id]/invoice/route";
 
 const SECRET_REF = "env://ZZ_ROUTE_ETA_SECRET_SENTINEL";
 const SIGNING_REF = "env://ZZ_ROUTE_ETA_SIGNING_SENTINEL";
@@ -501,5 +502,143 @@ describe("POST /api/dashboard/fiscal/submissions/[id]/resubmit", () => {
     const noUuid = await seedRejected({ etaUuid: null });
     signIn(noUuid.tenantId, ["owner"], noUuid.userId);
     expect((await postResubmit(post(), params(noUuid.submission.id))).status).toBe(409);
+  });
+});
+
+describe("POST /api/dashboard/fiscal/orders/[id]/invoice", () => {
+  const buyerBody = () => ({
+    rin: "313717919",
+    name: "Receiver Company LLC",
+    address: {
+      country: "EG",
+      governate: "Cairo",
+      regionCity: "Nasr City",
+      street: "580 Clementina Key",
+      buildingNumber: "Bldg. 0",
+    },
+  });
+
+  const invoicePost = (body: unknown) =>
+    new NextRequest("http://localhost/api/dashboard/fiscal/orders/x/invoice", {
+      method: "POST",
+      body: typeof body === "string" ? body : JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+    });
+
+  const params = (id: string) => ({ params: Promise.resolve({ id }) });
+
+  /**
+   * An EG order with no fiscal configuration behind it. The 201 path therefore
+   * logs one expected "finalize-at-request failed" line — the best-effort
+   * finalize has nothing to build with — which is exactly the contract under
+   * test: the REQUEST still succeeds, because the row is the durable part. The
+   * document-building half is exercised against a real configured sale in
+   * `server/fiscal/config-service.test.ts`.
+   */
+  async function seedOrder() {
+    const { tenantId, userId } = await seedTenant();
+    const [branch] = await withTenant(tenantId, (tx) =>
+      tx.insert(branches).values({ tenantId, name: "Main" }).returning(),
+    );
+    const [order] = await withTenant(tenantId, (tx) =>
+      tx.insert(orders).values({
+        tenantId,
+        branchId: branch.id,
+        orderNumber: 2000 + n++,
+        fulfillmentType: "pickup",
+        customerName: "Walk-in",
+        customerPhone: "+201000000000",
+        subtotal: "100.00",
+        vatRateSnapshot: "14",
+        vatAmount: "14.00",
+        total: "114.00",
+        statusToken: `tok-invoice-${n++}`,
+      }).returning(),
+    );
+    return { tenantId, userId, orderId: order.id };
+  }
+
+  it("queues the invoice with the buyer captured, and audits who asked", async () => {
+    const { tenantId, userId, orderId } = await seedOrder();
+    signIn(tenantId, ["owner"], userId);
+
+    const res = await postInvoice(invoicePost(buyerBody()), params(orderId));
+    expect(res.status).toBe(201);
+    const { submissionId } = await res.json();
+
+    const [row] = await withTenant(tenantId, (tx) =>
+      tx.select().from(etaSubmissions).where(eq(etaSubmissions.id, submissionId)),
+    );
+    expect(row).toMatchObject({ docType: "e_invoice", orderId, status: "pending" });
+    // The buyer reached its own column, which is what `finalize.ts`'s
+    // `stagedBuyer` reads — migration 0052's whole point.
+    expect(row.buyerJson).toEqual(buyerBody());
+
+    const events = await withTenant(tenantId, (tx) =>
+      tx.select().from(auditEvents).where(eq(auditEvents.tenantId, tenantId)),
+    );
+    const emitted = events.filter((e) => e.action === "eta.invoice.requested");
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({ entityType: "eta_submission", entityId: submissionId, actorUserId: userId });
+    // Field names, never values — the buyer's tax identity is not audit data.
+    expect(JSON.stringify(emitted[0].metadata)).not.toContain("313717919");
+  });
+
+  it("refuses a non-owner with 403 and queues nothing", async () => {
+    const { tenantId, userId, orderId } = await seedOrder();
+    for (const role of ["manager", "staff"] as const) {
+      signIn(tenantId, [role], userId);
+      expect((await postInvoice(invoicePost(buyerBody()), params(orderId))).status).toBe(403);
+    }
+
+    const rows = await withTenant(tenantId, (tx) =>
+      tx.select().from(etaSubmissions).where(eq(etaSubmissions.tenantId, tenantId)),
+    );
+    expect(rows).toEqual([]);
+  });
+
+  it("maps a bad buyer to a 400 naming the field, and a malformed body to 400", async () => {
+    const { tenantId, userId, orderId } = await seedOrder();
+    signIn(tenantId, ["owner"], userId);
+
+    // The seven-field ladder is exercised against the service in
+    // `server/fiscal/config-service.test.ts`, where each case can assert its own
+    // message. This pins that the ROUTE turns that error into a 400 with the
+    // path intact rather than letting it fall through the catch as a 500.
+    const badRin = await postInvoice(invoicePost({ ...buyerBody(), rin: "12345" }), params(orderId));
+    expect(badRin.status).toBe(400);
+    expect((await badRin.json()).issues).toEqual([expect.objectContaining({ path: "rin" })]);
+
+    const badAddress = await postInvoice(
+      invoicePost({ ...buyerBody(), address: { ...buyerBody().address, governate: "" } }),
+      params(orderId),
+    );
+    expect(badAddress.status).toBe(400);
+    expect((await badAddress.json()).issues).toEqual([expect.objectContaining({ path: "address.governate" })]);
+
+    expect((await postInvoice(invoicePost("{not json"), params(orderId))).status).toBe(400);
+    expect((await postInvoice(invoicePost([1, 2, 3]), params(orderId))).status).toBe(400);
+  });
+
+  it("404s a foreign order and 409s a second request", async () => {
+    const mine = await seedOrder();
+    const theirs = await seedOrder();
+    signIn(mine.tenantId, ["owner"], mine.userId);
+
+    // RLS makes another tenant's order read as absent, so it lands on the same
+    // 404 as a fictional id — neither answer says whether the id exists.
+    expect((await postInvoice(invoicePost(buyerBody()), params(theirs.orderId))).status).toBe(404);
+    expect(
+      (await postInvoice(invoicePost(buyerBody()), params("00000000-0000-4000-8000-000000000000"))).status,
+    ).toBe(404);
+
+    expect((await postInvoice(invoicePost(buyerBody()), params(mine.orderId))).status).toBe(201);
+    // One live invoice per sale, or the sale is declared twice.
+    expect((await postInvoice(invoicePost(buyerBody()), params(mine.orderId))).status).toBe(409);
+
+    const rows = await withTenant(mine.tenantId, (tx) =>
+      tx.select().from(etaSubmissions).where(eq(etaSubmissions.tenantId, mine.tenantId)),
+    );
+    expect(rows).toHaveLength(1);
   });
 });

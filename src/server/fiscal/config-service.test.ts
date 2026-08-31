@@ -8,6 +8,7 @@ import { orders } from "@/server/ordering/schema";
 import { users } from "@/server/auth/schema";
 import { posDevices } from "@/server/pos/schema";
 import { auditEvents } from "@/server/audit/schema";
+import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { seedPosContext, openShiftForCtx } from "@/server/pos/test-helpers";
 import { recordSale } from "@/server/pos/record-sale";
 import {
@@ -26,9 +27,11 @@ import {
   listDeviceCredentials,
   listFiscalDevices,
   listProductTaxCodes,
+  requestB2bInvoice,
   updateFiscalConfig,
   upsertProductTaxCode,
   upsertDeviceCredential,
+  type RequestB2bInvoiceBuyer,
   type UpdateFiscalConfigInput,
   type UpsertDeviceCredentialInput,
   type UpsertProductTaxCodeInput,
@@ -1100,5 +1103,324 @@ describe("listSubmissions", () => {
     );
     expect((await getSubmissionById(a.id, row.id))!.status).toBe("rejected");
     expect(await getSubmissionById(b.id, row.id)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B2B invoice trigger
+// ---------------------------------------------------------------------------
+
+const B2B_BUYER = (): RequestB2bInvoiceBuyer => ({
+  rin: "313717919",
+  name: "Receiver Company LLC",
+  address: {
+    country: "EG",
+    governate: "Cairo",
+    regionCity: "Nasr City",
+    street: "580 Clementina Key",
+    buildingNumber: "Bldg. 0",
+  },
+});
+
+/** `B2B_BUYER()` with one field blanked, at a dotted path. */
+function buyerWithout(path: string): RequestB2bInvoiceBuyer {
+  const buyer = B2B_BUYER();
+  if (path.startsWith("address.")) {
+    const key = path.slice("address.".length) as keyof RequestB2bInvoiceBuyer["address"];
+    return { ...buyer, address: { ...buyer.address, [key]: "" } };
+  }
+  return { ...buyer, [path as "rin" | "name"]: "" };
+}
+
+const invoiceRows = (tenantId: string) =>
+  withTenant(tenantId, (tx) =>
+    tx.select().from(etaSubmissions).where(eq(etaSubmissions.docType, "e_invoice")),
+  );
+
+const auditRows = (tenantId: string) =>
+  withTenant(tenantId, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.tenantId, tenantId)));
+
+describe("requestB2bInvoice — buyer validation", () => {
+  it("names EVERY one of the seven mandatory fields, at its own path", async () => {
+    const s = await seedSale({ configureFirst: true });
+
+    // The whole point of validating HERE rather than in the worker: each of
+    // these is a form error with the operator still looking at the form, not a
+    // `failed` submission row and an owner alert hours later.
+    const paths = [
+      "rin",
+      "name",
+      "address.country",
+      "address.governate",
+      "address.regionCity",
+      "address.street",
+      "address.buildingNumber",
+    ];
+    for (const path of paths) {
+      await expectRejected(
+        () => requestB2bInvoice(s.tenantId, s.receipt.orderId, buyerWithout(path)),
+        { path },
+      );
+    }
+
+    // Refused means refused: seven rejected attempts, zero rows.
+    expect(await invoiceRows(s.tenantId)).toEqual([]);
+  });
+
+  it("holds the buyer's RIN to exactly the shape the seller's is held to", async () => {
+    const s = await seedSale({ configureFirst: true });
+    // A document naming a 9-digit issuer and an 8-digit receiver is not well
+    // formed — ETA's Registration Identification Number is one kind of value.
+    for (const rin of ["12345678", "1234567890", "20017370x", "200 173 707", ""]) {
+      await expectRejected(
+        () => requestB2bInvoice(s.tenantId, s.receipt.orderId, { ...B2B_BUYER(), rin }),
+        { path: "rin", match: /9 digits/ },
+      );
+    }
+    const ok = await requestB2bInvoice(s.tenantId, s.receipt.orderId, { ...B2B_BUYER(), rin: " 313717919 " });
+    // Trimmed on the way in, like every other text field this service takes.
+    expect(ok.ok).toBe(true);
+    const [row] = await invoiceRows(s.tenantId);
+    expect(row.buyerJson!.rin).toBe("313717919");
+  });
+
+  it("validates the buyer BEFORE the order lookup — the operator's own typing comes first", async () => {
+    const s = await seedSale({ configureFirst: true });
+    // Both the order id and the buyer are wrong. The buyer is the half they can
+    // see and fix, so it is what they are told about.
+    await expectRejected(
+      () => requestB2bInvoice(s.tenantId, "00000000-0000-4000-8000-000000000000", buyerWithout("name")),
+      { path: "name" },
+    );
+  });
+});
+
+describe("requestB2bInvoice — ownership and the live-invoice ladder", () => {
+  it("404s an unknown order, a malformed id, and another tenant's order alike", async () => {
+    const mine = await seedSale({ configureFirst: true });
+    const theirs = await seedSale({ configureFirst: true });
+
+    for (const orderId of ["00000000-0000-4000-8000-000000000000", "not-a-uuid", theirs.receipt.orderId]) {
+      const outcome = await requestB2bInvoice(mine.tenantId, orderId, B2B_BUYER());
+      expect(outcome, orderId).toEqual({ ok: false, status: 404, error: "Order not found" });
+    }
+
+    // Identical answers on purpose: a foreign order must not be distinguishable
+    // from a fictional one. And nothing was written to either tenant.
+    expect(await invoiceRows(mine.tenantId)).toEqual([]);
+    expect(await invoiceRows(theirs.tenantId)).toEqual([]);
+  });
+
+  it("409s a second request — one live invoice per sale, or the sale is declared twice", async () => {
+    const s = await seedSale({ configureFirst: true });
+
+    const first = await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER());
+    expect(first.ok).toBe(true);
+
+    const second = await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER());
+    expect(second).toMatchObject({ ok: false, status: 409 });
+    expect((second as { error: string }).error).toMatch(/already has a tax invoice/);
+
+    // The pre-check is the friendly face of `eta_submissions_order`; the index
+    // is what actually holds. Either way there is exactly one row.
+    expect(await invoiceRows(s.tenantId)).toHaveLength(1);
+  });
+
+  it("409s the loser of two CONCURRENT requests rather than letting it overwrite the winner", async () => {
+    const s = await seedSale({ configureFirst: true });
+
+    // WHAT THIS PINS, STATED PRECISELY, because the obvious reading is wrong.
+    // It pins the OUTCOME of two overlapping calls — one row, one audit event,
+    // exactly one `ok` — and NOT which of the two refusals produced it. Measured
+    // by disabling the post-enqueue `buyerJson` backstop and re-running: this
+    // test stays green, because the first call commits before the second's
+    // pre-check reads, so the pre-check is what refuses here. The backstop
+    // covers the window this suite cannot open (two processes, not two promises
+    // on one pool) and is labelled as such at its own site. Do not "simplify" it
+    // away on the strength of this test passing.
+    const other = { ...B2B_BUYER(), rin: "100000009", name: "Someone Else LLC" };
+    const results = await Promise.all([
+      requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER()),
+      requestB2bInvoice(s.tenantId, s.receipt.orderId, other),
+    ]);
+
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect(results.filter((r) => !r.ok)).toMatchObject([{ status: 409 }]);
+
+    const rows = await invoiceRows(s.tenantId);
+    expect(rows).toHaveLength(1);
+    // The WINNER's buyer stands — whichever it was; what must not happen is a
+    // row carrying one caller's buyer while the other was told it succeeded.
+    expect([B2B_BUYER(), other]).toContainEqual(rows[0].buyerJson);
+    const requested = (await auditRows(s.tenantId)).filter((e) => e.action === "eta.invoice.requested");
+    expect(requested).toHaveLength(1);
+  });
+
+  it("409s a REJECTED invoice by pointing at the correction path, not by silently no-opping", async () => {
+    const s = await seedSale({ configureFirst: true });
+    await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER());
+    await withTenant(s.tenantId, (tx) =>
+      tx.update(etaSubmissions)
+        .set({ status: "rejected", lastError: "InvalidTaxpayer" })
+        .where(eq(etaSubmissions.docType, "e_invoice")),
+    );
+
+    // The LIVE index would admit this insert (every row is rejected); the
+    // ORIGINAL index would not. Without the pre-check `onConflictDoNothing`
+    // would no-op and the operator would get a success toast and no invoice.
+    const outcome = await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER());
+    expect(outcome).toMatchObject({ ok: false, status: 409 });
+    expect((outcome as { error: string }).error).toMatch(/corrected resubmission/);
+    expect(await invoiceRows(s.tenantId)).toHaveLength(1);
+  });
+
+  it("409s a cancelled or rejected order — a cancelled sale has nothing to invoice", async () => {
+    for (const status of ["cancelled", "rejected"] as const) {
+      const s = await seedSale({ configureFirst: true });
+      await withTenant(s.tenantId, (tx) =>
+        tx.update(orders).set({ status }).where(eq(orders.id, s.receipt.orderId)),
+      );
+
+      const outcome = await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER());
+      expect(outcome, status).toMatchObject({ ok: false, status: 409 });
+      // Refused in the SERVICE, not only by hiding the dashboard button: the
+      // API cannot be allowed to do what the button will not.
+      expect(await invoiceRows(s.tenantId)).toEqual([]);
+    }
+  });
+});
+
+describe("requestB2bInvoice — the happy path", () => {
+  it("queues the invoice, captures the buyer in buyer_json, and audits who asked", async () => {
+    const s = await seedSale({ configureFirst: true });
+
+    const outcome = await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER(), {
+      actorUserId: s.ctx.cashierUserId,
+      actorType: "user",
+      roleKey: "owner",
+      fingerprint: emptyFingerprint(),
+    });
+    expect(outcome.ok).toBe(true);
+    const submissionId = (outcome as { submissionId: string }).submissionId;
+
+    const [row] = await invoiceRows(s.tenantId);
+    expect(row.id).toBe(submissionId);
+    expect(row).toMatchObject({ docType: "e_invoice", orderId: s.receipt.orderId, refundId: null });
+    // THE CAPTURE. Round-trips through jsonb unchanged — it is input, not the
+    // hashed document, which is exactly why this column may be jsonb while
+    // `request_json` may not.
+    expect(row.buyerJson).toEqual(B2B_BUYER());
+
+    const requested = (await auditRows(s.tenantId)).filter((e) => e.action === "eta.invoice.requested");
+    expect(requested).toHaveLength(1);
+    expect(requested[0]).toMatchObject({
+      entityType: "eta_submission",
+      entityId: submissionId,
+      actorType: "user",
+      actorUserId: s.ctx.cashierUserId,
+    });
+    expect(requested[0].metadata).toMatchObject({ orderId: s.receipt.orderId, docType: "e_invoice" });
+
+    // FIELD NAMES, NEVER VALUES — the same rule eta.config.updated keeps, biting
+    // here on something that is not a credential. Audit rows are readable by
+    // every audit:view holder, which is wider than fiscal:manage; the record of
+    // WHO was invoiced is the filed document and `buyer_json`, not this row.
+    expect(requested[0].metadata).toMatchObject({ buyerFields: ["rin", "name", "address"] });
+    const metadata = JSON.stringify(requested[0].metadata);
+    expect(metadata).not.toContain("313717919");
+    expect(metadata).not.toContain("Receiver Company LLC");
+  });
+
+  it("finalizes immediately after the commit, so bad config surfaces at the form", async () => {
+    const s = await seedSale({ configureFirst: true });
+    await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER());
+
+    // The best-effort finalize has already run by the time the call returns:
+    // there is no QR deadline here, but building the document is what discovers
+    // an unclassified product or a missing branch address, and doing it now puts
+    // that in front of an operator who is still on the page.
+    const [row] = await invoiceRows(s.tenantId);
+    const wire = row.requestJson as Record<string, unknown>;
+    expect(Array.isArray(wire.invoiceLines)).toBe(true);
+    expect(wire.documentType).toBe("I");
+    expect(wire.internalID).toBe(String(s.receipt.orderNumber));
+    // The captured buyer became the filed receiver — the two records agree.
+    expect(wire.receiver).toMatchObject({ type: "B", id: "313717919", name: "Receiver Company LLC" });
+    // And the capture SURVIVES the wire write; it is a separate column now.
+    expect(row.buyerJson).toEqual(B2B_BUYER());
+    // Nothing local claims an invoice's identity — ETA assigns it.
+    expect(row.etaUuid).toBeNull();
+    expect(row.qrPayload).toBeNull();
+  });
+
+  it("never fails the request when the finalize cannot build a document", async () => {
+    // The product's ETA classification is removed, so the build throws inside
+    // `finalizeAfterCommit`. (One expected "finalize-at-request failed" line is
+    // logged here.)
+    const s = await seedSale({ configureFirst: true });
+    await withTenant(s.tenantId, (tx) => tx.delete(productTaxCodes));
+
+    const outcome = await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER());
+    // The request SUCCEEDED: the row is the durable part and the worker will
+    // finalize it on its next pass. Reporting a failed request would be a lie.
+    expect(outcome.ok).toBe(true);
+    const [row] = await invoiceRows(s.tenantId);
+    expect(row.status).toBe("pending");
+    expect(row.requestJson).toEqual({});
+    expect(row.buyerJson).toEqual(B2B_BUYER());
+  });
+
+  it("two live invoices can never share an internalID — the match key enqueue.ts asked to be asserted", async () => {
+    // `internalID` is `String(order.orderNumber)`, and ETA keys BOTH
+    // acceptedDocuments and rejectedDocuments on it because an invoice has no
+    // uuid at submission. Two live invoices sharing one value would cross-map
+    // ETA's assigned uuid/longId onto the wrong document.
+    const s = await seedSale({ configureFirst: true });
+    const second = await recordSale(s.ctx, {
+      clientOrderId: `internalid-${n++}`,
+      lines: [{ productId: s.productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: s.total,
+      payments: [{ clientPaymentId: "p-1", method: "cash", amount: s.total, tenderedAmount: s.total }],
+    });
+
+    await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER());
+    await requestB2bInvoice(s.tenantId, second.orderId, B2B_BUYER());
+    // And a repeat of either is refused, which is the second half of the
+    // property: at most one LIVE invoice per order.
+    expect(await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER())).toMatchObject({ status: 409 });
+
+    const internalIds = (await invoiceRows(s.tenantId))
+      .map((row) => (row.requestJson as { internalID?: string }).internalID);
+    expect(internalIds).toHaveLength(2);
+    expect(new Set(internalIds).size).toBe(2);
+    // orderNumber is allocated MAX+1 under placeOrder's per-tenant advisory
+    // lock, which is what makes order -> internalID injective in the first place.
+    expect(internalIds).toContain(String(s.receipt.orderNumber));
+    expect(internalIds).toContain(String(second.orderNumber));
+
+    // THE CAVEAT THIS CANNOT COVER, restated where someone would try to extend
+    // the test: ETA scopes identity per TAXPAYER (RIN), not per ServeOS tenant,
+    // and two tenants sharing one registration number are invisible to each
+    // other under RLS. See `requestB2bInvoice`'s JSDoc — operational constraint,
+    // not an assertion this or any query inside `withTenant` could make.
+  });
+
+  it("leaks no reference through the trigger's outcome or its audit row", async () => {
+    // By RULE rather than by judgement, exactly like the read-surface walk
+    // above: `buyer_json` holds no credential and the outcome is an id, but the
+    // masking guarantee is kept as "nothing ever leaves", so every new surface
+    // joins the walk whether or not it could plausibly carry one.
+    const s = await seedSale({ configureFirst: true });
+    await withTenant(s.tenantId, (tx) =>
+      tx.update(etaTenantConfig).set({ signingKeyRef: REFS.signing }).where(eq(etaTenantConfig.tenantId, s.tenantId)),
+    );
+
+    const outcome = await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER());
+    expectNoRefValues(outcome, "requestB2bInvoice");
+    expectNoRefValues(await auditRows(s.tenantId), "audit_events (eta.invoice.requested)");
+    // The submission row itself is not a read SURFACE — nothing returns it to a
+    // client — but it is what the finalize wrote under a configured e-seal ref,
+    // so it is walked too.
+    expectNoRefValues(await invoiceRows(s.tenantId), "eta_submissions after the trigger");
   });
 });

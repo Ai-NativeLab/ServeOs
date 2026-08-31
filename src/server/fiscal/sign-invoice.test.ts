@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
+import { readFileSync, readdirSync } from "node:fs";
 import { createHash, verify as nodeVerify, generateKeyPairSync } from "node:crypto";
 import * as asn1js from "asn1js";
 import * as pkijs from "pkijs";
@@ -344,5 +345,76 @@ describe("a PemBundleSigner-signed container is structurally identical to a Test
       expect(signedData.encapContentInfo.eContentType).toBe(OID.digestedData);
       expect(signerInfo.signedAttrs!.attributes).toHaveLength(4);
     }
+  });
+});
+
+/**
+ * THE UNREACHABILITY GUARDRAIL — round 2 Task 4 paying `sign-invoice.ts`'s
+ * carry-forward marker (c).
+ *
+ * `TestCertSigner` produces a certificate issued by nobody. Attached to a real
+ * document it would look, from every surface ServeOS has, exactly like a
+ * correctly sealed one: the container parses, the four signed attributes are
+ * present, the signature verifies against its own certificate. The ONLY thing
+ * separating a meaningless seal on a legal record from a real one is that no
+ * production path can construct this class — and until this test, that was a
+ * convention rather than an assertion.
+ *
+ * A STATIC SCAN, in the style of `src/server/audit/coverage.ts`: read the source,
+ * look for the identifier. Deliberately not an import-graph walk — a scan that
+ * cannot be satisfied by a dynamic `import()` or a re-export is worth more here
+ * than one that models module resolution precisely, and the identifier is
+ * distinctive enough that a substring match has no false positives to trade off.
+ *
+ * SCOPE: every `.ts`/`.tsx` under `src/server` and `src/app` except `*.test.*`
+ * (the tests are the sanctioned caller) and `sign-invoice.ts` itself (which
+ * defines the class and names it in its own JSDoc). Note what that includes:
+ * non-`*.test.*` test SUPPORT files are in scope on purpose. A helper that
+ * builds a signer is one import away from being reachable from a route, and
+ * "it's only used by tests" is exactly the claim this guardrail exists to stop
+ * anyone from having to take on trust.
+ */
+describe("TestCertSigner is unreachable from production code", () => {
+  const ROOTS = ["src/server", "src/app"];
+  const DEFINING_MODULE = "src/server/fiscal/sign-invoice.ts";
+  const isTestFile = (file: string) => /\.test\.[cm]?tsx?$/.test(file);
+
+  function sourceFiles(dir: string, out: string[] = []): string[] {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) sourceFiles(path, out);
+      else if (/\.[cm]?tsx?$/.test(entry.name) && !isTestFile(entry.name)) out.push(path);
+    }
+    return out;
+  }
+
+  /** The scan itself, as a function, so the non-vacuity check below runs the
+   *  SAME predicate against a planted source rather than a lookalike. */
+  const referencesTestSigner = (source: string) => /\bTestCertSigner\b/.test(source);
+
+  it("is named by no non-test module under src/server or src/app", () => {
+    const scanned = ROOTS.flatMap((root) => sourceFiles(root)).filter((f) => f !== DEFINING_MODULE);
+
+    // Non-vacuity, first: a scan that found nothing to read proves nothing. The
+    // count is a floor rather than a pin so ordinary growth does not fail it.
+    expect(scanned.length).toBeGreaterThan(200);
+    expect(scanned).toContain("src/server/fiscal/finalize.ts");
+
+    const offenders = scanned.filter((file) => referencesTestSigner(readFileSync(file, "utf8")));
+    expect(
+      offenders,
+      `TestCertSigner is referenced by production code: ${offenders.join(", ")}. It is a self-issued seal — ` +
+        "a document signed with it would be indistinguishable from a properly sealed one from every ServeOS surface. " +
+        "Only *.test.* files may construct it; a real e-seal reaches the same interface through PemBundleSigner.",
+    ).toEqual([]);
+  });
+
+  it("the scan is live — a planted reference is caught by the same predicate", () => {
+    expect(referencesTestSigner("const signer = await TestCertSigner.create();")).toBe(true);
+    expect(referencesTestSigner('import { TestCertSigner } from "@/server/fiscal/sign-invoice";')).toBe(true);
+    // And it does not fire on a mere substring, which would make the assertion
+    // above unfalsifiable in the other direction.
+    expect(referencesTestSigner("class MyTestCertSignerish {}")).toBe(false);
+    expect(referencesTestSigner("const s = new PemBundleSigner(pem);")).toBe(false);
   });
 });

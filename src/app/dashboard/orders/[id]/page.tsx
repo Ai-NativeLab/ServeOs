@@ -6,6 +6,7 @@ import { getSale } from "@/server/pos/sales-history";
 import { nextStatuses } from "@/server/ordering/state-machine";
 import { transitionOrderAction, markPaidAction } from "./actions";
 import { RefundForm } from "./RefundForm";
+import { B2bInvoiceForm } from "./B2bInvoiceForm";
 import { can } from "@/server/rbac/authorize";
 import { recordCustomerPiiView } from "@/server/audit/read-events";
 import { actionAudit } from "@/server/audit/action-context";
@@ -46,6 +47,19 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
     r.lines.map((l) => ({ orderItemId: l.orderItemId, quantity: l.quantity })),
   );
   const canRefund = can(ctx.roleKeys, "pos:refund");
+  // Same shape as `canRefund`: this page hosts actions from several domains, and
+  // each is gated by its OWN permission rather than by the page's. `fiscal:manage`
+  // is owner-only — deliberately narrower than the orders screen itself.
+  //
+  // Country-gated too, because `isFiscalEnabled` gates the whole subsystem on
+  // `tenants.country === "EG"`: offering the button to a non-EG tenant would
+  // queue a document nothing will ever submit. The fiscal dashboard says the
+  // same thing in its own banner.
+  const canInvoice =
+    can(ctx.roleKeys, "fiscal:manage") &&
+    tenant?.country === "EG" &&
+    order.status !== "cancelled" &&
+    order.status !== "rejected";
 
   return (
     <>
@@ -214,6 +228,8 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
           netPaidRemaining={netPaidRemaining}
         />
       )}
+
+      {canInvoice && <B2bInvoiceForm orderId={id} />}
 
       <h2 className="eyebrow text-primary mb-2 mt-6">History</h2>
       <ul className="text-sm text-muted-foreground space-y-1">

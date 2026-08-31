@@ -1,0 +1,1 @@
+ALTER TABLE "eta_submissions" ADD COLUMN "buyer_json" jsonb;

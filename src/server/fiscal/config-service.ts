@@ -5,23 +5,26 @@
  * app code must not import from. Declaring it also bumped 4.4.3 → 4.5.4; see
  * §6 of `docs/ailab/specs/2026-08-30-eta-verified-findings-addendum.md`.
  *
- * ONE EDGE CROSSES A MODULE BOUNDARY. `UpdateFiscalConfigInput` and
- * `UpsertDeviceCredentialInput` are `z.input<typeof …>`, and the dashboard
- * routes import those types to shape their request bodies. The types ERASE at
- * compile time, so nothing zod-shaped reaches the bundle or the wire — but a
- * zod MAJOR bump that changes inference can break `tsc` in
- * `api/dashboard/fiscal/**` rather than here, which is a confusing place to
- * discover it. The runtime values (`FiscalConfigInputError`, its `issues`) are
- * this module's own, precisely so no route ever catches a `ZodError`.
+ * ONE KIND OF EDGE CROSSES A MODULE BOUNDARY. Every exported `*Input` /
+ * `RequestB2bInvoiceBuyer` type here is a `z.input<typeof …>`, and the dashboard
+ * routes and server actions import them to shape their request bodies and form
+ * reads. The types ERASE at compile time, so nothing zod-shaped reaches the
+ * bundle or the wire — but a zod MAJOR bump that changes inference can break
+ * `tsc` in `api/dashboard/fiscal/**` or `app/dashboard/**` rather than here,
+ * which is a confusing place to discover it. The runtime values
+ * (`FiscalConfigInputError`, its `issues`) are this module's own, precisely so
+ * no route ever catches a `ZodError`.
  */
 import { z } from "zod";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { withTenant, type Tx } from "@/db/with-tenant";
 import { posDevices } from "@/server/pos/schema";
 import { products } from "@/server/catalog/schema";
+import { orders } from "@/server/ordering/schema";
 import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import {
+  etaSubmissions,
   etaTenantConfig,
   etaPosCredentials,
   productTaxCodes,
@@ -29,12 +32,15 @@ import {
   etaActivationStatusEnum,
   etaCodeSourceEnum,
   etaPosCredentialStatusEnum,
+  type EtaSubmissionBuyer,
   type EtaWireContextConfig,
   type EtaEnvironment,
   type EtaActivationStatus,
   type EtaPosCredentialStatus,
   type EtaCodeSource,
 } from "./schema";
+import { enqueueFiscalDocument } from "./enqueue";
+import { finalizeSubmissionRow } from "./finalize";
 
 /**
  * The fiscal CONFIGURATION surface: everything an owner sets up once, read back
@@ -49,6 +55,16 @@ import {
  * the taxpayer's identity was the wrong shape (it also pulled `qrcode` into
  * every config import). Nothing there writes; nothing here is reachable below
  * owner.
+ *
+ * THE ONE NON-CONFIGURATION WRITER, and why it is here anyway.
+ * `requestB2bInvoice` acts on ONE ORDER rather than on tenant setup, so on the
+ * "configuration" reading it does not belong. It is here because this module's
+ * real seam is the PERMISSION one stated above — `fiscal:manage`, owner only —
+ * and because it is a zod-validated fiscal write whose refusals must reach the
+ * operator as `FiscalConfigInputError` field paths, which is this file's
+ * apparatus and nothing else's. Putting it in `./read-model` would have made
+ * the cashier-reachable module a writer; putting it in `./enqueue` would have
+ * put zod and an audit actor on the sale path.
  *
  * TWO RULES SHAPE THIS WHOLE FILE.
  *
@@ -236,6 +252,47 @@ const upsertDeviceCredentialSchema = z.object({
 });
 
 export type UpsertDeviceCredentialInput = z.input<typeof upsertDeviceCredentialSchema>;
+
+/**
+ * The B2B buyer captured at the invoice trigger — invoice v1.0's `receiver`.
+ *
+ * SEVEN MANDATORY FIELDS, AND THIS SCHEMA OWNS ALL SEVEN. `buildInvoice`'s
+ * `BuyerIdRequiredError` also refuses an incomplete receiver, but it runs inside
+ * the WORKER, where the only way to report a mistyped registration number is a
+ * `failed` submission row and an owner alert hours later. Validating here makes
+ * a typo a form error with the operator still looking at the form, and leaves
+ * that error what it should be: an unreachable backstop for data that arrived
+ * some other way. (`finalize.ts`'s `stagedBuyer` records the same division from
+ * the other end.)
+ *
+ * `rin` reuses `rinSchema` deliberately: ETA's Registration Identification
+ * Number is one kind of identifier, and the buyer's is checked to exactly the
+ * shape the seller's is — a document naming a 9-digit issuer and an 8-digit
+ * receiver is not well formed.
+ *
+ * The five address components are Mandatory in invoice v1.0's own words; the
+ * rest are Optional and carried verbatim, for the same reason the seller's
+ * address carries them — a field the form cannot set is a field the tenant
+ * cannot comply with.
+ */
+const buyerSchema = z.object({
+  rin: rinSchema,
+  name: requiredText("the buyer's registered name"),
+  address: z.object({
+    country: requiredText("a country code"),
+    governate: requiredText("a governate"),
+    regionCity: requiredText("a region/city"),
+    street: requiredText("a street"),
+    buildingNumber: requiredText("a building number"),
+    postalCode: z.string().trim().optional(),
+    floor: z.string().trim().optional(),
+    room: z.string().trim().optional(),
+    landmark: z.string().trim().optional(),
+    additionalInformation: z.string().trim().optional(),
+  }),
+});
+
+export type RequestB2bInvoiceBuyer = z.input<typeof buyerSchema>;
 
 // ---------------------------------------------------------------------------
 // Masked read shapes
@@ -967,6 +1024,269 @@ function changedTaxCodeFields(
   if (!before) return [];
   const columns = ["codeSource", "itemCode", "egsApprovalStatus", "taxType", "taxSubType", "unitType"] as const;
   return columns.filter((column) => before[column] !== after[column]);
+}
+
+// ---------------------------------------------------------------------------
+// B2B invoice trigger
+// ---------------------------------------------------------------------------
+
+/**
+ * The refusals a caller has to be able to tell apart, in the shape
+ * `requestResubmission` (`app/dashboard/fiscal/resubmit.ts`) established for the
+ * same job: a 400 is a THROWN `FiscalConfigInputError` carrying field paths (the
+ * form highlights an input), while "no such order" and "already invoiced" are
+ * RETURNED, because neither is a shape problem and neither has a field to point
+ * at.
+ */
+export type RequestB2bInvoiceOutcome =
+  | { ok: true; submissionId: string }
+  | { ok: false; status: 404 | 409; error: string };
+
+/** A non-uuid id cannot be any tenant's order, and Postgres would answer it with
+ *  `invalid input syntax for type uuid` rather than "not found". Checked so the
+ *  refusal is the honest 404 instead of an opaque 500. */
+const isUuid = (value: string): boolean => z.uuid().safeParse(value).success;
+
+/**
+ * Requests a B2B `e_invoice` for one order, with the buyer the operator typed
+ * in, and records who asked for it.
+ *
+ * WHY THIS EXISTS AS A TRIGGER AT ALL. A B2B invoice is not something ServeOS
+ * can infer: nothing on an order says the customer is a business, and invoice
+ * v1.0's receiver (registration number, name, five address components) is data
+ * ServeOS stores nowhere. So someone has to ask, and to type it — this is that
+ * act, and `eta.invoice.requested` is the record of it.
+ *
+ * ---------------------------------------------------------------------------
+ * `internalID` IS A MATCH KEY — THE ASSERTION `enqueue.ts` ASKED THIS TASK FOR.
+ *
+ * `finalize.ts` sets an invoice's `internalID` to `String(order.orderNumber)`,
+ * and ETA's Submit Documents response keys BOTH `acceptedDocuments` and
+ * `rejectedDocuments` on it, because an invoice has no uuid of its own at
+ * submission. Two LIVE invoices sharing one value would cross-map ETA's assigned
+ * uuid/longId onto the wrong document. Per TENANT, that cannot happen, and two
+ * independent facts are what make it so:
+ *
+ *   1. `orders.orderNumber` is allocated MAX+1 under `placeOrder`'s per-tenant
+ *      advisory lock, so it is unique tenant-wide.
+ *   2. The live pre-check below (backed by the `eta_submissions_order` partial
+ *      unique index) admits at most ONE non-rejected `e_invoice` per order.
+ *
+ * (1) makes order → internalID injective; (2) makes order → live invoice at most
+ * one. Composed: at most one live invoice per internalID value, per tenant. The
+ * test `two live invoices can never share an internalID` pins it end to end.
+ *
+ * THE CAVEAT, WHICH IS OPERATIONAL AND NOT CODE: ETA scopes document identity
+ * per TAXPAYER (the RIN), not per ServeOS tenant. Two ServeOS tenants configured
+ * with the SAME `registration_number` would each allocate `orderNumber` from
+ * their own sequence and could therefore file two live invoices under one RIN
+ * with one `internalID`. This function cannot assert that away: every query it
+ * runs is inside `withTenant`, and RLS is precisely the thing stopping it from
+ * seeing the other tenant's rows — a cross-tenant uniqueness check would have to
+ * run outside RLS, which is a much worse trade than the risk it removes. If a
+ * deployment ever maps two tenants to one RIN, `internalID` must gain a
+ * tenant-discriminating prefix; until then this is a documented operating
+ * constraint, ledger-worthy rather than enforceable here.
+ * ---------------------------------------------------------------------------
+ *
+ * @throws {FiscalConfigInputError} for any buyer field that is missing or
+ * malformed — routes map exactly this to a 400 with the field path intact.
+ */
+export async function requestB2bInvoice(
+  tenantId: string,
+  orderId: string,
+  buyer: RequestB2bInvoiceBuyer,
+  audit?: AuditActorInput,
+): Promise<RequestB2bInvoiceOutcome> {
+  // BEFORE the order lookup, on purpose: a bad buyer is the operator's own
+  // typing and the thing they can fix, so it is reported even if the order id in
+  // the URL is also wrong.
+  const parsed: EtaSubmissionBuyer = parseOrThrow(buyerSchema, buyer);
+  if (!isUuid(orderId)) return { ok: false, status: 404, error: "Order not found" };
+
+  const outcome = await withTenant(tenantId, async (tx): Promise<RequestB2bInvoiceOutcome> => {
+    // `orders` is RLS-backed, so another tenant's order simply reads as absent
+    // and lands on the same 404 as a fictional one — which is the right answer
+    // for both: neither tells the caller whether the id exists elsewhere.
+    const [order] = await tx
+      .select({ id: orders.id, orderNumber: orders.orderNumber, status: orders.status })
+      .from(orders)
+      .where(and(eq(orders.id, orderId), eq(orders.tenantId, tenantId)))
+      .limit(1);
+    if (!order) return { ok: false, status: 404, error: "Order not found" };
+
+    // A cancelled or rejected order is not a sale, and a tax invoice for one
+    // declares revenue that never happened. Refused here rather than at the
+    // dashboard alone, so the API cannot do what the button will not.
+    if (order.status === "cancelled" || order.status === "rejected") {
+      return {
+        ok: false,
+        status: 409,
+        error: `Order ${order.orderNumber} is ${order.status} — a cancelled sale has nothing to invoice`,
+      };
+    }
+
+    // THE FRIENDLY PRE-CHECK. The partial unique indexes are the real backstop
+    // (`eta_submissions_order_original` caps originals forever;
+    // `eta_submissions_order` caps live rows), but `onConflictDoNothing` fails
+    // SILENTLY by design — the operator would get a success toast and no
+    // invoice. Reading the rows first is what turns each index into a sentence.
+    const existing = await tx
+      .select({ id: etaSubmissions.id, status: etaSubmissions.status })
+      .from(etaSubmissions)
+      .where(and(
+        eq(etaSubmissions.tenantId, tenantId),
+        eq(etaSubmissions.docType, "e_invoice"),
+        eq(etaSubmissions.orderId, orderId),
+      ));
+
+    const live = existing.find((row) => row.status !== "rejected");
+    if (live) {
+      return {
+        ok: false,
+        status: 409,
+        error: `Order ${order.orderNumber} already has a tax invoice (${live.status}) — one live invoice per sale, or the sale is declared twice`,
+      };
+    }
+    if (existing.length > 0) {
+      // Every row is rejected, so the LIVE index would admit an insert — but the
+      // ORIGINAL index would not (it ignores status), and ETA does not accept a
+      // fix in place anyway. The supported move is a corrected resubmission,
+      // which carries `referenceOldUuid`; saying so beats a silent no-op.
+      return {
+        ok: false,
+        status: 409,
+        error: `Order ${order.orderNumber}'s tax invoice was rejected by ETA — queue a corrected resubmission from the fiscal dashboard rather than a new invoice`,
+      };
+    }
+
+    // ONE TRANSACTION for the enqueue, the buyer and the audit event. The buyer
+    // is the only reason this row can become a document at all, so a row that
+    // exists without one is a `failed` submission and an owner alert; and an
+    // unattributed invoice request is exactly the fact this event exists to
+    // record. Neither is worth risking for a shorter critical section.
+    await enqueueFiscalDocument({ tenantId }, { docType: "e_invoice", orderId }, tx);
+
+    // The ORIGINAL row — the one just inserted. Same select as
+    // `enqueueAndFinalizeReceipt`'s, and for the same reason:
+    // `enqueueFiscalDocument` returns nothing, because on the sale path there is
+    // nothing to return to.
+    const [row] = await tx
+      .select({ id: etaSubmissions.id, buyerJson: etaSubmissions.buyerJson })
+      .from(etaSubmissions)
+      .where(and(
+        eq(etaSubmissions.tenantId, tenantId),
+        eq(etaSubmissions.docType, "e_invoice"),
+        eq(etaSubmissions.orderId, orderId),
+        sql`${etaSubmissions.referenceOldUuid} is null`,
+      ))
+      .limit(1);
+    if (!row) {
+      // Unreachable: the insert above either wrote this row or conflicted with
+      // one, and the ladder above proved no row existed. Thrown rather than
+      // returned so it surfaces as a 500 with a redacted cause instead of a 409
+      // the operator would retry forever.
+      throw new Error(`fiscal: e_invoice enqueue for order ${orderId} produced no submission row`);
+    }
+
+    // THE ONE RACE THE PRE-CHECK CANNOT SEE. Two concurrent requests for the
+    // same order can both read no rows (neither snapshot contains the other's
+    // uncommitted insert); the second then BLOCKS on
+    // `eta_submissions_order_original`, and once the first commits, its
+    // `onConflictDoNothing` no-ops and the select above — a new statement, so a
+    // new READ COMMITTED snapshot — returns the WINNER'S row. Without this check
+    // the loser would overwrite the winner's buyer, emit a second
+    // `eta.invoice.requested` for one document, and report success twice. A
+    // captured buyer on a row this call did not create is exactly that
+    // situation, and it gets the same 409 the pre-check would have given.
+    //
+    // HONESTLY LABELLED: this is a BACKSTOP whose throw site the suite cannot
+    // force. `requestB2bInvoice — 409s the loser of two CONCURRENT requests`
+    // fires two overlapping calls and pins the OUTCOME (one row, one audit
+    // event, one `ok`) — but the first commits fast enough that the loser is
+    // caught by the pre-check instead, verified by disabling this branch and
+    // watching that test stay green. It is kept because the window is real
+    // across processes (the worker fleet and the dashboard are not one Node
+    // process), and because the alternative failure is silent: a success toast
+    // for an invoice carrying someone else's buyer.
+    if (row.buyerJson) {
+      return {
+        ok: false,
+        status: 409,
+        error: `Order ${order.orderNumber} already has a tax invoice (pending) — one live invoice per sale, or the sale is declared twice`,
+      };
+    }
+
+    await tx
+      .update(etaSubmissions)
+      .set({ buyerJson: parsed })
+      .where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, row.id)));
+
+    await recordAuditEvent(
+      auditContext(tenantId, audit),
+      {
+        action: "eta.invoice.requested",
+        entityType: "eta_submission",
+        entityId: row.id,
+        summary: `B2B tax invoice requested for order ${order.orderNumber}`,
+        // FIELD NAMES ONLY, exactly as `eta.config.updated` and its siblings do
+        // — and here the rule bites on something that is not a credential. The
+        // buyer's registration number and name are NOT recorded: audit rows are
+        // readable by every `audit:view` holder (owner AND manager), which is
+        // wider than `fiscal:manage`, and the authoritative record of who was
+        // invoiced is the filed document's own `receiver` block plus
+        // `eta_submissions.buyer_json`. What belongs here is that an invoice was
+        // requested, for which order, by whom.
+        metadata: {
+          orderId,
+          docType: "e_invoice",
+          buyerFields: Object.keys(parsed),
+          roleKey: audit?.roleKey ?? null,
+        },
+        actorType: audit?.actorType ?? "user",
+      },
+      tx,
+    );
+
+    return { ok: true, submissionId: row.id };
+  });
+
+  if (outcome.ok) await finalizeAfterCommit(tenantId, outcome.submissionId);
+  return outcome;
+}
+
+/**
+ * Builds the queued invoice's wire document immediately, best-effort.
+ *
+ * MIRRORS `enqueueAndFinalizeReceipt`'s SHAPE, for a different reason. There the
+ * urgency is the QR on a receipt being handed to a customer; a B2B invoice has
+ * no QR and no such deadline — the worker would finalize this row within a
+ * minute either way. What the immediate attempt buys is FEEDBACK: building the
+ * document is what discovers an unclassified product, a missing branch address
+ * or an unresolvable e-seal reference, and doing it now surfaces those to an
+ * operator who is still on the page instead of as a `failed` row and an alert
+ * later.
+ *
+ * AFTER THE COMMIT, never inside it — the request must not be rolled back by a
+ * document build, and the row is the durable part.
+ *
+ * FAILURES ARE SWALLOWED (logged, not thrown), same contract as the receipt
+ * path's finalize half: by this point the row exists and the worker will
+ * finalize it on its next pass, so a failure here costs the fast feedback and
+ * nothing else. Reporting it as a failed REQUEST would be a lie — the invoice
+ * was requested, and it is queued.
+ */
+async function finalizeAfterCommit(tenantId: string, submissionId: string): Promise<void> {
+  try {
+    await finalizeSubmissionRow(tenantId, submissionId);
+  } catch (err) {
+    // Identifiers, never the buyer: this line is the only trace an
+    // immediately-failed build leaves on the trigger path.
+    console.error(
+      `[fiscal] finalize-at-request failed for tenant ${tenantId} submission ${submissionId} (row queued; the worker will retry)`,
+      err,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

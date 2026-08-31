@@ -283,29 +283,42 @@ export async function finalizeSubmissionRow(tenantId: string, submissionId: stri
  * silently follow later edits to the tenant's tax codes or wire context.
  *
  * ---------------------------------------------------------------------------
- * THE BUYER READ SEAM — TEMPORARY, AND TASK 4 REPLACES IT.
+ * THE BUYER READ SEAM — NOW A COLUMN (round 2, Task 4).
  *
  * A B2B invoice needs a receiver ServeOS stores nowhere (registration number,
  * name, five address components — see `FiscalInvoiceBuyer`), so the buyer is
- * captured at the TRIGGER and has to reach this pure-read finalizer somehow.
- * Until round 2 Task 4's migration adds a dedicated `eta_submissions.buyerJson`
- * column, the trigger stages it in `request_json` — which is empty (`{}`) on a
- * freshly enqueued row and is not read by anything else before finalization.
+ * captured at the TRIGGER (`config-service.requestB2bInvoice`, which owns the
+ * zod that validates it in front of the operator) and reaches this pure-read
+ * finalizer through `eta_submissions.buyer_json`.
  *
- * So the read is: `request_json.buyer`, or a PERMANENT `EtaConfigError` naming
- * the gap. Never a default, never a guess — an invoice with an invented receiver
- * is a misfiled legal document, and failing closed sends the owner an actionable
+ * So the read is: `buyer_json`, or a PERMANENT `EtaConfigError` naming the gap.
+ * Never a default, never a guess — an invoice with an invented receiver is a
+ * misfiled legal document, and failing closed sends the owner an actionable
  * alert instead.
  *
- * The staged value is then OVERWRITTEN by the wire document, and nothing is
- * lost: the buyer survives in the wire's own `receiver` block, which is the
- * authoritative record of what was filed. That overwrite is also what makes the
- * idempotency key above work — a staged `{buyer}` is not a wire document, so a
- * row that has only been staged is still finalizable.
+ * WHAT CHANGED FROM THE ROUND-1 SEAM, AND WHAT DELIBERATELY DID NOT. Task 3
+ * staged the buyer inside `request_json` because there was no column yet; only
+ * `stagedBuyer` was repointed. The error, the failure family and the idempotency
+ * key are byte-for-byte what they were. The legacy `request_json.buyer` fallback
+ * was REMOVED rather than kept: no row has ever been staged that way outside
+ * this repo's own tests (the trigger that would have written it is this task's,
+ * and it writes the column), so a fallback would be dead code standing in for
+ * data that does not exist.
  *
- * WHEN TASK 4 LANDS, exactly one thing changes: `stagedBuyer` reads the new
- * column instead of `request_json`. The error, the failure family, the
- * overwrite and the idempotency key all stay as they are.
+ * TWO PROPERTIES THE SPLIT PRESERVES:
+ *
+ *   THE WIRE OVERWRITE. `request_json` is still overwritten by the wire document
+ *   below, and the buyer is still not lost by it — it survives BOTH as the
+ *   wire's own `receiver` block (the authoritative record of what was filed) and
+ *   now in `buyer_json` (the record of what was captured). The overwrite simply
+ *   no longer touches the buyer at all.
+ *
+ *   THE IDEMPOTENCY KEY. Still `request_json` CONTAINING `invoiceLines`, not
+ *   `request_json` being non-empty — which is what lets a row that has only been
+ *   staged still be finalizable. That distinction now costs nothing (a staged
+ *   row's `request_json` is exactly `{}`), and it is kept because the key must
+ *   go on identifying "these are the bytes we filed" rather than "something is
+ *   written here".
  */
 async function finalizeInvoiceRow(tx: Tx, tenantId: string, row: EtaSubmission): Promise<FinalizeOutcome> {
   if (isWireDocument(row.requestJson)) return { status: "invoice-already-finalized" } as const;
@@ -415,21 +428,26 @@ function isWireDocument(requestJson: Record<string, unknown>): boolean {
 }
 
 /**
- * The buyer the B2B trigger staged. See THE BUYER READ SEAM above.
+ * The buyer the B2B trigger captured. See THE BUYER READ SEAM above.
  *
- * CARRY-FORWARD FOR TASK 4 — VALIDATE AT THE DASHBOARD BOUNDARY, NOT HERE. This
- * function checks only that SOMETHING was staged; `buildInvoice` then refuses an
- * incomplete receiver with `BuyerIdRequiredError`. Both of those run inside the
- * WORKER, where the only way to report a bad TRN is a `failed` submission row
- * and an owner alert hours after the fact — which is the wrong surface for a
- * typo. Task 4's zod (`rin: /^\d{9}$/`, non-empty name, the five address
- * components) belongs at the trigger, in front of the operator, so a malformed
- * buyer is a FORM error at capture time and `BuyerIdRequiredError` stays what it
- * should be: an unreachable backstop for data that got in some other way.
+ * VALIDATED AT THE DASHBOARD BOUNDARY, NOT HERE — and as of round 2 Task 4 that
+ * is a fact rather than a plan. This function checks only that SOMETHING was
+ * captured; `buildInvoice` then refuses an incomplete receiver with
+ * `BuyerIdRequiredError`. Both of those run inside the WORKER, where the only
+ * way to report a bad TRN is a `failed` submission row and an owner alert hours
+ * after the fact — the wrong surface for a typo. `requestB2bInvoice`'s zod
+ * (`rin: /^\d{9}$/`, non-empty name, the five mandatory address components) runs
+ * at the trigger, in front of the operator, so a malformed buyer is a FORM error
+ * at capture time and `BuyerIdRequiredError` is what it should be: an
+ * unreachable backstop for data that got in some other way.
+ *
+ * `buyer_json` is nullable and typed, so the only shape this can be handed is a
+ * complete `EtaSubmissionBuyer` or nothing — the round-1 "is it an object?"
+ * check went away with the untyped `request_json` staging it guarded.
  */
 function stagedBuyer(row: EtaSubmission): FiscalInvoiceBuyer {
-  const staged = row.requestJson.buyer;
-  if (!staged || typeof staged !== "object" || Array.isArray(staged)) {
+  const staged = row.buyerJson;
+  if (!staged) {
     throw new EtaConfigError(
       "missing-buyer",
       `fiscal: e_invoice submission ${row.id} carries no staged buyer. A B2B invoice's receiver — registration ` +
@@ -437,7 +455,12 @@ function stagedBuyer(row: EtaSubmission): FiscalInvoiceBuyer {
         "order, and it cannot be defaulted or inferred. Re-request the invoice with the buyer's details.",
     );
   }
-  return staged as unknown as FiscalInvoiceBuyer;
+  // No cast. `EtaSubmissionBuyer` and `FiscalInvoiceBuyer` are structurally
+  // identical by design and this assignment is what enforces it: the round-1
+  // `as unknown as` was covering for an untyped `request_json` bag, and keeping
+  // it would silently absorb exactly the drift schema.ts promises is a compile
+  // error.
+  return staged;
 }
 
 /**

@@ -36,19 +36,23 @@ export type EnqueueInput =
   | { docType: "e_receipt" | "e_invoice"; orderId: string }
   | { docType: "return_receipt" | "credit_note"; refundId: string };
 
-// CARRY-FORWARD FOR TASK 4 (B2B trigger) — `internalID` IS A MATCH KEY, NOT A
-// LABEL. `finalize.ts` sets an invoice's `internalID` to
-// `String(order.orderNumber)`, and ETA's Submit Documents response keys BOTH
-// `acceptedDocuments` and `rejectedDocuments` on it — an invoice has no uuid of
-// its own at submission, so this is the only value a 202 can be matched back to
-// its row on (`findByInternalId` in `./eta-provider`). Two live invoices sharing
-// one value would silently cross-map ETA's assigned uuid/longId onto the wrong
-// document. `orders.orderNumber` is allocated MAX+1 under the per-tenant
-// advisory lock in `placeOrder`, so it is unique TENANT-wide today and the
-// property holds — but nothing ASSERTS it, and ETA scopes document identity per
-// TAXPAYER (the RIN), not per ServeOS tenant. Task 4's trigger owns that
-// assertion; if a tenant ever maps to more than one RIN, or an invoice is ever
-// issued for something other than an order, the derivation has to change with it.
+// `internalID` IS A MATCH KEY, NOT A LABEL. `finalize.ts` sets an invoice's
+// `internalID` to `String(order.orderNumber)`, and ETA's Submit Documents
+// response keys BOTH `acceptedDocuments` and `rejectedDocuments` on it — an
+// invoice has no uuid of its own at submission, so this is the only value a 202
+// can be matched back to its row on (`findByInternalId` in `./eta-provider`).
+// Two live invoices sharing one value would silently cross-map ETA's assigned
+// uuid/longId onto the wrong document.
+//
+// ASSERTED, as of round 2 Task 4, at the trigger that mints these rows:
+// `config-service.requestB2bInvoice`'s JSDoc carries the per-TENANT proof
+// (`orders.orderNumber` unique tenant-wide via `placeOrder`'s advisory-locked
+// MAX+1, composed with the live pre-check that admits one non-rejected
+// `e_invoice` per order) and the per-RIN caveat it cannot close: ETA scopes
+// document identity per TAXPAYER, and two ServeOS tenants sharing one
+// registration number are invisible to each other under RLS. If a tenant ever
+// maps to more than one RIN — or an invoice is ever issued for something other
+// than an order — the derivation has to change with it.
 
 // The exact predicate text of the ORIGINAL-document partial unique indexes
 // (`eta_submissions_order_original` / `eta_submissions_refund_original`,

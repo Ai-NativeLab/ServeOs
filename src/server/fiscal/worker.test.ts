@@ -1222,14 +1222,25 @@ const B2B_BUYER: FiscalInvoiceBuyer = {
   },
 };
 
-/** Enqueues an `e_invoice` for a sale, staging the buyer exactly where
- *  `finalizeInvoiceRow`'s read seam expects it. `null` stages NOTHING — the
- *  empty `request_json` a bare enqueue leaves behind. */
+/**
+ * Enqueues an `e_invoice` for a sale, capturing the buyer exactly where
+ * `finalizeInvoiceRow`'s read seam expects it — `buyer_json` as of migration
+ * 0052 (round 2 Task 4), previously staged inside `request_json`. `null`
+ * captures NOTHING: a row with the empty `request_json` AND the null
+ * `buyer_json` a bare enqueue leaves behind.
+ *
+ * Deliberately still a direct insert rather than a call to `requestB2bInvoice`:
+ * this suite tests the WORKER's contract with the row, and driving it through
+ * the trigger would make every case here depend on the dashboard's ladder (and
+ * on its best-effort finalize having already run). `config-service.test.ts` owns
+ * the trigger end of the seam.
+ */
 async function enqueueInvoice(tenantId: string, orderId: string, buyer: unknown = B2B_BUYER): Promise<string> {
   const [row] = await withTenant(tenantId, (tx) => tx.insert(etaSubmissions).values({
     tenantId, docType: "e_invoice", orderId, refundId: null,
     status: "pending", attempts: 0,
-    requestJson: (buyer === null ? {} : { buyer }) as Record<string, unknown>,
+    requestJson: {},
+    buyerJson: (buyer === null ? null : buyer) as FiscalInvoiceBuyer | null,
   }).returning({ id: etaSubmissions.id }));
   return row.id;
 }

@@ -484,14 +484,16 @@ export class PemBundleSigner implements InvoiceSigner {
  * which is parsed by `PemBundleSigner` and never by this class. Nothing
  * constructs a `TestCertSigner` outside `*.test.ts`.
  *
- * CARRY-FORWARD FOR TASKS 4/5 — THAT UNREACHABILITY IS CURRENTLY A CONVENTION,
- * NOT AN ASSERTION, and it is the one property in this module worth a guardrail:
- * a self-issued seal reaching a production document would attach a meaningless
- * signature to a legal record and look, from every surface ServeOS has, exactly
- * like a correctly signed one. Whichever of Tasks 4/5 lands the config-write
- * surface owes a test that no production path can construct this class — the
- * repo's existing static-scan style (`src/server/audit/coverage.ts`) is the
- * natural fit: assert that no non-test module imports `TestCertSigner`.
+ * THAT UNREACHABILITY IS NOW ASSERTED, NOT MERELY CONVENTIONAL. It is the one
+ * property in this module worth a guardrail — a self-issued seal reaching a
+ * production document would attach a meaningless signature to a legal record and
+ * look, from every surface ServeOS has, exactly like a correctly signed one. The
+ * `TestCertSigner is unreachable from production code` describe in
+ * `./sign-invoice.test.ts` is the assertion: a static scan in
+ * `src/server/audit/coverage.ts`'s style over every `.ts`/`.tsx` under
+ * `src/server` and `src/app` except `*.test.*` and this file, failing on any
+ * mention of the identifier. Round 2 Task 4 landed it with the B2B invoice
+ * trigger, which is the config-write surface the carry-forward marker named.
  *
  * The profile is minimal on purpose — version 3, a serial, matching issuer and
  * subject DNs, a validity window, the public key — because everything ETA's

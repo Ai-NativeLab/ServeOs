@@ -365,6 +365,13 @@
       "when": 1788173376698,
       "tag": "0051_tranquil_frank_castle",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1788186270127,
+      "tag": "0052_clear_hannibal_king",
+      "breakpoints": true
     }
   ]
 }
