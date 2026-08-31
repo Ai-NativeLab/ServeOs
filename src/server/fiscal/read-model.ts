@@ -77,7 +77,7 @@ export type SubmissionRowView = {
    * the same moment for every practical purpose: the row is inserted by
    * `recordSale`'s after-commit enqueue (or, for a return, inside the refund's
    * own transaction), while `dateTimeIssued` is the parent's `placedAt` /
-   * `createdAt` — seconds apart, against a 24-hour budget. Using the column we
+   * `createdAt` — seconds apart, against a 24-hour budget. (Exception: a SWEPT order — the online channel's primary path — has `createdAt` trailing `dateTimeIssued` by 5 minutes up to the 7-day horizon, so a backlog-adopted row reads not-overdue for its first 24h; bounded by RECONCILE_HORIZON_MS.) Using the column we
    * already select beats parsing `requestJson` for a field the table does not
    * otherwise need.
    *

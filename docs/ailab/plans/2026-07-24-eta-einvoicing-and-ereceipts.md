@@ -668,7 +668,7 @@ describe("fiscal:manage", () => {
 
   **as-built (2026-08-31):** ran wider than the plan's scope, since this task touches rbac, audit coverage and the shared nav.
 
-  **Counts, re-measured after each review round rather than estimated.** This task touches **6 test files** — `config-service.test.ts` (new, 30), `fiscal-routes.test.ts` (new, 13), `api/pos/v1/sales/[id]/fiscal/route.test.ts` (new, 5), `api/fiscal/worker/route.test.ts` (new, 3), `permissions.test.ts` (14 → 16, +2) and `nav-items.test.ts` (8 → 9, +1) — for **54 new tests**. Scope run (`src/server/{fiscal,audit,rbac}` + `src/app` + `src/components`): **46 files / 539 tests passed**. Full `npm test`: **190 files / 1556 tests passed**. Two earlier drafts of this note said 1532 and then 1534; each predated tests that landed in the following review round. `npx tsc --noEmit` clean. `npx eslint src/server/fiscal src/server/rbac src/app src/components/dashboard` reports only 6 **pre-existing** `no-html-link-for-pages` errors in `admin/`, `login/` and `register/` pages, none of them touched here; nothing new. `npx next build` succeeds with all seven new paths registered as dynamic server functions, which is the check that would have caught a route conflict.
+  **Counts, re-measured after each review round rather than estimated.** This task touches **6 test files** — `config-service.test.ts` (new, 30), `fiscal-routes.test.ts` (new, 13), `api/pos/v1/sales/[id]/fiscal/route.test.ts` (new, 5), `api/fiscal/worker/route.test.ts` (new, 3), `permissions.test.ts` (14 → 16, +2) and `nav-items.test.ts` (8 → 9, +1) — for **54 new tests**. Scope run (`src/server/{fiscal,audit,rbac}` + `src/app` + `src/components`): **46 files / 539 tests passed**. Full `npm test`: **190 files / 1556 tests passed**. Two earlier drafts of this note said 1532 and then 1534; each predated tests that landed in the following review round. `npx tsc --noEmit` clean. `npx eslint src/server/fiscal src/server/rbac src/app src/components/dashboard` reports only 6 **pre-existing** `no-html-link-for-pages` errors in `admin/`, `login/` and `register/` pages, none of them touched here; nothing new. `npx next build` succeeds with all new paths registered as dynamic server functions (seven at this task's close; nine after the final-review rounds added the tax-code routes), which is the check that would have caught a route conflict.
 
   **Route tests exist** — there is a house pattern (`src/app/api/purchase-orders/**/route.test.ts`), and it is followed: mock the ONE seam that needs a live HTTP request and leave everything below it real, so the permission check, the services, RLS and the audit chain are exercised rather than stubbed into agreement. On the dashboard routes that seam is `requireDashboardUser`, NOT `resolveFiscalContext` — the point is that the real `authorize(roleKeys, "fiscal:manage")` runs and a manager is genuinely refused. On the POS route it is `requirePosCashier`, pulled in through `importOriginal` so the REAL `assertPermission` still decides the 403.
 
@@ -790,7 +790,7 @@ _No commit for this section — it is a gate, not a change. Do not remove a `TOD
 
 **Files:** none — this task changes nothing. It proves the spec.
 
-- [x] **Step 1: Run everything.** *(As-built 2026-08-31: root suite **1543/1543** — incl. the once-flaky `offline-lifecycle` test, green; `npx tsc --noEmit` clean; `npx eslint src` = exactly the **6 pre-existing** `no-html-link-for-pages` errors in 5 files untouched on this branch (`git diff main...HEAD` empty for each) — documented debt, not a regression; apps/pos **157/13** + both typechecks clean; `npx next build` clean, all 7 fiscal paths dynamic; `npm run db:migrate:test` **51/51**.)*
+- [x] **Step 1: Run everything.** *(As-built 2026-08-31: root suite **1556/1556** after the two final-review fix rounds (**1543/1543** at first measurement) — incl. the once-flaky `offline-lifecycle` test, green; `npx tsc --noEmit` clean; `npx eslint src` = exactly the **6 pre-existing** `no-html-link-for-pages` errors in 5 files untouched on this branch (`git diff main...HEAD` empty for each) — documented debt, not a regression; apps/pos **157/13** + both typechecks clean; `npx next build` clean, **9** fiscal paths dynamic (7 at first measurement; +2 tax-code routes in the final-review rounds); `npm run db:migrate:test` **51/51**.)*
 
 - [ ] **Step 2: Walk the spec's acceptance path** (on a tenant with `country="EG"` and an `active` `eta_tenant_config`, POS paired):
   - [x] Classify a product in `product_tax_codes`; ring a sale of it → an `eta_submissions` row `docType='e_receipt'`, `status='pending'` appears; the **sale returns immediately** (no ETA wait). *(Evidence: `enqueue.test.ts` EG-sale-via-real-`recordSale` test; finalize-at-enqueue also stamps uuid+QR — `worker.test.ts` accept path.)* **Corrected 2026-08-31 (final-review I3): the first clause of this step had no product surface behind it.** `product_tax_codes` had readers (the document builder throws `MissingTaxCodeError` without a row) and NO writer anywhere in the codebase, so "classify a product" was reachable only by hand-writing SQL — i.e. this box was ticked on evidence that the *sale* half worked, while the *classification* half could not be performed by a tenant at all. A write surface now exists: `listProductTaxCodes` / `upsertProductTaxCode` (config-service), `GET /api/dashboard/fiscal/tax-codes` + `PUT /tax-codes/[productId]`, and a Tax codes section on the fiscal dashboard listing classified products and naming the unclassified ones. Deliberately NOT the spec's deferred bulk-EGS-lookup UI — no code search, no catalogue import, no approval polling, all of which need ETA's codes API. *(Added evidence: `config-service.test.ts` classify/re-classify + shape-rejection + cross-tenant-product + audit-emission + tenant-scoped-read tests; `fiscal-routes.test.ts` tax-code 403 / list / classify / 400-ladder tests.)*
@@ -829,14 +829,21 @@ WHAT SHIPPED (the branch's signed commits, task-by-task with two-stage review on
   keys and would corrupt the hash — caught in review).
 - Pipeline: finalize-at-enqueue (uuid+QR exist at sale time; sale is NEVER blocked),
   15-min cron worker with lease-based claim (lease + timeout < ETA's ~10-min duplicate
-  window, documented), 24h budget, reconciliation sweep for row-less failures,
+  window, documented), the 24h window surfaced as a read-layer overdue flag
+  (deliberately not enforced at the worker — stopping at the deadline would turn a
+  late document into no document), a reconciliation sweep that is BOTH the detection
+  surface for row-less failures AND the primary enqueue path for paid online orders
+  (7-day horizon), a headerless full-refund resolver (remaining-quantity lines,
+  largest-remainder gross split — pro-rata simplification documented), and
   dashboard-triggered corrected resubmission with actor audit.
 - Config surface: fiscal:manage (owner-only), Zod-validated wire context/devices,
-  write-only credential refs with mutation-verified masking, status-count chips.
+  write-only credential refs (env:// enforced on save) with mutation-verified masking,
+  status-count chips, and the product tax-code write surface (list/upsert + dashboard
+  section, unclassified products lead — the day-one unblock).
 - POS: receipt fiscal footer (QR at pending-finalized), bounded 30s poll, offline
   degrades silently, non-EG receipts byte-identical.
 
-VERIFICATION: root 1543/1543 · apps/pos 157/13 · migrations 51/51 · next build clean ·
+VERIFICATION: root 1556/1556 · apps/pos 157/13 · migrations 51/51 · next build clean (9 fiscal paths) ·
 eslint = 6 pre-existing errors in files untouched here (documented debt).
 
 GO-LIVE GATES (no code can close these — see plan "Blocked — VERIFY" + addendum §5):
@@ -857,6 +864,9 @@ DECISIONS FOR PRODUCT REVIEW (deliberate, documented in addendum §6):
   output VAT on refunds until Spec 3 stores it. LIVE FISCAL EXPOSURE, flagged.
 - Order-level VAT is allocated per line (largest remainder, exact reconciliation).
 - zod is now a declared runtime dependency (and moved 4.4.3 → 4.5.4).
+- Goodwill full refunds (total < outstanding net-paid) are deliberately REFUSED
+  (IrreconcilableOrderError) — inventing which items came back would be inventing
+  tax; they surface as permanent failures for the owner to resolve.
 Follow-up tickets noted in-repo: audit-scanner private-helper widening (8 pre-existing
 gaps outside fiscal), transitive global-db read in the refund tx (pre-existing),
 date-filtered submissions listing.

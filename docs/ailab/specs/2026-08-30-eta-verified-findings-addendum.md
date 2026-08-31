@@ -62,9 +62,9 @@ in `docs/references/eta/` (see its README). Secondary/vendor claims are marked `
   `submitted` and `accepted|rejected`.
 - **Window:** submit within **24 hours** of issuance; beyond it, the formal **Late Submission Request** path
   (configurable "Late Submission Window (Days)"). Retry/backoff must respect the 24h budget and flag breaches.
-  **As built:** the budget is respected by arithmetic (six attempts on a 2^n x 30s backoff spans ~1 hour, far
+  **As built:** the budget is respected by arithmetic (six attempts on a 2^n x 30s backoff span ~31 minutes — the 6th backoff is never served, far
   inside 24h) and the breach is FLAGGED AT THE READ LAYER, not enforced at the worker — stopping retries at the
-  deadline would turn a late document into no document. `SUBMISSION_WINDOW_MS` (`fiscal/worker.ts`) is the
+  deadline would turn a late document into no document. `SUBMISSION_WINDOW_MS` (`fiscal/constants.ts`) is the
   threshold; `listSubmissions`/`getSubmissionById` return `overdue: boolean` and the fiscal dashboard shows each
   submission's age with an overdue marker.
 - **QR:** the C5 format string, rendered at issuance.

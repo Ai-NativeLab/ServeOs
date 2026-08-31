@@ -26,7 +26,7 @@
  * flag breaches" is actually satisfied. The arithmetic that keeps ordinary
  * retries inside it (constants in `./worker`):
  *
- *     MAX_ATTEMPTS (6) with backoff 2^n x 30s  ->  ~63 min of retrying
+ *     MAX_ATTEMPTS (6) with backoff 2^n x 30s  ->  ~31 min of retrying (60+120+240+480+960s; the 6th backoff is written but never served — the claim excludes attempts >= MAX_ATTEMPTS)
  *     + POLL_INTERVAL_MS (60s) per poll
  *     << SUBMISSION_WINDOW_MS (24h)
  *

@@ -30,7 +30,7 @@ import { parseWire } from "./parse-wire";
  */
 
 /**
- * The attempt cap. Six retries on the schedule below spans roughly 30 minutes
+ * The attempt cap. Six retries on the schedule below span ~31 minutes (the 6th backoff is written but never served — the claim excludes attempts >= MAX_ATTEMPTS)
  * of transient failure before a row is parked for a human.
  *
  * It is also the guard on ONE genuinely non-idempotent retry: `submit` throws
