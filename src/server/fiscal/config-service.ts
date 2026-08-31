@@ -1,4 +1,20 @@
 import QRCode from "qrcode";
+/**
+ * The ONLY zod import in the repository (house convention elsewhere is
+ * hand-rolled validators), and a declared runtime dependency as of this task —
+ * it was previously a dev-only transitive of `eslint-plugin-react-hooks`, which
+ * app code must not import from. Declaring it also bumped 4.4.3 → 4.5.4; see
+ * §6 of `docs/ailab/specs/2026-08-30-eta-verified-findings-addendum.md`.
+ *
+ * ONE EDGE CROSSES A MODULE BOUNDARY. `UpdateFiscalConfigInput` and
+ * `UpsertDeviceCredentialInput` are `z.input<typeof …>`, and the dashboard
+ * routes import those types to shape their request bodies. The types ERASE at
+ * compile time, so nothing zod-shaped reaches the bundle or the wire — but a
+ * zod MAJOR bump that changes inference can break `tsc` in
+ * `api/dashboard/fiscal/**` rather than here, which is a confusing place to
+ * discover it. The runtime values (`FiscalConfigInputError`, its `issues`) are
+ * this module's own, precisely so no route ever catches a `ZodError`.
+ */
 import { z } from "zod";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { withTenant, type Tx } from "@/db/with-tenant";

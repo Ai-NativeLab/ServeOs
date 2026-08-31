@@ -420,6 +420,84 @@ describe("masking — no *Ref value ever leaves this service", () => {
     expectNoRefValues({ message: error.message, issues: error.issues }, "FiscalConfigInputError");
   });
 
+  it("walks the FOUR read surfaces too — submissions, sale status, one submission, devices", async () => {
+    // The config and credential views are the obvious leak sites, but they are
+    // not the only reachable ones: `lastError` is worker-written free text, and
+    // the device list carries operator-typed labels. Both are strings this
+    // service hands to a client, so both belong inside the walk.
+    const t = await makeTenant();
+    const device = await makeDevice(t.id, "till");
+    const order = await makeOrder(t.id, device.branchId);
+    await updateFiscalConfig(t.id, validConfig({ signingKeyRef: REFS.signing }));
+    await upsertDeviceCredential(t.id, device.id, validCredential());
+
+    // A REALISTIC failure message — this is `resolveSecretRef`'s own text
+    // (config.ts), verbatim in shape, which is what the worker actually parks
+    // in `lastError` when a credential reference will not resolve.
+    const realisticLastError =
+      "fiscal: eta_tenant_config.client_secret_ref points at env key ZZ_ETA_ERP_SECRET_SENTINEL, " +
+      "which is unset or empty — the ETA credential cannot be assembled. " +
+      "Set it in the deployment's environment.";
+
+    const [row] = await withTenant(t.id, (tx) =>
+      tx.insert(etaSubmissions).values({
+        tenantId: t.id,
+        docType: "e_receipt",
+        orderId: order.id,
+        status: "failed",
+        etaUuid: "a".repeat(64),
+        qrPayload: `https://preprod.invoicing.eta.gov.eg/receipts/search/${"a".repeat(64)}`,
+        lastError: realisticLastError,
+      }).returning(),
+    );
+
+    const submissions = await listSubmissions(t.id);
+    const saleStatus = await getSaleFiscalStatus(t.id, order.id);
+    const one = await getSubmissionById(t.id, row.id);
+    const fiscalDevices = await listFiscalDevices(t.id);
+
+    expectNoRefValues(submissions, "listSubmissions");
+    expectNoRefValues(saleStatus, "getSaleFiscalStatus");
+    expectNoRefValues(one, "getSubmissionById");
+    expectNoRefValues(fiscalDevices, "listFiscalDevices");
+
+    /**
+     * DELIBERATE SCOPE, stated so a later reader does not "tighten" it by
+     * accident. The message above names the env KEY (`ZZ_ETA_ERP_SECRET_SENTINEL`)
+     * and the walk passes it. That is by design, not an oversight:
+     * `resolveSecretRef` documents the stance explicitly — "The thrown message
+     * names the ENV KEY, which is not itself a secret, and never the value" —
+     * because an operator staring at a failed receipt needs to know WHICH
+     * variable is unset.
+     *
+     * So the invariant pinned here is narrower and sharper than "no reference
+     * string ever appears": it is that no reference VALUE and no resolved
+     * SECRET transits. `FORBIDDEN` is exactly those two sets, and the bare key
+     * name is deliberately outside it.
+     *
+     * The distinction is only legible because this file stores its refs in the
+     * `env://KEY` spelling. `resolveSecretRef` accepts a BARE key too, and a
+     * deployment using that spelling would make the stored column value and the
+     * error's key name the same characters — which is precisely why config.ts's
+     * stance has to be a considered decision rather than an accident of format.
+     */
+    expect(one!.lastError).toContain("ZZ_ETA_ERP_SECRET_SENTINEL");
+
+    // And the walk is LIVE on all four shapes — the nested array, the wrapper
+    // object, the flat record and the plain list. Planting a reference where an
+    // accidental leak would actually land must fail, or the four assertions
+    // above prove nothing.
+    const planted: [string, unknown][] = [
+      ["listSubmissions", { ...submissions, rows: [{ ...submissions.rows[0], lastError: REFS.erp }] }],
+      ["getSaleFiscalStatus", { ...saleStatus, qrPayload: REFS.signing }],
+      ["getSubmissionById", { ...one, lastError: SECRET_VALUES.ZZ_ETA_DEVICE_S1_SENTINEL }],
+      ["listFiscalDevices", [{ ...fiscalDevices[0], label: REFS.psk }]],
+    ];
+    for (const [what, payload] of planted) {
+      expect(() => expectNoRefValues(payload, what), `${what}'s walk did not catch a planted reference`).toThrow();
+    }
+  });
+
   it("stores the references verbatim — the masking is a read-side guarantee, not a lossy write", async () => {
     const t = await makeTenant();
     const device = await makeDevice(t.id, "till");

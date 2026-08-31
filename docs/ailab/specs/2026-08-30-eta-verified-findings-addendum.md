@@ -167,3 +167,12 @@ Sources: `/document-serialization-approach/`, `/documents/receipt-v1-2/`, `/docu
   `orders.orderNumber` and must settle branch-vs-device uniqueness (ETA scopes it per branch per submission,
   while the uuid chain is per device).
 - **Sale-path enqueue failures are row-less; the Task 5 reconciliation sweep is the detection surface.**
+- **Task 6 added `zod` as a declared runtime dependency, and BUMPED it 4.4.3 → 4.5.4.** Disclosed here because
+  the PR diff makes it look like a pure dev→prod hoist and it is not. `zod` was already in `node_modules` as a
+  **dev-only transitive** of `eslint-plugin-react-hooks` (via `zod-validation-error`), so importing it from
+  `src/server/fiscal/config-service.ts` would have been a live production hazard — an app-code runtime
+  dependency on an eslint plugin's dependency tree. Declaring it (`^4.5.4`) is the fix, but `npm install`
+  resolved the caret to a **newer minor than the transitive 4.4.3 that was on disk**, so the lockfile carries a
+  version bump as well as a dev→prod flag change. Nothing else in the repo imports zod (house convention is
+  hand-rolled validators), so the blast radius is `config-service.ts` alone — but see that file's import
+  comment for the one type-level edge that crosses a module boundary.
