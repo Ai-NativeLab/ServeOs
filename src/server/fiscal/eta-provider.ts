@@ -2,12 +2,15 @@ import type {
   FiscalProvider,
   FiscalSaleInput,
   FiscalRefundInput,
+  FiscalInvoiceInput,
   FiscalDocument,
   FinalizedFiscalDocument,
   FiscalSubmitResult,
   EtaConfig,
 } from "./provider";
+import type { EtaDocType } from "./schema";
 import { buildReceipt, buildReturnReceipt } from "./build-document";
+import { buildInvoice } from "./build-invoice";
 import { stringifyWire } from "./serialize";
 import { getEtaEnv } from "./eta-env";
 import { EtaTransportError, EtaConfigError, redactAuthMaterial } from "./eta-transport-errors";
@@ -41,6 +44,21 @@ const TOKEN_PATH = "/connect/token";
 
 /** `POST {apiBase}/api/v1/receiptsubmissions` — Submit Receipt Documents. */
 const SUBMIT_PATH = "/api/v1/receiptsubmissions";
+
+/**
+ * `POST {apiBase}/api/v1.0/documentsubmissions/` — Submit Documents, the B2B
+ * (eInvoicing) sibling of the receipt endpoint above.
+ *
+ * A DIFFERENT API VERSION SEGMENT, not a typo: the receipt API is published
+ * under `/api/v1/` and the invoice API under `/api/v1.0/`. Both are transcribed
+ * exactly as their own pages give them
+ * (https://sdk.invoicing.eta.gov.eg/einvoicingapi/01-submit-documents/), because
+ * normalising one to look like the other would be inventing a route.
+ *
+ * The same path serves Get Submission — `GET {apiBase}/api/v1.0/documentsubmissions/{uuid}`
+ * — with no `/details` suffix, which the receipt poll does have.
+ */
+const INVOICE_SUBMIT_PATH = "/api/v1.0/documentsubmissions/";
 
 /**
  * How long any single ETA call may hang before it is abandoned as a transport
@@ -142,6 +160,10 @@ export class EtaFiscalProvider implements FiscalProvider {
     return buildReturnReceipt(input);
   }
 
+  buildInvoice(input: FiscalInvoiceInput): FiscalDocument {
+    return buildInvoice(input);
+  }
+
   /**
    * Submits ONE finalized document and maps ETA's answer.
    *
@@ -162,6 +184,19 @@ export class EtaFiscalProvider implements FiscalProvider {
    * "rejected" with ETA's error captured in `responseJson`.
    */
   async submit(finalized: FinalizedFiscalDocument, cfg: EtaConfig): Promise<FiscalSubmitResult> {
+    if (finalized.docType === "e_invoice") return this.#submitInvoice(finalized, cfg);
+
+    // The receipt family's identity is self-computed and is what both response
+    // arrays key on, so it must exist by now — `finalizeSubmissionRow` writes it
+    // before anything reaches here, and `loadFinalized` already refuses a row
+    // without one. Narrowing loudly rather than with a `!` keeps the invoice
+    // family's legitimate null from being papered over as if it were the same
+    // thing.
+    const uuid = finalized.uuid;
+    if (!uuid) {
+      throw new Error(`fiscal: a ${finalized.docType} reached submit with no self-computed uuid — it was never finalized`);
+    }
+
     const url = `${getEtaEnv(cfg.environment).apiBase}${SUBMIT_PATH}`;
     const res = await this.#authedRequest(cfg, url, {
       method: "POST",
@@ -185,9 +220,9 @@ export class EtaFiscalProvider implements FiscalProvider {
     }
 
     const responseJson = redactAuthMaterial(json);
-    const rejected = findByUuid(json.rejectedDocuments, finalized.uuid);
+    const rejected = findByUuid(json.rejectedDocuments, uuid);
     if (rejected) {
-      return { status: "rejected", etaUuid: finalized.uuid, responseJson };
+      return { status: "rejected", etaUuid: uuid, responseJson };
     }
 
     const submissionUuid = typeof json.submissionUUID === "string" ? json.submissionUUID : null;
@@ -215,15 +250,15 @@ export class EtaFiscalProvider implements FiscalProvider {
       });
     }
 
-    const accepted = findByUuid(json.acceptedDocuments, finalized.uuid);
+    const accepted = findByUuid(json.acceptedDocuments, uuid);
     return {
       status: "submitted",
       submissionUuid,
       // Our own self-computed uuid is the document's identity whether or not
       // ETA echoed it back; `longId` only exists if ETA assigned one.
-      etaUuid: finalized.uuid,
+      etaUuid: uuid,
       ...(typeof accepted?.longId === "string" ? { etaLongId: accepted.longId } : {}),
-      qrPayload: finalized.qrUrl,
+      ...(finalized.qrUrl ? { qrPayload: finalized.qrUrl } : {}),
       responseJson,
     };
   }
@@ -254,7 +289,9 @@ export class EtaFiscalProvider implements FiscalProvider {
    * the row keeps retrying and shows up as a stuck submission, rather than
    * being silently filed under the wrong verdict.
    */
-  async poll(submissionUuid: string, cfg: EtaConfig): Promise<FiscalSubmitResult> {
+  async poll(submissionUuid: string, cfg: EtaConfig, docType: EtaDocType): Promise<FiscalSubmitResult> {
+    if (docType === "e_invoice") return this.#pollInvoice(submissionUuid, cfg);
+
     const url = `${getEtaEnv(cfg.environment).apiBase}${SUBMIT_PATH}/${encodeURIComponent(submissionUuid)}/details`;
     const res = await this.#authedRequest(cfg, url, { method: "GET", headers: {} });
 
@@ -309,6 +346,183 @@ export class EtaFiscalProvider implements FiscalProvider {
     throw new EtaTransportError(
       `fiscal: ETA returned an unrecognised receipt status ${JSON.stringify(receiptStatus)} — ` +
         "Get Receipt Submission documents only Valid, Invalid and Cancelled, so this is not mapped rather than guessed",
+      { status: res.status, correlationId: correlationIdOf(res), body: responseJson },
+    );
+  }
+
+  /**
+   * Submits ONE B2B invoice through the eInvoicing (ERP) API.
+   *
+   * Body: `{"documents":[<document>]}` — Submit Documents describes the array as
+   * "List of document objects submitted. List should have at least one
+   * document." One document per submission, exactly as the receipt path does and
+   * for the same contract reason (`FiscalProvider`'s one-document-per-submission
+   * note: a batch would need `poll` to return per-document results).
+   *
+   * ALWAYS THE ERP CREDENTIAL, forced here rather than assumed. `#login` picks
+   * the POS login whenever `cfg.device` is set, which is right for a receipt and
+   * wrong for an invoice — B2B documents authenticate through Login as Taxpayer
+   * System against the taxpayer's ERP client id, and `eta_tenant_config`'s own
+   * JSDoc draws that line ("E-receipt submission does NOT use this: each POS
+   * device authenticates with its own credential instead"). Blanking `device`
+   * for this call makes the choice explicit and survives a caller that resolved
+   * its config with a device in hand; it also puts the token in the right cache
+   * bucket, since `tokenCacheKey` keys off the same field. The ERP secret thunk
+   * is resolved inside `erpLogin` and never logged.
+   *
+   * MATCHED ON `internalId`, NOT ON A UUID. An invoice has no identity of its
+   * own until ETA assigns one, so there is nothing to match `acceptedDocuments`
+   * on except the value we put in `internalID` — which is precisely what the
+   * field is for ("Internal document ID used to link back to the ERP document
+   * number") and what ETA echoes in BOTH response arrays. It is read back out of
+   * the wire document rather than passed alongside it, so the value matched is
+   * by construction the value transmitted.
+   *
+   * RESULT MAPPING is the receipt path's, for the same documented reason: "202 |
+   * Successful submission (validation incomplete)", so an accepted document maps
+   * to "submitted" and the verdict comes from `poll`. What differs is that ETA's
+   * uuid and longId arrive HERE, at submission, and are worth persisting
+   * immediately — they are the only handle on the document, and a poll that
+   * never succeeds would otherwise leave the row unable to name what it filed.
+   */
+  async #submitInvoice(finalized: FinalizedFiscalDocument, cfg: EtaConfig): Promise<FiscalSubmitResult> {
+    const internalId = internalIdOf(finalized.wire);
+    const erpCfg: EtaConfig = { ...cfg, device: null };
+    const url = `${getEtaEnv(cfg.environment).apiBase}${INVOICE_SUBMIT_PATH}`;
+
+    const res = await this.#authedRequest(erpCfg, url, {
+      method: "POST",
+      // "Content-Type: application/json or application/xml (required; defines
+      // submission format)".
+      headers: { "Content-Type": "application/json" },
+      body: buildDocumentSubmissionBody(finalized.wire),
+    });
+
+    const body = await readJsonBody(res);
+    if (res.status !== 202) throw transportErrorFor(res, body, "invoice submission");
+
+    const json = body.json;
+    if (!json) {
+      throw new EtaTransportError("fiscal: ETA returned 202 for an invoice submission with no JSON body", {
+        status: res.status,
+        correlationId: correlationIdOf(res),
+      });
+    }
+
+    const responseJson = redactAuthMaterial(json);
+    const rejected = findByInternalId(json.rejectedDocuments, internalId);
+    if (rejected) return { status: "rejected", responseJson };
+
+    const submissionUuid = typeof json.submissionUUID === "string" ? json.submissionUUID : null;
+    if (!submissionUuid) {
+      // Same trade as the receipt path's identical throw, and MORE acute here:
+      // without a submissionUUID an invoice has no identity at all — not even a
+      // self-computed one — so a stranded row could never be reconciled against
+      // ETA by any means. Raising it keeps the document in the retry loop; see
+      // the long note on the receipt-path throw for the ~10-minute duplicate
+      // window that bounds how long that stays idempotent.
+      throw new EtaTransportError("fiscal: ETA returned 202 for an invoice submission with no submissionUUID", {
+        status: res.status,
+        correlationId: correlationIdOf(res),
+        body: responseJson,
+      });
+    }
+
+    const accepted = findByInternalId(json.acceptedDocuments, internalId);
+    return {
+      status: "submitted",
+      submissionUuid,
+      // ETA-ASSIGNED, both of them — the whole reason an invoice row starts with
+      // a null `eta_uuid`.
+      ...(typeof accepted?.uuid === "string" ? { etaUuid: accepted.uuid } : {}),
+      ...(typeof accepted?.longId === "string" ? { etaLongId: accepted.longId } : {}),
+      // NO qrPayload. See `buildInvoice` — there is no invoice QR template, and
+      // the column stays null for this document's whole life.
+      responseJson,
+    };
+  }
+
+  /**
+   * Polls a B2B invoice submission for its terminal verdict.
+   *
+   * `GET {apiBase}/api/v1.0/documentsubmissions/{uuid}` — Get Submission. Its
+   * `pageNo`/`pageSize` parameters are paging over the submission's documents
+   * and none is sent, because a submission holds exactly one document.
+   *
+   * STATUS MAPPING, from the page's own vocabulary, which is LOWER CASE where
+   * the receipt API's is capitalised:
+   *   `overallStatus` "in progress"                    -> "submitted"
+   *   `documentSummary[0].status` "valid"/"cancelled"  -> "accepted"
+   *   `documentSummary[0].status` "invalid"/"rejected" -> "rejected"
+   *   `documentSummary[0].status` "submitted"          -> "submitted"
+   *
+   * Comparison is case-INSENSITIVE, which is a deliberate and narrow tolerance
+   * rather than a guess: the two ETA API families document the same vocabulary
+   * in different cases ("Valid" on Get Receipt Submission, "valid" here), which
+   * is evidence that the casing is presentational and not part of the contract.
+   * The set of RECOGNISED values is unchanged — an unrecognised status still
+   * raises `EtaTransportError` and leaves the row visibly stuck, rather than
+   * being filed under a verdict nobody published.
+   *
+   * "cancelled" MAPS TO "accepted" for the reason the receipt path documents:
+   * `eta_submission_status` has no cancelled member, and a cancelled document is
+   * one ETA validated and later had withdrawn — recording it as rejected would
+   * misstate the fiscal record. The raw status stays in `responseJson`.
+   */
+  async #pollInvoice(submissionUuid: string, cfg: EtaConfig): Promise<FiscalSubmitResult> {
+    const erpCfg: EtaConfig = { ...cfg, device: null };
+    const url = `${getEtaEnv(cfg.environment).apiBase}${INVOICE_SUBMIT_PATH}${encodeURIComponent(submissionUuid)}`;
+    const res = await this.#authedRequest(erpCfg, url, { method: "GET", headers: {} });
+
+    const body = await readJsonBody(res);
+    if (!res.ok) throw transportErrorFor(res, body, "invoice submission poll");
+
+    const json = body.json;
+    if (!json) {
+      throw new EtaTransportError("fiscal: ETA returned 200 for an invoice submission poll with no JSON body", {
+        status: res.status,
+        correlationId: correlationIdOf(res),
+      });
+    }
+
+    const responseJson = redactAuthMaterial(json);
+    const overall = lowerOf(json.overallStatus);
+    if (overall === "in progress") return { status: "submitted", submissionUuid, responseJson };
+
+    const summary = Array.isArray(json.documentSummary) ? asRecord(json.documentSummary[0]) : null;
+    const ids = summary
+      ? {
+          ...(typeof summary.uuid === "string" ? { etaUuid: summary.uuid } : {}),
+          ...(typeof summary.longId === "string" ? { etaLongId: summary.longId } : {}),
+        }
+      : {};
+    const documentStatus = summary ? lowerOf(summary.status) : null;
+
+    if (documentStatus === "valid" || documentStatus === "cancelled") {
+      return { status: "accepted", submissionUuid, ...ids, responseJson };
+    }
+    if (documentStatus === "invalid" || documentStatus === "rejected") {
+      return { status: "rejected", submissionUuid, ...ids, responseJson };
+    }
+    if (documentStatus === "submitted") {
+      return { status: "submitted", submissionUuid, ...ids, responseJson };
+    }
+
+    if (summary === null) {
+      // Terminal at the submission level with no per-document row: fall back to
+      // the submission's own verdict rather than inventing one. "partially
+      // valid" cannot occur for a single-document submission, and is mapped with
+      // "valid" only so that a future batching change fails visibly at the
+      // per-document level instead of here.
+      if (overall === "valid" || overall === "partially valid") return { status: "accepted", submissionUuid, responseJson };
+      if (overall === "invalid") return { status: "rejected", submissionUuid, responseJson };
+    }
+
+    throw new EtaTransportError(
+      `fiscal: ETA returned an unrecognised invoice status (overall ${JSON.stringify(json.overallStatus)}, ` +
+        `document ${JSON.stringify(summary?.status)}) — Get Submission documents only ` +
+        '"in progress"/"valid"/"partially valid"/"invalid" and "submitted"/"valid"/"invalid"/"rejected"/"cancelled", ' +
+        "so this is not mapped rather than guessed",
       { status: res.status, correlationId: correlationIdOf(res), body: responseJson },
     );
   }
@@ -628,6 +842,67 @@ export function buildSubmissionBody(
   const receipts = `"receipts":[${stringifyWire(wire)}]`;
   if (!signatures || signatures.length === 0) return `{${receipts}}`;
   return `{${receipts},"signatures":${JSON.stringify(signatures)}}`;
+}
+
+/**
+ * The request body for one B2B invoice — `{"documents":[<document>]}`.
+ *
+ * `stringifyWire`, not `JSON.stringify`, for the reason `buildSubmissionBody`
+ * gives: the wire layer's `WireDecimal` values would become objects and the
+ * exact decimal literals would be lost. It matters even more here than on the
+ * receipt path, because those same bytes are what the CAdES-BES signature is
+ * taken over — a document whose transmitted text differs from the canonicalized
+ * text is a document whose signature cannot verify.
+ *
+ * THE SIGNATURES GO INSIDE THE DOCUMENT, not beside it, which is the structural
+ * difference from the receipt envelope. Invoice v1.0 lists `signatures` as a
+ * Mandatory member of the document itself ("Structure containing one or two
+ * digital signatures"), and ETA's signed sample carries it as the document's
+ * last property; the receipt API instead documents a `signatures` key alongside
+ * `receipts`. So this function takes no signature parameter at all —
+ * `attachSignatures` (./eta-invoice-wire) has already put them where they
+ * belong by the time the wire reaches here.
+ */
+export function buildDocumentSubmissionBody(wire: Record<string, unknown>): string {
+  return `{"documents":[${stringifyWire(wire)}]}`;
+}
+
+/**
+ * The `internalID` of the document we are about to send, read back out of the
+ * wire itself.
+ *
+ * Read rather than passed so that the value matched against ETA's response is
+ * by construction the value transmitted; a separately-threaded copy could drift
+ * from the document and would then match nothing, silently turning every
+ * response into "no entry for our document".
+ */
+function internalIdOf(wire: Record<string, unknown>): string {
+  const internalId = wire.internalID;
+  if (typeof internalId !== "string" || internalId === "") {
+    throw new Error(
+      "fiscal: invoice wire document has no internalID — it is Mandatory in invoice v1.0 and is the only key " +
+        "ETA's submission response can be matched on, since an invoice carries no uuid of its own",
+    );
+  }
+  return internalId;
+}
+
+/** A status string, lower-cased for comparison. See the casing note on
+ *  `#pollInvoice`. */
+function lowerOf(value: unknown): string | null {
+  return typeof value === "string" ? value.toLowerCase() : null;
+}
+
+/** The accepted/rejected entry for our own invoice. Both arrays key on
+ *  `internalId` — the ERP document number the submitter chose — because ETA
+ *  assigns the uuid and cannot echo one we never sent. */
+function findByInternalId(list: unknown, internalId: string): Record<string, unknown> | null {
+  if (!Array.isArray(list)) return null;
+  for (const entry of list) {
+    const record = asRecord(entry);
+    if (record && record.internalId === internalId) return record;
+  }
+  return null;
 }
 
 /** Cache key: one token per credential per environment. The POS serial is part

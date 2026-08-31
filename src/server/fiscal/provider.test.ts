@@ -8,6 +8,7 @@ import type {
   FiscalDocLine,
   FiscalSaleInput,
   FiscalRefundInput,
+  FiscalInvoiceInput,
   FiscalSubmitResult,
   FinalizedFiscalDocument,
   EtaConfig,
@@ -86,6 +87,33 @@ class FakeFiscalProvider implements FiscalProvider {
     };
   }
 
+  /** ETA assigns an invoice's identity, so the built document carries no uuid
+   *  and no chain link — the shape `buildInvoice` really returns. */
+  buildInvoice(): FiscalDocument {
+    return {
+      docType: "e_invoice",
+      uuid: null,
+      previousUuid: null,
+      referenceUuid: null,
+      referenceOldUuid: null,
+      buyer: {
+        type: "B",
+        id: "313717919",
+        name: "Receiver Co",
+        address: { country: "EG", governate: "Cairo", regionCity: "Nasr City", street: "1 Test", buildingNumber: "1" },
+      },
+      lines: [FIXTURE_LINE],
+      subtotal: "100.00",
+      discountTotal: "0.00",
+      feesTotal: "15.00",
+      taxTotals: TAX_BREAKDOWN,
+      total: "129.00",
+      paymentMethodCode: "C",
+      currency: "EGP",
+      issuedAt: "2026-07-24T00:00:00.000Z",
+    };
+  }
+
   async submit(): Promise<FiscalSubmitResult> {
     return { status: "accepted", etaUuid: RECEIPT_UUID, qrPayload: "QR", responseJson: {} };
   }
@@ -120,14 +148,15 @@ describe("NoopFiscalProvider", () => {
   });
 
   it("poll returns skipped and writes nothing", async () => {
-    const res = await new NoopFiscalProvider().poll("some-submission-uuid", {} as EtaConfig);
+    const res = await new NoopFiscalProvider().poll("some-submission-uuid", {} as EtaConfig, "e_receipt");
     expect(res).toEqual({ status: "skipped", responseJson: {} });
   });
 
-  it("buildReceipt and buildReturnReceipt throw — non-EG tenants never build fiscal documents", () => {
+  it("every builder throws — non-EG tenants never build fiscal documents", () => {
     const noop = new NoopFiscalProvider();
     expect(() => noop.buildReceipt({} as FiscalSaleInput)).toThrow();
     expect(() => noop.buildReturnReceipt({} as FiscalRefundInput)).toThrow();
+    expect(() => noop.buildInvoice({} as FiscalInvoiceInput)).toThrow();
   });
 });
 
@@ -156,7 +185,7 @@ describe("EtaFiscalProvider", () => {
       signingKey: () => null,
     };
 
-    await expect(eta.poll("submission-uuid", cfg)).rejects.toThrow(/ETA request failed/);
+    await expect(eta.poll("submission-uuid", cfg, "e_receipt")).rejects.toThrow(/ETA request failed/);
     // Authentication happens on the identity service, not the API host.
     expect(urls).toEqual(["https://id.preprod.eta.gov.eg/connect/token"]);
   });

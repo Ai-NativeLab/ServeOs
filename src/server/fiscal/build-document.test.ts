@@ -818,7 +818,14 @@ describe("buildReturnReceipt — VAT reversal", () => {
       expect.unreachable("toWireReceipt should have refused the un-de-topped line");
     } catch (err) {
       expect(err).toBeInstanceOf(EtaTotalsMismatchError);
-      expect((err as EtaTotalsMismatchError).equation).toContain("taxableItems[T1].amount = netSale * rate / 100");
+      // Round 2 Task 3 widened the equation's TEXT to rule 42's full form; the
+      // FIGURES below are byte-identical to the reduced form's, which is the
+      // zero-case in action — a return emits no T2/T3/T5-T12/valueDifference,
+      // so every added term is zero. (The same identity is pinned directly, on
+      // both builders, in `build-invoice.test.ts`.)
+      expect((err as EtaTotalsMismatchError).equation).toContain(
+        "taxableItems[T1].amount = (T2 + netSale + TotalTaxableFees[T5-T12] + valueDifference + T3) * rate / 100",
+      );
       expect((err as EtaTotalsMismatchError).expected).toBe("13.51");
       expect((err as EtaTotalsMismatchError).actual).toBe("12.11");
     }

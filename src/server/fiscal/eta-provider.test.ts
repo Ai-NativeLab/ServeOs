@@ -1,10 +1,11 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { EtaFiscalProvider, buildSubmissionBody, type FetchLike } from "./eta-provider";
+import { EtaFiscalProvider, buildSubmissionBody, buildDocumentSubmissionBody, type FetchLike } from "./eta-provider";
 import { EtaTransportError, EtaConfigError, REDACTED } from "./eta-transport-errors";
 import { getEtaEnv } from "./eta-env";
 import { finalizeReceipt, type WireContext } from "./eta-wire";
 import { stringifyWire } from "./serialize";
-import type { FiscalDocument, EtaConfig } from "./provider";
+import { dec } from "./decimal";
+import type { FiscalDocument, FinalizedFiscalDocument, EtaConfig } from "./provider";
 
 /**
  * Every test here mocks at the `fetch` boundary — the provider is constructed
@@ -590,7 +591,7 @@ describe("EtaFiscalProvider.poll", () => {
       api: [() => jsonResponse(200, { submissionuuid: "SUB-1", status: "InProgress", receipts: [] })],
     });
 
-    const result = await new EtaFiscalProvider(http).poll("SUB-1", cfg);
+    const result = await new EtaFiscalProvider(http).poll("SUB-1", cfg, "e_receipt");
     expect(calls[1].url).toBe(pollUrl);
     expect(calls[1].init.method).toBe("GET");
     expect(result.status).toBe("submitted");
@@ -607,7 +608,7 @@ describe("EtaFiscalProvider.poll", () => {
     };
     const { http } = makeHttp({ api: [() => jsonResponse(200, body)] });
 
-    const result = await new EtaFiscalProvider(http).poll("SUB-1", cfg);
+    const result = await new EtaFiscalProvider(http).poll("SUB-1", cfg, "e_receipt");
     expect(result.status).toBe("accepted");
     expect(result.etaUuid).toBe(finalized.uuid);
     expect(result.etaLongId).toBe("BFNGXFA17265TQX34");
@@ -630,7 +631,7 @@ describe("EtaFiscalProvider.poll", () => {
     };
     const { http } = makeHttp({ api: [() => jsonResponse(200, body)] });
 
-    const result = await new EtaFiscalProvider(http).poll("SUB-1", cfg);
+    const result = await new EtaFiscalProvider(http).poll("SUB-1", cfg, "e_receipt");
     expect(result.status).toBe("rejected");
     expect(result.etaUuid).toBe(finalized.uuid);
     expect(JSON.stringify(result.responseJson)).toContain("CV307");
@@ -647,7 +648,7 @@ describe("EtaFiscalProvider.poll", () => {
       ],
     });
 
-    const result = await new EtaFiscalProvider(http).poll("SUB-1", cfg);
+    const result = await new EtaFiscalProvider(http).poll("SUB-1", cfg, "e_receipt");
     expect(result.status).toBe("accepted");
     expect(JSON.stringify(result.responseJson)).toContain("Cancelled");
   });
@@ -664,14 +665,14 @@ describe("EtaFiscalProvider.poll", () => {
       ],
     });
 
-    const result = await new EtaFiscalProvider(http).poll("SUB-1", cfg);
+    const result = await new EtaFiscalProvider(http).poll("SUB-1", cfg, "e_receipt");
     expect(result.status).toBe("rejected");
   });
 
   it("refuses to guess at an undocumented submission status", async () => {
     const { http } = makeHttp({ api: [() => jsonResponse(200, { status: "PartiallyValid", receipts: [] })] });
 
-    const error = await new EtaFiscalProvider(http).poll("SUB-1", cfg).catch((e: unknown) => e);
+    const error = await new EtaFiscalProvider(http).poll("SUB-1", cfg, "e_receipt").catch((e: unknown) => e);
     expect(error).toBeInstanceOf(EtaTransportError);
     expect((error as EtaTransportError).message).toContain("PartiallyValid");
   });
@@ -681,7 +682,7 @@ describe("EtaFiscalProvider.poll", () => {
       api: [() => jsonResponse(500, { error: { code: "InternalServerError", message: "boom" } })],
     });
 
-    const error = await new EtaFiscalProvider(http).poll("SUB-1", cfg).catch((e: unknown) => e);
+    const error = await new EtaFiscalProvider(http).poll("SUB-1", cfg, "e_receipt").catch((e: unknown) => e);
     expect(error).toBeInstanceOf(EtaTransportError);
     expect((error as EtaTransportError).status).toBe(500);
     expect((error as EtaTransportError).etaErrorCode).toBe("InternalServerError");
@@ -698,5 +699,295 @@ describe("buildSubmissionBody", () => {
     const parsed = JSON.parse(body) as Record<string, unknown>;
     expect(Object.keys(parsed)).toEqual(["receipts", "signatures"]);
     expect(parsed.signatures).toEqual([{ signatureType: "I", value: "BASE64" }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B2B invoices — the ERP path (round 2 Task 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * `{"documents":[...]}` against `/api/v1.0/documentsubmissions/`, authenticated
+ * through Login as Taxpayer System rather than Authenticate POS. Every shape
+ * below is transcribed from
+ * https://sdk.invoicing.eta.gov.eg/einvoicingapi/01-submit-documents/ and
+ * .../09-get-submission/.
+ */
+const INVOICE_SUBMIT_URL = `${PREPROD.apiBase}/api/v1.0/documentsubmissions/`;
+
+/** A minimal but structurally real invoice wire document. The mapper's own
+ *  output is covered exhaustively in `build-invoice.test.ts`; what matters here
+ *  is that `internalID` is present, since it is the only key ETA's response can
+ *  be matched on. */
+const invoiceWire: Record<string, unknown> = {
+  issuer: { address: { country: "EG" }, type: "B", id: "200173707", name: "ABC Corp" },
+  receiver: { address: { country: "EG" }, type: "B", id: "313717919", name: "Receiver" },
+  documentType: "I",
+  documentTypeVersion: "0.9",
+  dateTimeIssued: "2026-07-24T09:30:15Z",
+  taxpayerActivityCode: "5610",
+  internalID: "1042",
+  invoiceLines: [],
+  totalDiscountAmount: dec("0.00"),
+  totalSalesAmount: dec("150.00"),
+  netAmount: dec("150.00"),
+  taxTotals: [{ taxType: "T1", amount: dec("21.00") }],
+  totalAmount: dec("171.00"),
+  extraDiscountAmount: dec("0.00"),
+  totalItemsDiscountAmount: dec("0.00"),
+};
+
+/** An invoice reaches `submit` with NO uuid and NO QR — ETA assigns the first
+ *  and there is no template for the second. */
+const finalizedInvoice: FinalizedFiscalDocument = {
+  docType: "e_invoice",
+  wire: invoiceWire,
+  uuid: null,
+  qrUrl: null,
+};
+
+/** The signed form: documentTypeVersion 1.0 with a `signatures` element INSIDE
+ *  the document, which is where invoice v1.0 puts it. */
+const finalizedSignedInvoice: FinalizedFiscalDocument = {
+  ...finalizedInvoice,
+  wire: {
+    ...invoiceWire,
+    documentTypeVersion: "1.0",
+    signatures: [{ signatureType: "I", value: "MIIGywYJKoZIhvcNAQcCoIIGvDCC-stub" }],
+  },
+};
+
+describe("EtaFiscalProvider.submit — B2B invoice over the ERP credential", () => {
+  it("authenticates with Login as Taxpayer System, never the POS login, even when a device is configured", async () => {
+    const { http, calls } = makeHttp({ api: [() => jsonResponse(202, { submissionUUID: "SUB-INV-1" })] });
+    // `cfg` carries a full DEVICE credential. An invoice must still go through
+    // the ERP login — that is the whole point of the forced downgrade in
+    // `#submitInvoice`.
+    await new EtaFiscalProvider(http).submit(finalizedInvoice, cfg);
+
+    const token = calls[0];
+    expect(token.url).toBe(TOKEN_URL);
+    const headers = headersOf(token);
+    // HTTP Basic, per the ERP page: "Must contain basic authorization string
+    // created using issued Client ID and Client Secret for the ERP system."
+    expect(headers.Authorization).toBe(`Basic ${Buffer.from(`erp-client-id:${ERP_SECRET}`, "utf8").toString("base64")}`);
+    // And none of the four POS headers.
+    for (const posHeader of ["posserial", "pososversion", "posmodelframework", "presharedkey"]) {
+      expect(headers[posHeader], posHeader).toBeUndefined();
+    }
+    const form = new URLSearchParams(String(token.init.body));
+    expect(form.get("grant_type")).toBe("client_credentials");
+    expect(form.get("scope")).toBe("InvoicingAPI");
+  });
+
+  it('posts {"documents":[...]} to /api/v1.0/documentsubmissions/ with the exact wire bytes', async () => {
+    const { http, calls } = makeHttp({ api: [() => jsonResponse(202, { submissionUUID: "SUB-INV-1" })] });
+    await new EtaFiscalProvider(http).submit(finalizedInvoice, cfg);
+
+    const submit = calls[1];
+    expect(submit.url).toBe(INVOICE_SUBMIT_URL);
+    expect(submit.init.method).toBe("POST");
+    expect(headersOf(submit)["Content-Type"]).toBe("application/json");
+    expect(headersOf(submit).Authorization).toBe(`Bearer ${ACCESS_TOKEN}`);
+
+    // The envelope snapshot: the document goes out verbatim, decimals unquoted
+    // and with their trailing zeros intact.
+    expect(String(submit.init.body)).toBe(`{"documents":[${stringifyWire(invoiceWire)}]}`);
+    expect(String(submit.init.body)).toContain('"totalAmount":171.00');
+    expect(String(submit.init.body)).toContain('"documentTypeVersion":"0.9"');
+    // No `receipts` key, and no signatures alongside the document.
+    expect(String(submit.init.body)).not.toContain('"receipts"');
+    expect(JSON.parse(String(submit.init.body))).toHaveProperty("documents");
+  });
+
+  it("carries documentTypeVersion 1.0 and its signatures INSIDE the document when a signer produced one", async () => {
+    const { http, calls } = makeHttp({ api: [() => jsonResponse(202, { submissionUUID: "SUB-INV-1" })] });
+    await new EtaFiscalProvider(http).submit(finalizedSignedInvoice, cfg);
+
+    const body = JSON.parse(String(calls[1].init.body)) as { documents: Record<string, unknown>[] };
+    expect(body.documents).toHaveLength(1);
+    expect(body.documents[0].documentTypeVersion).toBe("1.0");
+    // Invoice v1.0 lists `signatures` as a member of the DOCUMENT; the receipt
+    // API instead documents it beside `receipts`. This is that difference.
+    expect(body.documents[0].signatures).toEqual([{ signatureType: "I", value: "MIIGywYJKoZIhvcNAQcCoIIGvDCC-stub" }]);
+    expect(Object.keys(body)).toEqual(["documents"]);
+  });
+
+  it("maps a 202 to submitted and carries ETA's ASSIGNED uuid and longId through", async () => {
+    const accepted = {
+      submissionUUID: "TZRKK8MFZCPSTW9XCYWBMKME10",
+      acceptedDocuments: [{
+        uuid: "TZRKK8MFZCPSTW9XCYWBMKME11",
+        longId: "TZRKK8MFZ CPSTW9XC YWBMKME10A BC123160 2681697",
+        internalId: "1042",
+      }],
+      rejectedDocuments: [],
+    };
+    const { http } = makeHttp({ api: [() => jsonResponse(202, accepted)] });
+    const result = await new EtaFiscalProvider(http).submit(finalizedInvoice, cfg);
+
+    expect(result.status).toBe("submitted");
+    expect(result.submissionUuid).toBe("TZRKK8MFZCPSTW9XCYWBMKME10");
+    expect(result.etaUuid).toBe("TZRKK8MFZCPSTW9XCYWBMKME11");
+    expect(result.etaLongId).toBe("TZRKK8MFZ CPSTW9XC YWBMKME10A BC123160 2681697");
+    // THE NO-QR INVARIANT.
+    expect(result.qrPayload).toBeUndefined();
+    expectNoAuthMaterial(result.responseJson);
+  });
+
+  it("matches on internalId, ignoring another document in the same response", async () => {
+    const mixed = {
+      submissionUUID: "SUB-INV-1",
+      acceptedDocuments: [
+        { uuid: "OTHER-UUID", longId: "OTHER-LONG", internalId: "9999" },
+        { uuid: "OURS", longId: "OURS-LONG", internalId: "1042" },
+      ],
+    };
+    const { http } = makeHttp({ api: [() => jsonResponse(202, mixed)] });
+    const result = await new EtaFiscalProvider(http).submit(finalizedInvoice, cfg);
+    expect(result.etaUuid).toBe("OURS");
+  });
+
+  it("maps a rejectedDocuments entry to the terminal rejected, with no invented uuid", async () => {
+    const rejected = {
+      submissionUUID: "SUB-INV-1",
+      acceptedDocuments: [],
+      rejectedDocuments: [{
+        internalId: "1042",
+        error: { code: "BadArgument", message: "receiver id is not registered", target: "receiver.id", details: [] },
+      }],
+    };
+    const { http } = makeHttp({ api: [() => jsonResponse(202, rejected)] });
+    const result = await new EtaFiscalProvider(http).submit(finalizedInvoice, cfg);
+
+    expect(result.status).toBe("rejected");
+    expect(result.etaUuid).toBeUndefined();
+    expect(result.responseJson).toEqual(rejected);
+  });
+
+  it("treats a 202 with no submissionUUID as retryable — an invoice with no handle can never be reconciled", async () => {
+    const { http } = makeHttp({ api: [() => jsonResponse(202, { acceptedDocuments: [] })] });
+    const error = await new EtaFiscalProvider(http).submit(finalizedInvoice, cfg).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(EtaTransportError);
+    expect((error as Error).message).toContain("no submissionUUID");
+  });
+
+  it("maps every documented non-202 to a transport error carrying ETA's own code", async () => {
+    for (const [status, code] of [[400, "BadStructure"], [403, "IncorrectSubmitter"], [422, "DuplicateSubmission"]] as const) {
+      const { http } = makeHttp({ api: [() => jsonResponse(status, { error: { code, message: "refused" } })] });
+      const error = await new EtaFiscalProvider(http).submit(finalizedInvoice, cfg).catch((e: unknown) => e);
+      expect(error, code).toBeInstanceOf(EtaTransportError);
+      expect((error as EtaTransportError).status, code).toBe(status);
+      expect((error as EtaTransportError).etaErrorCode, code).toBe(code);
+    }
+  });
+
+  it("refuses to submit a document with no internalID rather than matching nothing in the response", async () => {
+    const noInternalId: FinalizedFiscalDocument = {
+      ...finalizedInvoice,
+      wire: Object.fromEntries(Object.entries(invoiceWire).filter(([key]) => key !== "internalID")),
+    };
+    const { http } = makeHttp({ api: [() => jsonResponse(202, { submissionUUID: "SUB-INV-1" })] });
+    await expect(new EtaFiscalProvider(http).submit(noInternalId, cfg)).rejects.toThrow(/no internalID/);
+  });
+});
+
+describe("EtaFiscalProvider.poll — B2B invoice (Get Submission)", () => {
+  const POLL_URL = `${INVOICE_SUBMIT_URL}SUB-INV-1`;
+
+  /** ETA's documented Get Submission body, with the per-document row that
+   *  carries the verdict. */
+  const submission = (overall: string, documentStatus?: string) => ({
+    uuid: "SUB-INV-1",
+    documentCount: 1,
+    dateTimeReceived: "2026-07-24T09:31:00Z",
+    overallStatus: overall,
+    ...(documentStatus === undefined
+      ? {}
+      : {
+          documentSummary: [{
+            uuid: "F9D425P6DS7D8IU",
+            longId: "LONG-INV-1",
+            internalId: "1042",
+            typeName: "i",
+            status: documentStatus,
+            issuerId: "200173707",
+            total: 171.0,
+          }],
+        }),
+  });
+
+  it("GETs /api/v1.0/documentsubmissions/{uuid} — no /details suffix — under the ERP token", async () => {
+    const { http, calls } = makeHttp({ api: [() => jsonResponse(200, submission("valid", "valid"))] });
+    await new EtaFiscalProvider(http).poll("SUB-INV-1", cfg, "e_invoice");
+
+    expect(calls[1].url).toBe(POLL_URL);
+    expect(calls[1].init.method).toBe("GET");
+    expect(headersOf(calls[0]).Authorization).toContain("Basic ");
+  });
+
+  it("maps a valid document to accepted, carrying ETA's assigned uuid and longId", async () => {
+    const { http } = makeHttp({ api: [() => jsonResponse(200, submission("valid", "valid"))] });
+    const result = await new EtaFiscalProvider(http).poll("SUB-INV-1", cfg, "e_invoice");
+
+    expect(result.status).toBe("accepted");
+    expect(result.etaUuid).toBe("F9D425P6DS7D8IU");
+    expect(result.etaLongId).toBe("LONG-INV-1");
+    expect(result.qrPayload).toBeUndefined();
+  });
+
+  it('maps "in progress" to submitted without consuming the verdict', async () => {
+    const { http } = makeHttp({ api: [() => jsonResponse(200, submission("in progress"))] });
+    const result = await new EtaFiscalProvider(http).poll("SUB-INV-1", cfg, "e_invoice");
+    expect(result.status).toBe("submitted");
+  });
+
+  it("maps every documented per-document status to its verdict", async () => {
+    const expected: [string, string][] = [
+      ["valid", "accepted"],
+      // A cancelled document was validated and later withdrawn; the status enum
+      // has no cancelled member and recording it as rejected would misstate the
+      // fiscal record.
+      ["cancelled", "accepted"],
+      ["invalid", "rejected"],
+      ["rejected", "rejected"],
+      ["submitted", "submitted"],
+    ];
+    for (const [documentStatus, status] of expected) {
+      const { http } = makeHttp({ api: [() => jsonResponse(200, submission("valid", documentStatus))] });
+      const result = await new EtaFiscalProvider(http).poll("SUB-INV-1", cfg, "e_invoice");
+      expect(result.status, documentStatus).toBe(status);
+    }
+  });
+
+  it("accepts ETA's capitalisation either way — the two API families document the same words differently", async () => {
+    const { http } = makeHttp({ api: [() => jsonResponse(200, submission("Valid", "Valid"))] });
+    expect((await new EtaFiscalProvider(http).poll("SUB-INV-1", cfg, "e_invoice")).status).toBe("accepted");
+  });
+
+  it("falls back to the submission's own verdict when there is no per-document row", async () => {
+    for (const [overall, status] of [["valid", "accepted"], ["invalid", "rejected"]] as const) {
+      const { http } = makeHttp({ api: [() => jsonResponse(200, submission(overall))] });
+      expect((await new EtaFiscalProvider(http).poll("SUB-INV-1", cfg, "e_invoice")).status, overall).toBe(status);
+    }
+  });
+
+  it("refuses to guess at an unrecognised status rather than filing a verdict nobody published", async () => {
+    const { http } = makeHttp({ api: [() => jsonResponse(200, submission("valid", "quarantined"))] });
+    const error = await new EtaFiscalProvider(http).poll("SUB-INV-1", cfg, "e_invoice").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(EtaTransportError);
+    expect((error as Error).message).toContain("not mapped rather than guessed");
+  });
+
+  it("still polls the RECEIPT endpoint for a receipt, so the two families cannot be confused", async () => {
+    const { http, calls } = makeHttp({ api: [() => jsonResponse(200, { status: "InProgress" })] });
+    await new EtaFiscalProvider(http).poll("SUB-1", cfg, "e_receipt");
+    expect(calls[1].url).toBe(`${PREPROD.apiBase}/api/v1/receiptsubmissions/SUB-1/details`);
+  });
+});
+
+describe("buildDocumentSubmissionBody", () => {
+  it("wraps the document in ETA's documents envelope, decimals verbatim", () => {
+    expect(buildDocumentSubmissionBody(invoiceWire)).toBe(`{"documents":[${stringifyWire(invoiceWire)}]}`);
   });
 });

@@ -1,12 +1,13 @@
 import type {
   FiscalDocument,
   FiscalDocLine,
+  FiscalTaxAmount,
   FiscalSaleInput,
   FiscalRefundInput,
   FeeLineConfig,
 } from "./provider";
 import type { ProductTaxCode } from "./schema";
-import type { Order } from "@/server/ordering/schema";
+import type { Order, OrderItem } from "@/server/ordering/schema";
 import type { OrderPayment } from "@/server/pos/tender-schema";
 import {
   addDecimal, sumDecimal, subtractDecimal, compareDecimal, divideDecimal,
@@ -35,8 +36,51 @@ import { LINE_TAX_TOLERANCE } from "./constants";
  *  Egyptian issuer, an exchangeRate only when the currency is not EGP. */
 const CURRENCY = "EGP";
 
-/** ETA's VAT tax-type code. */
-const DEFAULT_TAX_TYPE = "T1";
+/**
+ * Document-level `taxTotals`, aggregated from the lines' OWN `taxableItems`.
+ *
+ * ETA defines it exactly that way and re-derives it on receipt — Main
+ * Calculations rule 26, "taxTotals <taxType> = Sum (itemData[*].taxableItems
+ * [taxType=].amount)" — so the lines are the authority and this is a fold over
+ * them, never a second, independent computation of the same money. For a sale
+ * that means the total still equals `orders.vatAmount` to the cent, because
+ * `allocateVat` split exactly that figure across exactly these lines.
+ *
+ * IT GROUPS BY (taxType, subType), NOT BY taxType ALONE, and the pair matters
+ * even though ETA's own wire structure carries only the type. A group is what
+ * a `rate` belongs to: two subtypes of one tax type are two different rates,
+ * and collapsing them here would leave the document-level entry claiming one
+ * rate for money charged at two. The wire mappers fold the groups back down to
+ * ETA's per-taxType shape at emit time (`foldTaxTotalsByType` in `./eta-wire`),
+ * which is where the "TaxType needs to be unique" rule actually applies.
+ *
+ * WHAT THIS REPLACED, and why it is not a behaviour change for any document
+ * ServeOS emits today: both builders used to take the document's single
+ * `taxTotals` entry's type and subtype from the FIRST taxed draft and pair it
+ * with the whole stored VAT figure. With one tax type in play — every ServeOS
+ * document, since a tenant's `product_tax_codes` are all T1 VAT in practice —
+ * the two produce byte-identical output, which `build-invoice.test.ts` pins
+ * directly. With TWO, the old form was simply wrong: it reported the entire
+ * document's tax under whichever type happened to sort first, and ETA's rule 26
+ * would have refused it. A B2B invoice is the first document that can plausibly
+ * mix them (a table-tax T3 item alongside VAT), which is why this is widened
+ * now rather than left as a known-latent bug.
+ *
+ * Order is FIRST-APPEARANCE, so the emitted array is deterministic — the same
+ * sale must always serialize to the same bytes.
+ */
+export function aggregateTaxTotals(lines: FiscalDocLine[]): FiscalTaxAmount[] {
+  const groups = new Map<string, FiscalTaxAmount>();
+  for (const line of lines) {
+    for (const tax of line.taxes) {
+      const key = `${tax.taxType}|${tax.taxSubType ?? ""}`;
+      const seen = groups.get(key);
+      if (seen) seen.amount = addDecimal("taxTotals", seen.amount, tax.amount);
+      else groups.set(key, { taxType: tax.taxType, taxSubType: tax.taxSubType, rate: tax.rate, amount: tax.amount });
+    }
+  }
+  return [...groups.values()];
+}
 
 /** ETA allows 5 decimal places on `unitPrice`; a VAT-inclusive net unit price
  *  needs them (see `buildLines`). */
@@ -47,8 +91,21 @@ const UNIT_PRICE_SCALE = 5;
  * and the same value is echoed into the QR url, so milliseconds are trimmed
  * here rather than at each consumer.
  */
-function toEtaUtc(at: Date): string {
+export function toEtaUtc(at: Date): string {
   return `${at.toISOString().slice(0, 19)}Z`;
+}
+
+/**
+ * `FiscalDocument.feesTotal` for a SALE — the semantic sum of both fee columns.
+ *
+ * Kept for the contract's sake and identical for an e-receipt and a B2B
+ * e-invoice: the fees themselves ship as their own document lines in both
+ * families (receipt v1.2's `feesAmount` "accepts only zero values" and invoice
+ * v1.0 has no document-level fee slot at all), so this is never the thing that
+ * carries them onto the wire.
+ */
+export function feesTotalOf(order: Order): string {
+  return addDecimal("feesTotal", order.serviceChargeAmount ?? "0.00", order.deliveryFee);
 }
 
 /**
@@ -185,7 +242,25 @@ function feeDraft(config: FeeLineConfig, amount: string, bearsVat: boolean): Lin
  * misstate the tax base; allocating it across the lines it actually reduced
  * keeps every published equation true.
  */
-function buildLineDrafts(input: FiscalSaleInput): LineDraft[] {
+/**
+ * The inputs the SALE line pipeline reads — the exact common subset of
+ * `FiscalSaleInput` and `FiscalInvoiceInput`.
+ *
+ * Written as a structural type rather than as a base interface either of those
+ * extends, so neither has to know this one exists: an e-receipt and a B2B
+ * e-invoice describe the SAME sale, and the only honest way to say that is for
+ * both to satisfy the same shape without either being defined in terms of the
+ * other. Anything on this type is sale data; anything either input adds beyond
+ * it (`previousUuid`, `deviceSerial`, `buyer`) is document data.
+ */
+export type SaleLineInput = {
+  order: Order;
+  items: OrderItem[];
+  taxCodes: ProductTaxCode[];
+  feeLines?: { serviceCharge?: FeeLineConfig; delivery?: FeeLineConfig };
+};
+
+function buildLineDrafts(input: SaleLineInput): LineDraft[] {
   const { order, items, taxCodes } = input;
   const codes = taxCodeIndex(taxCodes);
 
@@ -311,7 +386,7 @@ function tenderCode(method: OrderPayment["method"]): string {
  * fall back to `orders.paymentMethod`, whose instapay/wallet values have no
  * counterpart in ETA's table and therefore report as "O | Others".
  */
-function paymentMethodCode(order: Order, payments: OrderPayment[]): string {
+export function paymentMethodCode(order: Order, payments: OrderPayment[]): string {
   if (payments.length > 0) {
     const largest = payments.reduce((best, payment) => (compareDecimal(payment.amount, best.amount) > 0 ? payment : best));
     return tenderCode(largest.method);
@@ -336,11 +411,75 @@ function paymentMethodCode(order: Order, payments: OrderPayment[]): string {
  */
 export function buildReceipt(input: FiscalSaleInput): FiscalDocument {
   const { order } = input;
+  const lines = buildSaleLines(input);
+
+  return {
+    docType: "e_receipt",
+    uuid: null,
+    previousUuid: input.previousUuid,
+    referenceUuid: null,
+    referenceOldUuid: null,
+    buyer: { type: "P" },
+    lines,
+    subtotal: order.subtotal,
+    // The order-level discount now rides on the lines (see buildLineDrafts),
+    // so there is no receipt-level discount left for ETA to subtract.
+    discountTotal: "0.00",
+    feesTotal: feesTotalOf(order),
+    // The lines' own taxes, folded — which IS `orders.vatAmount` for a sale,
+    // because `allocateVat` split exactly that figure across exactly them and
+    // throws if the parts stop summing to it. See `aggregateTaxTotals`.
+    taxTotals: aggregateTaxTotals(lines),
+    total: order.total,
+    paymentMethodCode: paymentMethodCode(order, input.payments),
+    currency: CURRENCY,
+    issuedAt: toEtaUtc(order.placedAt),
+  };
+}
+
+/**
+ * THE SALE LINE PIPELINE, shared verbatim by the e-receipt and the B2B
+ * e-invoice.
+ *
+ * This is the whole of `buildReceipt`'s former body, lifted unchanged: draft the
+ * lines with the order discount pushed down onto them, split `orders.vatAmount`
+ * across the VAT-bearing ones by largest remainder, then take the tax back out
+ * of a VAT-INCLUSIVE base to get ETA's tax-exclusive `netSale` and derive the
+ * unit price from the line's own `totalSale`.
+ *
+ * WHY IT IS SHARED RATHER THAN REIMPLEMENTED, and this is the load-bearing part
+ * of Task 3: an invoice and a receipt for the same sale must report the same
+ * money. The two documents' per-line equations are the SAME equations — Main
+ * Calculations is one document covering both families, and the terms simply
+ * change spelling between them:
+ *
+ *     receipt v1.2          invoice v1.0        this pipeline produces
+ *     ------------          ------------        ----------------------
+ *     totalSale             salesTotal          netSale + discounts
+ *     netSale               netTotal            `lineTotal`
+ *     total                 total               netSale + Σ taxes
+ *     unitPrice             unitValue.amountEGP `unitPrice`
+ *     taxableItems[]        taxableItems[]      `taxes`
+ *
+ * (Names verified on https://sdk.invoicing.eta.gov.eg/documents/invoice-v1-0/ —
+ * "salesTotal: Total amount for the invoice line considering quantity and unit
+ * price in EGP"; "netTotal: Total amount for the invoice line after applying
+ * discount"; "total: Total amount for the invoice line after adding all pricing
+ * items, taxes, removing discounts".) Two copies of this arithmetic would be two
+ * chances to disagree about a tenant's output VAT for one sale, which is exactly
+ * the reconciliation break round 2 Task 2 recorded as worth a ticket in the
+ * refund direction.
+ *
+ * WHAT IT DOES NOT DECIDE. Buyer, chain position, document type, totals and the
+ * date all belong to the document, not the sale, and stay with each builder.
+ */
+export function buildSaleLines(input: SaleLineInput): FiscalDocLine[] {
+  const { order } = input;
   const mode = vatMode(order);
   const drafts = buildLineDrafts(input);
   const vatShares = allocateVat(order, drafts);
 
-  const lines: FiscalDocLine[] = drafts.map((draft, index) => {
+  return drafts.map((draft, index) => {
     const vat = vatShares[index];
     // netSale is tax-EXCLUSIVE by ETA's definition, so VAT-inclusive prices
     // have their allocated tax taken back out; exclusive prices pass through
@@ -376,40 +515,7 @@ export function buildReceipt(input: FiscalSaleInput): FiscalDocument {
       lineTotal: netSale,
     };
   });
-
-  return {
-    docType: "e_receipt",
-    uuid: null,
-    previousUuid: input.previousUuid,
-    referenceUuid: null,
-    referenceOldUuid: null,
-    buyer: { type: "P" },
-    lines,
-    subtotal: order.subtotal,
-    // The order-level discount now rides on the lines (see buildLineDrafts),
-    // so there is no receipt-level discount left for ETA to subtract.
-    discountTotal: "0.00",
-    // The semantic sum of both fee columns, kept for the contract's sake; the
-    // fees themselves ship as their own lines above and the wire's feesAmount
-    // is always zero.
-    feesTotal: addDecimal("feesTotal", order.serviceChargeAmount ?? "0.00", order.deliveryFee),
-    taxTotals: isZeroDecimal(order.vatAmount)
-      ? []
-      : [
-          {
-            taxType: drafts.find((draft) => draft.bearsVat)?.taxType ?? DEFAULT_TAX_TYPE,
-            taxSubType: drafts.find((draft) => draft.bearsVat)?.taxSubType ?? null,
-            rate: order.vatRateSnapshot,
-            amount: order.vatAmount,
-          },
-        ],
-    total: order.total,
-    paymentMethodCode: paymentMethodCode(order, input.payments),
-    currency: CURRENCY,
-    issuedAt: toEtaUtc(order.placedAt),
-  };
 }
-
 
 /**
  * Which convention a REFUND's stored line amounts were written in, and
@@ -767,8 +873,6 @@ export function buildReturnReceipt(input: FiscalRefundInput): FiscalDocument {
 
   assertLinesCarryTheirOwnVat(lines, drafts, refund.id, rate);
 
-  const taxed = drafts.find((_, index) => !isZeroDecimal(vats[index]));
-  const reported = sumDecimal("return VAT", vats);
   return {
     docType: "return_receipt",
     uuid: null,
@@ -783,9 +887,11 @@ export function buildReturnReceipt(input: FiscalRefundInput): FiscalDocument {
     // ETA defines this as the sum of the lines' taxableItems, and
     // `assertTotalsReconcile` holds us to that. It IS `refunds.vatAmount` for
     // every refund whose money and VAT agree — see THE DOCUMENT'S VAT CEILING.
-    taxTotals: isZeroDecimal(reported)
-      ? []
-      : [{ taxType: taxed?.line.taxType ?? DEFAULT_TAX_TYPE, taxSubType: taxed?.line.taxSubType ?? null, rate, amount: reported }],
+    // `aggregateTaxTotals` is that definition applied literally; it replaced a
+    // hand-rolled "first taxed draft's type, whole reported figure" that agreed
+    // with it for every single-tax-type document and quietly misreported a
+    // mixed one.
+    taxTotals: aggregateTaxTotals(lines),
     total: refund.totalAmount,
     // A refund reverses the sale's tender; ServeOS records the outgoing
     // method on `refund_payments`, which this input does not carry, so the

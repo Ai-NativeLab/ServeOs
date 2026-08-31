@@ -17,7 +17,7 @@ import { computeCartTotals } from "@/lib/order-totals";
 import type { PosCashierContext } from "@/server/pos/require-cashier";
 import {
   etaSubmissions, etaTenantConfig, etaPosCredentials, etaDeviceChains, productTaxCodes,
-  type EtaWireContextConfig,
+  type EtaWireContextConfig, type EtaDocType,
 } from "./schema";
 import { drainEtaSubmissions, MAX_ATTEMPTS } from "./worker";
 import { finalizeSubmissionRow, reconcileMissingReceipts } from "./finalize";
@@ -25,7 +25,7 @@ import { enqueueCorrectedResubmission } from "./enqueue";
 import { stringifyWire } from "./serialize";
 import { EtaTransportError, EtaConfigError } from "./eta-transport-errors";
 import type {
-  EtaConfig, FinalizedFiscalDocument, FiscalProvider, FiscalSaleInput, FiscalRefundInput, FiscalSubmitResult,
+  EtaConfig, FinalizedFiscalDocument, FiscalProvider, FiscalSaleInput, FiscalRefundInput, FiscalInvoiceInput, FiscalInvoiceBuyer, FiscalSubmitResult,
 } from "./provider";
 
 /**
@@ -86,6 +86,9 @@ class FakeEta implements FiscalProvider {
   readonly name = "fake";
   readonly submitted: FinalizedFiscalDocument[] = [];
   readonly polled: string[] = [];
+  /** Which family each poll asked for — the worker must pass the ROW's docType,
+   *  because the two families are polled through different ETA APIs. */
+  readonly polledDocTypes: EtaDocType[] = [];
 
   constructor(
     private readonly submitOutcomes: SubmitOutcome[],
@@ -100,12 +103,17 @@ class FakeEta implements FiscalProvider {
     throw new Error("FakeEta.buildReturnReceipt must not be called — finalization uses the pure builders directly");
   }
 
+  buildInvoice(_input: FiscalInvoiceInput): never {
+    throw new Error("FakeEta.buildInvoice must not be called — finalization uses the pure builders directly");
+  }
+
   async submit(finalized: FinalizedFiscalDocument, _cfg: EtaConfig): Promise<FiscalSubmitResult> {
     this.submitted.push(finalized);
     return unwrap(this.submitOutcomes, this.submitted.length, "submit");
   }
 
-  async poll(submissionUuid: string, _cfg: EtaConfig): Promise<FiscalSubmitResult> {
+  async poll(submissionUuid: string, _cfg: EtaConfig, docType: EtaDocType): Promise<FiscalSubmitResult> {
+    this.polledDocTypes.push(docType);
     this.polled.push(submissionUuid);
     return unwrap(this.pollOutcomes, this.polled.length, "poll");
   }
@@ -133,6 +141,7 @@ function losingDrain(tenantId: string, failure: Error): FiscalProvider {
     name: "losing-drain",
     buildReceipt: () => { throw new Error("not used"); },
     buildReturnReceipt: () => { throw new Error("not used"); },
+    buildInvoice: () => { throw new Error("not used"); },
     poll: () => { throw new Error("not used"); },
     submit: async () => {
       await withTenant(tenantId, (tx) => tx.update(etaSubmissions)
@@ -1187,3 +1196,185 @@ async function placeWebOrder(
 
   return placed.orderId;
 }
+
+// ---------------------------------------------------------------------------
+// B2B invoices, end to end (round 2 Task 3)
+//
+// The dashboard trigger is Task 4, so these enqueue directly — which is also
+// what pins the STAGING CONTRACT that trigger has to satisfy: an `e_invoice`
+// row with the buyer in `request_json`, and nothing else.
+// ---------------------------------------------------------------------------
+
+const B2B_BUYER: FiscalInvoiceBuyer = {
+  rin: "313717919",
+  name: "Receiver Company LLC",
+  address: {
+    country: "EG", governate: "Cairo", regionCity: "Nasr City",
+    street: "580 Clementina Key", buildingNumber: "Bldg. 0",
+  },
+};
+
+/** Enqueues an `e_invoice` for a sale, staging the buyer exactly where
+ *  `finalizeInvoiceRow`'s read seam expects it. `null` stages NOTHING — the
+ *  empty `request_json` a bare enqueue leaves behind. */
+async function enqueueInvoice(tenantId: string, orderId: string, buyer: unknown = B2B_BUYER): Promise<string> {
+  const [row] = await withTenant(tenantId, (tx) => tx.insert(etaSubmissions).values({
+    tenantId, docType: "e_invoice", orderId, refundId: null,
+    status: "pending", attempts: 0,
+    requestJson: (buyer === null ? {} : { buyer }) as Record<string, unknown>,
+  }).returning({ id: etaSubmissions.id }));
+  return row.id;
+}
+
+const invoiceRowsFor = (tenantId: string) =>
+  withTenant(tenantId, (tx) => tx.select().from(etaSubmissions).where(and(
+    eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.docType, "e_invoice"))));
+
+describe("B2B e_invoice — finalization", () => {
+  it("persists the wire document with NO uuid, NO chain and NO QR", async () => {
+    const s = await seedSale({ clientOrderId: "b2b-1" });
+    const submissionId = await enqueueInvoice(s.tenantId, s.receipt.orderId);
+
+    const outcome = await finalizeSubmissionRow(s.tenantId, submissionId);
+    expect(outcome).toEqual({ status: "invoice-finalized" });
+
+    const [row] = await invoiceRowsFor(s.tenantId);
+    // ETA assigns an invoice's identity; nothing local may claim to have one.
+    expect(row.etaUuid).toBeNull();
+    expect(row.etaLongId).toBeNull();
+    // THE NO-QR INVARIANT — there is no invoice QR template at all.
+    expect(row.qrPayload).toBeNull();
+    // Not signed, and not pretending to be: the CAdES-BES container is BLOCKED.
+    expect(row.hashOrSignature).toBeNull();
+
+    const wire = row.requestJson;
+    expect(wire.documentType).toBe("I");
+    expect(wire.documentTypeVersion).toBe("0.9");
+    expect(wire.internalID).toBe(String(s.receipt.orderNumber));
+    expect(Object.keys(wire)).not.toContain("signatures");
+    expect(Object.keys(wire)).not.toContain("header");
+    // The staged buyer survives as the document's own receiver block.
+    expect(wire.receiver).toMatchObject({ type: "B", id: B2B_BUYER.rin, name: B2B_BUYER.name });
+  });
+
+  it("does NOT advance any device chain — an invoice is issued from no device", async () => {
+    const s = await seedSale({ clientOrderId: "b2b-chain" });
+    const [before] = await chainFor(s.tenantId);
+    await finalizeSubmissionRow(s.tenantId, await enqueueInvoice(s.tenantId, s.receipt.orderId));
+    const [after] = await chainFor(s.tenantId);
+    expect(after.lastUuid).toBe(before.lastUuid);
+  });
+
+  it("stores decimal literals verbatim, so the bytes a signature would cover survive the round trip", async () => {
+    const s = await seedSale({ clientOrderId: "b2b-decimals" });
+    const submissionId = await enqueueInvoice(s.tenantId, s.receipt.orderId);
+    await finalizeSubmissionRow(s.tenantId, submissionId);
+
+    const [order] = await withTenant(s.tenantId, (tx) =>
+      tx.select().from(orders).where(eq(orders.id, s.receipt.orderId)));
+    const text = await storedWireText(s.tenantId, submissionId);
+    expect(text).toContain(`"totalAmount":${order.total}`);
+    // Property order preserved by the `json` column — `issuer` first, exactly as
+    // the mapper emitted it.
+    expect(text.startsWith('{"issuer":')).toBe(true);
+  });
+
+  it("is idempotent: a second finalization leaves the persisted bytes untouched", async () => {
+    const s = await seedSale({ clientOrderId: "b2b-idem" });
+    const submissionId = await enqueueInvoice(s.tenantId, s.receipt.orderId);
+    await finalizeSubmissionRow(s.tenantId, submissionId);
+    const first = await storedWireText(s.tenantId, submissionId);
+
+    expect(await finalizeSubmissionRow(s.tenantId, submissionId)).toEqual({ status: "invoice-already-finalized" });
+    expect(await storedWireText(s.tenantId, submissionId)).toBe(first);
+  });
+
+  it("refuses permanently, and by name, when no buyer was staged", async () => {
+    const s = await seedSale({ clientOrderId: "b2b-nobuyer" });
+    const submissionId = await enqueueInvoice(s.tenantId, s.receipt.orderId, null);
+
+    const error = await finalizeSubmissionRow(s.tenantId, submissionId).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(EtaConfigError);
+    expect((error as EtaConfigError).code).toBe("missing-buyer");
+  });
+
+  it("refuses a staged buyer missing a mandatory receiver field", async () => {
+    const s = await seedSale({ clientOrderId: "b2b-partial" });
+    const incomplete = { ...B2B_BUYER, address: { ...B2B_BUYER.address, governate: "" } };
+    const submissionId = await enqueueInvoice(s.tenantId, s.receipt.orderId, incomplete);
+
+    const error = await finalizeSubmissionRow(s.tenantId, submissionId).catch((e: unknown) => e);
+    expect((error as { code?: string }).code).toBe("buyer-id-required");
+  });
+});
+
+describe("B2B e_invoice — the worker's submit/poll path", () => {
+  it("submits, then polls, mapping ETA's ASSIGNED uuid and longId into the row", async () => {
+    const s = await seedSale({ clientOrderId: "b2b-drain" });
+    await enqueueInvoice(s.tenantId, s.receipt.orderId);
+
+    // The sale's own e_receipt row is claimed in the same pass; script both.
+    const eta = new FakeEta(
+      [accepted202("sub-receipt"), { status: "submitted", submissionUuid: "sub-invoice", etaUuid: "ETA-UUID-1", etaLongId: "ETA-LONG-1", responseJson: {} }],
+      [pollValid("LONG-RECEIPT"), { status: "accepted", etaUuid: "ETA-UUID-1", etaLongId: "ETA-LONG-1", responseJson: { overallStatus: "valid" } }],
+    );
+
+    await drainEtaSubmissions({ provider: eta, reconcile: false });
+    const [afterSubmit] = await invoiceRowsFor(s.tenantId);
+    expect(afterSubmit.status).toBe("submitted");
+    expect(afterSubmit.submissionUuid).toBe("sub-invoice");
+    // Written at SUBMISSION, not at finalization — the invoice model's whole
+    // point. The uuid arrives in ETA's 202.
+    expect(afterSubmit.etaUuid).toBe("ETA-UUID-1");
+    expect(afterSubmit.etaLongId).toBe("ETA-LONG-1");
+    expect(afterSubmit.qrPayload).toBeNull();
+
+    // The claim query only reconsiders a submitted row once its poll interval
+    // has passed, so wind the clock forward for the poll pass.
+    await withTenant(s.tenantId, (tx) => tx.update(etaSubmissions)
+      .set({ nextAttemptAt: new Date(Date.now() - 1000) })
+      .where(eq(etaSubmissions.tenantId, s.tenantId)));
+    await drainEtaSubmissions({ provider: eta, reconcile: false });
+
+    const [accepted] = await invoiceRowsFor(s.tenantId);
+    expect(accepted.status).toBe("accepted");
+    expect(accepted.etaUuid).toBe("ETA-UUID-1");
+    expect(accepted.etaLongId).toBe("ETA-LONG-1");
+    // NO QR, for the document's whole life.
+    expect(accepted.qrPayload).toBeNull();
+
+    // The worker told the provider WHICH family to poll — the two use different
+    // ETA APIs, so getting this wrong would poll the receipt endpoint for an
+    // invoice's submission uuid.
+    expect(eta.polledDocTypes).toContain("e_invoice");
+  });
+
+  it("submits the invoice document itself, with no uuid and no QR attached", async () => {
+    const s = await seedSale({ clientOrderId: "b2b-envelope" });
+    await enqueueInvoice(s.tenantId, s.receipt.orderId);
+
+    const eta = new FakeEta([accepted202("sub-receipt"), accepted202("sub-invoice")]);
+    await drainEtaSubmissions({ provider: eta, reconcile: false });
+
+    const invoice = eta.submitted.find((d) => d.docType === "e_invoice")!;
+    expect(invoice.uuid).toBeNull();
+    expect(invoice.qrUrl).toBeNull();
+    expect(invoice.wire.documentTypeVersion).toBe("0.9");
+    expect(invoice.wire.internalID).toBe(String(s.receipt.orderNumber));
+  });
+
+  it("fails permanently, with an owner alert, when the buyer was never staged", async () => {
+    const s = await seedSale({ clientOrderId: "b2b-fail" });
+    await enqueueInvoice(s.tenantId, s.receipt.orderId, null);
+
+    const eta = new FakeEta([accepted202("sub-receipt")]);
+    await drainEtaSubmissions({ provider: eta, reconcile: false });
+
+    const [row] = await invoiceRowsFor(s.tenantId);
+    expect(row.status).toBe("failed");
+    expect(row.attempts).toBe(MAX_ATTEMPTS); // permanent: no backoff, no retries
+    expect(row.lastError).toContain("missing-buyer");
+    const alerts = await notificationsFor(s.tenantId);
+    expect(alerts.some((n) => n.title === "A fiscal document could not be submitted")).toBe(true);
+  });
+});

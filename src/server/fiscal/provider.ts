@@ -35,9 +35,49 @@ export type FiscalDocLine = {
   discountAmount: string;
   taxes: FiscalTaxAmount[];
   lineTotal: string;
+  /**
+   * Invoice v1.0's `valueDifference` — "Value difference when selling goods
+   * already taxed (accepts +/- numbers), e.g., factory value based." Optional
+   * there, absent from every document ServeOS emits today, and carried here for
+   * ONE reason: it is a term of Main Calculations rule 42, so the assertion that
+   * proves a line's tax is derivable has to be able to read it. Omit it and the
+   * assertion is only true for documents that happen not to carry one — see
+   * `assertLineTaxesDerivable` in `./eta-wire`, which defaults it to zero.
+   */
+  valueDifference?: string;
 };
 
-export type FiscalBuyer = { type: "B" | "P" | "F"; id?: string; name?: string };
+/**
+ * A structured postal address, exactly the fields ETA's Address type defines.
+ *
+ * Shared by the receipt's `seller.branchAddress` (see `WireBranchAddress` in
+ * `./eta-wire`, which this mirrors field for field) and invoice v1.0's
+ * `issuer.address` / `receiver.address`. The first five are Mandatory in every
+ * one of those positions; the rest are Optional and are omitted when absent
+ * rather than emitted empty (`canonicalSerialize` refuses null outright).
+ */
+export type FiscalAddress = {
+  /** "Country represented by ISO-3166-2 2 symbol code of the countries. Must be
+   *  EG for internal business issuers." */
+  country: string;
+  governate: string;
+  regionCity: string;
+  street: string;
+  buildingNumber: string;
+  postalCode?: string;
+  floor?: string;
+  room?: string;
+  landmark?: string;
+  additionalInformation?: string;
+};
+
+/**
+ * `address` is B2B-only and carried for invoice v1.0's `receiver`, which marks
+ * it Conditional — "Optional if person buyer and invoice amount less than
+ * threshold limit defined", i.e. Mandatory for a type-B receiver. Receipt v1.2
+ * has no buyer-address slot at all, so `toWireReceipt` ignores it.
+ */
+export type FiscalBuyer = { type: "B" | "P" | "F"; id?: string; name?: string; address?: FiscalAddress };
 
 /**
  * The fiscal document shape a `FiscalProvider` builds and submits. The four
@@ -162,6 +202,73 @@ export type FiscalRefundInput = {
 };
 
 /**
+ * The BUSINESS BUYER of a B2B e-invoice — invoice v1.0's `receiver`.
+ *
+ * EVERY FIELD HERE IS AN INPUT, not something derived from the order, and that
+ * is the whole point of the type. `orders` stores a `customerName` and a
+ * `customerPhone` and nothing else about the buyer: no registration number, no
+ * structured address, not even a free-text one for a POS sale. Invoice v1.0
+ * marks the receiver's `id`, `name` and `address` Conditional — "Optional if
+ * person buyer and invoice amount less than threshold limit defined" — so for a
+ * type-B receiver all three are Mandatory, and inside `address` the five fields
+ * on `FiscalAddress` are Mandatory in their own right. None of them can be
+ * filled from ServeOS data, so they are captured at the trigger instead.
+ *
+ * VALIDATION IS NOT HERE. Round 2's Task 4 owns the zod schema at the capture
+ * boundary (a 9-digit RIN, a non-empty name, the five address components) and
+ * runs it ONCE with the operator in front of it — the same division
+ * `requireWireContext` documents for the seller half. This builder consumes the
+ * value verbatim and refuses only what it could not emit at all.
+ */
+export type FiscalInvoiceBuyer = {
+  /**
+   * `receiver.id` — "Registration number. For business in Egypt must be
+   * registration number." Named `rin` here because that is ETA's own name for
+   * the same value on the seller side (`EtaConfig.rin`), and the two must be
+   * the same KIND of identifier for the document to be well formed.
+   */
+  rin: string;
+  /** `receiver.name` — "Registration name of the company or name and surname of
+   *  the person." */
+  name: string;
+  /** `receiver.address` — Mandatory for a type-B receiver. */
+  address: FiscalAddress;
+};
+
+/**
+ * The sale + its resolved `ProductTaxCode[]` + the business buyer needed to
+ * build a B2B `e_invoice` `FiscalDocument`.
+ *
+ * ITS OWN INPUT TYPE, as `FiscalProvider`'s composition block requires: the
+ * third builder brings its own rather than widening `FiscalSaleInput`. The
+ * overlap with that type is real and deliberate (an invoice IS a sale, priced
+ * by the same stored figures and split by the same allocator — `buildSaleLines`
+ * in `./build-document` is literally shared), but the differences are
+ * structural, not cosmetic:
+ *
+ *   - NO `previousUuid`. Invoices do not chain; `previousUUID` is a receipt
+ *     concept and invoice v1.0 has no slot for it.
+ *   - NO `deviceSerial`. An invoice is submitted under the ERP credential, not
+ *     a POS device's, and carries no device identity on the wire.
+ *   - A MANDATORY `buyer`. A receipt's buyer is an optional walk-in; an
+ *     invoice's receiver is the counterparty the document exists to name.
+ */
+export type FiscalInvoiceInput = {
+  order: Order;
+  items: OrderItem[];
+  taxCodes: ProductTaxCode[];
+  /** The sale's tenders. Invoice v1.0 has no `paymentMethod` slot (its
+   *  `payment` structure is bank details), so this feeds `paymentMethodCode` on
+   *  the contract only — see `toWireInvoice`, which does not emit it. */
+  payments: OrderPayment[];
+  /** Same contract as `FiscalSaleInput.feeLines`, including the INERT delivery
+   *  tax classification: ServeOS adds the delivery fee after VAT, so its line
+   *  carries no `taxableItems` whatever this says. */
+  feeLines?: { serviceCharge?: FeeLineConfig; delivery?: FeeLineConfig };
+  buyer: FiscalInvoiceBuyer;
+};
+
+/**
  * A `FiscalDocument` that has been mapped to its ETA wire JSON, hashed into
  * its uuid and given its QR url — i.e. everything `submit` needs and nothing
  * it does not.
@@ -174,12 +281,30 @@ export type FiscalRefundInput = {
  */
 export type FinalizedFiscalDocument = {
   docType: EtaDocType;
-  /** The receipt v1.2 JSON, property order preserved — see `stringifyWire`. */
+  /** The receipt v1.2 / invoice v1.0 JSON, property order preserved — see
+   *  `stringifyWire`. */
   wire: Record<string, unknown>;
-  /** 64-hex, self-computed; the document's fiscal identity. */
-  uuid: string;
-  /** The portal url the printed receipt's QR encodes. */
-  qrUrl: string;
+  /**
+   * 64-hex, self-computed; the document's fiscal identity — for the RECEIPT
+   * family only.
+   *
+   * NULL for `e_invoice`, and that is the model rather than a gap: ETA assigns
+   * an invoice's uuid in its submission response, so there is nothing to compute
+   * and nothing to match a response entry on. The invoice path matches on
+   * `internalId` instead ("Internal document ID used to link back to the ERP
+   * document number") — see `toWireInvoice` and `EtaFiscalProvider.submit`.
+   */
+  uuid: string | null;
+  /**
+   * The portal url the printed receipt's QR encodes.
+   *
+   * NULL for `e_invoice`. The QR url is built FROM the self-computed uuid
+   * (`buildQrUrl`), which an invoice does not have at issuance; ETA publishes no
+   * invoice QR template at all, and the B2B read surfaces show the ETA-assigned
+   * `longId` as text instead. `qr_payload` therefore stays null on an
+   * `eta_submissions` row for an invoice, for its whole life.
+   */
+  qrUrl: string | null;
 };
 
 /**
@@ -277,7 +402,14 @@ export type EtaConfig = {
  * `FiscalSaleInput` / `FiscalRefundInput`, and `./finalize`'s
  * `buildSaleDocument` / `buildReturnDocument` for the assembly. A third builder
  * (B2B `e_invoice`) takes the same shape — its own `Fiscal*Input`, assembled
- * there, rather than widening either of these.
+ * there, rather than widening either of these. Round 2 Task 3 built exactly
+ * that: `FiscalInvoiceInput` above, assembled by `./finalize`'s
+ * `buildInvoiceDocument`, with steps 1-2 running `buildInvoice`
+ * (./build-invoice) + `toWireInvoice` (./eta-invoice-wire) and NO hash step at
+ * all — an invoice's uuid is ETA's to assign, so there is nothing to compute and
+ * no QR to derive from it (see `FinalizedFiscalDocument.uuid`). The money
+ * pipeline underneath is NOT re-derived: `buildInvoice` calls the same
+ * `buildSaleLines` the e-receipt does.
  *
  * FAILURE TAXONOMY — the complete contract for what a thrown error means and
  * what Task 5's worker must do about it. Three families, three behaviours;
@@ -318,11 +450,24 @@ export interface FiscalProvider {
   buildReceipt(input: FiscalSaleInput): FiscalDocument;
   /** Pure: builds a return-receipt FiscalDocument, no I/O. */
   buildReturnReceipt(input: FiscalRefundInput): FiscalDocument;
+  /** Pure: builds a B2B e-invoice FiscalDocument, no I/O. */
+  buildInvoice(input: FiscalInvoiceInput): FiscalDocument;
   /** submit()/poll(): one document per submission — batching is out of
    *  contract; a batch submission model would require poll to return
    *  per-document results (`FiscalSubmitResult[]`). */
   submit(finalized: FinalizedFiscalDocument, cfg: EtaConfig): Promise<FiscalSubmitResult>;
-  /** Polls a prior "submitted" result for its terminal accept/reject — see
-   *  the one-document-per-submission note on submit(). */
-  poll(submissionUuid: string, cfg: EtaConfig): Promise<FiscalSubmitResult>;
+  /**
+   * Polls a prior "submitted" result for its terminal accept/reject — see the
+   * one-document-per-submission note on submit().
+   *
+   * `docType` is REQUIRED and is not inferable from the submission uuid: the
+   * receipt family and the B2B family are polled through two different ETA APIs
+   * (`/api/v1/receiptsubmissions/{uuid}/details` vs
+   * `/api/v1.0/documentsubmissions/{uuid}`) whose response shapes and status
+   * vocabularies both differ. `submit` reads the same discriminator off
+   * `FinalizedFiscalDocument.docType`; a poll has no document in hand, so the
+   * caller supplies it rather than the provider defaulting to a family and
+   * being quietly wrong for the other.
+   */
+  poll(submissionUuid: string, cfg: EtaConfig, docType: EtaDocType): Promise<FiscalSubmitResult>;
 }

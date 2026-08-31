@@ -9,7 +9,9 @@ import {
   type EtaSubmission, type EtaWireContextConfig,
 } from "./schema";
 import { buildReceipt, buildReturnReceipt } from "./build-document";
+import { buildInvoice } from "./build-invoice";
 import { finalizeReceipt, type WireContext } from "./eta-wire";
+import { toWireInvoice } from "./eta-invoice-wire";
 import { stringifyWire } from "./serialize";
 import { getEtaEnv } from "./eta-env";
 import { EtaConfigError } from "./eta-transport-errors";
@@ -19,7 +21,7 @@ import {
   multiplyDecimal, subtractDecimal, sumDecimal,
 } from "./decimal";
 import { enqueueFiscalDocument } from "./enqueue";
-import type { FiscalDocument, FiscalSaleInput } from "./provider";
+import type { FiscalDocument, FiscalSaleInput, FiscalInvoiceBuyer } from "./provider";
 
 /**
  * FINALIZATION — the pure-local half of the fiscal pipeline, split out of the
@@ -89,7 +91,19 @@ export type FinalizeOutcome =
    *  not been accepted by ETA, so its Mandatory `referenceUUID` does not exist
    *  (the worker skips WITHOUT incrementing attempts). */
   | { status: "deferred"; reason: string }
-  | { status: "finalized" | "already-finalized"; deviceId: string; etaUuid: string };
+  | { status: "finalized" | "already-finalized"; deviceId: string; etaUuid: string }
+  /**
+   * A B2B `e_invoice`'s wire document is persisted and it is ready to submit.
+   *
+   * A SEPARATE VARIANT, not the one above with nullable fields, because it has
+   * neither of the things that one carries and the difference is the model
+   * rather than an absence: an invoice has no device (it submits under the ERP
+   * credential, so there is no per-device credential to pick) and no
+   * self-computed uuid (ETA assigns it). Making `deviceId`/`etaUuid` nullable on
+   * the receipt variant would have let the worker's receipt path compile while
+   * reaching for a device that was never resolved.
+   */
+  | { status: "invoice-finalized" | "invoice-already-finalized" };
 
 /**
  * Computes and persists one submission row's fiscal identity: its wire
@@ -134,11 +148,19 @@ export async function finalizeSubmissionRow(tenantId: string, submissionId: stri
   return withTenant(tenantId, async (tx) => {
     const row = await loadSubmission(tx, tenantId, submissionId);
 
+    // B2B invoices take a different route entirely — no chain, no device, no
+    // hash, no QR — so they branch out before any of the machinery below.
+    if (row.docType === "e_invoice") return finalizeInvoiceRow(tx, tenantId, row);
+
     // Already hashed: its uuid, QR and requestJson are the fiscal record and
     // must not move. The device is still resolved, because the caller needs it
     // to pick the submission credential.
-    if (row.etaUuid) {
-      return { status: "already-finalized", deviceId: await resolveSubmissionDeviceId(tx, tenantId, row), etaUuid: row.etaUuid } as const;
+    // Read into a local first: the `await` on the next line invalidates
+    // narrowing on a property, so `row.etaUuid` would still be `string | null`
+    // inside the object literal.
+    const alreadyHashed = row.etaUuid;
+    if (alreadyHashed) {
+      return { status: "already-finalized", deviceId: await resolveSubmissionDeviceId(tx, tenantId, row), etaUuid: alreadyHashed } as const;
     }
 
     // Deferral is checked before any configuration is touched: a return
@@ -228,6 +250,158 @@ export async function finalizeSubmissionRow(tenantId: string, submissionId: stri
 
     return { status: "finalized", deviceId, etaUuid: finalized.uuid } as const;
   });
+}
+
+/**
+ * One B2B `e_invoice` row's wire document, persisted.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO, and every omission is the invoice model
+ * rather than a shortcut:
+ *
+ *   NO ADVISORY LOCKS. The receipt path takes a tenant lock and a device lock
+ *   because the uuid is a hash OVER the chain predecessor, so read-then-advance
+ *   must be indivisible. An invoice has no chain and no predecessor, so there is
+ *   nothing to serialize and no reason to make two concurrent B2B triggers wait
+ *   on each other.
+ *
+ *   NO `eta_device_chains` WRITE, for the same reason: an invoice is not issued
+ *   from a device and joins no device's chain.
+ *
+ *   NO `eta_uuid` AND NO `qr_payload`. Both stay null — ETA assigns the uuid at
+ *   submission (`EtaFiscalProvider.#submitInvoice` writes it back), and there is
+ *   no invoice QR template to build a payload from. `hash_or_signature` also
+ *   stays null: it would hold the CAdES-BES value, which is BLOCKED (see
+ *   `./sign-invoice`), and writing anything else there would misrepresent an
+ *   unsigned document as a signed one.
+ *
+ * IDEMPOTENT, keyed on the SHAPE of `request_json` rather than on `eta_uuid`,
+ * which is the receipt path's key and is null here for the document's whole
+ * pre-submission life. A row that already holds a wire document (it has
+ * `invoiceLines`) is left exactly as it is: those bytes are what a signature
+ * would have been taken over and what ETA may already hold, and rebuilding would
+ * silently follow later edits to the tenant's tax codes or wire context.
+ *
+ * ---------------------------------------------------------------------------
+ * THE BUYER READ SEAM — TEMPORARY, AND TASK 4 REPLACES IT.
+ *
+ * A B2B invoice needs a receiver ServeOS stores nowhere (registration number,
+ * name, five address components — see `FiscalInvoiceBuyer`), so the buyer is
+ * captured at the TRIGGER and has to reach this pure-read finalizer somehow.
+ * Until round 2 Task 4's migration adds a dedicated `eta_submissions.buyerJson`
+ * column, the trigger stages it in `request_json` — which is empty (`{}`) on a
+ * freshly enqueued row and is not read by anything else before finalization.
+ *
+ * So the read is: `request_json.buyer`, or a PERMANENT `EtaConfigError` naming
+ * the gap. Never a default, never a guess — an invoice with an invented receiver
+ * is a misfiled legal document, and failing closed sends the owner an actionable
+ * alert instead.
+ *
+ * The staged value is then OVERWRITTEN by the wire document, and nothing is
+ * lost: the buyer survives in the wire's own `receiver` block, which is the
+ * authoritative record of what was filed. That overwrite is also what makes the
+ * idempotency key above work — a staged `{buyer}` is not a wire document, so a
+ * row that has only been staged is still finalizable.
+ *
+ * WHEN TASK 4 LANDS, exactly one thing changes: `stagedBuyer` reads the new
+ * column instead of `request_json`. The error, the failure family, the
+ * overwrite and the idempotency key all stay as they are.
+ */
+async function finalizeInvoiceRow(tx: Tx, tenantId: string, row: EtaSubmission): Promise<FinalizeOutcome> {
+  if (isWireDocument(row.requestJson)) return { status: "invoice-already-finalized" } as const;
+
+  const config = await loadTenantConfig(tx, tenantId);
+  const buyer = stagedBuyer(row);
+
+  const order = await loadOrder(tx, tenantId, row.orderId!);
+  const items = await loadOrderItems(tx, tenantId, order.id);
+  const payments = await tx.select().from(orderPayments)
+    .where(and(eq(orderPayments.tenantId, tenantId), eq(orderPayments.orderId, order.id)));
+  const taxCodes = await loadTaxCodes(tx, tenantId, items);
+
+  const built = buildInvoice({
+    order, items, taxCodes, payments, buyer,
+    ...(config.wireContext.feeLines ? { feeLines: config.wireContext.feeLines } : {}),
+  });
+  const doc: FiscalDocument = row.referenceOldUuid
+    // A corrected resubmission carries the rejected document's uuid, exactly as
+    // a receipt's does. Invoice v1.0 has no slot to EMIT it (that is what a
+    // credit note is for, and it is still deferred), so it stays on the
+    // `FiscalDocument` as the row's own audit trail rather than reaching the
+    // wire — which is also why it cannot change this document's bytes.
+    ? { ...built, referenceOldUuid: row.referenceOldUuid }
+    : built;
+
+  // ALWAYS UNSIGNED v0.9 TODAY, and `resolveInvoiceSigner` is deliberately NOT
+  // called here yet — it would be an `EtaConfig` resolution (a secret-manager
+  // read) on a path that can only get `null` back while the CAdES-BES container
+  // is BLOCKED (`./sign-invoice`). When the container lands, THIS is the call
+  // site: resolve the signer, and on a non-null one emit "1.0" instead, hash the
+  // document with `invoiceDigest`, and `attachSignatures` the result.
+  //
+  // THE VERSION IS FIXED HERE RATHER THAN AT SUBMIT TIME, and that ordering is
+  // load-bearing: `documentTypeVersion` is part of the document's own bytes, so
+  // it is part of what a signature covers. Choosing it later would let the
+  // signed document and the transmitted document differ by exactly the field
+  // that says whether the signature is checked.
+  //
+  // "0.9" is honest rather than convenient: a "1.0" document with no
+  // `signatures` element would be refused for a missing Mandatory field, and
+  // v0.9 is "maintained as v1.0, the only difference is that signature
+  // validation is disabled on this version". Whether ETA still ACCEPTS v0.9 is
+  // VERIFY-gated against preprod — see `./sign-invoice`.
+  const wire = toWireInvoice(doc, {
+    rin: config.registrationNumber,
+    sellerName: config.wireContext.sellerName,
+    branchCode: config.wireContext.branchCode,
+    branchAddress: config.wireContext.branchAddress,
+    activityCode: config.wireContext.activityCode,
+    internalId: String(order.orderNumber),
+    documentTypeVersion: INVOICE_UNSIGNED_VERSION,
+  });
+
+  await tx.update(etaSubmissions).set({
+    // `::json`, never `::jsonb`, and never Drizzle's JSON mapper — same reason
+    // as the receipt path: property order and decimal literals are part of what
+    // ETA (and any signature) sees.
+    requestJson: sql`${stringifyWire(wire)}::json`,
+    etaUuid: null,
+    qrPayload: null,
+    hashOrSignature: null,
+  }).where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, row.id)));
+
+  return { status: "invoice-finalized" } as const;
+}
+
+/**
+ * `documentTypeVersion` for a document with no signer.
+ *
+ * "0.9" — invoice v0.9 is "maintained as v1.0, the only difference is that
+ * signature validation is disabled on this version". A "1.0" document without a
+ * `signatures` element would be refused for a missing Mandatory field, so this is
+ * the only version an unsigned submission can honestly claim. Whether ETA still
+ * ACCEPTS v0.9 is VERIFY-gated against preprod — see `./sign-invoice`.
+ */
+const INVOICE_UNSIGNED_VERSION = "0.9" as const;
+
+/** A persisted `request_json` that is a WIRE DOCUMENT rather than staged input.
+ *  `invoiceLines` is Mandatory on every invoice and appears in no staging shape,
+ *  so its presence is the discriminator. */
+function isWireDocument(requestJson: Record<string, unknown>): boolean {
+  return Array.isArray(requestJson.invoiceLines);
+}
+
+/** The buyer the B2B trigger staged. See THE BUYER READ SEAM above. */
+function stagedBuyer(row: EtaSubmission): FiscalInvoiceBuyer {
+  const staged = row.requestJson.buyer;
+  if (!staged || typeof staged !== "object" || Array.isArray(staged)) {
+    throw new EtaConfigError(
+      "missing-buyer",
+      `fiscal: e_invoice submission ${row.id} carries no staged buyer. A B2B invoice's receiver — registration ` +
+        "number, name and a five-part address — is captured at the trigger because ServeOS stores none of it on the " +
+        "order, and it cannot be defaulted or inferred. Re-request the invoice with the buyer's details.",
+    );
+  }
+  return staged as unknown as FiscalInvoiceBuyer;
 }
 
 /**
@@ -365,11 +539,13 @@ async function loadSubmission(tx: Tx, tenantId: string, submissionId: string): P
   const [row] = await tx.select().from(etaSubmissions)
     .where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, submissionId))).limit(1);
   if (!row) throw new Error(`fiscal: eta_submissions row ${submissionId} not found for tenant ${tenantId}`);
-  if (row.docType !== "e_receipt" && row.docType !== "return_receipt") {
-    // B2B (`e_invoice`/`credit_note`) is deferred with its trigger — nothing
-    // enqueues those today, and their uuid is ETA-assigned rather than
-    // self-computed, so this builder does not apply to them at all.
-    throw new Error(`fiscal: docType ${row.docType} is not self-finalizing — only e_receipt and return_receipt compute their own uuid`);
+  if (row.docType !== "e_receipt" && row.docType !== "return_receipt" && row.docType !== "e_invoice") {
+    // `credit_note` — the B2B CORRECTION document — is still deferred: nothing
+    // enqueues one, and it needs a `referenceUUID` model of its own that the
+    // invoice engine did not build. `e_invoice` is handled, by a route that
+    // computes no uuid at all (see `finalizeInvoiceRow`); the receipt family is
+    // the only one that self-computes one.
+    throw new Error(`fiscal: docType ${row.docType} has no finalization route — only e_receipt, return_receipt and e_invoice do`);
   }
   return row;
 }

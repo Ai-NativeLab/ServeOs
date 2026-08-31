@@ -163,6 +163,63 @@ Sources: `/document-serialization-approach/`, `/documents/receipt-v1-2/`, `/docu
   follows the lines (which is ETA's own definition of it). Under-reversing is the safe side; reporting 14.00
   would claim credit for tax the customer never got back and be rejected outright. Closing the gap properly
   means the POS offering the GROSS line amount on a partial refund — a POS-layer change, not a mapper one.
+- **B2B e-invoice engine SHIPPED, submitting UNSIGNED v0.9 — two VERIFY-gated caveats (round 2, Task 3).**
+  `build-invoice.ts` + `eta-invoice-wire.ts` map a sale plus a captured business buyer to **invoice v1.0**
+  (`documentType` `"I"`, `issuer`/`receiver` rather than `seller`/`buyer`, `invoiceLines` rather than
+  `itemData`, `salesTotal`/`netTotal`/`unitValue.amountEGP` rather than `totalSale`/`netSale`/`unitPrice`),
+  submitted as `{"documents":[…]}` to `POST /api/v1.0/documentsubmissions/` under the **ERP** credential and
+  polled at `GET /api/v1.0/documentsubmissions/{uuid}`. The money is not re-derived: `buildInvoice` calls the
+  **same `buildSaleLines`** the e-receipt does, so an invoice and a receipt for one sale can never disagree
+  about that sale's output VAT. **ETA assigns the identity** — `eta_uuid` is null until the 202 answers,
+  matching is on `internalID` (`orders.orderNumber`), and there is **no QR at all** (no invoice QR template
+  exists), so `qr_payload` stays null for the document's whole life and the read surfaces show `longId` as
+  text. Key ORDER is asserted section-by-section against ETA's own published invoice
+  (`__fixtures__/one-doc.json`, the same file the serialization golden vector already proves byte-for-byte).
+  **CAVEAT 1 — signing is BLOCKED, not merely unfinished.** ETA's container (published parsed at
+  `/files/parsed-cades-bes.txt`) is DER CMS `SignedData`: detached, `eContentType` `digestedData`, signed
+  attributes `contentType`/`signingTime`/`messageDigest`/**`signingCertificateV2`** (ESSCertIDv2 with the
+  cert's SHA-256 and its issuerAndSerial). `node:crypto` has **no ASN.1/DER encoder** and **no X.509
+  certificate generation** (`X509Certificate` parses only), so neither the container nor a self-issued test
+  certificate is obtainable — which also means there is no `TestCertSigner`, and none was faked. Smallest
+  candidate dependency recorded and NOT taken: **`pkijs`** (+`asn1js`/`pvutils`), the only single addition
+  covering both halves; `@peculiar/asn1-cms`+`asn1-x509`+`asn1-schema`+`x509` is the multi-package
+  alternative; `node-forge` is insufficient (no `signingCertificateV2`). `signInvoice` therefore throws a
+  permanent, named `EtaConfigError` (`invoice-signing-unavailable`) rather than emitting anything
+  signature-shaped. Steps 2-3 of ETA's five-step process ARE implemented and tested (`invoiceDigest` =
+  SHA-256 over `canonicalSerialize`), and `InvoiceSigner` is drawn at the digest precisely so a real ITIDA
+  e-seal (USB/HSM) satisfies it unchanged. Even once built, a self-issued signature would prove STRUCTURE
+  only — an accepted seal must come from an ITIDA-licensed CA, so this is registration-gated twice over.
+  **CAVEAT 2 — v0.9 availability is unverified.** Every invoice therefore ships as `documentTypeVersion`
+  `"0.9"`, on ETA's own sentence: *"v0.9 of the Invoice document type structure is maintained as v1.0, the
+  only difference is that signature validation is disabled on this version."* That is the **entire** published
+  guidance; nothing states whether v0.9 is still accepted in production, and the documents index carries no
+  deprecation column. It is one preprod submission away from being settled and cannot be settled by reading.
+  **The mandatory receiver fields Task 4's zod must own** (none derivable from ServeOS data — `orders` stores
+  a `customerName` and a `customerPhone` and nothing else about a buyer): `id` (9-digit registration number),
+  `name`, and `address.{country, governate, regionCity, street, buildingNumber}` — invoice v1.0 marks
+  `receiver.id`/`name`/`address` Conditional ("Optional if person buyer and invoice amount less than threshold
+  limit defined"), i.e. Mandatory for the type-`B` receiver a B2B invoice exists to name, and Receiver Address
+  marks those five Mandatory within it. `buildInvoice` refuses an incomplete one by name
+  (`BuyerIdRequiredError`) rather than filing a misidentified legal document.
+  **Two page-vs-sample naming conflicts**, resolved and recorded: `internalID`/`branchID` follow ETA's own
+  samples (capital `D`) over the pages' `internalId`/`branchId`, per round 1's rule that working JSON wins on
+  spelling; `documentType` is emitted `"I"` following both samples, though the page's prose says "Must be `i`"
+  and Get Submission reports `typeName` lower-case — a one-character flip if preprod disagrees.
+- **Rule 42 is now checked in FULL, and `taxTotals` groups by (taxType, subType) (round 2, Task 3).** The
+  per-line assertion previously checked the equation's REDUCED form on the stated assumption that ServeOS emits
+  no T2/T3/T5-T12/`valueDifference` — an assumption its own JSDoc said had to be WIDENED, never bypassed, if any
+  of them were introduced. B2B invoices are the document family that can carry them, so
+  `assertLineTaxesDerivable` now assembles the whole published base
+  (`T2 + netSale + Σ T5-T12 + valueDifference + T3`) from the line itself, with every absent term defaulting to
+  zero, and is scoped to `T1` as rule 42's own condition states. **The sale and return paths are provably
+  unchanged** — their added terms are all zero — pinned as an explicit zero-case test rather than left to
+  inspection, alongside a T5-bearing line the reduced form would have wrongly refused (16.80 on a base of
+  120.00, which the old form priced at 14.00 and rejected as 2.80 out). Separately, both builders used to take
+  the document's single `taxTotals` entry from the FIRST taxed draft and pair it with the whole stored VAT
+  figure — byte-identical for every single-tax-type document (pinned), and simply wrong for a mixed one.
+  `aggregateTaxTotals` now folds the LINES' own taxes, which is ETA's own definition (rule 26), grouping by
+  (taxType, subType) so two subtypes cannot claim one rate; `foldTaxTotalsByType` sums them back to ETA's
+  per-taxType wire shape at emit time, where "TaxType needs to be unique" actually applies.
 - **Wire-boundary fail-closed guards.** The mapper refuses rather than emits a document it cannot total
   correctly: `UnsupportedTaxTypeError` for **T4** (ETA's line-total equation SUBTRACTS T4 where every other
   type is added — withholding support is deliberate work, so T1/T2/T3/T5-T20 are allowed and T4 is rejected);

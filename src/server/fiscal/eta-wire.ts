@@ -38,6 +38,14 @@ const ADDITIVE_TAX_TYPES = new Set([
   "T11", "T12", "T13", "T14", "T15", "T16", "T17", "T18", "T19", "T20",
 ]);
 
+/** ETA's VAT tax type — the ONLY type rule 42 is written about ("if
+ *  itemData[*].taxableItems[*].taxtype=T1, then ..."). */
+const VAT_TAX_TYPE = "T1";
+
+/** Rule 42's `TotalTaxableFees` term, spelled out by the rule itself as
+ *  "Sum(itemData[*].taxableItems[taxType=T5-T12].amount)". */
+const TAXABLE_FEE_TYPES = new Set(["T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12"]);
+
 /** Structural constants of the format itself — not tenant data. */
 const TYPE_VERSION = "1.2";
 const RECEIPT_TYPE_SALE = "s";
@@ -163,9 +171,83 @@ function toTaxableItem(tax: FiscalTaxAmount, index: number): Record<string, unkn
 }
 
 /** The line's `total` per Main Calculations: `netSale` plus its taxes (only
- *  T1 VAT is in play here; T4 would subtract, T5-T20 add). */
-function lineTotal(line: FiscalDocLine): string {
+ *  T1 VAT is in play here; T4 would subtract, T5-T20 add).
+ *
+ *  Exported for `./eta-invoice-wire`, whose `total` is the SAME quantity under
+ *  the invoice's spelling — "Total amount for the invoice line after adding all
+ *  pricing items, taxes, removing discounts" (invoice v1.0). */
+export function lineTotal(line: FiscalDocLine): string {
   return addDecimal("line total", line.lineTotal, ...line.taxes.map((tax) => tax.amount));
+}
+
+/**
+ * `doc.taxTotals` folded down to ETA's per-taxType wire shape.
+ *
+ * `aggregateTaxTotals` (./build-document) groups a document's tax by
+ * (taxType, subType), because a subtype is what a RATE belongs to. ETA's own
+ * Tax Total structure carries no subtype at all and requires the type to be
+ * unique — invoice v1.0: "The TaxType needs to be unique across the invoice
+ * line"; Main Calculations rule 26: "taxTotals <taxType> = Sum
+ * (itemData[*].taxableItems[taxType=].amount)" — so the groups are summed back
+ * down here, at the wire, rather than the builder pretending ETA's shape is
+ * finer than it is.
+ *
+ * IDENTITY for every document ServeOS emits today (one tax type, one subtype),
+ * which `build-invoice.test.ts` pins.
+ */
+export function foldTaxTotalsByType(totals: FiscalTaxAmount[]): { taxType: string; amount: string }[] {
+  const folded = new Map<string, string>();
+  for (const total of totals) {
+    const seen = folded.get(total.taxType);
+    folded.set(total.taxType, seen === undefined ? assertDecimal(total.amount, "taxTotals.amount") : addDecimal("taxTotals", seen, total.amount));
+  }
+  return [...folded.entries()].map(([taxType, amount]) => ({ taxType, amount }));
+}
+
+/**
+ * Every per-line invariant ETA publishes, on one line — shared by the receipt
+ * and invoice mappers because they are ONE set of rules (Main Calculations
+ * covers both families and numbers its rules once).
+ *
+ *   - the line's tax type is one this mapper can total (T4 subtracts)
+ *   - "itemData[*].totalSale = itemData[*].quantity * itemData[*].unitPrice"
+ *     (rule 11; the invoice spells the left side `salesTotal`)
+ *   - rule 42, on each of the line's taxes — see `assertLineTaxesDerivable`
+ */
+export function assertLineIsWellFormed(line: FiscalDocLine, index: number): void {
+  // A line's classification is refused even when no tax was allocated to it,
+  // so a T4-coded product can never reach a document at all.
+  if (!ADDITIVE_TAX_TYPES.has(line.taxType)) throw new UnsupportedTaxTypeError(line.taxType);
+
+  const quantity = String(line.quantity);
+  const totalSale = addDecimal("totalSale", line.lineTotal, line.discountAmount);
+  const extended = multiplyDecimal("totalSale", quantity, line.unitPrice);
+  const drift = absDecimal(subtractDecimal("totalSale", extended, totalSale));
+  const bound = multiplyDecimal("totalSale bound", quantity, UNIT_PRICE_ROUNDING_BOUND);
+  if (compareDecimal(drift, bound) > 0) {
+    throw new EtaTotalsMismatchError(totalSale, extended, `itemData[${index}].totalSale = quantity * unitPrice`);
+  }
+
+  assertLineTaxesDerivable(line, index);
+}
+
+/**
+ * `taxTotals` against the lines that produced it — Main Calculations rule 26,
+ * on the FOLDED (per-taxType) form that actually reaches the wire.
+ *
+ * Shared by both mappers for the same reason `assertLineIsWellFormed` is: rule
+ * 26 is one rule, and ETA re-derives it on receipt of either document family.
+ */
+export function assertTaxTotalsMatchLines(lines: FiscalDocLine[], folded: { taxType: string; amount: string }[]): void {
+  for (const total of folded) {
+    const summedTax = sumDecimal(
+      "taxTotals",
+      lines.flatMap((line) => line.taxes.filter((tax) => tax.taxType === total.taxType).map((tax) => tax.amount)),
+    );
+    if (compareDecimal(summedTax, total.amount) !== 0) {
+      throw new EtaTotalsMismatchError(total.amount, summedTax, `taxTotals[${total.taxType}] = Sum(itemData.taxableItems[${total.taxType}].amount)`);
+    }
+  }
 }
 
 /**
@@ -211,9 +293,15 @@ function toItemData(line: FiscalDocLine, ctx: WireContext): Record<string, unkno
  * actually about to emit:
  *
  *   totalAmount = Sum(itemData.total) - Sum(extraReceiptDiscountData.amount) + adjustment
- *   taxTotals<taxType> = Sum(itemData.taxableItems[taxType].amount)
- *   itemData[*].totalSale = itemData[*].quantity * itemData[*].unitPrice
- *   itemData[*].taxableItems[*].amount = ... netSale ... * rate / 100   (rule 42)
+ *   taxTotals<taxType> = Sum(itemData.taxableItems[taxType].amount)      (rule 26)
+ *   itemData[*].totalSale = itemData[*].quantity * itemData[*].unitPrice (rule 11)
+ *   itemData[*].taxableItems[T1].amount = (T2 + netSale + TotalTaxableFees
+ *     + valueDifference + T3) * rate / 100                              (rule 42)
+ *
+ * The last three are shared with `./eta-invoice-wire` verbatim
+ * (`assertLineIsWellFormed` / `assertTaxTotalsMatchLines`); only the
+ * `totalAmount` identity is receipt-specific, because invoice v1.0 states its
+ * own as `netAmount + Σ tax` instead.
  *
  * The per-line TAX equation is checked on sales and returns alike — it is one
  * published rule, not a return-specific one — and it is what makes the return
@@ -223,23 +311,7 @@ function toItemData(line: FiscalDocLine, ctx: WireContext): Record<string, unkno
  * emitted, before the document is transmitted rather than after it is rejected.
  */
 function assertTotalsReconcile(doc: FiscalDocument, extraDiscount: string): void {
-  for (const [index, line] of doc.lines.entries()) {
-    // A line's classification is refused even when no tax was allocated to
-    // it, so a T4-coded product can never reach a document at all.
-    if (!ADDITIVE_TAX_TYPES.has(line.taxType)) throw new UnsupportedTaxTypeError(line.taxType);
-
-    // "itemData[*].totalSale = itemData[*].quantity * itemData[*].unitPrice".
-    const quantity = String(line.quantity);
-    const totalSale = addDecimal("totalSale", line.lineTotal, line.discountAmount);
-    const extended = multiplyDecimal("totalSale", quantity, line.unitPrice);
-    const drift = absDecimal(subtractDecimal("totalSale", extended, totalSale));
-    const bound = multiplyDecimal("totalSale bound", quantity, UNIT_PRICE_ROUNDING_BOUND);
-    if (compareDecimal(drift, bound) > 0) {
-      throw new EtaTotalsMismatchError(totalSale, extended, `itemData[${index}].totalSale = quantity * unitPrice`);
-    }
-
-    assertLineTaxesDerivable(line, index);
-  }
+  for (const [index, line] of doc.lines.entries()) assertLineIsWellFormed(line, index);
 
   const summedLines = sumDecimal("line totals", doc.lines.map(lineTotal));
   const computed = subtractDecimal("totalAmount", summedLines, extraDiscount);
@@ -247,15 +319,7 @@ function assertTotalsReconcile(doc: FiscalDocument, extraDiscount: string): void
     throw new EtaTotalsMismatchError(doc.total, computed, "totalAmount = Sum(itemData.total) - Sum(extraReceiptDiscountData.amount)");
   }
 
-  for (const total of doc.taxTotals) {
-    const summedTax = sumDecimal(
-      "taxTotals",
-      doc.lines.flatMap((line) => line.taxes.filter((tax) => tax.taxType === total.taxType).map((tax) => tax.amount)),
-    );
-    if (compareDecimal(summedTax, total.amount) !== 0) {
-      throw new EtaTotalsMismatchError(total.amount, summedTax, `taxTotals[${total.taxType}] = Sum(itemData.taxableItems[${total.taxType}].amount)`);
-    }
-  }
+  assertTaxTotalsMatchLines(doc.lines, foldTaxTotalsByType(doc.taxTotals));
 }
 
 /**
@@ -267,27 +331,49 @@ function assertTotalsReconcile(doc: FiscalDocument, extraDiscount: string): void
  *    + itemData[*].valueDifference + itemData[*].taxableItems[taxType="T3"].amount)
  *    * itemData[*].taxableItems[TaxableItem<T1>].Rate / 100"
  *
- * ServeOS emits no T2, no T3, no T5-T12 taxable fees and no valueDifference on
- * any document, so every term but `netSale` is zero and the rule reduces to
- * `amount = netSale * rate / 100`. ETA's own allowance applies —
- * "All the above calculations are subject to (± 0.5) tolerance" — so this
- * checks the published bound rather than a stricter one of our own: the point
- * is to refuse only what ETA would refuse.
+ * THE EQUATION IS CHECKED IN FULL, with every absent term defaulting to zero.
+ *
+ * It used to be checked in its REDUCED form, `amount = netSale * rate / 100`,
+ * on the stated assumption that ServeOS emits no T2, no T3, no T5-T12 taxable
+ * fees and no `valueDifference` on any document — which was true, and which
+ * that JSDoc was explicit had to be WIDENED rather than bypassed if any of them
+ * were ever introduced. Round 2 Task 3 introduces the document family that can
+ * carry them (a B2B invoice's line may legitimately bear a table tax alongside
+ * VAT), so this is that widening: `rule42Base` below assembles the rule's whole
+ * left-hand parenthesis from the line's own `taxes` and `valueDifference`, and
+ * the reduced form is now simply what it evaluates to when those terms are
+ * absent. THE SALE AND RETURN PATHS ARE PROVABLY UNCHANGED — they emit only T1,
+ * so every added term is zero and the arithmetic is identical, which
+ * `build-invoice.test.ts` pins as an explicit zero-case rather than leaving to
+ * inspection.
+ *
+ * SCOPED TO T1, because the rule is: "if itemData[*].taxableItems[*].taxtype=T1,
+ * then ...". A T2 amount has its own rule (40) and a T3 is a fixed amount rather
+ * than a rate applied to a base, so neither is derivable from this equation and
+ * neither is checked by it. They are still refused if non-positive, still summed
+ * into the line total, and still counted as rule-42 TERMS for the T1 entry —
+ * this only declines to re-derive them, which is honest rather than lenient.
+ *
+ * ETA's own allowance applies — "All the above calculations are subject to
+ * (± 0.5) tolerance" — so this checks the published bound rather than a stricter
+ * one of our own: the point is to refuse only what ETA would refuse.
  *
  * NON-POSITIVE AMOUNTS ARE REFUSED OUTRIGHT, before the equation. A zero
  * amount at a non-zero rate is arithmetically false (round 1's rule is to OMIT
- * the entry instead, which both builders do), and a negative one on a return
- * would claim back tax that was never charged. Neither is reachable from the
- * stored figures today — `refund-vat.ts` floors every line at zero — which is
- * exactly why it is asserted rather than assumed.
+ * the entry instead, which all three builders do), and a negative one on a
+ * return would claim back tax that was never charged. Neither is reachable from
+ * the stored figures today — `refund-vat.ts` floors every line at zero — which
+ * is exactly why it is asserted rather than assumed.
  */
-function assertLineTaxesDerivable(line: FiscalDocLine, index: number): void {
+export function assertLineTaxesDerivable(line: FiscalDocLine, index: number): void {
   for (const tax of line.taxes) {
     if (compareDecimal(tax.amount, "0") <= 0) throw new NonPositiveLineTaxError(index, tax.taxType, tax.amount);
+    if (tax.taxType !== VAT_TAX_TYPE) continue;
 
+    const base = rule42Base(line);
     const expected = divideDecimal(
       "taxableItems.amount",
-      multiplyDecimal("taxableItems.amount", assertDecimal(line.lineTotal, "netSale"), assertDecimal(tax.rate, "taxableItems.rate")),
+      multiplyDecimal("taxableItems.amount", base, assertDecimal(tax.rate, "taxableItems.rate")),
       // `100` at the rate's own scale — see `hundredAtRateScale`.
       hundredAtRateScale(tax.rate),
       2,
@@ -297,10 +383,42 @@ function assertLineTaxesDerivable(line: FiscalDocLine, index: number): void {
       throw new EtaTotalsMismatchError(
         tax.amount,
         expected,
-        `itemData[${index}].taxableItems[${tax.taxType}].amount = netSale * rate / 100 (± ${LINE_TAX_TOLERANCE})`,
+        `itemData[${index}].taxableItems[${tax.taxType}].amount = ` +
+          `(T2 + netSale + TotalTaxableFees[T5-T12] + valueDifference + T3) * rate / 100 (± ${LINE_TAX_TOLERANCE})`,
       );
     }
   }
+}
+
+/**
+ * Rule 42's parenthesised base for one line, term by term and in the rule's own
+ * order:
+ *
+ *   taxableItems[T2].amount + netSale + Sum(taxableItems[T5-T12].amount)
+ *     + valueDifference + taxableItems[T3].amount
+ *
+ * Every term but `netSale` is read off the line and defaults to zero when the
+ * line does not carry it, so this evaluates to plain `netSale` for every
+ * e-receipt and return receipt ServeOS emits.
+ *
+ * `TotalTaxableFees` is taken from the line's T5-T12 `taxableItems` rather than
+ * from invoice v1.0's separate `totalTaxableFees` field, because rule 42 spells
+ * the term out that way itself — "TotalTaxableFees [Sum(itemData[*].
+ * taxableItems[taxType=T5-T12].amount)]" — and `./eta-invoice-wire` emits that
+ * field FROM the same sum, so the two cannot disagree.
+ */
+function rule42Base(line: FiscalDocLine): string {
+  const ofType = (predicate: (taxType: string) => boolean) =>
+    sumDecimal("rule 42 term", line.taxes.filter((tax) => predicate(tax.taxType)).map((tax) => tax.amount));
+
+  return addDecimal(
+    "rule 42 base",
+    ofType((type) => type === "T2"),
+    assertDecimal(line.lineTotal, "netSale"),
+    ofType((type) => TAXABLE_FEE_TYPES.has(type)),
+    assertDecimal(line.valueDifference ?? "0.00", "valueDifference"),
+    ofType((type) => type === "T3"),
+  );
 }
 
 /**
@@ -393,7 +511,7 @@ export function toWireReceipt(doc: FiscalDocument, ctx: WireContext): Record<str
     feesAmount: FEES_AMOUNT,
     totalAmount: dec(doc.total, "totalAmount"),
     ...(doc.taxTotals.length > 0
-      ? { taxTotals: doc.taxTotals.map((tax) => ({ taxType: tax.taxType, amount: dec(tax.amount, "taxTotals.amount") })) }
+      ? { taxTotals: foldTaxTotalsByType(doc.taxTotals).map((tax) => ({ taxType: tax.taxType, amount: dec(tax.amount, "taxTotals.amount") })) }
       : {}),
     paymentMethod: doc.paymentMethodCode,
     adjustment: ADJUSTMENT,
@@ -415,7 +533,11 @@ export function finalizeReceipt(
   doc: FiscalDocument,
   ctx: WireContext,
   opts: { portalBase: string },
-): FinalizedFiscalDocument {
+  // The return type NARROWS `FinalizedFiscalDocument`'s two nullable fields:
+  // the receipt family always has both, and only the invoice family (which does
+  // not come through here) can be missing them. Stating that here is what lets
+  // `./finalize` persist the uuid without a non-null assertion.
+): FinalizedFiscalDocument & { uuid: string; qrUrl: string } {
   const wire = toWireReceipt(doc, ctx);
   const uuid = computeReceiptUuid(wire);
 

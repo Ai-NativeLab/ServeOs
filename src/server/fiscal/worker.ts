@@ -246,11 +246,11 @@ export async function drainEtaSubmissions(opts: DrainOptions = {}): Promise<Drai
  * 202 "accepted for processing", and the verdict only arrives from the poll
  * phase (addendum §3), so a submitted row is not finished — it is waiting.
  *
- * Only receipt docTypes. B2B `e_invoice`/`credit_note` are deferred with their
- * trigger and nothing enqueues them; their uuid is ETA-assigned rather than
- * self-computed, so the finalize step does not apply to them at all. Filtering
- * here means such a row (if one were ever hand-written) sits inert instead of
- * failing loudly on every pass.
+ * THREE docTypes, not four. `e_invoice` joined the receipt pair in round 2 Task
+ * 3 — it has a builder, a wire mapper and an ERP submission path — while
+ * `credit_note`, the B2B CORRECTION document, is still deferred and nothing
+ * enqueues one. Filtering here means such a row (if one were ever hand-written)
+ * sits inert instead of failing loudly on every pass.
  */
 async function claim(tenantId: string, limit: number): Promise<ClaimedRow[]> {
   return withTenant(tenantId, async (tx) => {
@@ -260,7 +260,7 @@ async function claim(tenantId: string, limit: number): Promise<ClaimedRow[]> {
        WHERE id IN (
          SELECT id FROM eta_submissions
           WHERE status IN ('pending', 'failed', 'submitted')
-            AND doc_type IN ('e_receipt', 'return_receipt')
+            AND doc_type IN ('e_receipt', 'return_receipt', 'e_invoice')
             AND next_attempt_at <= now()
             AND attempts < ${MAX_ATTEMPTS}
           ORDER BY next_attempt_at
@@ -293,10 +293,26 @@ async function processRow(
     const finalized = await finalizeSubmissionRow(tenantId, row.id);
     if (finalized.status === "deferred") return "deferred";
 
-    // The DEVICE credential, not the ERP one: e-receipts authenticate per POS
-    // device (addendum C6). Null means the device is registered but not usable
-    // (`resolveEtaConfig` accepts `"active"` only) — same durable skip.
-    const cfg = await resolveEtaConfig(tenantId, finalized.deviceId);
+    // WHICH CREDENTIAL, decided by the document family and not by a flag:
+    //
+    //   receipt family  the DEVICE credential — e-receipts authenticate per POS
+    //                   device (addendum C6), and `finalizeSubmissionRow` is
+    //                   what resolved which device.
+    //   e_invoice       the ERP credential — B2B documents go through Login as
+    //                   Taxpayer System, and there is no device to resolve.
+    //                   `resolveEtaConfig` with no device id returns a config
+    //                   whose `device` is null, which is exactly what
+    //                   `#submitInvoice` needs; it blanks the field again itself
+    //                   so the choice cannot depend on this call site.
+    //
+    // Null means the tenant (or the device) is registered but not usable
+    // (`resolveEtaConfig` accepts `"active"` only) — a durable skip either way.
+    // Narrowed on `deviceId`'s PRESENCE rather than on the status strings: the
+    // outcome variants differ precisely by whether a device was resolved, so
+    // that is the honest discriminator and it is the one TypeScript can prove.
+    const cfg = "deviceId" in finalized
+      ? await resolveEtaConfig(tenantId, finalized.deviceId)
+      : await resolveEtaConfig(tenantId);
     if (cfg === null) return "deferred";
 
     // THE IDEMPOTENCY GUARD, and it keys on `submissionUuid` rather than on
@@ -340,8 +356,16 @@ async function loadFinalized(tenantId: string, submissionId: string): Promise<Fi
     return rows;
   });
 
-  if (!stored?.uuid) throw new Error(`fiscal: submission ${submissionId} has no etaUuid after finalization`);
-  return { docType: stored.docType, wire: parseWire(stored.wire), uuid: stored.uuid, qrUrl: stored.qrUrl ?? "" };
+  if (!stored) throw new Error(`fiscal: submission ${submissionId} disappeared between finalization and submission`);
+  // An `e_invoice` legitimately has no uuid here — ETA assigns it in the
+  // submission response — so the receipt family's "must be hashed by now" check
+  // applies only to the receipt family. Submitting an unfinalized receipt would
+  // send a document whose identity nothing agrees on; submitting an invoice with
+  // a null uuid is the normal path.
+  if (stored.docType !== "e_invoice" && !stored.uuid) {
+    throw new Error(`fiscal: submission ${submissionId} has no etaUuid after finalization`);
+  }
+  return { docType: stored.docType, wire: parseWire(stored.wire), uuid: stored.uuid, qrUrl: stored.qrUrl };
 }
 
 async function submitPhase(
@@ -365,6 +389,16 @@ async function submitPhase(
       status: "submitted",
       submissionUuid: result.submissionUuid ?? null,
       submittedAt: now(),
+      // ETA-ASSIGNED IDENTIFIERS, WRITTEN AT SUBMISSION — the `e_invoice` path,
+      // and only it. An invoice's `eta_uuid` is null until ETA answers, and its
+      // answer arrives in the 202 rather than in the poll; persisting it here is
+      // what stops a document that never reaches a terminal verdict from being a
+      // row that cannot name what it filed. Spread conditionally so a receipt,
+      // whose uuid was written at finalization and must never move, is untouched
+      // (the receipt path returns its own uuid, so this would be a no-op write
+      // either way — the guard makes that a property rather than a coincidence).
+      ...(row.docType === "e_invoice" && result.etaUuid ? { etaUuid: result.etaUuid } : {}),
+      ...(row.docType === "e_invoice" && result.etaLongId ? { etaLongId: result.etaLongId } : {}),
       responseJson: result.responseJson,
       lastError: null,
       // Not a backoff — the document is with ETA and the poll phase is simply
@@ -400,7 +434,9 @@ async function submitPhase(
 async function pollPhase(
   tenantId: string, row: ClaimedRow, provider: FiscalProvider, cfg: EtaConfig, now: () => Date,
 ): Promise<RowOutcome> {
-  const result = await provider.poll(row.submissionUuid!, cfg);
+  // `docType` decides which ETA API is polled — the two families have different
+  // endpoints, response shapes and status vocabularies. See `FiscalProvider.poll`.
+  const result = await provider.poll(row.submissionUuid!, cfg, row.docType);
 
   if (result.status === "accepted") return persistAccepted(tenantId, row, result, now);
   if (result.status === "rejected") return persistRejected(tenantId, row, result, now);
@@ -428,9 +464,13 @@ async function persistAccepted(
     await tx.update(etaSubmissions).set({
       status: "accepted",
       acceptedAt: now(),
-      // ETA's own identifier for the accepted document; ours (etaUuid) was
-      // written at finalization and never changes.
+      // ETA's own identifier for the accepted document; for the RECEIPT family
+      // ours (etaUuid) was written at finalization and never changes, which is
+      // why the uuid below is written for `e_invoice` only — that is the family
+      // whose uuid ETA assigns, and a poll is the second place it can arrive
+      // (the 202 is the first; see `submitPhase`).
       ...(result.etaLongId ? { etaLongId: result.etaLongId } : {}),
+      ...(row.docType === "e_invoice" && result.etaUuid ? { etaUuid: result.etaUuid } : {}),
       ...(result.submissionUuid ? { submissionUuid: result.submissionUuid } : {}),
       responseJson: result.responseJson,
       lastError: null,

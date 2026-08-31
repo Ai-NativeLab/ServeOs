@@ -2,11 +2,13 @@ import type {
   FiscalProvider,
   FiscalSaleInput,
   FiscalRefundInput,
+  FiscalInvoiceInput,
   FiscalDocument,
   FinalizedFiscalDocument,
   FiscalSubmitResult,
   EtaConfig,
 } from "./provider";
+import type { EtaDocType } from "./schema";
 
 /**
  * The fiscal provider for every non-EG tenant. ETA e-receipts/e-invoices are
@@ -31,11 +33,15 @@ export class NoopFiscalProvider implements FiscalProvider {
     throw new Error("NoopFiscalProvider.buildReturnReceipt: non-EG tenants never build fiscal documents");
   }
 
+  buildInvoice(_input: FiscalInvoiceInput): FiscalDocument {
+    throw new Error("NoopFiscalProvider.buildInvoice: non-EG tenants never build fiscal documents");
+  }
+
   async submit(_finalized: FinalizedFiscalDocument, _cfg: EtaConfig): Promise<FiscalSubmitResult> {
     return { status: "skipped", responseJson: {} };
   }
 
-  async poll(_submissionUuid: string, _cfg: EtaConfig): Promise<FiscalSubmitResult> {
+  async poll(_submissionUuid: string, _cfg: EtaConfig, _docType?: EtaDocType): Promise<FiscalSubmitResult> {
     return { status: "skipped", responseJson: {} };
   }
 }
