@@ -15,7 +15,10 @@ import { NoOpenShiftError, PosForbiddenError, PosSaleError } from "./errors";
 import type { PosCashierContext } from "./require-cashier";
 import { recordAuditEvent } from "@/server/audit/service";
 import { isFiscalEnabled } from "@/server/fiscal/enqueue";
-import { enqueueAndFinalizeReceipt } from "@/server/fiscal/finalize";
+import { enqueueAndFinalizeInvoice, enqueueAndFinalizeReceipt } from "@/server/fiscal/finalize";
+// TYPE-ONLY, so nothing from the fiscal schema module is added to the sale
+// path's runtime graph — the buyer is carried verbatim and never parsed here.
+import type { EtaSubmissionBuyer } from "@/server/fiscal/schema";
 
 export const REASON_CODES = [
   "staff_meal", "comp_service", "promo", "manager_discretion",
@@ -68,6 +71,33 @@ export type RecordSaleInput = {
    *  pos_order_receipts_device_client, and (b) lastReceiptSeq's ordering-gap
    *  watermark advances for sale events the same as every other synced type. */
   syncReceipt?: SyncReceipt;
+  /**
+   * THE BUSINESS BUYER, CAPTURED AT THE TILL — and the field that decides which
+   * FAMILY of fiscal document this sale is declared as.
+   *
+   * Present ⇒ the sale is filed with ETA as an `e_invoice` (a tax invoice naming
+   * this receiver) INSTEAD of an `e_receipt`. Absent ⇒ nothing whatsoever
+   * changes: the receipt path is byte-identical to what it was before this field
+   * existed, which is the regression pin this task carries.
+   *
+   * ONE SALE, ONE DOCUMENT FAMILY. "Instead of", never "as well as" — two
+   * accepted documents for one sale is that sale declared twice in the
+   * taxpayer's ETA filings. Task 4's ladder enforces the rule at the dashboard,
+   * where a receipt already exists; this field is the SOURCE-SIDE guarantee, and
+   * the reconciliation sweep is the third leg (see `reconcileMissingReceipts`).
+   *
+   * NOT VALIDATED HERE — see `enqueueAndFinalizeInvoice`'s JSDoc for why zod
+   * stays off the sale path, where the shape IS checked, and what a malformed
+   * buyer costs (a visible `failed` invoice row; never a silent B2C receipt).
+   * The field is carried verbatim into `eta_submissions.buyer_json`.
+   *
+   * REPLAY-SAFE BY CONSTRUCTION: an offline sale carries this inside its own
+   * `sale.recorded` payload, so a B2B sale rung during an outage is still a B2B
+   * sale when it syncs (`sync-ingest.handleSaleRecorded`). It is NOT a
+   * replay-only field and needs no stripping at the live route — a caller
+   * naming a buyer is asking for a tax invoice, which is what the till asks for.
+   */
+  buyer?: EtaSubmissionBuyer;
 };
 
 export type SaleReceipt = {
@@ -394,9 +424,21 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
   // transaction for atomicity — see enqueueFiscalDocument's doc comment), a
   // fiscal failure here must not undo money already taken and a receipt
   // already printed.
+  //
+  // THE B2B BRANCH (round 2, Task 5) IS INSIDE THIS SAME try/catch, which is
+  // the iron rule doing its job unchanged: a business buyer must not be able to
+  // fail a sale the cashier has already taken money for. `input.buyer` is the
+  // only thing that selects it, and its absence leaves every byte of the
+  // consumer path exactly as it was — INSTEAD of an e_receipt, never as well as
+  // one (see RecordSaleInput.buyer).
+  const fiscalDocType = input.buyer ? "e_invoice" : "e_receipt";
   try {
     if (!existing && (await isFiscalEnabled(ctx.tenantId))) {
-      await enqueueAndFinalizeReceipt({ tenantId: ctx.tenantId }, placed.orderId);
+      if (input.buyer) {
+        await enqueueAndFinalizeInvoice({ tenantId: ctx.tenantId }, placed.orderId, input.buyer);
+      } else {
+        await enqueueAndFinalizeReceipt({ tenantId: ctx.tenantId }, placed.orderId);
+      }
     }
   } catch (err) {
     // Identifiers, not a bare message: this is the ONLY trace a failure here
@@ -406,7 +448,10 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
     // the DB, which is exactly the failure mode already in play here, and an
     // awaited call inside this catch would itself risk the iron rule (the
     // sale must never be blocked by fiscal logic).
-    console.error(`[fiscal] enqueue failed for tenant ${ctx.tenantId} order ${placed.orderId} (sale unaffected)`, err);
+    // The docType is part of the identifiers, not decoration: a B2B sale and a
+    // consumer sale fail here for different reasons and are fixed differently,
+    // and this line is the only place that distinction is recorded.
+    console.error(`[fiscal] enqueue failed for tenant ${ctx.tenantId} order ${placed.orderId} docType ${fiscalDocType} (sale unaffected)`, err);
   }
 
   // onPlaced always runs to completion before placeOrder resolves — see its

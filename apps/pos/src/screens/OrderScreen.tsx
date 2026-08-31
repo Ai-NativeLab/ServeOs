@@ -18,6 +18,7 @@ import {
 import { useSaleFiscal } from "../fiscal/sale-fiscal";
 import { Receipt, type ReceiptData } from "./Receipt";
 import { PaymentScreen, changeFor, type TenderDraft } from "./PaymentScreen";
+import type { PosSaleBuyer } from "../fiscal/buyer";
 import { ManagerAuthModal } from "./ManagerAuthModal";
 
 type Cashier = { name: string; permissions: string[] };
@@ -231,7 +232,7 @@ export function OrderScreen({
     setView("payment");
   }
 
-  async function completeSale(tenders: TenderDraft[]) {
+  async function completeSale(tenders: TenderDraft[], buyer?: PosSaleBuyer) {
     if (!totals || !saleId) return;
     try {
       const receiptData = await window.pos.recordSale({
@@ -248,6 +249,12 @@ export function OrderScreen({
         expectedTotal: totals.total,
         payments: tenders.map((t, i) => ({ ...t, clientPaymentId: `${saleId}-${i}` })),
         grants: discountGrant ? [{ permission: "pos:discount", token: discountGrant }] : undefined,
+        // Undefined for every ordinary sale — the payment screen's business
+        // section left collapsed — so the recorded event is unchanged. Present
+        // ⇒ the sale is filed as a tax invoice INSTEAD of an e-receipt, and it
+        // travels inside the sale event itself, so an outage cannot turn it
+        // back into a consumer sale (see `PosMain.recordSale`).
+        buyer,
       });
       const change = Math.round(tenders.reduce((s, t) => s + changeFor(t), 0) * 100) / 100;
       setReceipt({

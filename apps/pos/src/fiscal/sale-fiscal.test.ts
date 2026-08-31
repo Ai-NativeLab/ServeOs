@@ -12,12 +12,19 @@ import {
 const QR = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg";
 
 const status = (over: Partial<SaleFiscalStatus> = {}): SaleFiscalStatus => ({
+  docType: "e_receipt",
   status: "pending",
   etaUuid: "uuid-1",
+  etaLongId: null,
   qrPayload: "payload-1",
   qrImageDataUrl: QR,
   ...over,
 });
+
+/** A B2B sale's row: filed as an `e_invoice`, so it has no QR at any point and
+ *  ETA's assigned long id is the only identity it will ever show. */
+const invoice = (over: Partial<SaleFiscalStatus> = {}): SaleFiscalStatus =>
+  status({ docType: "e_invoice", etaUuid: null, qrPayload: null, qrImageDataUrl: null, ...over });
 
 /** One poll at t=0 and one every interval up to and including the cap. */
 const POLLS_TO_CAP = FISCAL_POLL_MAX_MS / FISCAL_POLL_INTERVAL_MS + 1;
@@ -50,6 +57,30 @@ describe("isFiscalPollDone", () => {
     expect(isFiscalPollDone(status({ status: "pending" }))).toBe(false);
     expect(isFiscalPollDone(status({ status: "submitted" }))).toBe(false);
   });
+
+  it("settles a B2B invoice on the verdict ALONE — there is no QR to wait for", () => {
+    // The whole point: an `e_invoice` never has a `qrImageDataUrl`, so the
+    // receipt's "QR and a verdict" rule is unsatisfiable for it and the till
+    // would burn its entire budget re-reading a settled row.
+    expect(isFiscalPollDone(invoice({ status: "accepted", etaLongId: "LONG-1" }))).toBe(true);
+    expect(isFiscalPollDone(invoice({ status: "rejected" }))).toBe(true);
+    // An acceptance ETA has not yet named a number for still settles: the poll
+    // is waiting on a VERDICT, and the footer prints "pending" for the number.
+    expect(isFiscalPollDone(invoice({ status: "accepted", etaLongId: null }))).toBe(true);
+
+    // The terminal half of the rule is unchanged — an invoice in flight is not
+    // done, and `failed` is still not terminal for either family.
+    expect(isFiscalPollDone(invoice({ status: "pending" }))).toBe(false);
+    expect(isFiscalPollDone(invoice({ status: "submitted" }))).toBe(false);
+    expect(isFiscalPollDone(invoice({ status: "failed" }))).toBe(false);
+  });
+
+  it("keeps the e_receipt rule intact — a QR-less accepted receipt is NOT done", () => {
+    // The regression this pins: widening the predicate for invoices must not
+    // relax it for receipts, whose printed QR is the thing being waited on.
+    expect(isFiscalPollDone(status({ status: "accepted", qrImageDataUrl: null }))).toBe(false);
+    expect(isFiscalPollDone(status({ status: "accepted", qrImageDataUrl: QR }))).toBe(true);
+  });
 });
 
 describe("sameFiscal", () => {
@@ -59,6 +90,20 @@ describe("sameFiscal", () => {
     expect(sameFiscal(status(), status({ etaUuid: "uuid-2" }))).toBe(false);
     expect(sameFiscal(null, status())).toBe(false);
     expect(sameFiscal(null, null)).toBe(true);
+  });
+
+  it("sees an invoice's long id arriving — it is the only field that changes", () => {
+    // An accepted invoice differs from the pending one it replaces in
+    // `etaLongId` and nothing else once the status has settled. Omitting the
+    // field from the comparison would leave "pending ETA number" on the receipt
+    // permanently, with the number sitting in a response nobody reported.
+    expect(sameFiscal(
+      invoice({ status: "accepted", etaLongId: null }),
+      invoice({ status: "accepted", etaLongId: "LONG-1" }),
+    )).toBe(false);
+    expect(sameFiscal(invoice({ etaLongId: "LONG-1" }), invoice({ etaLongId: "LONG-1" }))).toBe(true);
+    // And the family itself is compared, so a footer can never carry across it.
+    expect(sameFiscal(status(), invoice())).toBe(false);
   });
 });
 
@@ -97,6 +142,41 @@ describe("the bounded poll", () => {
     expect(fetchStatus).toHaveBeenCalledTimes(POLLS_TO_CAP);
     // The footer keeps what it has: one QR, reported once.
     expect(onFiscal).toHaveBeenCalledTimes(1);
+  });
+
+  it("settles a B2B invoice on the FIRST poll, not eleven polls later", async () => {
+    // The regression this exists for. Before the predicate split on `docType`,
+    // an accepted invoice could never satisfy "QR and a verdict" — so the till
+    // ran POLLS_TO_CAP reads on a row that was already final on the first, and
+    // ten of them were pure waste against a server that re-encodes a PNG per
+    // call. One read, then silence.
+    const accepted = invoice({ status: "accepted", etaLongId: "LONG-1" });
+    const fetchStatus = vi.fn().mockResolvedValue(accepted);
+    const onFiscal = vi.fn();
+
+    startSaleFiscalPoll("order-b2b", onFiscal, { fetchStatus });
+    await firstTick();
+
+    expect(fetchStatus).toHaveBeenCalledTimes(1);
+    expect(onFiscal).toHaveBeenCalledTimes(1);
+    expect(onFiscal).toHaveBeenCalledWith(accepted);
+
+    await vi.advanceTimersByTimeAsync(FISCAL_POLL_MAX_MS * 4);
+    expect(fetchStatus).toHaveBeenCalledTimes(1);
+    // Stated as the number it would otherwise have been, so this reads as the
+    // saving it is rather than as an arbitrary 1.
+    expect(POLLS_TO_CAP).toBeGreaterThan(1);
+  });
+
+  it("keeps polling an in-flight invoice to the cap, same as a receipt", async () => {
+    // The other half: settling early must be about the VERDICT, not about the
+    // family. A pending invoice is still waiting for something.
+    const fetchStatus = vi.fn().mockResolvedValue(invoice({ status: "submitted" }));
+    startSaleFiscalPoll("order-b2b", vi.fn(), { fetchStatus });
+
+    await firstTick();
+    await vi.advanceTimersByTimeAsync(FISCAL_POLL_MAX_MS * 4);
+    expect(fetchStatus).toHaveBeenCalledTimes(POLLS_TO_CAP);
   });
 
   it("keeps polling to the cap on a permanently `failed` row without looping forever", async () => {

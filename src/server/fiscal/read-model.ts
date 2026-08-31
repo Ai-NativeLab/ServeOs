@@ -42,8 +42,33 @@ import { SUBMISSION_WINDOW_MS } from "./constants";
  */
 
 export type SaleFiscalStatus = {
+  /**
+   * WHICH FAMILY THIS SALE WAS DECLARED AS — and the reason the field exists at
+   * all rather than being inferred.
+   *
+   * A B2B sale (round 2, Task 5) is filed as an `e_invoice` INSTEAD of an
+   * `e_receipt`, and the two print differently: a receipt carries a QR from the
+   * moment it is finalized, an invoice carries no QR ever and shows ETA's
+   * assigned long id once it has one. "No QR yet" cannot stand in for "this is
+   * an invoice" — an `e_receipt` in the seconds before its finalization lands
+   * has no QR either, and a footer reading the family off that absence would
+   * print B2B text on an ordinary consumer sale.
+   */
+  docType: Extract<EtaDocType, "e_receipt" | "e_invoice">;
   status: EtaSubmissionStatus;
   etaUuid: string | null;
+  /**
+   * ETA's own human-readable document number, assigned by ETA and never by us.
+   *
+   * THIS IS THE B2B FOOTER. An invoice has no QR to print and no self-computed
+   * uuid — the identity arrives with the 202 — so the long id is the only thing
+   * a tax invoice can show the buyer. `null` until ETA has answered, which is
+   * exactly the "Tax invoice — pending ETA number" state the till renders.
+   *
+   * An accepted `e_receipt` carries one too (the worker persists it either way);
+   * the receipt footer simply prints the QR instead.
+   */
+  etaLongId: string | null;
   qrPayload: string | null;
   /**
    * A PNG data URL rendered from the STORED `qrPayload`. Never recomputed from
@@ -106,9 +131,18 @@ const SUBMISSION_ROW_COLUMNS = {
 /**
  * The fiscal state of one sale, for the POS receipt (Task 7).
  *
- * `null` means this order has no e-receipt row at all — a non-EG tenant, or a
- * sale whose enqueue has not landed yet. The POS renders no fiscal footer for
- * it, which is the country-gate's no-behavioural-change guarantee.
+ * `null` means this order has no fiscal row at all — a non-EG tenant, or a sale
+ * whose enqueue has not landed yet. The POS renders no fiscal footer for it,
+ * which is the country-gate's no-behavioural-change guarantee.
+ *
+ * BOTH SALE FAMILIES ARE ADMITTED (round 2, Task 5). A B2B sale is declared as
+ * an `e_invoice` INSTEAD of an `e_receipt`, so the round-1 `docType =
+ * 'e_receipt'` filter found nothing on those orders and this returned `null` —
+ * indistinguishable, at the till, from a non-EG tenant, which meant a B2B
+ * receipt printed no fiscal block at all with no error anywhere. No docType
+ * predicate is used rather than an `in (...)` list, matching the sweep and
+ * `requestB2bInvoice`'s pre-check: `eta_submissions_parent_xor` already
+ * guarantees only `e_receipt` and `e_invoice` can carry an `order_id`.
  *
  * NEWEST LIVE ROW WINS when a sale has more than one. The partial live indexes
  * (`eta_submissions_order`) cap non-rejected rows at one per (tenant, docType,
@@ -127,6 +161,12 @@ const SUBMISSION_ROW_COLUMNS = {
  * `submitted` and `failed` are not — `failed` is retried by the worker up to
  * `MAX_ATTEMPTS`, so a client polling "until not failed" would poll forever
  * against a permanently failed row. Task 7 owns the bounded poll.
+ *
+ * AN `e_invoice` HAS NO QR AND NEVER WILL, so "hold the image AND a terminal
+ * status" is not a condition it can ever meet — a client applying the receipt's
+ * rule to an invoice spends its whole polling budget re-reading a verdict it
+ * already had. The till's predicate splits on `docType` for exactly that
+ * (`apps/pos/src/fiscal/sale-fiscal.ts`, `isFiscalPollDone`).
  */
 export async function getSaleFiscalStatus(
   tenantId: string,
@@ -135,8 +175,10 @@ export async function getSaleFiscalStatus(
   const row = await withTenant(tenantId, async (tx) => {
     const [found] = await tx
       .select({
+        docType: etaSubmissions.docType,
         status: etaSubmissions.status,
         etaUuid: etaSubmissions.etaUuid,
+        etaLongId: etaSubmissions.etaLongId,
         qrPayload: etaSubmissions.qrPayload,
       })
       .from(etaSubmissions)
@@ -144,27 +186,42 @@ export async function getSaleFiscalStatus(
         and(
           eq(etaSubmissions.tenantId, tenantId),
           eq(etaSubmissions.orderId, orderId),
-          // B2B SALES ARE INVISIBLE HERE UNTIL TASK 5 WIDENS THIS. A sale with a
-          // business buyer enqueues an `e_invoice` INSTEAD of an `e_receipt`, so
-          // this filter finds nothing and the function returns `null` — which the
-          // POS footer cannot tell apart from "non-EG tenant", and so shows
-          // nothing at all, with no error anywhere. Task 5 widens the filter to
-          // the invoice family AND adds `etaLongId` to `SaleFiscalStatus`, which
-          // the accepted-invoice footer needs (there is no QR to show instead).
-          // See the round-2 plan's Task 5 entry.
-          eq(etaSubmissions.docType, "e_receipt"),
         ),
       )
-      // LIVE ROW FIRST, then newest. The partial live indexes
-      // (`eta_submissions_order`) cap non-rejected rows at one per (tenant,
-      // docType, order), so "not rejected" identifies the document that counts
-      // whenever one exists, and `createdAt` picks the latest rejection
-      // otherwise. Ordering on `createdAt` alone would be right in every real
-      // case but would resolve a same-instant tie arbitrarily — and resolving
-      // it towards a superseded rejection would print "rejected" on a receipt
-      // whose correction is already in flight.
+      // ------------------------------------------------------------------
+      // PRECEDENCE, STATED RATHER THAN LEFT TO THE SORT. Four rungs, each
+      // deciding a question the one above it could not.
+      //
+      // THE MODEL RULE THIS SERVES: one sale is declared to ETA as ONE document
+      // family — either an `e_receipt` or an `e_invoice`, never both. A
+      // conforming order therefore has rows of a single family and rungs 1 and
+      // 3 never fire. They exist for the ANOMALOUS order that carries both,
+      // which nothing in the schema can prevent (the partial unique indexes are
+      // keyed on (tenant, docType, order), so a receipt and an invoice for one
+      // sale collide with nothing) and which is reachable only through the ONE
+      // sanctioned family switch: every `e_receipt` rejected, then an invoice
+      // issued in its place (`config-service.requestB2bInvoice`). Such an order
+      // must resolve DETERMINISTICALLY and towards the document ETA actually
+      // holds — never towards whichever row happened to sort first.
+      //
+      //   1. ACCEPTED FIRST. If ETA has accepted a document for this sale, that
+      //      document is what the sale IS, whatever else exists beside it.
+      //   2. LIVE BEFORE REJECTED. Within one family this is the correction
+      //      rule: a rejection superseded by a corrected resubmission must show
+      //      the correction, not the rejection it replaced. (Rung 1 never
+      //      contradicts it — an accepted row is by definition not rejected.)
+      //   3. THE `e_receipt` BREAKS A CROSS-FAMILY TIE. With two live,
+      //      unaccepted rows of different families, the receipt is the older
+      //      obligation and the one that already printed a QR for the customer;
+      //      preferring it means the footer never silently swaps a printed QR
+      //      for an invoice line while both are still pending.
+      //   4. NEWEST, THEN ID. The residual total order, so the query is
+      //      deterministic even where nothing above it discriminates.
+      // ------------------------------------------------------------------
       .orderBy(
+        sql`(${etaSubmissions.status} = 'accepted') desc`,
         sql`(${etaSubmissions.status} <> 'rejected') desc`,
+        sql`(${etaSubmissions.docType} = 'e_receipt') desc`,
         desc(etaSubmissions.createdAt),
         desc(etaSubmissions.id),
       )
@@ -173,9 +230,16 @@ export async function getSaleFiscalStatus(
   });
 
   if (!row) return null;
+  // `eta_submissions_parent_xor` guarantees an `order_id` row is one of these
+  // two, so the narrowing restates a database constraint rather than trusting
+  // the column — and it is what keeps `SaleFiscalStatus.docType` a two-member
+  // union the till can switch on exhaustively.
+  const docType = row.docType === "e_invoice" ? "e_invoice" : "e_receipt";
   return {
+    docType,
     status: row.status,
     etaUuid: row.etaUuid,
+    etaLongId: row.etaLongId,
     qrPayload: row.qrPayload,
     qrImageDataUrl: row.qrPayload ? await QRCode.toDataURL(row.qrPayload) : null,
   };

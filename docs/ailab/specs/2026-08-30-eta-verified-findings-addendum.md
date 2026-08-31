@@ -98,10 +98,10 @@ inquiry tool) remains an operational check, not a build blocker.
 | 7 Per-tenant applicability | **OPERATIONAL** — RIN inquiry tool per tenant; not a build blocker |
 | 8 Resubmit / idempotency | **RESOLVED** — C3 (`referenceOldUUID`, new UUID) + poll by `submissionUUID` |
 | 9 uuid blanking rule | **OPEN** — FAQ vs core-fields validator disagree on whether the uuid key is blanked or dropped; one line in `computeReceiptUuid`. See §6. |
-| 10 Offline issuance without QR | **OPEN** — an EG offline/unsynced sale prints with no QR (the chain is computed server-side at sync); the reprint carries it once synced. Whether handing the customer a QR-less copy at sale time is compliant is an ETA/tax-adviser question (ETA's own offline toolkit implies local issuance is the sanctioned model); mirrors ZATCA PRD-003 Q3. Raised by Task 7 (POS receipt footer). |
+| 10 Offline issuance without QR | **OPEN** — an EG offline/unsynced sale prints with no QR (the chain is computed server-side at sync); the reprint carries it once synced. Whether handing the customer a QR-less copy at sale time is compliant is an ETA/tax-adviser question (ETA's own offline toolkit implies local issuance is the sanctioned model); mirrors ZATCA PRD-003 Q3. Raised by Task 7 (POS receipt footer). **Widened by round 2 Task 5:** an unsynced B2B sale prints no fiscal line at all, not merely a missing QR — a business buyer's copy says nothing about the tax invoice being filed for them (the invoice itself is filed correctly on sync; see §6). Same question, one channel wider. |
 | 11 issuerSerial GeneralName tag | **OPEN** — ETA's published signed sample (`/files/one-doc-I.json`) wraps the `signingCertificateV2` issuerSerial DN in `[0]` (0xa0, the `otherName` alternative) while RFC 5280 spells `directoryName` `[4]`; both measured off real bytes, not inferred. ServeOS emits the RFC-correct `[4]`, because copying a known-wrong tag assumes ETA's VALIDATOR shares its ENCODER's bug — which the sample cannot tell us. Signature validation is undeployed, so nothing judges it today. **One line in `sign-invoice.ts`** (`type: 4` → `0` in `signingCertificateV2`), pinned as bytes by `sign-invoice.test.ts` so a flip is deliberate. **Test BOTH forms against preprod before any tenant configures a real seal.** Raised by round 2 Task 3 spec review. See §6. |
 
-| 12 Receipt→invoice conversion | **OPEN** — whether/how ETA supports issuing a B2B invoice for a sale already filed as an e-receipt (cancel + reissue? a reference mechanism from the invoice back to the superseded receipt? nothing at all?). ServeOS's research has never covered it, so there is no filing shape to implement against. **Until it is answered, ServeOS refuses cross-family issuance:** `config-service.requestB2bInvoice` 409s any order carrying a non-rejected `e_receipt`, because two accepted documents for one sale is that sale declared twice in the taxpayer's filings. The refusal blocks a real and ordinary workflow — a customer asking for a tax invoice after their receipt was filed — and the sanctioned workaround is to capture the buyer at the till so the sale is filed as an invoice from the start (round 2, Task 5). ONE exception is permitted and is not a bypass: an order whose every `e_receipt` row is REJECTED with no correction queued has no ETA document at all, so refusing would leave it permanently undeclared. Raised by round 2 Task 4 quality review. |
+| 12 Receipt→invoice conversion | **OPEN** — whether/how ETA supports issuing a B2B invoice for a sale already filed as an e-receipt (cancel + reissue? a reference mechanism from the invoice back to the superseded receipt? nothing at all?). ServeOS's research has never covered it, so there is no filing shape to implement against. **Until it is answered, ServeOS refuses cross-family issuance:** `config-service.requestB2bInvoice` 409s any order carrying a non-rejected `e_receipt`, because two accepted documents for one sale is that sale declared twice in the taxpayer's filings. The refusal blocks a real and ordinary workflow — a customer asking for a tax invoice after their receipt was filed — and the sanctioned workaround is to capture the buyer at the till so the sale is filed as an invoice from the start — **shipped in round 2 Task 5** (the payment screen's "Business buyer (فاتورة ضريبية)" section), so the workaround is now available rather than merely named, and the refusal only bites on a sale nobody flagged as B2B at the counter. ONE exception is permitted and is not a bypass: an order whose every `e_receipt` row is REJECTED with no correction queued has no ETA document at all, so refusing would leave it permanently undeclared. Raised by round 2 Task 4 quality review. |
 
 ## Deployment constraints
 
@@ -330,3 +330,28 @@ Sources: `/document-serialization-approach/`, `/documents/receipt-v1-2/`, `/docu
   of a channel where the answer was never decided: a **storefront fiscal surface is a named follow-up**
   (VERIFY-10-adjacent), not an oversight, and it is a product decision rather than a pipeline change — the
   document itself is issued correctly either way.
+- **TILL B2B CAPTURE: A SALE IS DECLARED AS ONE FAMILY, DECIDED AT THE COUNTER (round 2, Task 5).** A cashier who
+  opens the payment screen's "Business buyer (فاتورة ضريبية)" section and fills in the seven fields ETA requires of
+  a type-`B` receiver rings a sale that is filed as an **`e_invoice` INSTEAD of an `e_receipt`** — never as well as
+  one. Leaving the section collapsed is an ordinary B2C sale, unchanged in every respect. This is the sanctioned
+  answer to **VERIFY-12**: because ETA offers no mechanism ServeOS knows of for converting a filed receipt into a
+  tax invoice afterwards, the choice has to be made before the sale is filed, which is why it lives at the till and
+  not on the next morning's dashboard. Three things enforce the one-family rule, and all three are needed: the till
+  enqueues one document (source), `config-service.requestB2bInvoice`'s cross-family rung refuses a second
+  (dashboard), and `reconcileMissingReceipts`' not-exists now treats ANY order-carrying row as satisfying (sweep) —
+  before that last one, every B2B sale outliving `RECONCILE_AFTER_MS` would have been adopted into a second document
+  deterministically, not as a race.
+- **SEVEN FIELDS AT THE COUNTER IS A DELIBERATE COST.** Invoice v1.0 makes the buyer's registration number,
+  registered name and five address components (country, governate, region/city, street, building number) Mandatory
+  for a type-`B` receiver, and there is no partial form: an invoice missing any of them is not a well-formed
+  document. Asking for all seven while the buyer is standing there beats the alternative, which is a permanent
+  `EtaConfigError` on a `failed` row hours later. The end state is a **B2B buyer directory** — repeat business
+  customers captured once and then chosen by name or registration number — recorded as a future ticket.
+- **AN UNSYNCED B2B SALE PRINTS NO FISCAL LINE (limitation, same shape as VERIFY-10).** The buyer rides inside the
+  till's own `sale.recorded` event, so a B2B sale rung during an outage is still filed as an invoice when it syncs —
+  it can never silently become a consumer receipt, and that is pinned end to end through the real offline store,
+  sync engine and route. What it cannot do is print anything at issuance: an unsynced sale has no server order to
+  read a fiscal record from, so the customer copy carries the provisional-sync notice and nothing about the tax
+  invoice. For a B2C sale this is exactly VERIFY-10's QR-less copy; for a B2B one the buyer is told nothing at all.
+  The number appears on a reprint after sync. Fixing it needs the captured buyer carried into the receipt data so
+  the footer can say "pending sync" without a server round trip — a named follow-up, not a filing defect.

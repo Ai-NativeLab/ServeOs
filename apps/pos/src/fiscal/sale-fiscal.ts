@@ -36,17 +36,36 @@ export const FISCAL_POLL_MAX_MS = 30_000;
 
 const TERMINAL_STATUSES: readonly SaleFiscalStatus["status"][] = ["accepted", "rejected"];
 
-/** What the poll is waiting for: the printable QR *and* a settled verdict.
- *  `failed` and `pending` are not settled — the cap is what stops those. */
+/**
+ * What the poll is waiting for — and it is a DIFFERENT condition per family,
+ * because the two documents have different things left to arrive.
+ *
+ * `e_receipt`: the printable QR *and* a settled verdict. `failed` and `pending`
+ * are not settled — the cap is what stops those.
+ *
+ * `e_invoice`: the settled verdict ALONE. A tax invoice has no QR and never will
+ * — ETA assigns the identity at submission and there is nothing to encode at
+ * issuance — so `qrImageDataUrl` stays `null` for the row's entire life.
+ * Applying the receipt's rule to it would make the condition unsatisfiable: the
+ * till would spend its whole 30-second budget, ten further reads, re-fetching a
+ * verdict it already held on the first one. What the invoice is still waiting
+ * for once it is terminal is nothing.
+ */
 export function isFiscalPollDone(fiscal: SaleFiscalStatus | null): boolean {
-  return fiscal !== null && fiscal.qrImageDataUrl !== null && TERMINAL_STATUSES.includes(fiscal.status);
+  if (fiscal === null) return false;
+  if (!TERMINAL_STATUSES.includes(fiscal.status)) return false;
+  return fiscal.docType === "e_invoice" || fiscal.qrImageDataUrl !== null;
 }
 
 /** Compares only what the footer renders — a re-encoded but identical PNG must
- *  not count as a change, or the receipt would re-render the QR on every poll. */
+ *  not count as a change, or the receipt would re-render the QR on every poll.
+ *  `etaLongId` is in the set because on a B2B sale it IS the footer: an accepted
+ *  invoice differs from the pending one it replaces in that field and no other,
+ *  so omitting it would leave "pending ETA number" on screen forever. */
 export function sameFiscal(a: SaleFiscalStatus | null, b: SaleFiscalStatus | null): boolean {
   if (a === null || b === null) return a === b;
-  return a.status === b.status && a.etaUuid === b.etaUuid && a.qrImageDataUrl === b.qrImageDataUrl;
+  return a.docType === b.docType && a.status === b.status && a.etaUuid === b.etaUuid
+    && a.etaLongId === b.etaLongId && a.qrImageDataUrl === b.qrImageDataUrl;
 }
 
 /**

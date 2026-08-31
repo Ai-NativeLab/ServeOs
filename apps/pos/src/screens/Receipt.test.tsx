@@ -31,12 +31,21 @@ const SALE: ReceiptData = {
   synced: true,
 };
 
+const LONG_ID = "BFNGXFA17265TQX34";
+
 const fiscal = (over: Partial<ReceiptFiscal> = {}): ReceiptFiscal => ({
+  docType: "e_receipt",
   status: "pending",
   etaUuid: UUID,
+  etaLongId: null,
   qrImageDataUrl: QR,
   ...over,
 });
+
+/** A B2B sale: filed as an `e_invoice`, so no QR exists at any point in its life
+ *  and ETA's assigned long id is the only identity it can ever show. */
+const invoice = (over: Partial<ReceiptFiscal> = {}): ReceiptFiscal =>
+  fiscal({ docType: "e_invoice", etaUuid: null, qrImageDataUrl: null, ...over });
 
 /** The receipt as it printed before this task — the `fiscal` prop is not passed
  *  at all, which is exactly how every screen called it. */
@@ -123,6 +132,68 @@ describe("rejected", () => {
     expect(html).toContain("Fiscal receipt pending");
     expect(html).toContain("Fiscal receipt rejected — correction pending");
     expect(html).not.toContain("<img");
+  });
+});
+
+describe("the B2B tax-invoice footer", () => {
+  it("says the number is pending while the invoice is in flight, and shows NO QR", () => {
+    // A tax invoice has no QR at any point — ETA assigns the identity when the
+    // document is submitted, so there is nothing to encode at issuance and
+    // nothing to encode afterwards either.
+    for (const status of ["pending", "submitted", "failed"] as const) {
+      const html = render(invoice({ status }));
+      expect(html).toContain("Tax invoice — pending ETA number");
+      expect(html).not.toContain("<img");
+      expect(html).not.toContain("ETA UUID");
+      // Not the consumer wording: "Fiscal receipt pending" would tell a business
+      // buyer they are holding a receipt, which is the one thing they are not.
+      expect(html).not.toContain("Fiscal receipt");
+      // Everything above the footer is character-for-character the sale.
+      expect(withoutFooter(html)).toBe(baseline);
+    }
+  });
+
+  it("prints ETA's own document number once the invoice is accepted", () => {
+    const html = render(invoice({ status: "accepted", etaLongId: LONG_ID }));
+    expect(html).toContain(`Tax invoice — ETA number: ${LONG_ID}`);
+    expect(html).not.toContain("pending ETA number");
+    expect(html).not.toContain("<img");
+    expect(withoutFooter(html)).toBe(baseline);
+  });
+
+  it("stays on the pending line when ETA accepted but named no number", () => {
+    // Reachable: acceptance and the assigned long id arrive from different
+    // reads. Printing "ETA number: " with nothing after it would be worse than
+    // saying it is still coming.
+    const html = render(invoice({ status: "accepted", etaLongId: null }));
+    expect(html).toContain("Tax invoice — pending ETA number");
+    expect(html).not.toContain("ETA number:");
+  });
+
+  it("notes a rejection without ever printing a QR", () => {
+    const html = render(invoice({ status: "rejected" }));
+    expect(html).toContain("Tax invoice — pending ETA number");
+    expect(html).toContain("Tax invoice rejected — correction pending");
+    expect(html).not.toContain("Fiscal receipt rejected");
+    expect(html).not.toContain("<img");
+    expect(withoutFooter(html)).toBe(baseline);
+  });
+
+  it("nests no `div` either, so `withoutFooter` holds for both families", () => {
+    const footer = render(invoice({ status: "rejected" })).match(FOOTER_RE)?.[0];
+    expect(footer).toBeDefined();
+    expect(footer!.match(/<div/g)).toHaveLength(1);
+    expect(footer!.match(/<\/div>/g)).toHaveLength(1);
+  });
+
+  it("splits on docType, not on the absence of a QR", () => {
+    // THE REGRESSION THIS PINS. An `e_receipt` in the seconds before its
+    // finalization lands also has no QR — inferring the family from that
+    // absence would print tax-invoice wording on an ordinary consumer sale.
+    const unfinalizedReceipt = fiscal({ status: "pending", etaUuid: null, qrImageDataUrl: null });
+    const html = render(unfinalizedReceipt);
+    expect(html).toContain("Fiscal receipt pending");
+    expect(html).not.toContain("Tax invoice");
   });
 });
 

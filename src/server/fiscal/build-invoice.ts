@@ -156,18 +156,32 @@ export function buildInvoice(input: FiscalInvoiceInput): FiscalDocument {
  *
  * The threshold argument is "0" — a business receiver's fields are Mandatory
  * unconditionally, not above some amount.
+ *
+ * EVERY FIELD IS READ DEFENSIVELY, `rin` AND `name` INCLUDED — a round-2 Task 5
+ * correction, and the reason is that the set of things that can WRITE a buyer
+ * grew. When only Task 4's dashboard trigger staged one, zod guaranteed both
+ * were strings and `rin.trim()` was safe; the address half was already defensive
+ * anyway, for the reason recorded below. The till (Task 5) now writes
+ * `buyer_json` too, and it deliberately carries no zod — so a payload whose
+ * `name` is absent reaches here and `name.trim()` threw a bare `TypeError`
+ * instead of this named refusal. Same containment either way (the sale path
+ * swallows it, the row stays queued), but the owner's alert said
+ * "Cannot read properties of undefined" rather than naming the field to fix,
+ * which is the entire value this function has.
  */
-function assertReceiverComplete(rin: string, name: string, address: FiscalInvoiceAddressLike): void {
+function assertReceiverComplete(rin: unknown, name: unknown, address: FiscalInvoiceAddressLike): void {
+  const blank = (value: unknown): boolean => typeof value !== "string" || value.trim() === "";
+
   const missing: string[] = [];
-  if (!rin.trim()) missing.push("id");
-  if (!name.trim()) missing.push("name");
+  if (blank(rin)) missing.push("id");
+  if (blank(name)) missing.push("name");
   for (const field of ["country", "governate", "regionCity", "street", "buildingNumber"] as const) {
-    if (!address?.[field]?.trim()) missing.push(`address.${field}`);
+    if (blank(address?.[field])) missing.push(`address.${field}`);
   }
   if (missing.length > 0) throw new BuyerIdRequiredError("B", "0", "0", missing);
 }
 
 /** The Mandatory half of `FiscalAddress`, read defensively: this value crosses
- *  a trigger boundary and Task 4's zod is what makes it well-typed, so the
+ *  a trigger boundary and no writer's type is a runtime guarantee, so the
  *  builder treats a missing component as missing rather than trusting the type. */
 type FiscalInvoiceAddressLike = Partial<Record<"country" | "governate" | "regionCity" | "street" | "buildingNumber", string>>;

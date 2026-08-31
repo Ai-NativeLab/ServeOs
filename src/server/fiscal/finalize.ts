@@ -6,7 +6,7 @@ import { posOrderReceipts } from "@/server/pos/schema";
 import { refunds, refundLines, refundPayments, type Refund, type RefundLine } from "@/server/pos/refund-schema";
 import {
   etaSubmissions, etaTenantConfig, etaPosCredentials, etaDeviceChains, productTaxCodes,
-  type EtaSubmission, type EtaWireContextConfig,
+  type EtaSubmission, type EtaSubmissionBuyer, type EtaWireContextConfig,
 } from "./schema";
 import { buildReceipt, buildReturnReceipt } from "./build-document";
 import { buildInvoice } from "./build-invoice";
@@ -503,6 +503,63 @@ export async function enqueueAndFinalizeReceipt(ctx: { tenantId: string }, order
 }
 
 /**
+ * The TILL's B2B entry point: a sale rung with a business buyer is declared as
+ * an `e_invoice` INSTEAD of an `e_receipt`, never as well as one.
+ *
+ * ONE SALE, ONE DOCUMENT FAMILY, GUARANTEED AT THE SOURCE. Task 4's ladder in
+ * `config-service.requestB2bInvoice` enforces the rule for the DASHBOARD, where
+ * a receipt already exists and the question is whether an invoice may join it.
+ * Here there is nothing to enforce against: this function is reached instead of
+ * `enqueueAndFinalizeReceipt`, so the only row this sale ever gets is the
+ * invoice. The sweep (`reconcileMissingReceipts`) is the third leg — it now
+ * treats ANY order-carrying row as satisfying, so it cannot re-adopt this order
+ * into a receipt an hour later.
+ *
+ * SAME TWO FAILURE CONTRACTS as the receipt path, for the same reasons: the
+ * enqueue PROPAGATES (the row is the compliance record, and `record-sale.ts`
+ * catches and logs), the finalize is SWALLOWED (the row exists, the worker
+ * retries). What differs is what a lost finalization costs. On a receipt it is
+ * the QR on one printed copy; on an invoice there is no QR to lose — ETA assigns
+ * the identity at submission — so the immediate build buys FEEDBACK only, in the
+ * same sense `finalizeAfterCommit` documents for the dashboard trigger.
+ *
+ * THE BUYER IS NOT REVALIDATED HERE, and that is deliberate rather than
+ * overlooked. `buyerSchema` lives in `config-service.ts` behind zod, an audit
+ * writer and a 1,300-line configuration module; importing it would put all of
+ * that on the module graph of every till transaction, B2C ones included, to
+ * serve a branch most sales never take. The till validates the seven fields as
+ * it captures them (`apps/pos/src/fiscal/buyer.ts`, which mirrors `buyerSchema`
+ * field for field), and `buildInvoice`'s `BuyerIdRequiredError` is the backstop.
+ * The consequence is stated honestly: a malformed buyer that reaches here
+ * becomes a `failed` invoice row and an owner alert — visible, named, and
+ * correctable — and never, under any circumstance, a silent downgrade to a B2C
+ * receipt, which is the one outcome that would misdeclare the sale.
+ */
+export async function enqueueAndFinalizeInvoice(
+  ctx: { tenantId: string },
+  orderId: string,
+  buyer: EtaSubmissionBuyer,
+): Promise<void> {
+  // The buyer rides the INSERT itself — see `enqueueFiscalDocument`'s note on
+  // why the till cannot use Task 4's enqueue-then-update shape.
+  await enqueueFiscalDocument(ctx, { docType: "e_invoice", orderId, buyerJson: buyer });
+
+  try {
+    const [row] = await withTenant(ctx.tenantId, (tx) =>
+      tx.select({ id: etaSubmissions.id }).from(etaSubmissions).where(and(
+        eq(etaSubmissions.tenantId, ctx.tenantId),
+        eq(etaSubmissions.docType, "e_invoice"),
+        eq(etaSubmissions.orderId, orderId),
+        sql`${etaSubmissions.referenceOldUuid} is null`,
+      )).limit(1));
+
+    if (row) await finalizeSubmissionRow(ctx.tenantId, row.id);
+  } catch (err) {
+    console.error(`[fiscal] finalize-at-enqueue failed for tenant ${ctx.tenantId} order ${orderId} docType e_invoice (row queued; the worker will retry)`, err);
+  }
+}
+
+/**
  * EG orders old enough to have been fiscalised, carrying no `e_receipt` row at
  * all — enqueued and finalized here.
  *
@@ -566,7 +623,21 @@ export async function reconcileMissingReceipts(
         gt(orders.placedAt, horizon),
         sql`${orders.status} not in ('cancelled','rejected')`,
         sql`${orders.paymentStatus} not in ('unpaid','pending_verification')`,
-        sql`not exists (select 1 from ${etaSubmissions} where ${etaSubmissions.orderId} = ${orders.id} and ${etaSubmissions.docType} = 'e_receipt')`,
+        // ANY order-carrying document satisfies this, not just an `e_receipt`.
+        // ONE SALE, ONE DOCUMENT FAMILY — a B2B sale (round 2, Task 5) enqueues
+        // an `e_invoice` INSTEAD of a receipt, so a `docType = 'e_receipt'`
+        // predicate here would find no receipt, adopt the order, and file a
+        // SECOND document for a sale ETA already holds one for. That is not a
+        // race or a rare interleaving: it is deterministic, and it fires on
+        // every B2B sale that lives past `RECONCILE_AFTER_MS`.
+        //
+        // No docType predicate at all rather than an `in (...)` list, for the
+        // same reason `config-service.requestB2bInvoice`'s pre-check dropped
+        // its own: `eta_submissions_parent_xor` already guarantees the only
+        // docTypes that can carry an `order_id` are `e_receipt` and
+        // `e_invoice`, so enumerating them would be a second place to keep in
+        // step with the constraint.
+        sql`not exists (select 1 from ${etaSubmissions} where ${etaSubmissions.orderId} = ${orders.id})`,
       ))
       .orderBy(asc(orders.placedAt))
       .limit(limit));

@@ -1,9 +1,11 @@
 import type { SaleFiscalStatus } from "../../electron/preload";
 import type { CartLine } from "../order/cart";
 
-/** What the footer renders of a sale's ETA e-receipt — the server's payload
- *  minus `qrPayload`, which is the QR's INPUT and never printed itself. */
-export type ReceiptFiscal = Pick<SaleFiscalStatus, "status" | "etaUuid" | "qrImageDataUrl">;
+/** What the footer renders of a sale's ETA document — the server's payload minus
+ *  `qrPayload`, which is the QR's INPUT and never printed itself. */
+export type ReceiptFiscal = Pick<
+  SaleFiscalStatus, "docType" | "status" | "etaUuid" | "etaLongId" | "qrImageDataUrl"
+>;
 
 /**
  * The ETA block at the foot of a receipt. Renders nothing at all without a
@@ -11,17 +13,53 @@ export type ReceiptFiscal = Pick<SaleFiscalStatus, "status" | "etaUuid" | "qrIma
  * gate's no-behavioural-change guarantee: their receipt is byte-identical to
  * the one this screen printed before ETA existed.
  *
- * THE QR PRINTS AS SOON AS IT EXISTS — at `pending`, not only at `accepted`.
- * ETA e-receipts are post-clearance: the uuid is self-computed and the QR
- * payload written at sale time, while the verdict lands minutes to hours later.
+ * ---------------------------------------------------------------------------
+ * TWO FAMILIES, TWO FOOTERS, AND THE CONSUMER ONE IS UNTOUCHED.
+ *
+ * `e_receipt` — everything below the `docType` branch is exactly what it was.
+ * THE QR PRINTS AS SOON AS IT EXISTS, at `pending` and not only at `accepted`:
+ * ETA e-receipts are post-clearance, so the uuid is self-computed and the QR
+ * payload written at sale time while the verdict lands minutes to hours later.
  * The copy handed to the customer must already carry the code, so gating the
  * image on `accepted` would print blank receipts all day and only ever show the
  * QR on a reprint. `rejected` keeps the code visible too and adds a note beside
  * it: the sale stands, and the correction is a dashboard action, not something
  * the cashier can act on with the customer at the counter.
+ *
+ * `e_invoice` — NEVER A QR, in any state. A tax invoice has no QR to print: ETA
+ * assigns the document's identity when it is submitted, so there is nothing to
+ * encode at issuance and nothing to encode later either. What the buyer needs is
+ * ETA's own document number, which arrives with the 202 — so the footer says
+ * "pending" until it holds one and prints it once it does. Rendering a QR here
+ * would be inventing a code that does not exist for this document type.
+ *
+ * The split is on `docType` and not on "is there a QR", because an `e_receipt`
+ * in the seconds before its finalization lands has no QR either — reading the
+ * family off that absence would print tax-invoice text on a consumer sale.
  */
 export function ReceiptFiscalFooter({ fiscal }: { fiscal?: ReceiptFiscal | null }) {
   if (!fiscal) return null;
+
+  if (fiscal.docType === "e_invoice") {
+    return (
+      <div className="mt-4 border-t border-dashed border-border pt-3 text-center">
+        {fiscal.status === "accepted" && fiscal.etaLongId ? (
+          <p className="mt-1 text-[10px] break-all text-muted-foreground">
+            Tax invoice — ETA number: {fiscal.etaLongId}
+          </p>
+        ) : (
+          // Every non-accepted state, and an acceptance ETA has not yet named a
+          // number for. The invoice is filed either way; the number is what is
+          // still in flight, and saying so is the honest thing to hand over.
+          <p className="text-[10px] text-muted-foreground">Tax invoice — pending ETA number</p>
+        )}
+        {fiscal.status === "rejected" && (
+          <p className="mt-1 text-[10px] text-status-danger-fg">Tax invoice rejected — correction pending</p>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="mt-4 border-t border-dashed border-border pt-3 text-center">
       {fiscal.qrImageDataUrl ? (

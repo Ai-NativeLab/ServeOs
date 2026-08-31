@@ -2,7 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { tenants } from "@/server/tenancy/schema";
-import { etaSubmissions } from "./schema";
+import { etaSubmissions, type EtaSubmissionBuyer } from "./schema";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -31,9 +31,16 @@ export async function isFiscalEnabled(tenantId: string): Promise<boolean> {
  * `eta_submissions_parent_xor` CHECK constraint enforces in the database.
  * The type system makes the mistake unrepresentable; the CHECK is the
  * backstop for anything that reaches the DB some other way.
+ *
+ * `e_invoice` SPLIT OUT OF THE ORDER-CARRYING ARM (round 2, Task 5) so it alone
+ * can carry `buyerJson`. The buyer is the receiver block of an invoice and has
+ * no meaning on any other document — an `e_receipt` names no buyer at all — so
+ * the union is what refuses `{ docType: "e_receipt", buyerJson }` rather than a
+ * runtime check that would have to exist for the same reason `parent_xor` does.
  */
 export type EnqueueInput =
-  | { docType: "e_receipt" | "e_invoice"; orderId: string }
+  | { docType: "e_receipt"; orderId: string }
+  | { docType: "e_invoice"; orderId: string; buyerJson?: EtaSubmissionBuyer }
   | { docType: "return_receipt" | "credit_note"; refundId: string };
 
 // `internalID` IS A MATCH KEY, NOT A LABEL. `finalize.ts` sets an invoice's
@@ -110,6 +117,22 @@ const REFUND_LIVE_WHERE = sql`${etaSubmissions.refundId} is not null and ${etaSu
  *     blocked or rolled back by fiscal logic — so this opens an independent
  *     transaction, and the caller is expected to catch and log any failure
  *     rather than let it propagate (see `record-sale.ts`).
+ *
+ * `buyerJson` IS WRITTEN IN THE SAME INSERT (round 2, Task 5), and that is the
+ * whole reason the parameter exists rather than the caller updating the row
+ * afterwards. Task 4's trigger does enqueue-then-update because it owns a
+ * transaction with an audit event in it — the update, the event and the insert
+ * are one unit there, and it has a `tx` to make them so. The TILL has no such
+ * transaction: `recordSale`'s has already committed by the time this runs (iron
+ * rule), so an enqueue-then-update here would be two independent statements with
+ * a window between them in which a `pending` `e_invoice` row exists carrying no
+ * buyer. That row cannot be finalized (`finalizeInvoiceRow` throws a PERMANENT
+ * `EtaConfigError("missing-buyer")`) and cannot be re-requested (the ladder in
+ * `config-service.requestB2bInvoice` 409s a live invoice), so the sale would be
+ * stuck undeclarable. One insert has no such window.
+ *
+ * The write is IDEMPOTENT-SAFE for free: `onConflictDoNothing` means a duplicate
+ * enqueue never overwrites the buyer already staged on the winning row.
  */
 export async function enqueueFiscalDocument(ctx: { tenantId: string }, input: EnqueueInput, tx?: Tx): Promise<void> {
   // `"orderId" in input` narrows the discriminated union by shape rather than
@@ -122,6 +145,9 @@ export async function enqueueFiscalDocument(ctx: { tenantId: string }, input: En
       ? tx.insert(etaSubmissions).values({
           tenantId: ctx.tenantId, docType: input.docType, orderId: input.orderId, refundId: null,
           status: "pending" as const, attempts: 0, requestJson: {},
+          // Only the `e_invoice` arm carries one; `undefined` on the receipt arm
+          // leaves the nullable column at its default, exactly as before.
+          buyerJson: input.docType === "e_invoice" ? input.buyerJson : undefined,
         }).onConflictDoNothing({
           target: [etaSubmissions.tenantId, etaSubmissions.docType, etaSubmissions.orderId],
           where: ORDER_ORIGINAL_WHERE,

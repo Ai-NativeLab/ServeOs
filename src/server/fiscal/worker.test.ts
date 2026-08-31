@@ -22,6 +22,7 @@ import {
 import { drainEtaSubmissions, MAX_ATTEMPTS } from "./worker";
 import { finalizeSubmissionRow, reconcileMissingReceipts } from "./finalize";
 import { enqueueCorrectedResubmission } from "./enqueue";
+import { BuyerIdRequiredError } from "./errors";
 import { TestCertSigner } from "./sign-invoice";
 import { stringifyWire } from "./serialize";
 import { EtaTransportError, EtaConfigError } from "./eta-transport-errors";
@@ -1248,6 +1249,145 @@ async function enqueueInvoice(tenantId: string, orderId: string, buyer: unknown 
 const invoiceRowsFor = (tenantId: string) =>
   withTenant(tenantId, (tx) => tx.select().from(etaSubmissions).where(and(
     eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.docType, "e_invoice"))));
+
+/**
+ * THE TILL'S OWN B2B PATH (round 2, Task 5) — a sale rung with a business buyer,
+ * driven through the REAL `recordSale`, not through a hand-built row.
+ *
+ * `enqueueInvoice` above stages a row directly because the worker's contract is
+ * what those cases are about. These cases are about the opposite end: whether a
+ * cashier pressing "Complete sale" with the buyer section filled in produces one
+ * document of the right family, with the buyer on it, and nothing else — ever.
+ */
+async function ringB2bSale(
+  opts: { clientOrderId?: string; buyer?: unknown } = {},
+): Promise<Awaited<ReturnType<typeof seedPosContext>> & { orderId: string; orderNumber: string }> {
+  const s = await seedPosContext("owner");
+  await openShiftForCtx(s.ctx);
+  await seedTaxCode(s.tenantId, s.productId);
+  await seedFiscalConfig(s.tenantId);
+  await seedDeviceCredential(s.tenantId, s.ctx.deviceId);
+
+  const receipt = await recordSale(s.ctx, {
+    clientOrderId: opts.clientOrderId ?? "b2b-till-1",
+    lines: [{ productId: s.productId, quantity: 1, selectedOptionIds: [] }],
+    expectedTotal: s.total,
+    payments: [{ clientPaymentId: "p-1", method: "cash", amount: s.total, tenderedAmount: s.total }],
+    buyer: (opts.buyer === undefined ? B2B_BUYER : opts.buyer) as never,
+  });
+  return { ...s, orderId: receipt.orderId, orderNumber: receipt.orderNumber };
+}
+
+describe("till B2B capture — one sale, one document family", () => {
+  it("files a B2B sale as an e_invoice carrying the buyer, and NEVER an e_receipt", async () => {
+    const s = await ringB2bSale();
+
+    const rows = await rowsFor(s.tenantId);
+    // EXACTLY ONE ROW. Not "an invoice exists" — the absence of the receipt is
+    // half the assertion, and it is the half that makes the sale declared once.
+    expect(rows).toHaveLength(1);
+    expect(rows[0].docType).toBe("e_invoice");
+    expect(rows.some((r) => r.docType === "e_receipt")).toBe(false);
+
+    // The buyer landed in the SAME insert — never an enqueue-then-update, which
+    // on the sale path (no transaction to share) would leave a window holding a
+    // buyer-less invoice row that can be neither finalized nor re-requested.
+    expect(rows[0].buyerJson).toEqual(B2B_BUYER);
+
+    // And it finalized inline, so the row is a real filed document rather than a
+    // bare queue entry: ETA assigns the identity, so no uuid and no QR.
+    expect(rows[0].requestJson).toMatchObject({ documentType: "I", internalID: s.orderNumber });
+    expect(rows[0].etaUuid).toBeNull();
+    expect(rows[0].qrPayload).toBeNull();
+  });
+
+  it("leaves the ORDINARY consumer sale exactly as it was — no buyer, no behaviour change", async () => {
+    // THE LOAD-BEARING REGRESSION PIN. Nothing about a B2C sale may move: the
+    // whole B2B branch is selected by `input.buyer` alone, and its absence must
+    // reach the same e_receipt, finalized inline with its QR at issuance.
+    const s = await seedSale({ clientOrderId: "b2c-unchanged" });
+
+    const rows = await rowsFor(s.tenantId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].docType).toBe("e_receipt");
+    expect(rows[0].buyerJson).toBeNull();
+    expect(rows[0].etaUuid).toMatch(/^[0-9a-f]{64}$/);
+    expect(rows[0].qrPayload).toContain(rows[0].etaUuid!);
+  });
+
+  it("still takes the money when the fiscal branch cannot produce a document", async () => {
+    // The iron rule, on the branch this task added: the B2B enqueue lives inside
+    // `recordSale`'s existing try/catch, so a buyer ETA would refuse cannot cost
+    // the cashier a sale the customer has already paid for. (One expected
+    // `[fiscal] ... docType e_invoice` line is logged.)
+    const s = await ringB2bSale({ clientOrderId: "b2b-bad-buyer", buyer: { rin: "nope" } });
+
+    const [order] = await withTenant(s.tenantId, (tx) =>
+      tx.select().from(orders).where(eq(orders.id, s.orderId)));
+    expect(order.paymentStatus).toBe("paid");
+
+    // The row exists and is an invoice — the failure is visible and named, and
+    // is NEVER a silent downgrade to a consumer receipt, which would misdeclare
+    // the sale rather than merely fail to declare it.
+    const rows = await rowsFor(s.tenantId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].docType).toBe("e_invoice");
+    expect(rows.some((r) => r.docType === "e_receipt")).toBe(false);
+    // The buyer is stored exactly as it arrived, unrepaired, so the row says
+    // what was actually captured rather than a cleaned-up version of it.
+    expect(rows[0].buyerJson).toEqual({ rin: "nope" });
+  });
+
+  it("refuses a malformed till buyer BY NAME, listing the fields to fix", async () => {
+    // The till carries no zod (see `enqueueAndFinalizeInvoice`), so the builder
+    // is the backstop — and it has to be a NAMED refusal listing the missing
+    // fields, because an owner's alert is where this is read. Before Task 5 the
+    // only writer was Task 4's zod trigger, so `name.trim()` was safe and an
+    // absent `name` threw a bare TypeError saying nothing useful.
+    const s = await ringB2bSale({ clientOrderId: "b2b-named", buyer: { rin: "nope" } });
+    const [row] = await rowsFor(s.tenantId);
+
+    await expect(finalizeSubmissionRow(s.tenantId, row.id)).rejects.toThrow(BuyerIdRequiredError);
+    await expect(finalizeSubmissionRow(s.tenantId, row.id)).rejects.toThrow(/name/);
+    await expect(finalizeSubmissionRow(s.tenantId, row.id)).rejects.toThrow(/address\.country/);
+  });
+
+  it("SWEEP CLAUSE: a B2B order past the threshold is never swept into a receipt", async () => {
+    // THE DETERMINISTIC DOUBLE-FILING THIS CLOSES. The sweep used to look for a
+    // missing `e_receipt` specifically, so a B2B order — which has an invoice and
+    // no receipt, by design — read as unfiscalised on every pass and would have
+    // been adopted into a SECOND document for one sale. Not a race: it fires on
+    // every B2B sale that outlives RECONCILE_AFTER_MS.
+    const s = await ringB2bSale({ clientOrderId: "b2b-sweep" });
+    await withTenant(s.tenantId, (tx) =>
+      tx.update(orders).set({ placedAt: new Date(Date.now() - 30 * 60 * 1000) })
+        .where(eq(orders.id, s.orderId)));
+
+    const before = await rowsFor(s.tenantId);
+    const res = await reconcileMissingReceipts({ tenantId: s.tenantId });
+
+    expect(res.enqueued).toBe(0);
+    const after = await rowsFor(s.tenantId);
+    expect(after).toHaveLength(before.length);
+    expect(after.some((r) => r.docType === "e_receipt")).toBe(false);
+  });
+
+  it("SWEEP CLAUSE: an order with NO row at all is still adopted — the sweep still works", async () => {
+    // Non-vacuity for the case above. Dropping the docType predicate must not
+    // have turned the sweep off; an order carrying nothing is still swept.
+    const s = await seedPosContext("owner");
+    await seedTaxCode(s.tenantId, s.productId);
+    await seedFiscalConfig(s.tenantId, { onlineDeviceId: s.ctx.deviceId });
+    await seedDeviceCredential(s.tenantId, s.ctx.deviceId);
+    const orphan = await placeWebOrder(s.tenantId, s.branchId, s.productId, { minutesAgo: 30 });
+
+    expect((await reconcileMissingReceipts({ tenantId: s.tenantId })).enqueued).toBe(1);
+    const rows = await rowsFor(s.tenantId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].orderId).toBe(orphan);
+    expect(rows[0].docType).toBe("e_receipt");
+  });
+});
 
 describe("B2B e_invoice — finalization", () => {
   it("persists the wire document with NO uuid, NO chain and NO QR", async () => {

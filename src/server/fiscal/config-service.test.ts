@@ -470,8 +470,34 @@ describe("masking — no *Ref value ever leaves this service", () => {
       }).returning(),
     );
 
+    // THE WIDENED SALE SURFACE IS WALKED TOO (round 2, Task 5). A second order,
+    // filed as an `e_invoice` — the family `getSaleFiscalStatus` now admits —
+    // carrying a reference in `lastError` and in `etaLongId`, which is the field
+    // the widening added and the only new string this surface can return. A walk
+    // that only ever saw the receipt family would leave the whole B2B path
+    // outside the guarantee.
+    const b2bOrder = await makeOrder(t.id, device.branchId);
+    await withTenant(t.id, (tx) =>
+      tx.insert(etaSubmissions).values({
+        tenantId: t.id,
+        docType: "e_invoice",
+        orderId: b2bOrder.id,
+        status: "failed",
+        etaLongId: "BFNGXFA17265TQX34",
+        lastError: realisticLastError,
+        buyerJson: {
+          rin: "313717919", name: "Receiver Company LLC",
+          address: {
+            country: "EG", governate: "Cairo", regionCity: "Nasr City",
+            street: "580 Clementina Key", buildingNumber: "Bldg. 0",
+          },
+        },
+      }),
+    );
+
     const submissions = await listSubmissions(t.id);
     const saleStatus = await getSaleFiscalStatus(t.id, order.id);
+    const invoiceStatus = await getSaleFiscalStatus(t.id, b2bOrder.id);
     const one = await getSubmissionById(t.id, row.id);
     const statusCounts = await getSubmissionStatusCounts(t.id);
     const fiscalDevices = await listFiscalDevices(t.id);
@@ -479,7 +505,13 @@ describe("masking — no *Ref value ever leaves this service", () => {
 
     expectNoRefValues(submissions, "listSubmissions");
     expectNoRefValues(saleStatus, "getSaleFiscalStatus");
+    expectNoRefValues(invoiceStatus, "getSaleFiscalStatus (e_invoice)");
     expectNoRefValues(one, "getSubmissionById");
+    // Non-vacuity for the pair above: the B2B read really is the invoice family
+    // and really does carry the field the widening added, so walking it is
+    // walking something.
+    expect(invoiceStatus!.docType).toBe("e_invoice");
+    expect(invoiceStatus!.etaLongId).toBe("BFNGXFA17265TQX34");
     // Numbers under fixed enum keys — nothing here could carry a reference
     // today, and it is walked anyway so that stays true if the shape grows.
     expectNoRefValues(statusCounts, "getSubmissionStatusCounts");
@@ -522,6 +554,9 @@ describe("masking — no *Ref value ever leaves this service", () => {
     const planted: [string, unknown][] = [
       ["listSubmissions", { ...submissions, rows: [{ ...submissions.rows[0], lastError: REFS.erp }] }],
       ["getSaleFiscalStatus", { ...saleStatus, qrPayload: REFS.signing }],
+      // The widened surface's own planted case: `etaLongId` is server-assigned
+      // text and the one new string a B2B read can hand back.
+      ["getSaleFiscalStatus (e_invoice)", { ...invoiceStatus, etaLongId: REFS.erp }],
       ["getSubmissionById", { ...one, lastError: SECRET_VALUES.ZZ_ETA_DEVICE_S1_SENTINEL }],
       ["listFiscalDevices", [{ ...fiscalDevices[0], label: REFS.psk }]],
     ];
@@ -964,7 +999,10 @@ describe("getSaleFiscalStatus", () => {
     // "finalize-at-enqueue failed" line here.)
     const unfinalized = await seedSale({ configureFirst: false });
     const early = await getSaleFiscalStatus(unfinalized.tenantId, unfinalized.receipt.orderId);
-    expect(early).toEqual({ status: "pending", etaUuid: null, qrPayload: null, qrImageDataUrl: null });
+    expect(early).toEqual({
+      docType: "e_receipt", status: "pending",
+      etaUuid: null, etaLongId: null, qrPayload: null, qrImageDataUrl: null,
+    });
 
     // The production path: finalized inline, so the printed customer copy
     // carries its uuid and QR before ETA has seen the document (addendum C5).
@@ -988,6 +1026,10 @@ describe("getSaleFiscalStatus", () => {
     expect(accepted!.etaUuid).toBe(pending!.etaUuid);
     expect(accepted!.qrPayload).toBe(pending!.qrPayload);
     expect(accepted!.qrImageDataUrl).toBe(pending!.qrImageDataUrl);
+    // The receipt family carries a long id too once ETA answers; the footer just
+    // prints the QR instead of it.
+    expect(accepted!.etaLongId).toBe("LONG-1");
+    expect(accepted!.docType).toBe("e_receipt");
   });
 
   it("returns the CORRECTION, not the rejection it supersedes", async () => {
@@ -1009,6 +1051,76 @@ describe("getSaleFiscalStatus", () => {
     const status = await getSaleFiscalStatus(s.tenantId, s.receipt.orderId);
     expect(status!.status).toBe("pending");
     expect(status!.etaUuid).toBeNull();
+  });
+
+  it("SEES A B2B SALE AT ALL — the invoice family, with ETA's long id", async () => {
+    // THE READ-MODEL GAP THIS CLOSES. A B2B sale enqueues an `e_invoice` INSTEAD
+    // of an `e_receipt`, so the round-1 `docType = 'e_receipt'` filter found
+    // nothing and this returned `null` — which the till cannot tell apart from a
+    // non-EG tenant, so it printed no fiscal block whatsoever: no error, no
+    // failing row, no log line to find it by.
+    const s = await seedSale({ configureFirst: true });
+    await withTenant(s.tenantId, (tx) =>
+      tx.update(etaSubmissions).set({ docType: "e_invoice", etaUuid: null, qrPayload: null })
+        .where(eq(etaSubmissions.tenantId, s.tenantId)));
+
+    const queued = await getSaleFiscalStatus(s.tenantId, s.receipt.orderId);
+    expect(queued).not.toBeNull();
+    expect(queued!.docType).toBe("e_invoice");
+    // An invoice has no QR at any point in its life, so there is nothing to
+    // render and nothing to poll for.
+    expect(queued!.qrPayload).toBeNull();
+    expect(queued!.qrImageDataUrl).toBeNull();
+    expect(queued!.etaLongId).toBeNull();
+
+    await withTenant(s.tenantId, (tx) =>
+      tx.update(etaSubmissions).set({ status: "accepted", etaLongId: "LONG-INV-1" })
+        .where(eq(etaSubmissions.tenantId, s.tenantId)));
+
+    // The long id IS the B2B footer — the only identity a tax invoice can show.
+    const accepted = await getSaleFiscalStatus(s.tenantId, s.receipt.orderId);
+    expect(accepted!.etaLongId).toBe("LONG-INV-1");
+    expect(accepted!.qrImageDataUrl).toBeNull();
+  });
+
+  it("resolves an anomalous BOTH-FAMILY order deterministically: accepted wins", async () => {
+    // Reachable only through the ONE sanctioned family switch — every receipt
+    // rejected, then an invoice issued in its place — and nothing in the schema
+    // prevents it (the partial unique indexes are keyed on (tenant, docType,
+    // order), so a receipt and an invoice for one sale collide with nothing).
+    // Whatever ETA has ACCEPTED is what the sale is, whichever row sorts first.
+    const s = await seedSale({ configureFirst: true });
+    await withTenant(s.tenantId, (tx) =>
+      tx.update(etaSubmissions).set({ status: "rejected" }).where(eq(etaSubmissions.tenantId, s.tenantId)));
+    await withTenant(s.tenantId, (tx) => tx.insert(etaSubmissions).values({
+      tenantId: s.tenantId, docType: "e_invoice", orderId: s.receipt.orderId,
+      status: "accepted", etaLongId: "LONG-ACCEPTED-INV",
+    }));
+
+    const status = await getSaleFiscalStatus(s.tenantId, s.receipt.orderId);
+    expect(status!.docType).toBe("e_invoice");
+    expect(status!.status).toBe("accepted");
+    expect(status!.etaLongId).toBe("LONG-ACCEPTED-INV");
+  });
+
+  it("resolves two LIVE unaccepted families towards the e_receipt, never the sort", async () => {
+    // Rung 3. Two pending rows of different families: `createdAt` alone would
+    // resolve a same-instant tie arbitrarily, and swapping a QR the customer has
+    // already been handed for an invoice line — both still pending, neither more
+    // settled than the other — is the outcome worth ruling out by name.
+    const s = await seedSale({ configureFirst: true });
+    const [receipt] = await withTenant(s.tenantId, (tx) =>
+      tx.select().from(etaSubmissions).where(eq(etaSubmissions.tenantId, s.tenantId)));
+    await withTenant(s.tenantId, (tx) => tx.insert(etaSubmissions).values({
+      tenantId: s.tenantId, docType: "e_invoice", orderId: s.receipt.orderId,
+      status: "pending",
+      // NEWER than the receipt, so `createdAt desc` alone would pick it.
+      createdAt: new Date(receipt.createdAt.getTime() + 1000),
+    }));
+
+    const status = await getSaleFiscalStatus(s.tenantId, s.receipt.orderId);
+    expect(status!.docType).toBe("e_receipt");
+    expect(status!.etaUuid).toBe(receipt.etaUuid);
   });
 });
 

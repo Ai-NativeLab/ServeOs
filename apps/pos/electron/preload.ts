@@ -49,6 +49,9 @@ export type {
   RefundSaleResult,
   ReprintReceipt,
   SaleFiscalStatus,
+  /** The B2B receiver a renderer may attach to `RecordSaleInput` — re-exported
+   *  so the payment screen names the same shape main will queue. */
+  SaleBuyer,
   SyncStatus,
   PosRealtimeMessage,
 } from "./pos-main";
@@ -64,7 +67,8 @@ export interface PosBridge {
   listSales(search?: SalesSearch): Promise<SalesRow[]>;
   getSale(orderId: string): Promise<SaleDetail>;
   reprintReceipt(orderId: string): Promise<ReprintReceipt>;
-  /** The sale's ETA e-receipt state for the receipt footer. `null` = no fiscal
+  /** The sale's ETA fiscal state for the receipt footer — an e-receipt's QR and
+   *  uuid, or a tax invoice's ETA long id. `null` = no fiscal
    *  record (non-EG tenant, enqueue not landed yet) OR the read did not get
    *  through — both print the receipt unchanged. Never rejects. Telling those
    *  apart needs a wider return type, not a reading of `null`: see
