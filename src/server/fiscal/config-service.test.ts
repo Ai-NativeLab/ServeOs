@@ -23,21 +23,34 @@ import {
   FiscalConfigInputError,
   getDeviceCredential,
   getFiscalConfig,
-  getSaleFiscalStatus,
-  getSubmissionById,
   listDeviceCredentials,
   listFiscalDevices,
-  listSubmissions,
   updateFiscalConfig,
   upsertDeviceCredential,
   type UpdateFiscalConfigInput,
   type UpsertDeviceCredentialInput,
 } from "./config-service";
+// The READ surfaces live next door (`./read-model`, split along the permission
+// seam) but are tested from HERE on purpose — see this file's header: the
+// masking walk has to cover both modules from one place or it becomes two half
+// guarantees that can drift apart.
+import {
+  getSaleFiscalStatus,
+  getSubmissionById,
+  getSubmissionStatusCounts,
+  listSubmissions,
+} from "./read-model";
 
 /**
  * Runs against the real test Postgres, seeding through `withTenant` and the
  * real POS service functions — so RLS, the FKs and the partial unique indexes
  * are exercised on the way in as well as out.
+ *
+ * COVERS TWO MODULES ON PURPOSE: `./config-service` (the owner-only write and
+ * config surface) and `./read-model` (the cashier-reachable reads, split out
+ * along the permission seam). They are one fiscal API from a caller's point of
+ * view and, more to the point, one SECRETS guarantee — split the walk below
+ * across two test files and it becomes two half-guarantees that drift.
  *
  * THE LOAD-BEARING TEST IN THIS FILE IS THE MASKING ONE. Every `*Ref` column
  * holds a distinctive sentinel string, and `expectNoRefValues` walks every
@@ -420,7 +433,7 @@ describe("masking — no *Ref value ever leaves this service", () => {
     expectNoRefValues({ message: error.message, issues: error.issues }, "FiscalConfigInputError");
   });
 
-  it("walks the FOUR read surfaces too — submissions, sale status, one submission, devices", async () => {
+  it("walks the READ surfaces too — submissions, sale status, one submission, status counts, devices", async () => {
     // The config and credential views are the obvious leak sites, but they are
     // not the only reachable ones: `lastError` is worker-written free text, and
     // the device list carries operator-typed labels. Both are strings this
@@ -454,11 +467,15 @@ describe("masking — no *Ref value ever leaves this service", () => {
     const submissions = await listSubmissions(t.id);
     const saleStatus = await getSaleFiscalStatus(t.id, order.id);
     const one = await getSubmissionById(t.id, row.id);
+    const statusCounts = await getSubmissionStatusCounts(t.id);
     const fiscalDevices = await listFiscalDevices(t.id);
 
     expectNoRefValues(submissions, "listSubmissions");
     expectNoRefValues(saleStatus, "getSaleFiscalStatus");
     expectNoRefValues(one, "getSubmissionById");
+    // Numbers under fixed enum keys — nothing here could carry a reference
+    // today, and it is walked anyway so that stays true if the shape grows.
+    expectNoRefValues(statusCounts, "getSubmissionStatusCounts");
     expectNoRefValues(fiscalDevices, "listFiscalDevices");
 
     /**
@@ -859,6 +876,45 @@ describe("listSubmissions", () => {
     // A hand-built query string cannot ask for the whole fiscal history.
     const capped = await listSubmissions(t.id, { limit: 10_000 });
     expect(capped.rows.length).toBeLessThanOrEqual(50);
+  });
+
+  it("getSubmissionStatusCounts counts the WHOLE table, zero-fills every status, and is tenant-scoped", async () => {
+    const t = await makeTenant();
+    const stranger = await makeTenant();
+    const branch = await makeBranch(t.id);
+
+    // Before any document exists: every status present at zero, not an empty
+    // object. A chip row built from a sparse map would appear and disappear as
+    // documents moved between states.
+    expect(await getSubmissionStatusCounts(t.id)).toEqual({
+      pending: 0, submitted: 0, accepted: 0, rejected: 0, failed: 0,
+    });
+
+    const statuses = ["accepted", "accepted", "rejected", "pending"] as const;
+    for (const status of statuses) {
+      const order = await makeOrder(t.id, branch.id);
+      await withTenant(t.id, (tx) =>
+        tx.insert(etaSubmissions).values({
+          tenantId: t.id, docType: "e_receipt", orderId: order.id, status,
+        }),
+      );
+    }
+
+    expect(await getSubmissionStatusCounts(t.id)).toEqual({
+      pending: 1, submitted: 0, accepted: 2, rejected: 1, failed: 0,
+    });
+
+    // It counts the whole table, not a page — which is the entire reason it
+    // exists: `listSubmissions` capped at one row would still report one
+    // rejection here, and that is the row an owner opened the screen to find.
+    const page = await listSubmissions(t.id, { limit: 1 });
+    expect(page.rows).toHaveLength(1);
+    expect((await getSubmissionStatusCounts(t.id)).accepted).toBe(2);
+
+    // RLS: another tenant sees zeros, not this tenant's four documents.
+    expect(await getSubmissionStatusCounts(stranger.id)).toEqual({
+      pending: 0, submitted: 0, accepted: 0, rejected: 0, failed: 0,
+    });
   });
 
   it("getSubmissionById is tenant-scoped and returns null for a stranger's row", async () => {

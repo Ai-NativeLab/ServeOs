@@ -1,13 +1,8 @@
 import { requireFiscalPermission } from "../fiscal-permission";
 import { UnauthorizedError } from "@/server/rbac/authorize";
 import { getTenantById } from "@/server/tenancy";
-import { formatDayTime } from "@/lib/datetime";
-import {
-  getFiscalConfig,
-  listDeviceCredentials,
-  listFiscalDevices,
-  listSubmissions,
-} from "@/server/fiscal/config-service";
+import { getFiscalConfig, listDeviceCredentials, listFiscalDevices } from "@/server/fiscal/config-service";
+import { listSubmissions, getSubmissionStatusCounts } from "@/server/fiscal/read-model";
 import {
   etaActivationStatusEnum,
   etaCodeSourceEnum,
@@ -23,20 +18,14 @@ import { ToastForm } from "@/components/dashboard/ToastForm";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { FiscalCredentialsTable } from "@/components/dashboard/FiscalCredentialsTable";
+import { FiscalSubmissionsTable } from "@/components/dashboard/FiscalSubmissionsTable";
 
 const selectCls = "rounded-md border bg-background px-3 py-1.5 text-sm h-9";
 
-/** Status chips for the submission feed. `rejected` and `failed` are the two
- *  rows an owner is here to see, so they read as warnings rather than as
- *  neutral state. */
-const STATUS_CHIP: Record<string, string> = {
-  pending: "bg-muted text-muted-foreground",
-  submitted: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
-  accepted: "bg-green-500/10 text-green-700 dark:text-green-400",
-  rejected: "bg-red-500/10 text-red-700 dark:text-red-400",
-  failed: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
-};
+/** One page of the submission feed. Passed to the table too, so the "showing
+ *  the N most recent" line cannot drift from the query that produced them. */
+const SUBMISSIONS_PAGE_SIZE = 25;
 
 function Field({
   name, label, defaultValue, hint, placeholder, required,
@@ -131,11 +120,12 @@ export default async function FiscalPage() {
     throw e; // requireDashboardUser redirects unauthenticated users
   }
 
-  const [config, devices, credentials, submissions, tenant] = await Promise.all([
+  const [config, devices, credentials, submissions, statusCounts, tenant] = await Promise.all([
     getFiscalConfig(ctx.tenantId),
     listFiscalDevices(ctx.tenantId),
     listDeviceCredentials(ctx.tenantId),
-    listSubmissions(ctx.tenantId, { limit: 25 }),
+    listSubmissions(ctx.tenantId, { limit: SUBMISSIONS_PAGE_SIZE }),
+    getSubmissionStatusCounts(ctx.tenantId),
     getTenantById(ctx.tenantId),
   ]);
   const tz = tenant?.timezone ?? "UTC";
@@ -259,40 +249,7 @@ export default async function FiscalPage() {
 
       {/* ------------------------------------------------------------------ */}
       <h2 className="eyebrow text-muted-foreground mb-3">Device credentials</h2>
-      {credentials.length > 0 && (
-        <Card className="p-0 overflow-hidden mb-4">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Till</TableHead>
-                <TableHead>ETA serial</TableHead>
-                <TableHead>Client id</TableHead>
-                <TableHead>Secrets</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Activated</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {credentials.map((c) => (
-                <TableRow key={c.deviceId}>
-                  <TableCell className="font-medium">{c.deviceLabel ?? c.deviceId.slice(0, 8)}</TableCell>
-                  <TableCell className="font-mono text-xs">{c.etaSerial}</TableCell>
-                  <TableCell className="font-mono text-xs">{c.clientId}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {[c.hasSecret1 && "secret 1", c.hasSecret2 && "secret 2", c.hasPresharedKey && "pre-shared key"]
-                      .filter(Boolean)
-                      .join(" · ") || "none"}
-                  </TableCell>
-                  <TableCell className="text-xs">{c.status}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {c.activatedAt ? formatDayTime(c.activatedAt, tz) : "—"}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Card>
-      )}
+      <FiscalCredentialsTable credentials={credentials} timezone={tz} />
 
       <Card className="p-5 mb-8 max-w-2xl">
         {devices.length === 0 ? (
@@ -347,66 +304,14 @@ export default async function FiscalPage() {
 
       {/* ------------------------------------------------------------------ */}
       <h2 className="eyebrow text-muted-foreground mb-3">Submissions</h2>
-      {submissions.rows.length === 0 ? (
-        <EmptyState title="No submissions yet" description="Fiscal documents appear here as sales and refunds are rung." />
-      ) : (
-        <Card className="p-0 overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>When</TableHead>
-                <TableHead>Document</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>ETA uuid</TableHead>
-                <TableHead>Attempts</TableHead>
-                <TableHead>Last error</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {submissions.rows.map((row) => (
-                <TableRow key={row.id}>
-                  <TableCell className="whitespace-nowrap text-muted-foreground text-xs">
-                    {formatDayTime(row.createdAt, tz)}
-                  </TableCell>
-                  <TableCell className="text-xs">
-                    {row.docType}
-                    {row.referenceOldUuid && (
-                      <span className="block text-muted-foreground">correction of {row.referenceOldUuid.slice(0, 12)}…</span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_CHIP[row.status] ?? ""}`}>
-                      {row.status}
-                    </span>
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">{row.etaUuid ? `${row.etaUuid.slice(0, 12)}…` : "—"}</TableCell>
-                  <TableCell className="text-xs">{row.attempts}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground max-w-xs truncate" title={row.lastError ?? ""}>
-                    {row.lastError ?? "—"}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {/* Only a REJECTED document with an ETA uuid can be superseded: ETA
-                        does not accept a fix in place, and a rejection that never
-                        reached ETA has no uuid for a correction to reference. */}
-                    {row.status === "rejected" && row.etaUuid && (
-                      <ToastForm action={resubmitAction} successMessage="Correction queued">
-                        <input type="hidden" name="submissionId" value={row.id} />
-                        <SubmitButton size="sm" variant="ghost">Resubmit</SubmitButton>
-                      </ToastForm>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Card>
-      )}
-      {submissions.hasMore && (
-        <p className="mt-3 text-xs text-muted-foreground">
-          Showing the 25 most recent documents.
-        </p>
-      )}
+      <FiscalSubmissionsTable
+        rows={submissions.rows}
+        hasMore={submissions.hasMore}
+        counts={statusCounts}
+        timezone={tz}
+        resubmitAction={resubmitAction}
+        pageSize={SUBMISSIONS_PAGE_SIZE}
+      />
     </>
   );
 }

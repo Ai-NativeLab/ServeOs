@@ -1,4 +1,3 @@
-import QRCode from "qrcode";
 /**
  * The ONLY zod import in the repository (house convention elsewhere is
  * hand-rolled validators), and a declared runtime dependency as of this task —
@@ -16,7 +15,7 @@ import QRCode from "qrcode";
  * this module's own, precisely so no route ever catches a `ZodError`.
  */
 import { z } from "zod";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { withTenant, type Tx } from "@/db/with-tenant";
 import { posDevices } from "@/server/pos/schema";
 import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
@@ -24,7 +23,6 @@ import { emptyFingerprint } from "@/server/audit/fingerprint";
 import {
   etaTenantConfig,
   etaPosCredentials,
-  etaSubmissions,
   etaEnvironmentEnum,
   etaActivationStatusEnum,
   etaCodeSourceEnum,
@@ -33,15 +31,21 @@ import {
   type EtaEnvironment,
   type EtaActivationStatus,
   type EtaPosCredentialStatus,
-  type EtaDocType,
-  type EtaSubmissionStatus,
 } from "./schema";
 
 /**
  * The fiscal CONFIGURATION surface: everything an owner sets up once, read back
- * masked, plus the per-order status the POS reads and the submission feed the
- * dashboard lists. Gated by `fiscal:manage` (owner only) at every entry point
- * above this module.
+ * masked. Gated by `fiscal:manage` (owner only) at every entry point above this
+ * module — every function here either writes a compliance record or reads one
+ * that only an owner may see.
+ *
+ * WHAT LIVES NEXT DOOR. The per-order status the POS reads and the submission
+ * feed the dashboard lists are in `./read-model`, split out along the
+ * PERMISSION seam: `getSaleFiscalStatus` is reached by any cashier holding
+ * `pos:sell`, and having the till import a module whose other exports mutate
+ * the taxpayer's identity was the wrong shape (it also pulled `qrcode` into
+ * every config import). Nothing there writes; nothing here is reachable below
+ * owner.
  *
  * TWO RULES SHAPE THIS WHOLE FILE.
  *
@@ -62,6 +66,10 @@ import {
  *    values. A ref is not itself a secret, but echoing one hands an attacker the
  *    map to the secret store — and the masking guarantee is much easier to keep
  *    honest as "no ref ever leaves" than as a per-field judgement call.
+ *
+ *    The rule binds `./read-model` identically and is restated in its header;
+ *    `config-service.test.ts`'s masking walk enforces it across BOTH modules
+ *    from one place, so the guarantee cannot drift into two halves.
  */
 
 // ---------------------------------------------------------------------------
@@ -252,31 +260,6 @@ export type DeviceCredentialView = {
   status: EtaPosCredentialStatus;
   activatedAt: Date | null;
   expiresAt: Date | null;
-};
-
-export type SaleFiscalStatus = {
-  status: EtaSubmissionStatus;
-  etaUuid: string | null;
-  qrPayload: string | null;
-  /** A PNG data URL rendered from the STORED `qrPayload`. Never recomputed
-   *  from the document: `./finalize` persists the payload as part of the
-   *  receipt's fiscal identity, and re-deriving it here could print a QR that
-   *  disagrees with the one already hashed into the uuid. */
-  qrImageDataUrl: string | null;
-};
-
-export type SubmissionRowView = {
-  id: string;
-  docType: EtaDocType;
-  orderId: string | null;
-  refundId: string | null;
-  status: EtaSubmissionStatus;
-  etaUuid: string | null;
-  attempts: number;
-  lastError: string | null;
-  referenceOldUuid: string | null;
-  createdAt: Date;
-  acceptedAt: Date | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -733,162 +716,8 @@ function changedCredentialFields(
 }
 
 // ---------------------------------------------------------------------------
-// Read surfaces
+// Devices (the config form's picker)
 // ---------------------------------------------------------------------------
-
-/**
- * The fiscal state of one sale, for the POS receipt (Task 7).
- *
- * `null` means this order has no e-receipt row at all — a non-EG tenant, or a
- * sale whose enqueue has not landed yet. The POS renders no fiscal footer for
- * it, which is the country-gate's no-behavioural-change guarantee.
- *
- * NEWEST ROW WINS when a sale has more than one. The partial live indexes
- * (`eta_submissions_order`) cap non-rejected rows at one per (tenant, docType,
- * order), so the only way to have several is a rejection superseded by a
- * corrected resubmission — and the correction is the document that counts. The
- * unfiltered `eta_submissions_order_lookup` index is what makes reading across
- * both cheap.
- *
- * The QR image is rendered from the STORED payload and only when one exists.
- * `./finalize` writes `qrPayload` as part of the receipt's fiscal identity;
- * recomputing it here could print a code that disagrees with the document ETA
- * holds.
- */
-export async function getSaleFiscalStatus(
-  tenantId: string,
-  orderId: string,
-): Promise<SaleFiscalStatus | null> {
-  const row = await withTenant(tenantId, async (tx) => {
-    const [found] = await tx
-      .select({
-        status: etaSubmissions.status,
-        etaUuid: etaSubmissions.etaUuid,
-        qrPayload: etaSubmissions.qrPayload,
-      })
-      .from(etaSubmissions)
-      .where(
-        and(
-          eq(etaSubmissions.tenantId, tenantId),
-          eq(etaSubmissions.orderId, orderId),
-          eq(etaSubmissions.docType, "e_receipt"),
-        ),
-      )
-      // LIVE ROW FIRST, then newest. The partial live indexes
-      // (`eta_submissions_order`) cap non-rejected rows at one per (tenant,
-      // docType, order), so "not rejected" identifies the document that counts
-      // whenever one exists, and `createdAt` picks the latest rejection
-      // otherwise. Ordering on `createdAt` alone would be right in every real
-      // case but would resolve a same-instant tie arbitrarily — and resolving
-      // it towards a superseded rejection would print "rejected" on a receipt
-      // whose correction is already in flight.
-      .orderBy(
-        sql`(${etaSubmissions.status} <> 'rejected') desc`,
-        desc(etaSubmissions.createdAt),
-        desc(etaSubmissions.id),
-      )
-      .limit(1);
-    return found ?? null;
-  });
-
-  if (!row) return null;
-  return {
-    status: row.status,
-    etaUuid: row.etaUuid,
-    qrPayload: row.qrPayload,
-    qrImageDataUrl: row.qrPayload ? await QRCode.toDataURL(row.qrPayload) : null,
-  };
-}
-
-export type ListSubmissionsOptions = {
-  /** Rows per page. Capped so a hand-built query string cannot ask for the
-   *  tenant's whole fiscal history in one response. */
-  limit?: number;
-  offset?: number;
-  status?: EtaSubmissionStatus;
-};
-
-const SUBMISSIONS_PAGE_LIMIT = 50;
-
-/**
- * The dashboard's submission feed: newest first, paginated, with everything the
- * table renders and nothing else. `requestJson`/`responseJson` are deliberately
- * NOT selected — they are the fiscal document and ETA's raw reply, several
- * kilobytes each, and the table shows neither.
- */
-export async function listSubmissions(
-  tenantId: string,
-  opts: ListSubmissionsOptions = {},
-): Promise<{ rows: SubmissionRowView[]; hasMore: boolean }> {
-  const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 25), 1), SUBMISSIONS_PAGE_LIMIT);
-  const offset = Math.max(Math.trunc(opts.offset ?? 0), 0);
-
-  const rows = await withTenant(tenantId, (tx) =>
-    tx
-      .select({
-        id: etaSubmissions.id,
-        docType: etaSubmissions.docType,
-        orderId: etaSubmissions.orderId,
-        refundId: etaSubmissions.refundId,
-        status: etaSubmissions.status,
-        etaUuid: etaSubmissions.etaUuid,
-        attempts: etaSubmissions.attempts,
-        lastError: etaSubmissions.lastError,
-        referenceOldUuid: etaSubmissions.referenceOldUuid,
-        createdAt: etaSubmissions.createdAt,
-        acceptedAt: etaSubmissions.acceptedAt,
-      })
-      .from(etaSubmissions)
-      .where(
-        opts.status
-          ? and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.status, opts.status))
-          : eq(etaSubmissions.tenantId, tenantId),
-      )
-      .orderBy(desc(etaSubmissions.createdAt), desc(etaSubmissions.id))
-      // One extra row decides `hasMore` without a second COUNT(*) over a table
-      // that only grows.
-      .limit(limit + 1)
-      .offset(offset),
-  );
-
-  return { rows: rows.slice(0, limit), hasMore: rows.length > limit };
-}
-
-/**
- * One submission row, masked to the same fields the dashboard table shows.
- *
- * Exists so the resubmit route can answer 404 (no such row) and 409 (not
- * rejected, or rejected before it ever reached ETA) from data rather than by
- * pattern-matching the messages `enqueueCorrectedResubmission` throws. That
- * function stays the authority — it re-checks both preconditions inside its own
- * transaction — but a thrown `Error` with a prose message is not something an
- * HTTP layer should be discriminating on.
- */
-export async function getSubmissionById(
-  tenantId: string,
-  submissionId: string,
-): Promise<SubmissionRowView | null> {
-  return withTenant(tenantId, async (tx) => {
-    const [row] = await tx
-      .select({
-        id: etaSubmissions.id,
-        docType: etaSubmissions.docType,
-        orderId: etaSubmissions.orderId,
-        refundId: etaSubmissions.refundId,
-        status: etaSubmissions.status,
-        etaUuid: etaSubmissions.etaUuid,
-        attempts: etaSubmissions.attempts,
-        lastError: etaSubmissions.lastError,
-        referenceOldUuid: etaSubmissions.referenceOldUuid,
-        createdAt: etaSubmissions.createdAt,
-        acceptedAt: etaSubmissions.acceptedAt,
-      })
-      .from(etaSubmissions)
-      .where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, submissionId)))
-      .limit(1);
-    return row ?? null;
-  });
-}
 
 /** The tenant's POS devices, for the online-device picker and the credential
  *  form. `pos_devices` carries no RLS policy, so the tenant predicate is

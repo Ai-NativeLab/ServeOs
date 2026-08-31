@@ -3,7 +3,7 @@ import type { DashboardContext } from "@/server/auth/dashboard-context";
 import { actionAudit } from "@/server/audit/action-context";
 import { recordAuditEvent } from "@/server/audit/service";
 import { enqueueCorrectedResubmission } from "@/server/fiscal/enqueue";
-import { getSubmissionById } from "@/server/fiscal/config-service";
+import { getSubmissionById } from "@/server/fiscal/read-model";
 
 export type ResubmitOutcome =
   | { ok: true; submissionId: string }

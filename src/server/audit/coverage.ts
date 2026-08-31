@@ -51,6 +51,11 @@ export const AUDITED_SERVICE_FILES = [
   // of its writers are exported, both are owner actions on a compliance
   // surface, and both emit (eta.config.updated / eta.device_credentials.updated).
   "src/server/fiscal/config-service.ts",
+  // Read-only today — it is the cashier-reachable half of the fiscal API and
+  // writes nothing at all, so it contributes zero symbols. Listed purely as
+  // forward coverage: a read module that grows a writer is exactly the change
+  // that should have to justify itself.
+  "src/server/fiscal/read-model.ts",
   "src/server/catalog/service.ts",
   "src/server/catalog/variants.ts",
   "src/server/inventory/service.ts",

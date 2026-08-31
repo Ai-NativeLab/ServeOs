@@ -6,6 +6,7 @@ import { withTenant } from "@/db/with-tenant";
 import { tenants } from "@/server/tenancy/schema";
 import { branches } from "@/server/branches/schema";
 import { orders } from "@/server/ordering/schema";
+import { posDevices } from "@/server/pos/schema";
 import { users, type User } from "@/server/auth/schema";
 import { auditEvents } from "@/server/audit/schema";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
@@ -42,6 +43,8 @@ vi.mock("@/server/audit/action-context", () => ({
 import { requireDashboardUser } from "@/server/auth/dashboard-context";
 import { redactedCause } from "./fiscal-errors";
 import { GET as getConfig, PUT as putConfig } from "./config/route";
+import { GET as getDevices } from "./devices/route";
+import { GET as getDevice, PUT as putDevice } from "./devices/[deviceId]/route";
 import { POST as postResubmit } from "./submissions/[id]/resubmit/route";
 
 const SECRET_REF = "env://ZZ_ROUTE_ETA_SECRET_SENTINEL";
@@ -152,6 +155,115 @@ describe("GET/PUT /api/dashboard/fiscal/config", () => {
         body: "{not json",
         headers: { "content-type": "application/json" },
       }),
+    );
+    expect(malformed.status).toBe(400);
+  });
+});
+
+describe("GET /api/dashboard/fiscal/devices and /devices/[deviceId]", () => {
+  const DEVICE_SECRET_1 = "env://ZZ_ROUTE_ETA_DEVICE_S1_SENTINEL";
+  const DEVICE_SECRET_2 = "env://ZZ_ROUTE_ETA_DEVICE_S2_SENTINEL";
+
+  const credentialBody = () => ({
+    etaSerial: "POS-001",
+    clientId: "device-client-id",
+    clientSecret1Ref: DEVICE_SECRET_1,
+    clientSecret2Ref: DEVICE_SECRET_2,
+  });
+
+  const devicePut = (body: unknown) =>
+    new NextRequest("http://localhost/api/dashboard/fiscal/devices/x", {
+      method: "PUT",
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+    });
+
+  const deviceParams = (deviceId: string) => ({ params: Promise.resolve({ deviceId }) });
+
+  async function seedDevice(tenantId: string, userId: string, label: string) {
+    const [branch] = await withTenant(tenantId, (tx) =>
+      tx.insert(branches).values({ tenantId, name: "Main" }).returning(),
+    );
+    const [device] = await db
+      .insert(posDevices)
+      .values({ tenantId, branchId: branch.id, token: `tok-${label}-${n++}`, label, createdByUserId: userId })
+      .returning();
+    return device;
+  }
+
+  it("403s all three handlers for a non-owner", async () => {
+    const { tenantId, userId } = await seedTenant();
+    const device = await seedDevice(tenantId, userId, "till");
+    for (const role of ["manager", "staff"] as const) {
+      signIn(tenantId, [role], userId);
+      expect((await getDevices()).status).toBe(403);
+      expect((await getDevice(devicePut({}), deviceParams(device.id))).status).toBe(403);
+      expect((await putDevice(devicePut(credentialBody()), deviceParams(device.id))).status).toBe(403);
+    }
+  });
+
+  it("lists every till plus its masked credential, and 404s a till with none", async () => {
+    const { tenantId, userId } = await seedTenant();
+    const registered = await seedDevice(tenantId, userId, "front-counter");
+    const bare = await seedDevice(tenantId, userId, "back-counter");
+    signIn(tenantId, ["owner"], userId);
+
+    // A till with no ETA credential yet is exactly the row an operator is
+    // looking for, so the list carries devices AND credentials.
+    const empty = await (await getDevices()).json();
+    expect(empty.credentials).toEqual([]);
+    expect(empty.devices.map((d: { label: string }) => d.label).sort()).toEqual(["back-counter", "front-counter"]);
+
+    expect((await getDevice(devicePut({}), deviceParams(registered.id))).status).toBe(404);
+
+    const saved = await putDevice(devicePut(credentialBody()), deviceParams(registered.id));
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toMatchObject({
+      etaSerial: "POS-001",
+      hasSecret1: true,
+      hasSecret2: true,
+      hasPresharedKey: false,
+      status: "registered",
+    });
+
+    const read = await getDevice(devicePut({}), deviceParams(registered.id));
+    expect(read.status).toBe(200);
+    const one = await read.json();
+    expect(one.deviceLabel).toBe("front-counter");
+
+    // Same rule as the config route: the reference must not appear in the bytes
+    // sent to the browser, whatever fields the view grows.
+    for (const payload of [JSON.stringify(one), JSON.stringify(await (await getDevices()).json())]) {
+      expect(payload).not.toContain(DEVICE_SECRET_1);
+      expect(payload).not.toContain(DEVICE_SECRET_2);
+    }
+
+    // The other till still has none.
+    expect((await getDevice(devicePut({}), deviceParams(bare.id))).status).toBe(404);
+  });
+
+  it("maps a bad body to 400, not 500", async () => {
+    const { tenantId, userId } = await seedTenant();
+    const device = await seedDevice(tenantId, userId, "till");
+    signIn(tenantId, ["owner"], userId);
+
+    // The full 400 ladder — serial length, cross-tenant device, illegal status
+    // transition, missing-ref-on-create — is exercised against the service in
+    // `server/fiscal/config-service.test.ts`, where each case can assert the
+    // field path it produces. This pins only that the ROUTE converts that error
+    // into a 400 with the path intact rather than letting it fall through the
+    // blanket catch as a 500.
+    const res = await putDevice(devicePut({ ...credentialBody(), etaSerial: "" }), deviceParams(device.id));
+    expect(res.status).toBe(400);
+    expect((await res.json()).issues).toEqual([expect.objectContaining({ path: "etaSerial" })]);
+
+    const malformed = await putDevice(
+      new NextRequest("http://localhost/api/dashboard/fiscal/devices/x", {
+        method: "PUT",
+        body: "{not json",
+        headers: { "content-type": "application/json" },
+      }),
+      deviceParams(device.id),
     );
     expect(malformed.status).toBe(400);
   });
