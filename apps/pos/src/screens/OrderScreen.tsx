@@ -15,6 +15,7 @@ import {
   removeLine,
   type CartLine,
 } from "../order/cart";
+import { useSaleFiscal } from "../fiscal/sale-fiscal";
 import { Receipt, type ReceiptData } from "./Receipt";
 import { PaymentScreen, changeFor, type TenderDraft } from "./PaymentScreen";
 import { ManagerAuthModal } from "./ManagerAuthModal";
@@ -59,6 +60,12 @@ export function OrderScreen({
   const [cart, setCart] = useState<CartLine[]>(() => recalled?.lines ?? []);
   const [cartError, setCartError] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<ReceiptData | null>(null);
+  // The SERVER order id of the receipt on screen, or null when there is nothing
+  // to ask ETA about (no receipt, or a sale the server has not confirmed yet).
+  // Set only AFTER the sale is committed and the receipt rendered — the fiscal
+  // read is never on the checkout path.
+  const [fiscalOrderId, setFiscalOrderId] = useState<string | null>(null);
+  const fiscal = useSaleFiscal(fiscalOrderId);
 
   const [view, setView] = useState<"cart" | "payment">("cart");
   const [saleId, setSaleId] = useState<string | null>(null);
@@ -257,6 +264,11 @@ export function OrderScreen({
         timestamp: new Date().toISOString(),
         synced: receiptData.synced ?? false,
       });
+      // An unsynced sale has no server order yet, so there is nothing to look a
+      // fiscal record up by — it stays null and the receipt prints as it always
+      // has. Nothing below is awaited: the poll starts from an effect once the
+      // receipt is on screen.
+      setFiscalOrderId(receiptData.synced ? receiptData.orderId : null);
       resetSale();
       setView("cart");
     } catch (e) {
@@ -275,8 +287,9 @@ export function OrderScreen({
     return (
       <Receipt
         data={receipt}
+        fiscal={fiscal}
         onPrint={() => window.print()}
-        onNewOrder={() => { setReceipt(null); setCartError(null); }}
+        onNewOrder={() => { setReceipt(null); setFiscalOrderId(null); setCartError(null); }}
       />
     );
   }

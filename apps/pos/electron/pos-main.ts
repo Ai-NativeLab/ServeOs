@@ -284,6 +284,23 @@ export type ReprintReceipt = {
   }[];
 };
 
+/**
+ * One sale's ETA e-receipt state, as `GET /api/pos/v1/sales/:id/fiscal` returns
+ * it. Mirrors `SaleFiscalStatus` in `src/server/fiscal/read-model.ts`.
+ *
+ * The whole block is `null` when the order has no submission row — the ORDINARY
+ * state of a non-EG tenant and of an EG sale in the moment before its enqueue
+ * lands. Never an error, and never a footer: see `saleFiscalStatus` below.
+ */
+export type SaleFiscalStatus = {
+  status: "pending" | "submitted" | "accepted" | "rejected" | "failed";
+  etaUuid: string | null;
+  qrPayload: string | null;
+  /** `data:image/png;base64,…`, re-rendered server-side on every call from an
+   *  immutable payload — so it is byte-identical each time. Render it once. */
+  qrImageDataUrl: string | null;
+};
+
 export type PosShiftSummary = {
   id: string;
   status: "open" | "closed";
@@ -907,6 +924,32 @@ export class PosMain {
     });
     if (!res.ok) throw new Error(`Could not reprint (${res.status})`);
     return (await res.json()) as ReprintReceipt;
+  }
+
+  /**
+   * The ETA fiscal state of one finalized sale, for the receipt footer (Task 7).
+   * Read-only and `pos:sell`-gated server-side — it never submits anything, so a
+   * reprint may call it as freely as the sale that minted the receipt.
+   *
+   * NEVER THROWS, and answers `null` for every "we do not have one": no server
+   * order id yet (an offline sale), no pairing, no cashier, an unreachable
+   * backend, a refused request, or the endpoint's own literal `null` body — a
+   * non-EG tenant, and every EG sale until its enqueue lands. All of them mean
+   * the same thing to the receipt: print it exactly as a non-fiscal till would.
+   * Mirrors `getOrders`, which swallows for the same reason — the till is
+   * offline-first and no fiscal read may cost a cashier a printed receipt.
+   */
+  async saleFiscalStatus(orderId: string): Promise<SaleFiscalStatus | null> {
+    if (!this.device || !this.cashier) return null;
+    try {
+      const res = await fetch(`${this.baseUrl}/api/pos/v1/sales/${orderId}/fiscal`, {
+        headers: this.authHeaders(),
+      });
+      if (!res.ok) return null;
+      return (await res.json()) as SaleFiscalStatus | null;
+    } catch {
+      return null;
+    }
   }
 
   /** Full or partial refund. A 403 (missing pos:refund) is surfaced with a

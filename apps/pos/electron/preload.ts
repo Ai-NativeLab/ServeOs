@@ -18,6 +18,7 @@ import type {
   RefundSaleInput,
   RefundSaleResult,
   ReprintReceipt,
+  SaleFiscalStatus,
   SyncStatus,
   PosRealtimeMessage,
 } from "./pos-main";
@@ -47,6 +48,7 @@ export type {
   RefundSaleInput,
   RefundSaleResult,
   ReprintReceipt,
+  SaleFiscalStatus,
   SyncStatus,
   PosRealtimeMessage,
 } from "./pos-main";
@@ -62,6 +64,10 @@ export interface PosBridge {
   listSales(search?: SalesSearch): Promise<SalesRow[]>;
   getSale(orderId: string): Promise<SaleDetail>;
   reprintReceipt(orderId: string): Promise<ReprintReceipt>;
+  /** The sale's ETA e-receipt state for the receipt footer. `null` = no fiscal
+   *  record (non-EG tenant, enqueue not landed yet) OR the read did not get
+   *  through — both print the receipt unchanged. Never rejects. */
+  saleFiscalStatus(orderId: string): Promise<SaleFiscalStatus | null>;
   refundSale(input: RefundSaleInput): Promise<RefundSaleResult>;
   signInCashier(email: string, password: string): Promise<CashierInfo>;
   cashier(): Promise<CashierInfo | null>;
@@ -103,6 +109,7 @@ contextBridge.exposeInMainWorld("pos", {
   listSales: (search?: SalesSearch) => ipcRenderer.invoke("pos:listSales", search),
   getSale: (orderId: string) => ipcRenderer.invoke("pos:getSale", orderId),
   reprintReceipt: (orderId: string) => ipcRenderer.invoke("pos:reprintReceipt", orderId),
+  saleFiscalStatus: (orderId: string) => ipcRenderer.invoke("pos:saleFiscalStatus", orderId),
   refundSale: (input: RefundSaleInput) => ipcRenderer.invoke("pos:refundSale", input),
   signInCashier: (email: string, password: string) => ipcRenderer.invoke("pos:signInCashier", email, password),
   cashier: () => ipcRenderer.invoke("pos:cashier"),

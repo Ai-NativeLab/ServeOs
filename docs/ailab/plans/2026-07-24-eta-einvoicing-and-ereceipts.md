@@ -687,23 +687,33 @@ git commit -m "feat(fiscal): fiscal:manage (owner) + masked config API + POS fis
 
 Once the fiscal block resolves to `accepted`, the receipt shows the ETA **QR** (from the server-generated `qrImageDataUrl`) and the **UUID**; while `pending`/`submitted` it shows "Fiscal receipt pending"; on `rejected` a non-blocking notice (the sale stands — the fix is a resubmit). A reprint renders the **stored** UUID/QR and never re-submits. For a refund, the accompanying credit-note references the original receipt's UUID (rendered on the refund slip once its `credit_note` is accepted).
 
+> **STALE, CORRECTED IN THE AS-BUILT NOTES BELOW:** "once the fiscal block resolves to `accepted`" is the pre-addendum rule. The QR + UUID print **as soon as `qrImageDataUrl` exists — at `pending`** — because `finalize` runs inline at sale time and ETA is post-clearance: the customer's copy must carry the code at issuance (addendum C5, and the Task 6 route test pins a `pending` row that already has a QR). "Fiscal receipt pending" is only for a row with **no QR yet**.
+
 **Files:**
 - Modify: `apps/pos/src/screens/Receipt.tsx`
 - Test: `apps/pos/src/screens/Receipt.test.tsx` (create if absent, following the POS renderer test convention)
+
+**Files as built:** `apps/pos/src/screens/Receipt.tsx` (+ `Receipt.test.tsx`), `apps/pos/src/fiscal/sale-fiscal.ts` (+ `sale-fiscal.test.ts` — the bounded poll), `apps/pos/src/screens/OrderScreen.tsx` (post-sale owner) and `apps/pos/src/screens/SalesHistory.tsx` (reprint slip), plus the IPC channel: `apps/pos/electron/pos-main.ts`, `preload.ts`, `main.ts`.
 
 **Interfaces:**
 - Consumes: the Task 6 `GET /api/pos/v1/sales/:orderId/fiscal` payload.
 - Produces: `ReceiptData` gains an optional `fiscal?: { status: "pending" | "submitted" | "accepted" | "rejected" | "failed"; etaUuid: string | null; qrImageDataUrl: string | null }` block. The screen polls the fiscal endpoint after the sale and re-renders when it resolves.
 
-- [ ] **Step 1: Write the failing renderer tests.** In `apps/pos/src/screens/Receipt.test.tsx`, render `Receipt` with three fiscal states and assert:
+- [x] **Step 1: Write the failing renderer tests.** In `apps/pos/src/screens/Receipt.test.tsx`, render `Receipt` with three fiscal states and assert:
   - `accepted` → the UUID text and an `<img>` with the `qrImageDataUrl` `src` are present.
   - `pending`/`submitted` → a "Fiscal receipt pending" line, no QR.
   - `rejected` → a non-blocking notice; the sale total/tenders still render unchanged.
   - No `fiscal` block (non-EG tenant) → the receipt renders **exactly as today** (no fiscal footer) — the country-gate no-behavioural-change guarantee.
 
-- [ ] **Step 2: Run to verify they fail.** `cd apps/pos && npx vitest run src/screens/Receipt.test.tsx`. Expected: FAIL — `fiscal` not rendered.
+  **as-built (2026-08-31) — THE `pending` ROW ABOVE IS WRONG AND WAS NOT BUILT.** The QR renders **whenever `qrImageDataUrl` is present, including at `pending`**, per the addendum's QR-at-issuance rule (which this plan's header says wins) and per the Task 6 route test, which pins a `pending` row that already carries a QR because `finalize` runs inline at sale time. Gating the image on `accepted` would print a blank customer copy on every EG sale and only ever show the code on a reprint. "Fiscal receipt pending" is now the narrower case it should always have been: **a row that exists but has no QR yet** (unfinalized — rare). `rejected` KEEPS the QR and uuid and adds the note beside them; `failed` prints like any other in-flight state, since the worker is still retrying it.
 
-- [ ] **Step 3: Implement.** Add the `fiscal?` field to `ReceiptData` and a fiscal footer below the "Thank you!" line:
+  **There is no DOM/render harness in this workspace** (no jsdom, no Testing Library — `SyncBadge.test.ts` says as much and tests pure helpers instead). Rather than add one, the tests render with **`react-dom/server`'s `renderToStaticMarkup`**, which `react-dom` (already a devDependency) provides: that makes "renders exactly as today" an exact **string equality** against a baseline rendered with no `fiscal` prop at all — the strongest available form — and lets every other state assert `withoutFooter(html) === baseline`, i.e. the sale body is character-for-character unchanged. 7 tests.
+
+- [x] **Step 2: Run to verify they fail.** `cd apps/pos && npx vitest run src/screens/Receipt.test.tsx`. Expected: FAIL — `fiscal` not rendered.
+
+  **as-built:** run as a red-state check on the **sketch in Step 3 below** rather than on an empty footer — the footer was written first, then the condition temporarily swapped to the sketch's `status === "accepted" && qrImageDataUrl`. **4 of 7 failed** (`pending`, `submitted`/`accepted`, `rejected`, `failed` all lost the `<img>`), which is exactly the correction this task carries; reverted and re-ran green. The `null`/absent-fiscal test passes under both, as it must.
+
+- [x] **Step 3: Implement.** Add the `fiscal?` field to `ReceiptData` and a fiscal footer below the "Thank you!" line:
 
 ```tsx
 {data.fiscal && (
@@ -724,14 +734,28 @@ Once the fiscal block resolves to `accepted`, the receipt shows the ETA **QR** (
 
 Wire the polling in the screen that owns the receipt (call the fiscal endpoint after `recordSale` returns; refresh on an interval until terminal). Keep the render **purely** driven by the `fiscal` prop so the component stays unit-testable.
 
-- [ ] **Step 4: Run to verify they pass.** `cd apps/pos && npx vitest run src/screens/Receipt.test.tsx && npx tsc --noEmit`. Expected: PASS, clean.
+  **as-built (2026-08-31) — what actually shipped, and the data-flow path it mirrors.**
 
-- [ ] **Step 5: Commit.**
+  **`fiscal` is a PROP of `Receipt`, not a field of `ReceiptData`** (`ReceiptData` is untouched). The receipt data is a snapshot of the sale, settled the moment it was rung; the fiscal block arrives afterwards and changes under it. Keeping them apart also makes the no-behavioural-change guarantee structural — a screen that passes no prop renders the pre-ETA markup byte for byte. The footer is its own exported component, `ReceiptFiscalFooter`, so the **reprint slip** (which renders its own receipt markup inside `SalesHistory.tsx`, not `Receipt`) shows the same block from the same code. It sits INSIDE `#receipt` so the print stylesheet's `#receipt *` rule keeps the QR on the paper copy.
+
+  **The renderer never talks to the server directly** — it has no device token. Every server call rides main: `PosMain` method → `ipcMain.handle("pos:…")` in `electron/main.ts` → `contextBridge` method in `electron/preload.ts` → `window.pos.…`. This task adds one channel by mirroring `reprintReceipt` exactly, its nearest sibling: **`PosMain.saleFiscalStatus(orderId)`** does `fetch(`${baseUrl}/api/pos/v1/sales/${orderId}/fiscal`, { headers: this.authHeaders() })` — the same device `Authorization` + `X-POS-Cashier` pair the route's `requirePosCashier` needs — plus `pos:saleFiscalStatus` in `main.ts` and `saleFiscalStatus` on `PosBridge`. Unlike `reprintReceipt` it **never throws**: it answers `null` for no pairing, no cashier, an unreachable backend, a non-2xx, and for the endpoint's own literal `null` body, because the receipt does the same thing with all of them — prints as a non-fiscal till would. That is `getOrders`'s swallow-and-degrade shape, chosen for the same offline-first reason.
+
+  **The poll lives in `apps/pos/src/fiscal/sale-fiscal.ts`, not in a component**, so it is testable without a render harness: `startSaleFiscalPoll(orderId, onFiscal, opts)` is a plain imperative loop returning its canceller, and `useSaleFiscal(orderId)` is a four-line hook over it. **The bound is the load-bearing part.** `accepted`/`rejected` are terminal; **`failed` is not** — the worker retries it — so "poll until it stops being failed" would poll forever against a permanently failed row. It polls every **3s** and stops at the **first** of: holding the QR **and** a terminal status, or **30s** elapsed (11 polls, the last landing on the cap). The verdict is minutes-to-hours away under post-clearance, so the till must not wait for it; the footer simply shows what it holds when polling stops. Because the endpoint re-encodes the same PNG on every call, `onFiscal` fires **only when a rendered field actually changed**, so the QR is rendered once and never churned.
+
+  **`OrderScreen` owns the post-sale flow** (`if (receipt) return <Receipt …>`). It keeps `fiscalOrderId`, set **after** `recordSale` resolves and only when `synced` — an unsynced offline sale has no server order id to look a record up by, so it prints unchanged — and cleared by "New order", which cancels the poll. **Nothing on the checkout path is awaited on fiscal:** the sale commits, the receipt renders, and the first poll goes out from an effect afterwards. **`SalesHistory`'s reprint** calls `fetchSaleFiscal(sale.id)` **once**, after the slip is already on screen and outside its busy/`finally` window — a read, never a submission, with nothing to wait for.
+
+- [x] **Step 4: Run to verify they pass.** `cd apps/pos && npx vitest run src/screens/Receipt.test.tsx && npx tsc --noEmit`. Expected: PASS, clean.
+
+  **as-built:** whole POS suite `npm --prefix apps/pos run test` → **154 passed / 13 files** (baseline 135/11: +7 `Receipt.test.tsx`, +12 `src/fiscal/sale-fiscal.test.ts`). `npm --prefix apps/pos run typecheck` (both `tsconfig.json` and `tsconfig.node.json`) clean. No root files touched, so the root `tsc`/`eslint` gates are unaffected. The poll tests drive fake timers through the cap and pin the four things a client gets wrong here: it stops at terminal+QR, it stops at the cap on `submitted`, it does **not** loop forever on `failed`, and a literal `null` body is the ordinary no-record answer rather than an error. `PosMain.saleFiscalStatus` itself has no main-process test — `pos-main.test.ts` covers pairing only, and its sibling fetch wrappers (`getOrders`, `listSales`, `reprintReceipt`) have none either; the endpoint is route-tested on the server side.
+
+- [x] **Step 5: Commit.**
 
 ```bash
 git add apps/pos/src/screens/Receipt.tsx apps/pos/src/screens/Receipt.test.tsx
 git commit -m "feat(pos): Receipt renders ETA UUID + QR once accepted, pending/rejected notices otherwise"
 ```
+
+  **as-built:** the message is `feat(pos): receipt fiscal footer — ETA QR + UUID at issuance, bounded status poll` (the sketch's "once accepted" is the stale rule this task corrects). It also stages what the sketch does not list: `apps/pos/src/fiscal/sale-fiscal.ts` + its test, `apps/pos/src/screens/{OrderScreen,SalesHistory}.tsx`, and the three main-process files that carry the new IPC channel (`electron/{pos-main,preload,main}.ts`). No trailers, per house convention.
 
 ---
 

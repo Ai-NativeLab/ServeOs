@@ -1,4 +1,45 @@
+import type { SaleFiscalStatus } from "../../electron/preload";
 import type { CartLine } from "../order/cart";
+
+/** What the footer renders of a sale's ETA e-receipt — the server's payload
+ *  minus `qrPayload`, which is the QR's INPUT and never printed itself. */
+export type ReceiptFiscal = Pick<SaleFiscalStatus, "status" | "etaUuid" | "qrImageDataUrl">;
+
+/**
+ * The ETA block at the foot of a receipt. Renders nothing at all without a
+ * `fiscal` value — the ordinary case for every non-EG tenant, and the country
+ * gate's no-behavioural-change guarantee: their receipt is byte-identical to
+ * the one this screen printed before ETA existed.
+ *
+ * THE QR PRINTS AS SOON AS IT EXISTS — at `pending`, not only at `accepted`.
+ * ETA e-receipts are post-clearance: the uuid is self-computed and the QR
+ * payload written at sale time, while the verdict lands minutes to hours later.
+ * The copy handed to the customer must already carry the code, so gating the
+ * image on `accepted` would print blank receipts all day and only ever show the
+ * QR on a reprint. `rejected` keeps the code visible too and adds a note beside
+ * it: the sale stands, and the correction is a dashboard action, not something
+ * the cashier can act on with the customer at the counter.
+ */
+export function ReceiptFiscalFooter({ fiscal }: { fiscal?: ReceiptFiscal | null }) {
+  if (!fiscal) return null;
+  return (
+    <div className="mt-4 border-t border-dashed border-border pt-3 text-center">
+      {fiscal.qrImageDataUrl ? (
+        <img src={fiscal.qrImageDataUrl} alt="ETA receipt QR" className="mx-auto h-28 w-28" />
+      ) : (
+        // The row exists but has not been finalized yet — rare, and it resolves
+        // on its own; the customer copy simply says so rather than lying.
+        <p className="text-[10px] text-muted-foreground">Fiscal receipt pending</p>
+      )}
+      {fiscal.etaUuid && (
+        <p className="mt-1 text-[10px] break-all text-muted-foreground">ETA UUID: {fiscal.etaUuid}</p>
+      )}
+      {fiscal.status === "rejected" && (
+        <p className="mt-1 text-[10px] text-status-danger-fg">Fiscal receipt rejected — correction pending</p>
+      )}
+    </div>
+  );
+}
 
 export type ReceiptTender = { method: string; amount: number };
 export type ReceiptData = {
@@ -19,7 +60,24 @@ export type ReceiptData = {
   synced: boolean;
 };
 
-export function Receipt({ data, onPrint, onNewOrder }: { data: ReceiptData; onPrint: () => void; onNewOrder: () => void }) {
+/**
+ * `fiscal` is a prop rather than a field of `ReceiptData` on purpose: the
+ * receipt data is a snapshot of the sale, settled the moment it was rung, while
+ * the fiscal block arrives afterwards and changes under it. Keeping it separate
+ * also keeps this render a pure function of its inputs — the poll lives in the
+ * screen that owns the receipt (see `../fiscal/sale-fiscal`), never here.
+ */
+export function Receipt({
+  data,
+  fiscal,
+  onPrint,
+  onNewOrder,
+}: {
+  data: ReceiptData;
+  fiscal?: ReceiptFiscal | null;
+  onPrint: () => void;
+  onNewOrder: () => void;
+}) {
   return (
     <div className="min-h-screen grid place-items-center bg-background px-4 py-6">
       <div className="w-full max-w-sm">
@@ -95,6 +153,9 @@ export function Receipt({ data, onPrint, onNewOrder }: { data: ReceiptData; onPr
           </div>
           <div className="mt-4 text-center text-xs text-muted-foreground">Cashier: {data.cashierName}</div>
           <div className="mt-1 text-center text-xs text-muted-foreground">Thank you!</div>
+          {/* Inside #receipt so the print stylesheet's `#receipt *` rule keeps
+              the QR visible on the customer copy. */}
+          <ReceiptFiscalFooter fiscal={fiscal} />
         </div>
 
         <div className="no-print mt-4 flex gap-2">
