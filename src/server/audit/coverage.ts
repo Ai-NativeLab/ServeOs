@@ -47,6 +47,10 @@ export const AUDITED_SERVICE_FILES = [
   // helper, and each of those calls recordFiscalAudit beside its write. Listed
   // for the forward coverage described at the head of this list.
   "src/server/fiscal/worker.ts",
+  // Real present coverage, unlike the three worker-shaped modules above: both
+  // of its writers are exported, both are owner actions on a compliance
+  // surface, and both emit (eta.config.updated / eta.device_credentials.updated).
+  "src/server/fiscal/config-service.ts",
   "src/server/catalog/service.ts",
   "src/server/catalog/variants.ts",
   "src/server/inventory/service.ts",

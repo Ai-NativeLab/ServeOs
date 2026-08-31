@@ -1,0 +1,412 @@
+import { requireFiscalPermission } from "../fiscal-permission";
+import { UnauthorizedError } from "@/server/rbac/authorize";
+import { getTenantById } from "@/server/tenancy";
+import { formatDayTime } from "@/lib/datetime";
+import {
+  getFiscalConfig,
+  listDeviceCredentials,
+  listFiscalDevices,
+  listSubmissions,
+} from "@/server/fiscal/config-service";
+import {
+  etaActivationStatusEnum,
+  etaCodeSourceEnum,
+  etaEnvironmentEnum,
+  etaPosCredentialStatusEnum,
+  type EtaFeeLineConfig,
+} from "@/server/fiscal/schema";
+import { saveFiscalConfigAction, saveDeviceCredentialAction, resubmitAction } from "./actions";
+import { PageHeader } from "@/components/dashboard/PageHeader";
+import { EmptyState } from "@/components/dashboard/EmptyState";
+import { SubmitButton } from "@/components/dashboard/SubmitButton";
+import { ToastForm } from "@/components/dashboard/ToastForm";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+
+const selectCls = "rounded-md border bg-background px-3 py-1.5 text-sm h-9";
+
+/** Status chips for the submission feed. `rejected` and `failed` are the two
+ *  rows an owner is here to see, so they read as warnings rather than as
+ *  neutral state. */
+const STATUS_CHIP: Record<string, string> = {
+  pending: "bg-muted text-muted-foreground",
+  submitted: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  accepted: "bg-green-500/10 text-green-700 dark:text-green-400",
+  rejected: "bg-red-500/10 text-red-700 dark:text-red-400",
+  failed: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+};
+
+function Field({
+  name, label, defaultValue, hint, placeholder, required,
+}: {
+  name: string;
+  label: string;
+  defaultValue?: string;
+  hint?: string;
+  placeholder?: string;
+  required?: boolean;
+}) {
+  return (
+    <div className="grid gap-1.5">
+      <Label htmlFor={name}>{label}</Label>
+      <Input id={name} name={name} defaultValue={defaultValue ?? ""} placeholder={placeholder} required={required} />
+      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+    </div>
+  );
+}
+
+/**
+ * A credential REFERENCE input. Write-only by design: the stored value is never
+ * sent to the browser, so the box is always blank and a blank box means "keep
+ * what is stored". The `configured` chip is the only feedback there can be —
+ * and it is OMITTED where the page cannot honestly answer the question (the
+ * device form's till is chosen client-side, so a server-rendered chip there
+ * would be a guess; the credentials table above says which till holds what).
+ */
+function RefField({ name, label, configured }: { name: string; label: string; configured?: boolean }) {
+  return (
+    <div className="grid gap-1.5">
+      <Label htmlFor={name}>
+        {label}{" "}
+        {configured !== undefined && (
+          <span className={configured ? "text-green-700 dark:text-green-400" : "text-muted-foreground"}>
+            {configured ? "· configured" : "· not set"}
+          </span>
+        )}
+      </Label>
+      <Input id={name} name={name} placeholder="ETA_CLIENT_SECRET_ACME" autoComplete="off" className="font-mono" />
+      <p className="text-xs text-muted-foreground">
+        The environment key holding the credential — never the credential itself. Leave blank to keep the stored one.
+      </p>
+    </div>
+  );
+}
+
+function FeeLineFields({ prefix, label, value }: { prefix: string; label: string; value?: EtaFeeLineConfig }) {
+  return (
+    <div className="grid gap-3 rounded-md border p-3">
+      <p className="text-sm font-medium">{label}</p>
+      <p className="text-xs text-muted-foreground">
+        Receipt v1.2 accepts only zero in its own fees slot, so a charge ships as its own receipt line and needs item
+        and tax codes exactly like a product. Leave the item code blank if this fee is never charged.
+      </p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field name={`${prefix}ItemCode`} label="Item code" defaultValue={value?.itemCode} />
+        <div className="grid gap-1.5">
+          <Label htmlFor={`${prefix}CodeSource`}>Code source</Label>
+          <select id={`${prefix}CodeSource`} name={`${prefix}CodeSource`} defaultValue={value?.codeSource ?? "gs1"} className={selectCls}>
+            {etaCodeSourceEnum.enumValues.map((v) => (
+              <option key={v} value={v}>{v.toUpperCase()}</option>
+            ))}
+          </select>
+        </div>
+        <Field name={`${prefix}TaxType`} label="Tax type" defaultValue={value?.taxType} placeholder="T1" />
+        <Field name={`${prefix}TaxSubType`} label="Tax sub-type" defaultValue={value?.taxSubType ?? ""} placeholder="V009" />
+        <Field name={`${prefix}UnitType`} label="Unit type" defaultValue={value?.unitType} placeholder="EA" />
+        <Field name={`${prefix}InternalCode`} label="Internal code" defaultValue={value?.internalCode} />
+      </div>
+      <Field name={`${prefix}Description`} label="Description" defaultValue={value?.description} />
+    </div>
+  );
+}
+
+export default async function FiscalPage() {
+  let ctx;
+  try {
+    ctx = await requireFiscalPermission();
+  } catch (e) {
+    if (e instanceof UnauthorizedError) {
+      return (
+        <>
+          <PageHeader eyebrow="Fiscal" title="ETA e-invoicing" />
+          <EmptyState
+            title="Not authorized"
+            description="ETA setup needs the fiscal:manage permission, which only the account owner holds. It names the taxpayer and points at the credential store, so it is deliberately narrower than every other admin screen."
+          />
+        </>
+      );
+    }
+    throw e; // requireDashboardUser redirects unauthenticated users
+  }
+
+  const [config, devices, credentials, submissions, tenant] = await Promise.all([
+    getFiscalConfig(ctx.tenantId),
+    listFiscalDevices(ctx.tenantId),
+    listDeviceCredentials(ctx.tenantId),
+    listSubmissions(ctx.tenantId, { limit: 25 }),
+    getTenantById(ctx.tenantId),
+  ]);
+  const tz = tenant?.timezone ?? "UTC";
+  const wire = config?.wireContext ?? null;
+  const address = wire?.branchAddress;
+  const credentialFor = new Map(credentials.map((c) => [c.deviceId, c]));
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Fiscal"
+        title="ETA e-invoicing"
+        description="Egypt Tax Authority setup: the taxpayer identity every receipt files under, the credential each till submits with, and the state of every document sent."
+      />
+
+      {tenant?.country !== "EG" && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400 mb-4">
+          This tenant&apos;s country is {tenant?.country ?? "unset"}, not EG. ETA submission is gated on country, so
+          nothing here will be sent until the business profile says Egypt.
+        </div>
+      )}
+
+      {config && !config.wireContextConfigured && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400 mb-4">
+          Seller details incomplete — missing {config.wireContextMissing.join(", ")}. Every one of these is mandatory in
+          receipt v1.2, so submission fails until they are filled in.
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      <h2 className="eyebrow text-muted-foreground mb-3">Taxpayer &amp; credentials</h2>
+      <Card className="p-5 mb-8">
+        <ToastForm action={saveFiscalConfigAction} successMessage="ETA configuration saved" className="grid gap-5">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field
+              name="rin" label="Registration number (RIN)" required
+              defaultValue={config?.rin} placeholder="200173707"
+              hint="Exactly 9 digits, as registered with ETA."
+            />
+            <Field name="clientId" label="ERP client id" required defaultValue={config?.clientId} />
+            <RefField name="clientSecretRef" label="ERP client secret reference" configured={config?.hasSecret ?? false} />
+            <div className="grid gap-3">
+              <RefField name="signingKeyRef" label="E-seal signing key reference" configured={config?.hasSigningKey ?? false} />
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" name="clearSigningKey" value="true" className="size-4 accent-(--color-primary)" />
+                Clear the e-seal reference (receipt-only tenants need none)
+              </label>
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="environment">Environment</Label>
+              <select id="environment" name="environment" defaultValue={config?.environment ?? "preprod"} className={selectCls}>
+                {etaEnvironmentEnum.enumValues.map((v) => (
+                  <option key={v} value={v}>{v}</option>
+                ))}
+              </select>
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="activationStatus">Activation status</Label>
+              <select id="activationStatus" name="activationStatus" defaultValue={config?.activationStatus ?? "not_configured"} className={selectCls}>
+                {etaActivationStatusEnum.enumValues.map((v) => (
+                  <option key={v} value={v}>{v.replace(/_/g, " ")}</option>
+                ))}
+              </select>
+              <p className="text-xs text-muted-foreground">
+                Only <code>active</code> submits. Anything else skips submission entirely rather than spraying documents
+                ETA will refuse.
+              </p>
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="onlineDeviceId">Device for online orders</Label>
+              <select id="onlineDeviceId" name="onlineDeviceId" defaultValue={config?.onlineDeviceId ?? ""} className={selectCls}>
+                <option value="">None — till sales only</option>
+                {devices.map((d) => (
+                  <option key={d.id} value={d.id}>{d.label}{d.revoked ? " (revoked)" : ""}</option>
+                ))}
+              </select>
+              <p className="text-xs text-muted-foreground">
+                A web or WhatsApp order was rung on no device, but ETA scopes the receipt chain to one. This till carries
+                those sales.
+              </p>
+            </div>
+          </div>
+
+          <div className="border-t pt-5 grid gap-4">
+            <p className="text-sm font-medium">Seller details (receipt v1.2)</p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field name="sellerName" label="Trade name" required defaultValue={wire?.sellerName} />
+              <Field name="activityCode" label="Activity code" required defaultValue={wire?.activityCode} />
+              <Field name="branchCode" label="Branch code" required defaultValue={wire?.branchCode} />
+              <Field name="syndicateLicenseNumber" label="Syndicate licence number" defaultValue={wire?.syndicateLicenseNumber} placeholder="C" />
+              <Field
+                name="buyerIdThreshold" label="Buyer-identification threshold"
+                defaultValue={wire?.buyerIdThreshold} placeholder="150000.00"
+                hint="Blank uses ETA's published 150,000 EGP. A plain decimal amount."
+              />
+            </div>
+            <p className="text-sm font-medium mt-2">Branch address</p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field name="addrCountry" label="Country" required defaultValue={address?.country} placeholder="EG" />
+              <Field name="addrGovernate" label="Governate" required defaultValue={address?.governate} />
+              <Field name="addrRegionCity" label="Region / city" required defaultValue={address?.regionCity} />
+              <Field name="addrStreet" label="Street" required defaultValue={address?.street} />
+              <Field name="addrBuildingNumber" label="Building number" required defaultValue={address?.buildingNumber} />
+              <Field name="addrPostalCode" label="Postal code" defaultValue={address?.postalCode} />
+              <Field name="addrFloor" label="Floor" defaultValue={address?.floor} />
+              <Field name="addrRoom" label="Room" defaultValue={address?.room} />
+              <Field name="addrLandmark" label="Landmark" defaultValue={address?.landmark} />
+              <Field name="addrAdditionalInformation" label="Additional information" defaultValue={address?.additionalInformation} />
+            </div>
+          </div>
+
+          <div className="border-t pt-5 grid gap-4">
+            <p className="text-sm font-medium">Fee lines</p>
+            <FeeLineFields prefix="feeServiceCharge" label="Service charge" value={wire?.feeLines?.serviceCharge} />
+            <FeeLineFields prefix="feeDelivery" label="Delivery fee" value={wire?.feeLines?.delivery} />
+          </div>
+
+          <div><SubmitButton>Save configuration</SubmitButton></div>
+        </ToastForm>
+      </Card>
+
+      {/* ------------------------------------------------------------------ */}
+      <h2 className="eyebrow text-muted-foreground mb-3">Device credentials</h2>
+      {credentials.length > 0 && (
+        <Card className="p-0 overflow-hidden mb-4">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Till</TableHead>
+                <TableHead>ETA serial</TableHead>
+                <TableHead>Client id</TableHead>
+                <TableHead>Secrets</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Activated</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {credentials.map((c) => (
+                <TableRow key={c.deviceId}>
+                  <TableCell className="font-medium">{c.deviceLabel ?? c.deviceId.slice(0, 8)}</TableCell>
+                  <TableCell className="font-mono text-xs">{c.etaSerial}</TableCell>
+                  <TableCell className="font-mono text-xs">{c.clientId}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {[c.hasSecret1 && "secret 1", c.hasSecret2 && "secret 2", c.hasPresharedKey && "pre-shared key"]
+                      .filter(Boolean)
+                      .join(" · ") || "none"}
+                  </TableCell>
+                  <TableCell className="text-xs">{c.status}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {c.activatedAt ? formatDayTime(c.activatedAt, tz) : "—"}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Card>
+      )}
+
+      <Card className="p-5 mb-8 max-w-2xl">
+        {devices.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            Pair a POS device first — ETA issues credentials per registered till.
+          </p>
+        ) : (
+          <ToastForm action={saveDeviceCredentialAction} successMessage="Device credential saved" className="grid gap-4">
+            <p className="text-sm font-medium">Record a till&apos;s ETA credential</p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-1.5">
+                <Label htmlFor="deviceId">Till</Label>
+                <select id="deviceId" name="deviceId" className={selectCls} required defaultValue="">
+                  <option value="" disabled>Select a till</option>
+                  {devices.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.label}
+                      {credentialFor.has(d.id) ? " · registered" : ""}
+                      {d.revoked ? " (revoked)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <Field
+                name="etaSerial" label="ETA serial" required
+                hint="As registered at pos.eta.gov.eg — at most 100 characters, and part of every receipt this till issues."
+              />
+              <Field name="deviceClientId" label="Device client id" required />
+              <div className="grid gap-1.5">
+                <Label htmlFor="status">Status</Label>
+                <select id="status" name="status" className={selectCls} defaultValue="">
+                  <option value="">Leave unchanged</option>
+                  {etaPosCredentialStatusEnum.enumValues.map((v) => (
+                    <option key={v} value={v}>{v}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Only <code>active</code> may submit. <code>retired</code> is final — the receipt chain is keyed on the
+                  till.
+                </p>
+              </div>
+              <RefField name="clientSecret1Ref" label="Client secret 1 reference" />
+              <RefField name="clientSecret2Ref" label="Client secret 2 reference" />
+              <RefField name="presharedKeyRef" label="Pre-shared key reference" />
+              <Field name="posOsVersion" label="POS OS version" placeholder="IOS" />
+              <Field name="posModelFramework" label="POS model framework" placeholder="1" />
+            </div>
+            <div><SubmitButton>Save credential</SubmitButton></div>
+          </ToastForm>
+        )}
+      </Card>
+
+      {/* ------------------------------------------------------------------ */}
+      <h2 className="eyebrow text-muted-foreground mb-3">Submissions</h2>
+      {submissions.rows.length === 0 ? (
+        <EmptyState title="No submissions yet" description="Fiscal documents appear here as sales and refunds are rung." />
+      ) : (
+        <Card className="p-0 overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>When</TableHead>
+                <TableHead>Document</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>ETA uuid</TableHead>
+                <TableHead>Attempts</TableHead>
+                <TableHead>Last error</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {submissions.rows.map((row) => (
+                <TableRow key={row.id}>
+                  <TableCell className="whitespace-nowrap text-muted-foreground text-xs">
+                    {formatDayTime(row.createdAt, tz)}
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    {row.docType}
+                    {row.referenceOldUuid && (
+                      <span className="block text-muted-foreground">correction of {row.referenceOldUuid.slice(0, 12)}…</span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_CHIP[row.status] ?? ""}`}>
+                      {row.status}
+                    </span>
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">{row.etaUuid ? `${row.etaUuid.slice(0, 12)}…` : "—"}</TableCell>
+                  <TableCell className="text-xs">{row.attempts}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground max-w-xs truncate" title={row.lastError ?? ""}>
+                    {row.lastError ?? "—"}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {/* Only a REJECTED document with an ETA uuid can be superseded: ETA
+                        does not accept a fix in place, and a rejection that never
+                        reached ETA has no uuid for a correction to reference. */}
+                    {row.status === "rejected" && row.etaUuid && (
+                      <ToastForm action={resubmitAction} successMessage="Correction queued">
+                        <input type="hidden" name="submissionId" value={row.id} />
+                        <SubmitButton size="sm" variant="ghost">Resubmit</SubmitButton>
+                      </ToastForm>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Card>
+      )}
+      {submissions.hasMore && (
+        <p className="mt-3 text-xs text-muted-foreground">
+          Showing the 25 most recent documents.
+        </p>
+      )}
+    </>
+  );
+}

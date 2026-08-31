@@ -16,7 +16,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
     unreadNotificationCount(tenantId, user.id, roleKeys),
   ]);
   const terms = getVerticalTerms(selectStorefrontTemplate(tenant?.vertical as VerticalId));
-  const items = dashboardNavItems(roleKeys, terms.catalogNoun.en);
+  const items = dashboardNavItems(roleKeys, terms.catalogNoun.en, tenant?.country);
 
   return (
     <div className="min-h-screen flex bg-background text-foreground">

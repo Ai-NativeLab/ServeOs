@@ -581,7 +581,7 @@ git commit -m "feat(fiscal): drainEtaSubmissions worker — claim/build/sign/sub
   - `function getSaleFiscalStatus(tenantId, orderId): Promise<{ status; etaUuid: string | null; qrPayload: string | null; qrImageDataUrl: string | null } | null>` — generates the QR PNG data URL via the `qrcode` root dep when `accepted`.
   - `function requireFiscalPermission(): Promise<DashboardContext>`.
 
-- [ ] **Step 1: Write the failing permission test.** Append to `src/server/rbac/permissions.test.ts`:
+- [x] **Step 1: Write the failing permission test.** Append to `src/server/rbac/permissions.test.ts`:
 
 ```ts
 describe("fiscal:manage", () => {
@@ -593,30 +593,71 @@ describe("fiscal:manage", () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails.** `npx vitest run src/server/rbac/permissions.test.ts`. Expected: FAIL.
+- [x] **Step 2: Run to verify it fails.** `npx vitest run src/server/rbac/permissions.test.ts`. Expected: FAIL.
 
-- [ ] **Step 3: Implement the permission.** In `src/server/rbac/permissions.ts`, add `"fiscal:manage"` to `PERMISSIONS` and append it to the `owner` array in `ROLE_PERMISSIONS` **only**.
+  **as-built (2026-08-31):** red confirmed — 2 failed / 14 passed before the implementation, then 16 passed after.
 
-- [ ] **Step 4: Write failing config-service tests.** Create `src/server/fiscal/config-service.test.ts`:
+- [x] **Step 3: Implement the permission.** In `src/server/rbac/permissions.ts`, add `"fiscal:manage"` to `PERMISSIONS` and append it to the `owner` array in `ROLE_PERMISSIONS` **only**.
+
+  **as-built (2026-08-31):** the test also pins `pharmacist` and `super_admin` as non-holders — the plan's sketch named only manager/staff, and a permission this narrow is worth asserting against every role rather than the two that happened to come to mind.
+
+- [x] **Step 4: Write failing config-service tests.** Create `src/server/fiscal/config-service.test.ts`:
   - `updateFiscalConfig` then `getFiscalConfig` returns the registration/clientId/environment/activationStatus and `hasSecret: true`, and **never** returns `clientSecretRef`/`signingKeyRef` values (masking — the load-bearing secrets test).
   - `getSaleFiscalStatus` returns `null` while pending, and `{ status: "accepted", etaUuid, qrPayload, qrImageDataUrl }` (a `data:image/png;base64,…` string) once the row is accepted.
   - RLS: cross-tenant reads of all three tables return nothing.
 
-- [ ] **Step 5: Run to verify they fail, then implement.** Create `src/server/fiscal/config-service.ts` (reads/writes via `withTenant`; QR via `import QRCode from "qrcode"` → `QRCode.toDataURL(qrPayload)`), and `src/app/dashboard/fiscal-permission.ts` (mirror `src/app/dashboard/audit-permission.ts`: `requireDashboardUser` + `authorize(ctx.roleKeys, "fiscal:manage")`).
+  **as-built (2026-08-31):** 22 tests, all three of the plan's cases plus the ones a security-sensitive surface needs. **The masking test is value-based, not shape-based:** every `*Ref` column holds a distinctive sentinel, and `expectNoRefValues` walks every string in a return value (or an audit row) looking for one as a SUBSTRING. A `toEqual` on a hand-written shape would let a field added later slip past, and the guarantee is about values, not keys. It is **mutation-checked**: adding `secretRef: row.clientSecretRef` to the config view makes it fail with `updateFiscalConfig leaked env://…`. Also covered: the audit trail (audit rows are readable by every `audit:view` holder — owner AND manager — a strictly wider audience than `fiscal:manage`), the thrown `FiscalConfigInputError`, and a closing end-to-end case that asks `resolveEtaConfig` for the real credentials, proving the refs were stored verbatim and the masking is a read-side guarantee rather than a lossy write.
 
-- [ ] **Step 6: Implement the routes + page.** (First read `node_modules/next/dist/docs/` per `AGENTS.md`; follow existing `src/app/api/dashboard/**` + `src/app/api/pos/v1/**` conventions.)
+  Beyond the plan's list: RIN/serial/threshold accept-reject tables; every mandatory wire-context path (the exact set `requireWireContext` enforces); cross-tenant and nonexistent `onlineDeviceId`; the credential status-transition table; blank-ref-means-keep vs. explicit-null-means-clear; `getSaleFiscalStatus` walking null → pending-unfinalized → pending-finalized → accepted through a **real** `recordSale` (so the QR comes from `./finalize`'s stored payload, not a fixture) plus the correction-supersedes-rejection case; and `listSubmissions` ordering, pagination and the page cap.
+
+- [x] **Step 5: Run to verify they fail, then implement.** Create `src/server/fiscal/config-service.ts` (reads/writes via `withTenant`; QR via `import QRCode from "qrcode"` → `QRCode.toDataURL(qrPayload)`), and `src/app/dashboard/fiscal-permission.ts` (mirror `src/app/dashboard/audit-permission.ts`: `requireDashboardUser` + `authorize(ctx.roleKeys, "fiscal:manage")`).
+
+  **as-built (2026-08-31):** the service is wider than the plan's four functions, because the dashboard and the POS both need more than the plan sketched: `getFiscalConfig` / `updateFiscalConfig` / `listDeviceCredentials` / `getDeviceCredential` / `upsertDeviceCredential` / `getSaleFiscalStatus` / `listSubmissions` / `getSubmissionById` / `listFiscalDevices`, plus one input-error class.
+
+  - **`zod` is now a declared runtime dependency** (`package.json` + lockfile). It was already in `node_modules` as a *dev-only transitive* of `eslint-plugin-react-hooks`, and importing an eslint plugin's transitive dep from `src/server` would be a live production hazard. Nothing else in the repo uses zod (the house convention is hand-rolled validators), so this is a **deliberate, reviewable dependency addition**: the wire context is a nested block of 20+ fields whose per-field paths drive the form's error messages, which is exactly what hand-rolling gets wrong. `zod` never leaves the service — `ZodError` is converted to one `FiscalConfigInputError` carrying `{ path, message }[]`, so no route imports it.
+  - **`getFiscalConfig` also returns `wireContext` itself**, which the plan's masked shape did not list. It holds no credential of any kind (trade name, activity code, branch address — all printed on every receipt), and without it the config form could not show what is stored, so every save would mean retyping eleven fields to change one. The deep masking assertion covers it.
+  - **Write-only refs are optional on update.** The form cannot display a reference, so requiring one on every save means retyping a credential pointer to change the environment dropdown — and a mistyped pointer breaks submission silently. Blank means "keep"; a required-on-create check catches the first save. `signingKeyRef` distinguishes `undefined` (keep) from `null` (clear), because "no e-seal" is the ordinary state of a receipt-only tenant and blank-means-keep would otherwise make it unreachable.
+  - **`upsertDeviceCredential` enforces a documented status transition table** (`registered → active`, `active → expired`, `expired → active`, `* → retired`, and `retired` terminal). `retired` is terminal because `eta_device_chains` keys the uuid chain on the device: reviving a retired credential is how a till comes back with a chain someone believes is finished. `activatedAt` is stamped by the service on the transition into `active`, never accepted from the caller.
+  - **`getSaleFiscalStatus` takes the NEWEST row** when a sale has several. The live partial indexes cap non-rejected rows at one per (tenant, docType, order), so the only way to have more is a rejection superseded by a correction — and the correction is the document that counts. The QR is rendered from the STORED `qrPayload` only; recomputing it could print a code that disagrees with the hashed document.
+  - `fiscal-permission.ts` exports **both** `requireFiscalPermission` (the plan's audit-permission mirror, used by the page) and `resolveFiscalContext` (the `purchasing-permission.ts` ladder, used by the routes). Without the second, an API caller with no session gets a 307 to the HTML login form, which a `fetch` cannot act on.
+
+- [x] **Step 6: Implement the routes + page.** (First read `node_modules/next/dist/docs/` per `AGENTS.md`; follow existing `src/app/api/dashboard/**` + `src/app/api/pos/v1/**` conventions.)
   - `GET/PUT /api/dashboard/fiscal/config` — `requireFiscalPermission` → `getFiscalConfig` / `updateFiscalConfig`; 403 on `UnauthorizedError`.
   - `GET /api/pos/v1/sales/[orderId]/fiscal` — `requirePosCashier` + `assertPermission(ctx, "pos:sell")` → `getSaleFiscalStatus(ctx.tenantId, orderId)`; returns `{ status, etaUuid, qrPayload, qrImageDataUrl }` or `null`.
   - `src/app/dashboard/fiscal/page.tsx` — owner view: masked config form (registration, clientId, environment, activation status, "secret configured" indicator) + a submission-status table (docType, order/refund, status, etaUuid, attempts, lastError) so `failed`/`rejected` rows are visible for resubmission.
 
-- [ ] **Step 7: Run tests + typecheck + lint.** `npx vitest run src/server/rbac/permissions.test.ts src/server/fiscal/config-service.test.ts && npx tsc --noEmit && npx eslint src/server/fiscal src/server/rbac src/app/api/dashboard/fiscal src/app/api/pos/v1/sales src/app/dashboard/fiscal`. Expected: PASS, clean.
+  **as-built (2026-08-31).** Next 16.2.9; the bundled docs (`01-app/03-api-reference/03-file-conventions/route.md`, `dynamic-routes.md`, `01-getting-started/15-route-handlers.md`) were read first and shaped two decisions:
 
-- [ ] **Step 8: Commit.**
+  - **The POS route is `sales/[id]/fiscal`, NOT `sales/[orderId]/fiscal`.** Next refuses two different slug names at the same dynamic position — `build/validate-app-paths.js` still carries "You cannot use different slug names for the same dynamic path" in this version — and the existing siblings (`sales/[id]/{payments,refund,reprint}`) already claim `[id]`. `npx next typegen` confirms all new paths register, `/api/pos/v1/sales/[id]/fiscal` included.
+  - `params` is a **Promise** in this version and is awaited (`{ params }: { params: Promise<{ id: string }> }`), matching both the docs and the sibling routes. The `RouteContext<'/users/[id]'>` helper exists but the house style is the explicit type, so that is what is used.
+  - **Absent-yet is a `null` body with a 200, not a 404.** A 404 would make the POS treat a non-EG tenant's ordinary receipt as an error; `null` is what the country gate's no-behavioural-change guarantee needs.
+
+  Routes beyond the plan's two, because the dashboard needs them: `GET /api/dashboard/fiscal/devices` (devices + masked credentials in one response), `GET/PUT /api/dashboard/fiscal/devices/[deviceId]`, and `POST /api/dashboard/fiscal/submissions/[id]/resubmit`.
+
+  **The resubmission audit event — Task 5's allowlist debt, paid.** `enqueueCorrectedResubmission` is allowlisted in `audit/coverage.ts` precisely because it has no actor in scope and "the who-asked-for-it event belongs to Task 6's dashboard route". It now lives in **`src/app/dashboard/fiscal/resubmit.ts`**, shared by the route AND the page's server action, rather than inline in the route as the brief sketched: the dashboard reaches the same act from two directions, and duplicating the emission across two callers is how one of them silently loses it. Insert first, then audit — the enqueue opens its own transaction, so the two cannot be atomic, and an unattributed correction (whose lifecycle the worker still audits) beats an audit row claiming a correction that was never queued.
+
+  **One leak the review found and closed: the log line.** Every other route in the codebase logs its unexpected failures as `{ …, error: e }`, and is right to — but a Drizzle failure puts the failing query's PARAMETERS in `error.message` (`params: <tenant>,<rin>,<client_secret_ref>,…`), so the house line would have written the credential references into the deployment's log stream on any constraint or connectivity error. Both fiscal write routes log `redactedCause(e)` instead — error class name, plus a Postgres error's SQLSTATE and violated constraint, none of which can carry a value — pinned by a test that feeds it a real Drizzle-shaped error and asserts the refs are gone.
+
+  Also landed here, out of the plan's Task 5 Step 5 debt: **`/api/fiscal/worker` on its own `*/15` cron entry** in `vercel.json`, with the `drainEtaSubmissions` call and its `TODO(schedule)` **removed** from `/api/notifications/worker` so the drain has exactly one owner. The route carries a **deploy-review gate**: Vercel Hobby crons are daily-only, so a 15-minute schedule needs Pro or above, and no EG tenant should go live until the tier is confirmed — `CLAIM_LEASE_MS` and the fetch timeout in `worker.ts` are sized for sub-hourly.
+
+  The page ships a nav entry gated on **`country === "EG"` AND `fiscal:manage`** (`dashboardNavItems` gained an optional `country`). Defaulting to hidden keeps the existing exact-array owner-nav assertion honest; an owner outside Egypt would otherwise be shown a setup screen that can never submit anything.
+
+- [x] **Step 7: Run tests + typecheck + lint.** `npx vitest run src/server/rbac/permissions.test.ts src/server/fiscal/config-service.test.ts && npx tsc --noEmit && npx eslint src/server/fiscal src/server/rbac src/app/api/dashboard/fiscal src/app/api/pos/v1/sales src/app/dashboard/fiscal`. Expected: PASS, clean.
+
+  **as-built (2026-08-31):** ran wider than the plan's scope, since this task touches rbac, audit coverage and the shared nav. `src/server/{fiscal,audit,rbac}` + `src/app` + `src/components`: **45 files / 516 tests passed**. Full `npm test`: **189 files / 1532 tests passed**. `npx tsc --noEmit` clean. `npx eslint src/server/fiscal src/server/rbac src/app src/components/dashboard` reports only 6 **pre-existing** `no-html-link-for-pages` errors in `admin/`, `login/` and `register/` pages, none of them touched here; nothing new. `npx next build` succeeds with all seven new paths registered as dynamic server functions, which is the check that would have caught a route conflict.
+
+  **Route tests exist** — there is a house pattern (`src/app/api/purchase-orders/**/route.test.ts`), and it is followed: mock the ONE seam that needs a live HTTP request (`requireDashboardUser`) and leave everything below it real, so `authorize(roleKeys, "fiscal:manage")`, the config service, RLS and the audit chain are exercised rather than stubbed into agreement. `resolveFiscalContext` is deliberately NOT mocked — the point is that a manager is really refused. Covered: masked GET/PUT over the serialized response, 403 for manager/staff/pharmacist with nothing written, 400-with-field-path for a bad RIN and for malformed JSON, and the resubmit route's 201 + audit row + 403 + 404 + all three 409 preconditions.
+
+- [x] **Step 8: Commit.**
 
 ```bash
 git add src/server/rbac/permissions.ts src/server/rbac/permissions.test.ts src/server/fiscal/config-service.ts src/server/fiscal/config-service.test.ts src/app/dashboard/fiscal-permission.ts src/app/api/dashboard/fiscal src/app/api/pos/v1/sales src/app/dashboard/fiscal
 git commit -m "feat(fiscal): fiscal:manage (owner) + masked config API + POS fiscal-status endpoint + config dashboard"
 ```
+
+  **as-built (2026-08-31):** one commit, and it also stages what the sketch above does not list — `package.json`/`package-lock.json` (the `zod` declaration), `vercel.json` + `src/app/api/fiscal/` + `src/app/api/notifications/worker/route.ts` (the dedicated fiscal cron and the single-ownership move), `src/server/audit/coverage.ts` (`config-service.ts` joins `AUDITED_SERVICE_FILES` with **real present coverage**: both its writers are exported and both emit, so no new allowlist entry was needed), and `src/components/dashboard/{nav-items,nav-items.test,DashboardNav}.ts(x)` + `src/app/dashboard/layout.tsx` (the country-gated nav entry). Actual message: `feat(fiscal): fiscal:manage config service + dashboard/POS routes, dedicated 15-min fiscal cron` — no trailers, per house convention.
+
+  **Two new audit actions ship with it**, per this task's brief: `eta.config.updated` (entity `eta_tenant_config`) and `eta.device_credentials.updated` (entity `eta_pos_credential`), both with metadata that names the **fields** that changed and never their values — audit rows are readable by every `audit:view` holder, a wider audience than `fiscal:manage`. Plus `eta.submission.resubmission_requested`, which is the allowlist debt described in Step 6.
 
 ---
 
