@@ -491,9 +491,9 @@ Mirrors Spec 5's outbox worker. Claims `pending|failed` rows (`SELECT … FOR UP
   - `const MAX_ATTEMPTS = 6` (or config).
   - `function drainEtaSubmissions(opts?: { provider?: FiscalProvider; limit?: number }): Promise<{ processed: number }>` — `provider` injectable so tests pass a **fake**.
 
-- [ ] **Step 0 (added 2026-08-31, review finding): reconciliation sweep** — the worker pass must also detect EG orders older than a threshold with NO eta_submissions row (a thrown sale-path enqueue leaves no row, so no row-based monitoring can see it) and enqueue them, closing the only gap where "never block the sale" trades away the compliance guarantee.
+- [x] **Step 0 (added 2026-08-31, review finding): reconciliation sweep** — the worker pass must also detect EG orders older than a threshold with NO eta_submissions row (a thrown sale-path enqueue leaves no row, so no row-based monitoring can see it) and enqueue them, closing the only gap where "never block the sale" trades away the compliance guarantee.
 
-- [ ] **Step 1: Write the failing tests.** Create `src/server/fiscal/worker.test.ts`, injecting a stubbed provider (accept / reject / throw variants):
+- [x] **Step 1: Write the failing tests.** Create `src/server/fiscal/worker.test.ts`, injecting a stubbed provider (accept / reject / throw variants):
   - **Accept:** a `pending e_receipt` → the worker records `etaUuid`/`qrPayload`, sets `status='accepted'` + `acceptedAt`, and emits the `eta.submission.accepted` audit event.
   - **Reject:** the provider returns `rejected` → `status='rejected'`, `responseJson` captured, `lastError` set, owner notified, and `eta.submission.rejected` emitted. The sale stands.
   - **Transient error:** the provider throws → `attempts++`, `status='failed'`, backoff set; after `MAX_ATTEMPTS` the row stays `failed` and a Spec 5 `critical` `notify` fires **once**.
@@ -501,9 +501,9 @@ Mirrors Spec 5's outbox worker. Claims `pending|failed` rows (`SELECT … FOR UP
   - **Concurrency:** two `drainEtaSubmissions` runs over the same row submit it **exactly once** (`SKIP LOCKED`).
   - **Credit-note deferral:** a `credit_note` whose parent receipt is not yet `accepted` is left `pending` and **not** submitted; once the parent has an `etaUuid`, the next pass submits it with `referenceUuid` = the parent UUID.
 
-- [ ] **Step 2: Run to verify they fail.** `npx vitest run src/server/fiscal/worker.test.ts`. Expected: FAIL — module not found.
+- [x] **Step 2: Run to verify they fail.** `npx vitest run src/server/fiscal/worker.test.ts`. Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement `drainEtaSubmissions`.** Create `src/server/fiscal/worker.ts`. Per claimed row, inside a `withTenant` tx:
+- [x] **Step 3: Implement `drainEtaSubmissions`.** Create `src/server/fiscal/worker.ts`. Per claimed row, inside a `withTenant` tx:
   1. `resolveEtaConfig(tenantId)` → if `null` (config inactive), leave `pending`, skip (durable, no spray at ETA).
   2. Load the order/refund + its lines + resolve `product_tax_codes`.
   3. For `credit_note`: load the parent `e_receipt` submission; if it has no `etaUuid`, **defer** (skip without incrementing attempts).
@@ -515,16 +515,32 @@ Mirrors Spec 5's outbox worker. Claims `pending|failed` rows (`SELECT … FOR UP
 
 Use `SELECT … FOR UPDATE SKIP LOCKED` on the claim query (raw `sql` — the same pattern the Spec 5 outbox worker and `pg_advisory_xact_lock` precedent establish).
 
-- [ ] **Step 4: Run to verify they pass.** `npx vitest run src/server/fiscal/worker.test.ts && npx tsc --noEmit`. Expected: PASS, clean.
+- [x] **Step 4: Run to verify they pass.** `npx vitest run src/server/fiscal/worker.test.ts && npx tsc --noEmit`. Expected: PASS, clean.
 
-- [ ] **Step 5: Register the schedule.** Wire `drainEtaSubmissions` into the same scheduler that runs Spec 5's outbox worker (cron/scheduled route). If that scheduler does not exist yet, add a documented invocation point + a `// TODO: schedule alongside Spec 5 outbox worker` and note it in Self-Review — the function is complete and callable regardless.
+- [x] **Step 5: Register the schedule.** Wire `drainEtaSubmissions` into the same scheduler that runs Spec 5's outbox worker (cron/scheduled route). If that scheduler does not exist yet, add a documented invocation point + a `// TODO: schedule alongside Spec 5 outbox worker` and note it in Self-Review — the function is complete and callable regardless.
 
-- [ ] **Step 6: Commit.**
+- [x] **Step 6: Commit.**
 
 ```bash
 git add src/server/fiscal/worker.ts src/server/fiscal/worker.test.ts
 git commit -m "feat(fiscal): drainEtaSubmissions worker — claim/build/sign/submit with retry, backoff, idempotency, audit + notify"
 ```
+
+  **as-built (2026-08-31):**
+
+  - **Files, vs the plan's two.** `src/server/fiscal/worker.ts` (+ `worker.test.ts`) as specified, plus three the plan did not anticipate:
+    - `src/server/fiscal/finalize.ts` — steps 1-2 (build + hash + chain advance) split out of the worker, because `recordSale` now calls them too and the sale path must not import the ETA HTTP client. Holds `finalizeSubmissionRow`, `enqueueAndFinalizeReceipt` and `reconcileMissingReceipts`.
+    - `src/server/fiscal/parse-wire.ts` (+ test) — the inverse of `stringifyWire`; see the `request_json` note below.
+    - `src/server/fiscal/enqueue.ts` gains `enqueueCorrectedResubmission` (addendum C3), beside the arbiter constants it shares. Not wired to any trigger: Task 6's dashboard owns that, and it is allowlisted in `audit/coverage.ts` because it has no actor in scope — **Task 6 must emit the who-asked-for-it audit event at the route.**
+  - **Finalization happens at ENQUEUE time, not only in the worker** (addendum C5 — the printed customer copy must carry the QR + uuid at issuance). Finalization is pure-local (chain read, serialize, SHA-256), so `recordSale`'s existing after-commit try/catch now calls `enqueueAndFinalizeReceipt`; the worker finalizes any row still lacking an `etaUuid` as its first per-row step, which is the authoritative fallback. Lock order inside that one transaction is **tenant, then device** (`pg_advisory_xact_lock`), documented at the call site so `recordAuditEvent`'s own tenant lock later in a transaction can never invert it.
+  - **Two migrations, not one.** `0049` adds `eta_tenant_config.online_device_id` (FK `pos_devices`, ON DELETE restrict) and `wire_context_json` (the receipt v1.2 seller fields ServeOS stores nowhere else). `0050` changes `eta_submissions.request_json` from **jsonb to json** — a correctness fix found while testing: jsonb normalizes property order (verified against this deployment), and ETA's serialization hashes properties *in document order*, so a document round-tripped through a jsonb column can never be re-serialized into the bytes it was hashed from. `json` stores the text verbatim. The column is written with `sql`${stringifyWire(wire)}::json`` and read back via `request_json::text` + `parseWire`, which is why that module exists.
+  - **Failure taxonomy** implemented exactly as `provider.ts` specifies, with one coordinator decision on top: `BadStructure`, `MaximumSizeExceeded` and `IncorrectSubmitter` arrive as `EtaTransportError` but are treated as PERMANENT (the identical payload fails identically), per the AMBIGUITY note that error class already carries. `MAX_ATTEMPTS = 6`; the terminal alert fires exactly once because a permanent failure parks `attempts` at the cap and the claim query excludes it.
+  - **Claim** is the outbox worker's shape — `UPDATE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED)` — but leases via `nextAttemptAt` rather than a status flip: `eta_submissions.status` is the FISCAL lifecycle, and adding a transport state to it would make the fiscal record lie. `submitted` rows are claimed too, for the poll phase; a poll that comes back `InProgress` costs no attempt.
+  - **Scheduling** joined the existing Vercel cron route (`/api/notifications/worker`) alongside the email and WhatsApp drains. Its `0 3 * * *` slot is inherited and **too slow for a 24-hour submission window** — a `TODO(schedule)` at the call site says so; give this drain its own ~15-minute entry before an EG tenant goes live.
+  - **Resubmission guard** (plan Step 5's intent): the submit-vs-poll branch keys on `submissionUuid`, NOT on `status = 'submitted'`. A poll that dies in transit leaves the row `failed` while still holding a submissionUuid, and branching on status would have re-POSTed a document ETA already holds — outside its ~10-minute duplicate window that files a second copy of the receipt. Pinned by a regression test.
+  - **Order of work** was implementation-then-tests, not the plan's strict red-first (Steps 1-2). The tests did their job regardless: the first run failed 5 of 19 and is what surfaced the jsonb ordering bug above.
+  - One unrelated test was adjusted: `pos/offline-lifecycle.test.ts`'s concurrent-ingest case asserted that the losing run reports all 8 events as duplicates, which assumed both runs advance at the same rate. EG sale events now cost visibly more (inline finalization), so the two interleave; the assertion is now per-event (exactly one `applied` and one `duplicate` across the two runs), which is stronger and scheduling-independent.
+  - Actual commit message: `feat(fiscal): finalize-at-enqueue + drainEtaSubmissions worker (chain, poll, reconciliation, resubmission)` — no trailers, per house convention.
 
 ---
 

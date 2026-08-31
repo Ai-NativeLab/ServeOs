@@ -4,7 +4,7 @@ import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { tenants } from "@/server/tenancy/schema";
 import { etaSubmissions } from "./schema";
-import { isFiscalEnabled, enqueueFiscalDocument } from "./enqueue";
+import { isFiscalEnabled, enqueueFiscalDocument, enqueueCorrectedResubmission } from "./enqueue";
 import { seedPosContext, openShiftForCtx } from "@/server/pos/test-helpers";
 import { recordSale } from "@/server/pos/record-sale";
 import { issueRefund, type RefundActor } from "@/server/pos/refund";
@@ -214,5 +214,101 @@ describe("issueRefund — fiscal enqueue (country gate)", () => {
 
     const rows = await submissionsByRefund(s.tenantId, refund.refundId);
     expect(rows).toHaveLength(0);
+  });
+});
+
+/**
+ * A rejected document, as ETA would leave it: refused, but carrying the
+ * self-computed uuid it was refused under — which is the only thing a
+ * correction can reference. Written directly rather than driven through the
+ * worker, so these assertions are about `enqueueCorrectedResubmission` alone.
+ */
+async function rejectOriginal(tenantId: string, orderId: string, etaUuid = "a".repeat(64)) {
+  const [row] = await withTenant(tenantId, (tx) =>
+    tx.update(etaSubmissions).set({ status: "rejected", etaUuid })
+      .where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.orderId, orderId)))
+      .returning());
+  return row;
+}
+
+describe("enqueueCorrectedResubmission", () => {
+  it("adds a NEW row referencing the rejected document, leaving the original untouched", async () => {
+    const s = await seedPaidSale();
+    const original = await rejectOriginal(s.tenantId, s.receipt.orderId);
+
+    const correctionId = await enqueueCorrectedResubmission({ tenantId: s.tenantId }, original.id);
+    expect(correctionId).not.toBeNull();
+
+    const rows = await submissionsByOrder(s.tenantId, s.receipt.orderId);
+    expect(rows).toHaveLength(2);
+
+    const correction = rows.find((row) => row.id === correctionId)!;
+    expect(correction).toMatchObject({
+      docType: "e_receipt",
+      status: "pending",
+      attempts: 0,
+      orderId: s.receipt.orderId,
+      refundId: null,
+      // The rejected document's uuid — ETA's referenceOldUUID (addendum C3).
+      referenceOldUuid: original.etaUuid,
+      // Its OWN uuid does not exist yet: a correction is a new document and
+      // gets a new hash at finalization.
+      etaUuid: null,
+    });
+
+    // The rejected row is a retained fiscal record, not something to mutate.
+    const untouched = rows.find((row) => row.id === original.id)!;
+    expect(untouched.status).toBe("rejected");
+    expect(untouched.etaUuid).toBe(original.etaUuid);
+  });
+
+  it("refuses a second LIVE correction for the same sale", async () => {
+    const s = await seedPaidSale();
+    const original = await rejectOriginal(s.tenantId, s.receipt.orderId);
+
+    expect(await enqueueCorrectedResubmission({ tenantId: s.tenantId }, original.id)).not.toBeNull();
+    // The live partial index (status <> 'rejected') is the arbiter: two live
+    // documents for one sale would let ETA accept the same sale twice.
+    expect(await enqueueCorrectedResubmission({ tenantId: s.tenantId }, original.id)).toBeNull();
+
+    expect(await submissionsByOrder(s.tenantId, s.receipt.orderId)).toHaveLength(2);
+  });
+
+  it("allows a correction of the correction once THAT one is rejected too", async () => {
+    const s = await seedPaidSale();
+    const original = await rejectOriginal(s.tenantId, s.receipt.orderId);
+    const firstCorrection = await enqueueCorrectedResubmission({ tenantId: s.tenantId }, original.id);
+
+    await withTenant(s.tenantId, (tx) => tx.update(etaSubmissions)
+      .set({ status: "rejected", etaUuid: "b".repeat(64) })
+      .where(and(eq(etaSubmissions.tenantId, s.tenantId), eq(etaSubmissions.id, firstCorrection!))));
+
+    const second = await enqueueCorrectedResubmission({ tenantId: s.tenantId }, firstCorrection!);
+    expect(second).not.toBeNull();
+
+    const rows = await submissionsByOrder(s.tenantId, s.receipt.orderId);
+    expect(rows).toHaveLength(3);
+    expect(rows.find((row) => row.id === second)!.referenceOldUuid).toBe("b".repeat(64));
+  });
+
+  it("refuses to correct a document ETA has not rejected", async () => {
+    const s = await seedPaidSale();
+    const [pending] = await submissionsByOrder(s.tenantId, s.receipt.orderId);
+
+    await expect(enqueueCorrectedResubmission({ tenantId: s.tenantId }, pending.id))
+      .rejects.toThrow(/is pending, not rejected/);
+  });
+
+  it("refuses to correct a rejection that never reached ETA", async () => {
+    const s = await seedPaidSale();
+    // Rejected with no etaUuid: there is no document to reference, so
+    // re-enqueueing the original is the right move, not a correction.
+    const [row] = await withTenant(s.tenantId, (tx) =>
+      tx.update(etaSubmissions).set({ status: "rejected" })
+        .where(and(eq(etaSubmissions.tenantId, s.tenantId), eq(etaSubmissions.orderId, s.receipt.orderId)))
+        .returning());
+
+    await expect(enqueueCorrectedResubmission({ tenantId: s.tenantId }, row.id))
+      .rejects.toThrow(/rejected without an etaUuid/);
   });
 });

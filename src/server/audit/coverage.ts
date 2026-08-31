@@ -168,6 +168,14 @@ export const AUDIT_ALLOWLIST: Record<string, string> = {
   // submission's own lifecycle (submitted/accepted/rejected) is a Task 5
   // concern; see the forward:eta.* entry below for that.
   "enqueue.enqueueFiscalDocument": "the eta_submissions row is bookkeeping for a sale/refund already audited as sale.recorded / refund.issued; eta.* events land with Task 5's worker",
+  // enqueueCorrectedResubmission takes no actor — its `ctx` is `{ tenantId }`
+  // — so an event emitted here would be attributed to the system, which is a
+  // lie: correcting a rejected document is a deliberate human decision. The
+  // row it inserts is not invisible either; the worker audits its
+  // submitted/accepted/rejected lifecycle exactly like the original's. The
+  // missing fact is WHO asked for it, and that belongs to the dashboard route
+  // that knows the user (Task 6).
+  "enqueue.enqueueCorrectedResubmission": "no actor in scope; the correction's own lifecycle is audited by the worker, and the who-asked-for-it event belongs to Task 6's dashboard route",
   // Forward references — land with later specs; the guardrail enforces they emit then.
   "forward:refund.*": "Spec 3 refunds must emit refund.* via recordAuditEvent",
   "forward:eta.*": "Spec 11 fiscal submissions must emit eta.*",

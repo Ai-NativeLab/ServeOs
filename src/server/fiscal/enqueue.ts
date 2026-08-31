@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { tenants } from "@/server/tenancy/schema";
@@ -49,6 +49,19 @@ export type EnqueueInput =
 const ORDER_ORIGINAL_WHERE = sql`${etaSubmissions.orderId} is not null and ${etaSubmissions.referenceOldUuid} is null`;
 const REFUND_ORIGINAL_WHERE = sql`${etaSubmissions.refundId} is not null and ${etaSubmissions.referenceOldUuid} is null`;
 
+// The predicate text of the LIVE-document partial unique indexes
+// (`eta_submissions_order` / `eta_submissions_refund`), which cap NON-REJECTED
+// rows at one per (tenant, docType, order|refund). Same arbiter-inference rule
+// as the pair above, different question: those cap the original document
+// forever, these cap how many documents are in play RIGHT NOW.
+//
+// This is the pair a corrected resubmission targets. It carries
+// `referenceOldUuid`, so it falls outside the ORIGINAL predicate entirely and
+// nothing there would stop a second, third and fourth correction from
+// coexisting; these indexes are what make "one live document per sale" true.
+const ORDER_LIVE_WHERE = sql`${etaSubmissions.orderId} is not null and ${etaSubmissions.status} <> 'rejected'`;
+const REFUND_LIVE_WHERE = sql`${etaSubmissions.refundId} is not null and ${etaSubmissions.status} <> 'rejected'`;
+
 /**
  * Inserts a `pending` `eta_submissions` row. NO network call — a cheap,
  * durable local write; the async worker (Task 5) does the actual ETA I/O.
@@ -81,9 +94,11 @@ const REFUND_ORIGINAL_WHERE = sql`${etaSubmissions.refundId} is not null and ${e
  *     rather than let it propagate (see `record-sale.ts`).
  */
 export async function enqueueFiscalDocument(ctx: { tenantId: string }, input: EnqueueInput, tx?: Tx): Promise<void> {
-  // `"orderId" in input` narrows the discriminated union by shape rather
-  // than by comparing `docType`'s (multi-literal) value, and — unlike that
-  // comparison — survives being read inside the `run` closure below.
+  // `"orderId" in input` narrows the discriminated union by shape rather than
+  // by comparing `docType` against two literals at a time. The narrowing works
+  // here for the ordinary reason — the check sits INSIDE the closure, so it
+  // applies to the branch it guards; `input` is a const parameter, so there is
+  // no captured-variable subtlety to survive in the first place.
   const run = (tx: Tx) =>
     "orderId" in input
       ? tx.insert(etaSubmissions).values({
@@ -106,4 +121,89 @@ export async function enqueueFiscalDocument(ctx: { tenantId: string }, input: En
     return;
   }
   await withTenant(ctx.tenantId, run);
+}
+
+/**
+ * Queues a CORRECTED RESUBMISSION of a rejected document.
+ *
+ * ETA does not accept a fix in place. A corrected receipt is a NEW document
+ * with a NEW self-computed uuid, still chained to its device's head, carrying
+ * `referenceOldUUID` = the rejected document's uuid (addendum C3). So this
+ * inserts a new row rather than touching the rejected one — which stays
+ * exactly as ETA left it, under the same 5-year retention as every other
+ * fiscal record. `./finalize` reads `referenceOldUuid` back off the new row
+ * and puts it in the wire document, where it becomes part of the new uuid's
+ * hash.
+ *
+ * PRECONDITIONS, both refused loudly rather than papered over:
+ *   - the original must be `rejected` — a pending/submitted/accepted document
+ *     is not superseded by anything, and correcting an ACCEPTED receipt is a
+ *     return receipt, not a resubmission;
+ *   - it must carry an `etaUuid` — that uuid IS the reference, and a rejected
+ *     row without one never reached ETA at all, so re-enqueueing it as an
+ *     original is the right move instead.
+ *
+ * IDEMPOTENT against the LIVE index pair: if a correction is already in play
+ * for this sale (any non-rejected row), the insert no-ops and this returns
+ * `null`. Two live corrections would be two documents ETA could both accept,
+ * and the tenant would have declared one sale twice.
+ *
+ * NOT called automatically anywhere. Deciding that a rejection is understood
+ * and the data now correct is a human judgement — the fiscal dashboard (Task
+ * 6) owns the trigger. Auto-correcting on rejection would resubmit the same
+ * bad data on a loop.
+ *
+ * @returns the new row's id, or `null` when a live document already exists.
+ */
+export async function enqueueCorrectedResubmission(
+  ctx: { tenantId: string },
+  originalSubmissionId: string,
+): Promise<string | null> {
+  return withTenant(ctx.tenantId, async (tx) => {
+    const [original] = await tx.select().from(etaSubmissions)
+      .where(and(eq(etaSubmissions.tenantId, ctx.tenantId), eq(etaSubmissions.id, originalSubmissionId)))
+      .limit(1);
+
+    if (!original) {
+      throw new Error(`fiscal: eta_submissions row ${originalSubmissionId} not found for tenant ${ctx.tenantId}`);
+    }
+    if (original.status !== "rejected") {
+      throw new Error(
+        `fiscal: submission ${originalSubmissionId} is ${original.status}, not rejected — ` +
+          "only a document ETA refused can be superseded by a corrected resubmission",
+      );
+    }
+    if (!original.etaUuid) {
+      throw new Error(
+        `fiscal: submission ${originalSubmissionId} was rejected without an etaUuid, so there is no document for a ` +
+          "correction to reference — it never reached ETA and should be re-enqueued as an original instead",
+      );
+    }
+
+    const values = {
+      tenantId: ctx.tenantId,
+      docType: original.docType,
+      orderId: original.orderId,
+      refundId: original.refundId,
+      referenceOldUuid: original.etaUuid,
+      status: "pending" as const,
+      attempts: 0,
+      requestJson: {},
+    };
+
+    // Same shape-narrowing rule as `enqueueFiscalDocument`: which parent column
+    // is set decides which live index arbitrates, and the CHECK constraint
+    // guarantees exactly one of them is.
+    const inserted = original.orderId
+      ? await tx.insert(etaSubmissions).values(values).onConflictDoNothing({
+          target: [etaSubmissions.tenantId, etaSubmissions.docType, etaSubmissions.orderId],
+          where: ORDER_LIVE_WHERE,
+        }).returning({ id: etaSubmissions.id })
+      : await tx.insert(etaSubmissions).values(values).onConflictDoNothing({
+          target: [etaSubmissions.tenantId, etaSubmissions.docType, etaSubmissions.refundId],
+          where: REFUND_LIVE_WHERE,
+        }).returning({ id: etaSubmissions.id });
+
+    return inserted[0]?.id ?? null;
+  });
 }
