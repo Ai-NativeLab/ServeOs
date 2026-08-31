@@ -4,6 +4,23 @@ import { readFileSync } from "node:fs";
  * The domain service modules whose mutating functions must each emit an audit
  * event (or be justified in AUDIT_ALLOWLIST). The coverage-guardrail test scans
  * exactly these. The audit module itself is not listed — it is the writer.
+ *
+ * WHAT LISTING A FILE DOES AND DOES NOT BUY. `enumerateMutatingSymbols` finds
+ * EXPORTED functions only. A module that keeps its DB writes in private
+ * top-level helpers and exposes one orchestrating entry point therefore
+ * contributes ZERO symbols to the scan, and listing it is forward coverage —
+ * the day someone exports a mutating function from it, the guardrail catches
+ * that — rather than a statement about today. Three worker-shaped modules here
+ * are in exactly that position: `notifications/worker.ts`,
+ * `whatsapp/status-worker.ts` and `fiscal/worker.ts`, each of which drains a
+ * queue through private per-row helpers.
+ *
+ * Widening the scan to private top-level functions was measured (2026-08-31):
+ * 14 additional flagged writers repo-wide, 8 of them outside fiscal
+ * (inventory ×6, inventory/recipes, tenancy/settings). That is a real
+ * improvement and a real piece of work — other domains' justifications to
+ * write — so it is deferred, not forgotten: see the post-review follow-up in
+ * docs/ailab/plans/2026-07-24-eta-einvoicing-and-ereceipts.md (Task 5).
  */
 export const AUDITED_SERVICE_FILES = [
   "src/server/whatsapp/linking.ts",
@@ -25,6 +42,10 @@ export const AUDITED_SERVICE_FILES = [
   "src/server/pos/sync-ingest.ts",
   "src/server/fiscal/enqueue.ts",
   "src/server/fiscal/finalize.ts",
+  // Contributes no symbols today: drainEtaSubmissions is its only export and it
+  // writes nothing directly — every status write lives in a private per-row
+  // helper, and each of those calls recordFiscalAudit beside its write. Listed
+  // for the forward coverage described at the head of this list.
   "src/server/fiscal/worker.ts",
   "src/server/catalog/service.ts",
   "src/server/catalog/variants.ts",

@@ -96,9 +96,11 @@ function resolveOptionalSecretRef(ref: string | null, column: string): string | 
  * `EtaConfig` inside the server.
  *
  * @throws {EtaConfigError} when a `*Ref` column needed by the requested path is
- * set but its env key is not. The tenant signing key and the device secrets
- * resolve eagerly, so they throw from this call; `erp.clientSecret` is a THUNK
- * that resolves when called instead — see its own comment for why.
+ * set but its env key is not. Only the DEVICE secrets resolve eagerly, so only
+ * they throw from this call — and they are the ones the receipt path actually
+ * uses, so a failure there is a failure that matters. `erp.clientSecret` and
+ * `signingKey` are THUNKS that resolve when called instead: both are B2B-only
+ * credentials, and neither may take the receipt path down with it.
  */
 export async function resolveEtaConfig(tenantId: string, deviceId?: string): Promise<EtaConfig | null> {
   const rows = await withTenant(tenantId, async (tx) => {
@@ -143,6 +145,7 @@ export async function resolveEtaConfig(tenantId: string, deviceId?: string): Pro
     : null;
 
   const clientSecretRef = tenantRow.clientSecretRef;
+  const signingKeyRef = tenantRow.signingKeyRef;
 
   return {
     // ETA calls it the Registration Identification Number; the column predates
@@ -178,6 +181,19 @@ export async function resolveEtaConfig(tenantId: string, deviceId?: string): Pro
       clientSecret: () => resolveSecretRef(clientSecretRef, "eta_tenant_config.client_secret_ref"),
     },
     device,
-    signingKey: resolveOptionalSecretRef(tenantRow.signingKeyRef, "eta_tenant_config.signing_key_ref"),
+    /**
+     * RESOLVED LAZILY, for the same reason as `erp.clientSecret` above and with
+     * a sharper edge. The e-seal signs B2B e_invoices; ETA has not deployed
+     * receipt batch-signature validation at all (addendum C7), so NO receipt
+     * path reads this. Resolving it eagerly meant a stale `signing_key_ref`
+     * threw out of this whole function — and the submission worker classifies
+     * `EtaConfigError` as PERMANENT, so one unset env var for an unused
+     * credential would have failed every receipt the tenant ever issued,
+     * terminally, with an alert naming something no receipt needs.
+     *
+     * `null` (no signing material configured) stays a value, not a throw: it is
+     * the ordinary state of a receipt-only tenant.
+     */
+    signingKey: () => resolveOptionalSecretRef(signingKeyRef, "eta_tenant_config.signing_key_ref"),
   };
 }

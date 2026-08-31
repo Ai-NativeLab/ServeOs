@@ -38,7 +38,7 @@ const cfg: EtaConfig = {
     osVersion: "IOS",
     modelFramework: "1",
   },
-  signingKey: null,
+  signingKey: () => null,
 };
 
 /** Same shape as `serialize.test.ts`'s fixture — a coherent v1.2 receipt whose

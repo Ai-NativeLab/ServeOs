@@ -17,10 +17,10 @@ import {
   type EtaWireContextConfig,
 } from "./schema";
 import { drainEtaSubmissions, MAX_ATTEMPTS } from "./worker";
-import { finalizeSubmissionRow } from "./finalize";
+import { finalizeSubmissionRow, reconcileMissingReceipts } from "./finalize";
 import { enqueueCorrectedResubmission } from "./enqueue";
 import { stringifyWire } from "./serialize";
-import { EtaTransportError } from "./eta-transport-errors";
+import { EtaTransportError, EtaConfigError } from "./eta-transport-errors";
 import type {
   EtaConfig, FinalizedFiscalDocument, FiscalProvider, FiscalSaleInput, FiscalRefundInput, FiscalSubmitResult,
 } from "./provider";
@@ -105,6 +105,30 @@ function unwrap(outcomes: SubmitOutcome[], call: number, what: string): FiscalSu
   if (!outcome) throw new Error(`FakeEta: no scripted ${what} outcome for call ${call}`);
   if (outcome instanceof Error) throw outcome;
   return outcome;
+}
+
+/**
+ * A provider that makes THIS drain the loser of the one race the claim lease
+ * cannot rule out: the lease can expire while a submit is in flight, so a
+ * second drain may finish the row while this one is still waiting on ETA.
+ *
+ * The racing write happens INSIDE submit — mid-flight, exactly where it would
+ * really land — and then the call fails, so the worker's terminal write runs
+ * against a row another drain has already parked at the attempt cap.
+ */
+function losingDrain(tenantId: string, failure: Error): FiscalProvider {
+  return {
+    name: "losing-drain",
+    buildReceipt: () => { throw new Error("not used"); },
+    buildReturnReceipt: () => { throw new Error("not used"); },
+    poll: () => { throw new Error("not used"); },
+    submit: async () => {
+      await withTenant(tenantId, (tx) => tx.update(etaSubmissions)
+        .set({ status: "failed", attempts: MAX_ATTEMPTS, lastError: "terminalized by the other drain" })
+        .where(eq(etaSubmissions.tenantId, tenantId)));
+      throw failure;
+    },
+  };
 }
 
 const accepted202 = (submissionUuid = "sub-1"): FiscalSubmitResult => ({
@@ -389,6 +413,31 @@ describe("drainEtaSubmissions — accept path", () => {
     expect(row.etaLongId).toBe("LONG-LATE");
   });
 
+  it("submits a row exactly once when two drains race it — the claim lease's regression pin", async () => {
+    const s = await seedSale({ configureFirst: true });
+    const [pending] = await rowsFor(s.tenantId);
+    const uuid = pending.etaUuid!;
+    // ONE provider shared by both drains, so its call log is the global count.
+    const provider = new FakeEta([accepted202("sub-race-a"), accepted202("sub-race-b")]);
+
+    await Promise.all([
+      drainEtaSubmissions({ provider, reconcile: false }),
+      drainEtaSubmissions({ provider, reconcile: false }),
+    ]);
+
+    // THE INVARIANT. `eta_submissions` has no in-flight status to flip, so
+    // exclusivity rides entirely on the claim pushing nextAttemptAt out by a
+    // lease; if that ever stops working, this row gets POSTed twice and the
+    // tenant files two legal documents for one sale. Counted by uuid because a
+    // drain visits every EG tenant, and sibling tests leave rows behind.
+    expect(provider.submitted.filter((doc) => doc.uuid === uuid)).toHaveLength(1);
+
+    const rows = await rowsFor(s.tenantId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("submitted");
+    expect(rows[0].attempts).toBe(0);
+  });
+
   it("does not consume an attempt while ETA is still processing", async () => {
     const s = await seedSale();
     const provider = new FakeEta([accepted202("sub-slow")], [pollInProgress()]);
@@ -512,20 +561,86 @@ describe("drainEtaSubmissions — the failure taxonomy", () => {
     expect(await notificationsFor(s.tenantId)).toHaveLength(1);
   });
 
-  it("leaves a row untouched while the tenant's ETA config is inactive", async () => {
+  it("passes over a tenant whose ETA config is inactive without claiming its rows", async () => {
     const s = await seedSale();
+    const before = (await rowsFor(s.tenantId))[0];
     await withTenant(s.tenantId, (tx) => tx.update(etaTenantConfig)
       .set({ activationStatus: "pending" }).where(eq(etaTenantConfig.tenantId, s.tenantId)));
     const provider = new FakeEta([accepted202()]);
 
     const res = await drainEtaSubmissions({ provider, reconcile: false });
-    expect(res.deferred).toBe(1);
+    // The gate is above the claim, so nothing is even looked at: an
+    // onboarding tenant costs one config query per pass, not a claim plus a
+    // lease bump on every row it owns.
+    expect(res).toMatchObject({ processed: 0, skippedTenants: 1 });
 
     const [row] = await rowsFor(s.tenantId);
     expect(row.status).toBe("pending");
     expect(row.attempts).toBe(0);
     expect(row.lastError).toBeNull();
+    // Not even the backoff clock moved — no lease was taken.
+    expect(row.nextAttemptAt.getTime()).toBe(before.nextAttemptAt.getTime());
     expect(provider.submitted).toHaveLength(0);
+    expect(await notificationsFor(s.tenantId)).toHaveLength(0);
+  });
+
+  it("submits receipts for a tenant whose UNUSED signing_key_ref is stale", async () => {
+    const s = await seedSale({ configureFirst: false });
+    // A dangling e-seal reference. The e-seal signs B2B e_invoices and ETA has
+    // not deployed receipt signature validation at all, so no receipt reads it
+    // — but while resolveEtaConfig resolved it eagerly, this one unset env var
+    // failed the whole tenant, and the worker turned that into a PERMANENT
+    // failure on every receipt.
+    await withTenant(s.tenantId, (tx) => tx.update(etaTenantConfig)
+      .set({ signingKeyRef: "TEST_WORKER_ETA_SIGNING_KEY_THAT_IS_NOT_SET" })
+      .where(eq(etaTenantConfig.tenantId, s.tenantId)));
+    const provider = new FakeEta([accepted202("sub-unsigned")]);
+
+    await drainEtaSubmissions({ provider, reconcile: false });
+
+    const [row] = await rowsFor(s.tenantId);
+    expect(row.status).toBe("submitted");
+    expect(row.etaUuid).toMatch(/^[0-9a-f]{64}$/);
+    expect(row.lastError).toBeNull();
+    expect(await notificationsFor(s.tenantId)).toHaveLength(0);
+  });
+
+  it("stays quiet when another drain has already terminalized the row (transient path)", async () => {
+    const s = await seedSale();
+    // One attempt short of the cap, so THIS drain's failure is the one that
+    // would exhaust it and alert — which is the only configuration where a
+    // double notify is possible at all.
+    await withTenant(s.tenantId, (tx) => tx.update(etaSubmissions)
+      .set({ attempts: MAX_ATTEMPTS - 1 }).where(eq(etaSubmissions.tenantId, s.tenantId)));
+
+    // Simulates the one race the lease cannot rule out: it can expire while a
+    // submit is in flight, so a second drain can be finishing this row while
+    // this one is still waiting on ETA. The fake plays that second drain —
+    // writing the terminal state mid-flight — and then fails our call.
+    const raceThenFail = losingDrain(s.tenantId, new EtaTransportError("gateway down", { status: 502 }));
+
+    await drainEtaSubmissions({ provider: raceThenFail, reconcile: false });
+
+    const [row] = await rowsFor(s.tenantId);
+    // The compare-and-set on the attempt count we read at claim time found
+    // nothing to update, so neither the counter nor the alert moved. Without
+    // it this drain would have written its own terminal state over the other's
+    // and sent a second critical alert for one failure.
+    expect(row.attempts).toBe(MAX_ATTEMPTS);
+    expect(row.lastError).toBe("terminalized by the other drain");
+    expect(await notificationsFor(s.tenantId)).toHaveLength(0);
+  });
+
+  it("stays quiet when another drain has already terminalized the row (permanent path)", async () => {
+    const s = await seedSale();
+    const raceThenFail = losingDrain(s.tenantId, new EtaConfigError("device-not-registered", "config went away mid-flight"));
+
+    await drainEtaSubmissions({ provider: raceThenFail, reconcile: false });
+
+    const [row] = await rowsFor(s.tenantId);
+    // `attempts < MAX_ATTEMPTS` makes the terminal UPDATE the thing that
+    // decides who alerts: the loser matches no row and says nothing.
+    expect(row.lastError).toBe("terminalized by the other drain");
     expect(await notificationsFor(s.tenantId)).toHaveLength(0);
   });
 
@@ -619,6 +734,48 @@ describe("drainEtaSubmissions — reconciliation sweep", () => {
     // Swept AND finalized in the same pass — the sweep uses the sale path's
     // own entry point, not a bare insert.
     expect(rows[0].etaUuid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("enqueues at most `limit` orders in one pass, leaving the backlog for the next", async () => {
+    const s = await seedPosContext("owner");
+    await seedTaxCode(s.tenantId, s.productId);
+    await seedFiscalConfig(s.tenantId, { onlineDeviceId: s.ctx.deviceId });
+    await seedDeviceCredential(s.tenantId, s.ctx.deviceId);
+    for (let i = 0; i < 5; i++) await placeWebOrder(s.tenantId, s.branchId, s.productId, { minutesAgo: 30 });
+
+    // A tenant that has been unconfigured for a while can present a backlog of
+    // any size; the sweep must take a bounded bite rather than hold a pass open
+    // over thousands of orders.
+    const first = await reconcileMissingReceipts({ tenantId: s.tenantId }, { limit: 2 });
+    expect(first.enqueued).toBe(2);
+    expect(await rowsFor(s.tenantId)).toHaveLength(2);
+
+    // Oldest first, so the backlog drains in issuance order and the receipts
+    // closest to ETA's 24-hour window go first.
+    const second = await reconcileMissingReceipts({ tenantId: s.tenantId }, { limit: 2 });
+    expect(second.enqueued).toBe(2);
+    expect(await rowsFor(s.tenantId)).toHaveLength(4);
+  });
+
+  it("sweeps an order past the age threshold and leaves one just inside it", async () => {
+    const s = await seedPosContext("owner");
+    await seedTaxCode(s.tenantId, s.productId);
+    await seedFiscalConfig(s.tenantId, { onlineDeviceId: s.ctx.deviceId });
+    await seedDeviceCredential(s.tenantId, s.ctx.deviceId);
+
+    // The threshold exists so an in-flight sale is never swept out from under
+    // its own enqueue — a sale whose recordSale has committed but whose
+    // after-commit enqueue has not run yet must not be adopted here.
+    const older = await placeWebOrder(s.tenantId, s.branchId, s.productId, { minutesAgo: 11 });
+    const newer = await placeWebOrder(s.tenantId, s.branchId, s.productId, { minutesAgo: 9 });
+
+    const res = await reconcileMissingReceipts({ tenantId: s.tenantId }, { olderThanMs: 10 * 60 * 1000 });
+    expect(res.enqueued).toBe(1);
+
+    const rows = await rowsFor(s.tenantId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].orderId).toBe(older);
+    expect(rows.some((row) => row.orderId === newer)).toBe(false);
   });
 
   it("ignores an unpaid order — no sale, no receipt", async () => {

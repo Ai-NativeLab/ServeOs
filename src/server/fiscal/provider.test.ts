@@ -153,7 +153,7 @@ describe("EtaFiscalProvider", () => {
       environment: "preprod",
       erp: { clientId: "erp-client-id", clientSecret: () => "s3cret" },
       device: null,
-      signingKey: null,
+      signingKey: () => null,
     };
 
     await expect(eta.poll("submission-uuid", cfg)).rejects.toThrow(/ETA request failed/);

@@ -107,7 +107,10 @@ describe("resolveEtaConfig — tenant-level config", () => {
     // The thunk is why an accidental serialization cannot leak the ERP secret:
     // JSON.stringify drops function values outright.
     expect(JSON.stringify(cfg!.erp)).toBe('{"clientId":"erp-client-id"}');
-    expect(cfg!.signingKey).toBe("signing-key-value");
+    expect(cfg!.signingKey()).toBe("signing-key-value");
+    // A thunk for the same reason erp.clientSecret is one — and JSON.stringify
+    // drops it, so an accidental serialization cannot leak the e-seal either.
+    expect(JSON.stringify({ signingKey: cfg!.signingKey })).toBe("{}");
     // No deviceId asked for, so no device credential is loaded.
     expect(cfg!.device).toBeNull();
   });
@@ -118,7 +121,30 @@ describe("resolveEtaConfig — tenant-level config", () => {
     await seedTenantConfig(tenant.id, { signingKeyRef: null });
 
     const cfg = await resolveEtaConfig(tenant.id);
-    expect(cfg!.signingKey).toBeNull();
+    // No signing material configured is the ORDINARY state of a receipt-only
+    // tenant, so it is a value, not a throw.
+    expect(cfg!.signingKey()).toBeNull();
+  });
+
+  it("resolves a tenant whose signing_key_ref is set but unresolvable, and throws only when the key is asked for", async () => {
+    setSecrets();
+    delete process.env[SIGNING_KEY]; // the ref stays; the env key is gone
+    const tenant = await makeTenant("eta-stale-signing");
+    await seedTenantConfig(tenant.id, { signingKeyRef: SIGNING_KEY });
+
+    // THE POINT: the e-seal signs B2B e_invoices and ETA has not deployed
+    // receipt signature validation at all, so no receipt reads this. If
+    // resolution threw here, the worker would classify it as PERMANENT and fail
+    // every receipt this tenant ever issues over a credential none of them use.
+    const cfg = await resolveEtaConfig(tenant.id);
+    expect(cfg).not.toBeNull();
+    expect(cfg!.rin).toBe("200173707");
+
+    // The failure lands where the credential is actually needed, naming the
+    // column and the env key a human has to go and set.
+    expect(() => cfg!.signingKey()).toThrow(EtaConfigError);
+    expect(() => cfg!.signingKey()).toThrow(/eta_tenant_config\.signing_key_ref/);
+    expect(() => cfg!.signingKey()).toThrow(new RegExp(SIGNING_KEY));
   });
 
   it("accepts the env:// ref spelling as well as a bare env key", async () => {
@@ -149,17 +175,23 @@ describe("resolveEtaConfig — tenant-level config", () => {
 
   it("throws a typed EtaConfigError when an eagerly-resolved ref has no env value", async () => {
     setSecrets();
-    delete process.env[SIGNING_KEY];
+    // The DEVICE secrets are the only refs still resolved eagerly, and rightly
+    // so: they are the ones the receipt path actually submits with, so a
+    // missing one is a failure worth having up front. (The two B2B-only refs —
+    // erp.clientSecret and signingKey — are thunks; see their own tests.)
+    delete process.env[SECRET_1_KEY];
     const tenant = await makeTenant("eta-missing-ref");
-    await seedTenantConfig(tenant.id, { signingKeyRef: SIGNING_KEY });
+    const device = await makeDevice(tenant.id, "till-missing-ref");
+    await seedTenantConfig(tenant.id);
+    await seedDeviceCredential(tenant.id, device.id);
 
-    const error = await resolveEtaConfig(tenant.id).catch((e: unknown) => e);
+    const error = await resolveEtaConfig(tenant.id, device.id).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(EtaConfigError);
     expect((error as EtaConfigError).code).toBe("missing-secret-ref");
     // The message names the exact column and env KEY that failed — the key is
     // safe to name, and the value never existed to leak.
-    expect((error as EtaConfigError).message).toContain(SIGNING_KEY);
-    expect((error as EtaConfigError).message).toContain("eta_tenant_config.signing_key_ref");
+    expect((error as EtaConfigError).message).toContain(SECRET_1_KEY);
+    expect((error as EtaConfigError).message).toContain("eta_pos_credentials.client_secret_1_ref");
   });
 
   it("does not fail a receipt-path resolution because the unused ERP secret ref is stale", async () => {

@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, lt, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { tenants } from "@/server/tenancy/schema";
@@ -136,8 +136,12 @@ export type DrainResult = {
    *  still waiting on its parent, or a poll ETA has not finished. No attempt
    *  was consumed. */
   deferred: number;
-  /** Orders the reconciliation sweep found with no submission row at all. */
+  /** Orders the reconciliation sweep found with no submission row at all, and
+   *  successfully enqueued. */
   reconciled: number;
+  /** EG tenants passed over entirely because their ETA config is absent or not
+   *  active — the onboarding backlog, not an error count. */
+  skippedTenants: number;
 };
 
 /**
@@ -157,12 +161,30 @@ export type DrainResult = {
 export async function drainEtaSubmissions(opts: DrainOptions = {}): Promise<DrainResult> {
   const limit = opts.limit ?? 20;
   const now = opts.now ?? (() => new Date());
-  const result: DrainResult = { processed: 0, submitted: 0, accepted: 0, rejected: 0, failed: 0, deferred: 0, reconciled: 0 };
+  const result: DrainResult = {
+    processed: 0, submitted: 0, accepted: 0, rejected: 0, failed: 0, deferred: 0, reconciled: 0, skippedTenants: 0,
+  };
 
   const egTenants = await db.select({ id: tenants.id, country: tenants.country })
     .from(tenants).where(eq(tenants.country, "EG"));
 
   for (const tenant of egTenants) {
+    // THE TENANT GATE, hoisted above both the sweep and the claim. An
+    // unconfigured or not-yet-activated tenant is not a failure — it is a
+    // tenant part-way through ETA onboarding — and there is nothing useful to
+    // do for one: no document may be submitted, and claiming its rows would
+    // only push their backoff clocks out by a lease each pass, churning a queue
+    // nobody can drain. One query, no rows claimed, no lease churn.
+    //
+    // Deliberately covers the reconciliation sweep too: enqueueing rows we then
+    // cannot finalize would log an EtaConfigError per order per pass. Nothing
+    // is lost by waiting — the sweep has no upper age bound, so the moment the
+    // tenant activates it adopts every order it skipped.
+    if ((await resolveEtaConfig(tenant.id)) === null) {
+      result.skippedTenants++;
+      continue;
+    }
+
     const provider = opts.provider ?? resolveFiscalProvider(tenant);
 
     if (opts.reconcile !== false) {
@@ -233,12 +255,9 @@ async function processRow(
   tenantId: string, row: ClaimedRow, provider: FiscalProvider, now: () => Date,
 ): Promise<RowOutcome> {
   try {
-    // Step 1 of the plan's per-row sequence: an inactive/unconfigured tenant is
-    // not a failure — it is a tenant part-way through ETA onboarding. Leave the
-    // row exactly as it is (the lease alone moves its clock) rather than
-    // spraying a dead endpoint or burning its attempts.
-    if ((await resolveEtaConfig(tenantId)) === null) return "deferred";
-
+    // The tenant-level gate ran once for the whole tenant before this row was
+    // claimed (see drainEtaSubmissions); only the DEVICE credential is
+    // per-row, because which device submits depends on the document.
     const finalized = await finalizeSubmissionRow(tenantId, row.id);
     if (finalized.status === "deferred") return "deferred";
 
@@ -481,10 +500,23 @@ async function failPermanently(
   tenantId: string, row: ClaimedRow, lastError: string, now: () => Date, guidance: string,
 ): Promise<RowOutcome> {
   await withTenant(tenantId, async (tx) => {
-    await tx.update(etaSubmissions)
+    // `attempts < MAX_ATTEMPTS` makes this write the thing that DECIDES who
+    // alerts. Two drains can hold one row at once — the claim lease can expire
+    // mid-flight, which is a documented and accepted window — and without this
+    // predicate both would terminalize it and both would notify. The first
+    // UPDATE parks attempts at the cap; the second matches nothing, returns no
+    // row, and stays quiet. One terminal failure, one alert.
+    const terminalized = await tx.update(etaSubmissions)
       // nextAttemptAt clears the claim lease — see persistRejected.
       .set({ status: "failed", attempts: MAX_ATTEMPTS, lastError, nextAttemptAt: now() })
-      .where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, row.id)));
+      .where(and(
+        eq(etaSubmissions.tenantId, tenantId),
+        eq(etaSubmissions.id, row.id),
+        lt(etaSubmissions.attempts, MAX_ATTEMPTS),
+      ))
+      .returning({ id: etaSubmissions.id });
+
+    if (terminalized.length === 0) return;
 
     await notifyFiscalFailure({ tenantId }, {
       title: "A fiscal document could not be submitted",
@@ -510,12 +542,22 @@ async function failTransiently(tenantId: string, row: ClaimedRow, err: unknown, 
   const lastError = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
 
   await withTenant(tenantId, async (tx) => {
-    await tx.update(etaSubmissions).set({
+    // Compare-and-set on the attempt count we READ at claim time. Two drains
+    // holding one row (an expired lease) must not both increment it, and at the
+    // cap they must not both alert: whichever writes first moves `attempts` off
+    // the value both read, so the loser's UPDATE matches nothing. Stronger than
+    // guarding the notify alone — it makes the counter itself race-safe, so
+    // "failed 6 times" means six real attempts.
+    const advanced = await tx.update(etaSubmissions).set({
       status: "failed", attempts, lastError,
       nextAttemptAt: new Date(now().getTime() + backoffMs),
-    }).where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, row.id)));
+    }).where(and(
+      eq(etaSubmissions.tenantId, tenantId),
+      eq(etaSubmissions.id, row.id),
+      eq(etaSubmissions.attempts, row.attempts),
+    )).returning({ id: etaSubmissions.id });
 
-    if (exhausted) {
+    if (exhausted && advanced.length > 0) {
       await notifyFiscalFailure({ tenantId }, {
         title: "A fiscal document could not be submitted",
         body: `Submission to ETA failed ${MAX_ATTEMPTS} times and will not be retried automatically. Last error: ${lastError}`,

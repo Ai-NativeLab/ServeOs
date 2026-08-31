@@ -218,8 +218,23 @@ export type EtaConfig = {
    */
   erp: { clientId: string; clientSecret: () => string };
   device: EtaDeviceCredentials | null;
-  /** e-seal signing material — B2B only; unused for receipts today. */
-  signingKey: string | null;
+  /**
+   * e-seal signing material — B2B only, and unused for receipts today (ETA has
+   * not deployed receipt batch-signature validation; addendum C7).
+   *
+   * A THUNK for exactly the reason `erp.clientSecret` is one, and it matters
+   * more here: nothing on the receipt path reads this, so resolving it eagerly
+   * meant a tenant whose `signing_key_ref` had gone stale could not submit
+   * RECEIPTS either — `resolveEtaConfig` threw for the whole tenant, and the
+   * worker turned that into a PERMANENT failure on every receipt, over a
+   * credential no receipt uses. Deferring keeps the failure at the signer that
+   * needs it.
+   *
+   * Returns `null` when the tenant has no signing material at all (the normal
+   * receipt-only case); THROWS `EtaConfigError` naming the column and env key
+   * when a ref is set but unresolvable.
+   */
+  signingKey: () => string | null;
 };
 
 /**
