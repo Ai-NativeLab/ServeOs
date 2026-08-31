@@ -91,6 +91,7 @@ inquiry tool) remains an operational check, not a build blocker.
 | 6 Auth details | **RESOLVED** — C6 + §3 |
 | 7 Per-tenant applicability | **OPERATIONAL** — RIN inquiry tool per tenant; not a build blocker |
 | 8 Resubmit / idempotency | **RESOLVED** — C3 (`referenceOldUUID`, new UUID) + poll by `submissionUUID` |
+| 10 Offline issuance without QR | **OPEN** — an EG offline/unsynced sale prints with no QR (the chain is computed server-side at sync); the reprint carries it once synced. Whether handing the customer a QR-less copy at sale time is compliant is an ETA/tax-adviser question (ETA's own offline toolkit implies local issuance is the sanctioned model); mirrors ZATCA PRD-003 Q3. Raised by Task 7 (POS receipt footer). |
 
 ## 6. Wire-level findings (Task 3a, verified against SDK)
 

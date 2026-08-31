@@ -693,7 +693,7 @@ Once the fiscal block resolves to `accepted`, the receipt shows the ETA **QR** (
 - Modify: `apps/pos/src/screens/Receipt.tsx`
 - Test: `apps/pos/src/screens/Receipt.test.tsx` (create if absent, following the POS renderer test convention)
 
-**Files as built:** `apps/pos/src/screens/Receipt.tsx` (+ `Receipt.test.tsx`), `apps/pos/src/fiscal/sale-fiscal.ts` (+ `sale-fiscal.test.ts` — the bounded poll), `apps/pos/src/screens/OrderScreen.tsx` (post-sale owner) and `apps/pos/src/screens/SalesHistory.tsx` (reprint slip), plus the IPC channel: `apps/pos/electron/pos-main.ts`, `preload.ts`, `main.ts`.
+**Files as built:** `apps/pos/src/screens/Receipt.tsx` (+ `Receipt.test.tsx`), `apps/pos/src/fiscal/sale-fiscal.ts` (+ `sale-fiscal.test.ts` — the bounded poll), `apps/pos/src/screens/OrderScreen.tsx` (post-sale owner) and `apps/pos/src/screens/SalesHistory.tsx` (reprint slip), plus the IPC channel: `apps/pos/electron/pos-main.ts`, `preload.ts`, `main.ts` (+ `pos-main.test.ts`, the URL/header pin).
 
 **Interfaces:**
 - Consumes: the Task 6 `GET /api/pos/v1/sales/:orderId/fiscal` payload.
@@ -746,7 +746,7 @@ Wire the polling in the screen that owns the receipt (call the fiscal endpoint a
 
 - [x] **Step 4: Run to verify they pass.** `cd apps/pos && npx vitest run src/screens/Receipt.test.tsx && npx tsc --noEmit`. Expected: PASS, clean.
 
-  **as-built:** whole POS suite `npm --prefix apps/pos run test` → **154 passed / 13 files** (baseline 135/11: +7 `Receipt.test.tsx`, +12 `src/fiscal/sale-fiscal.test.ts`). `npm --prefix apps/pos run typecheck` (both `tsconfig.json` and `tsconfig.node.json`) clean. No root files touched, so the root `tsc`/`eslint` gates are unaffected. The poll tests drive fake timers through the cap and pin the four things a client gets wrong here: it stops at terminal+QR, it stops at the cap on `submitted`, it does **not** loop forever on `failed`, and a literal `null` body is the ordinary no-record answer rather than an error. `PosMain.saleFiscalStatus` itself has no main-process test — `pos-main.test.ts` covers pairing only, and its sibling fetch wrappers (`getOrders`, `listSales`, `reprintReceipt`) have none either; the endpoint is route-tested on the server side.
+  **as-built:** whole POS suite `npm --prefix apps/pos run test` → **156 passed / 13 files** (baseline 135/11: +7 `Receipt.test.tsx`, +12 `src/fiscal/sale-fiscal.test.ts`, +2 `electron/pos-main.test.ts`; the last two arrived with the follow-up commit below). `npm --prefix apps/pos run typecheck` (both `tsconfig.json` and `tsconfig.node.json`) clean. No root files touched, so the root `tsc`/`eslint` gates are unaffected. The poll tests drive fake timers through the cap and pin the four things a client gets wrong here: it stops at terminal+QR, it stops at the cap on `submitted`, it does **not** loop forever on `failed`, and a literal `null` body is the ordinary no-record answer rather than an error. **`PosMain.saleFiscalStatus` is pinned at the transport boundary** (added in the follow-up commit). `pos-main.test.ts` does exercise `PosMain` for real — it is the pairing/unpairing suite — but until now **no test asserted a URL or a header for any `PosMain` method**, and this method's never-throws design turns a URL typo into a permanent silent no-footer rather than an error anyone would see. So one test signs a cashier in and asserts the exact `${baseUrl}/api/pos/v1/sales/<id>/fiscal` and both auth headers, and a second asserts the no-cashier guard makes no request at all. The endpoint itself is route-tested server-side.
 
 - [x] **Step 5: Commit.**
 
@@ -773,6 +773,7 @@ git commit -m "feat(pos): Receipt renders ETA UUID + QR once accepted, pending/r
 - [ ] VERIFY 6 — **Authentication details:** token TTL, refresh cadence, per-device vs. per-system credential granularity, and preprod base URLs for `eta_tenant_config` + the submit client.
 - [ ] VERIFY 7 — **Mandate applicability per tenant** (ETA obligated-taxpayer list + EGP 250,000 threshold). `activationStatus` gates submission until each tenant confirms inclusion.
 - [ ] VERIFY 8 — **Resubmit / idempotency semantics** (re-query by `submissionUuid` vs. resubmit with an idempotency key) — the worker's crash-recovery guard (Task 5).
+- [ ] VERIFY 10 — **Offline issuance without a QR** (raised by Task 7). An EG sale rung while the till is offline prints with **no fiscal footer** — the submission is enqueued server-side at sync, so there is no uuid or QR to print at the counter — and only the reprint carries the code; whether a QR-less customer copy is acceptable at issuance, or whether the till must compute the chain locally, is an ETA/tax-adviser question. See the addendum's §5 ledger row 10.
 
 _No commit for this section — it is a gate, not a change. Do not remove a `TODO(VERIFY)` marker without linking the confirming ETA documentation in the commit that removes it._
 
@@ -790,6 +791,7 @@ _No commit for this section — it is a gate, not a change. Do not remove a `TOD
   - [ ] Ring a sale of an **unclassified** product → the sale still completes; the worker marks the row `failed` with a product-naming `lastError` and the owner is notified. The sale is **not** blocked.
   - [ ] Issue a Spec 3 refund on the accepted receipt → a `credit_note` row referencing the parent `etaUuid` is enqueued and (after the worker) accepted.
   - [ ] Ring a sale on a **non-EG** tenant → **no** `eta_submissions` row, and the receipt renders with no fiscal footer.
+  - [ ] Ring an EG sale with the till **offline** → the receipt prints with **NO fiscal footer**; after sync, a reprint carries the QR + UUID. Confirm the compliance stance on the QR-less original with ETA/a tax adviser before go-live (VERIFY 10).
   - [ ] Confirm `GET /api/dashboard/fiscal/config` **never** returns a secret; a `manager`/`staff` user gets **403**.
   - [ ] Confirm the Vercel plan tier supports sub-daily cron (`*/15` fiscal worker) BEFORE enabling any EG tenant — Hobby tier silently runs daily; see `/api/fiscal/worker/route.ts` comment.
 

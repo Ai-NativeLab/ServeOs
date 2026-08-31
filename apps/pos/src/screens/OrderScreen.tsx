@@ -265,8 +265,11 @@ export function OrderScreen({
         synced: receiptData.synced ?? false,
       });
       // An unsynced sale has no server order yet, so there is nothing to look a
-      // fiscal record up by — it stays null and the receipt prints as it always
-      // has. Nothing below is awaited: the poll starts from an effect once the
+      // fiscal record up by — it stays null and the receipt prints with no
+      // footer, the code arriving only on a reprint after sync. Whether that
+      // QR-less customer copy is acceptable at issuance is an OPEN ETA question
+      // (VERIFY 10 in the plan / the addendum's §5 ledger), not a settled one.
+      // Nothing below is awaited: the poll starts from an effect once the
       // receipt is on screen.
       setFiscalOrderId(receiptData.synced ? receiptData.orderId : null);
       resetSale();
