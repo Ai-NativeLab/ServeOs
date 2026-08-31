@@ -11,6 +11,7 @@ import { users, type User } from "@/server/auth/schema";
 import { auditEvents } from "@/server/audit/schema";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { etaSubmissions } from "@/server/fiscal/schema";
+import { seedPosContext } from "@/server/pos/test-helpers";
 import type { RoleKey } from "@/server/rbac/permissions";
 
 /**
@@ -45,6 +46,8 @@ import { redactedCause } from "./fiscal-errors";
 import { GET as getConfig, PUT as putConfig } from "./config/route";
 import { GET as getDevices } from "./devices/route";
 import { GET as getDevice, PUT as putDevice } from "./devices/[deviceId]/route";
+import { GET as getTaxCodes } from "./tax-codes/route";
+import { PUT as putTaxCode } from "./tax-codes/[productId]/route";
 import { POST as postResubmit } from "./submissions/[id]/resubmit/route";
 
 const SECRET_REF = "env://ZZ_ROUTE_ETA_SECRET_SENTINEL";
@@ -264,6 +267,91 @@ describe("GET /api/dashboard/fiscal/devices and /devices/[deviceId]", () => {
         headers: { "content-type": "application/json" },
       }),
       deviceParams(device.id),
+    );
+    expect(malformed.status).toBe(400);
+  });
+});
+
+describe("GET /api/dashboard/fiscal/tax-codes and PUT /tax-codes/[productId]", () => {
+  const taxCodeBody = () => ({
+    codeSource: "gs1",
+    itemCode: "1234567890123",
+    taxType: "T1",
+    taxSubType: "V009",
+    unitType: "EA",
+  });
+
+  const taxCodePut = (body: unknown) =>
+    new NextRequest("http://localhost/api/dashboard/fiscal/tax-codes/x", {
+      method: "PUT",
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+    });
+
+  const productParams = (productId: string) => ({ params: Promise.resolve({ productId }) });
+
+  it("403s both handlers for a non-owner", async () => {
+    const s = await seedPosContext("owner");
+    for (const role of ["manager", "staff"] as const) {
+      signIn(s.tenantId, [role], s.ctx.cashierUserId);
+      expect((await getTaxCodes()).status).toBe(403);
+      expect((await putTaxCode(taxCodePut(taxCodeBody()), productParams(s.productId))).status).toBe(403);
+    }
+  });
+
+  it("lists unclassified products, then classifies one", async () => {
+    const s = await seedPosContext("owner");
+    signIn(s.tenantId, ["owner"], s.ctx.cashierUserId);
+
+    // The write path `product_tax_codes` previously had none of: without it an
+    // EG tenant cannot ring a single compliant sale.
+    const before = await (await getTaxCodes()).json();
+    expect(before.classified).toEqual([]);
+    expect(before.unclassified).toEqual([
+      { productId: s.productId, productName: "Margherita", productSku: null },
+    ]);
+
+    const saved = await putTaxCode(taxCodePut(taxCodeBody()), productParams(s.productId));
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toMatchObject({
+      productId: s.productId,
+      productName: "Margherita",
+      itemCode: "1234567890123",
+      taxType: "T1",
+      unitType: "EA",
+    });
+
+    const after = await (await getTaxCodes()).json();
+    expect(after.unclassified).toEqual([]);
+    expect(after.classified).toHaveLength(1);
+  });
+
+  it("maps a bad body and a foreign product to 400, not 500", async () => {
+    const s = await seedPosContext("owner");
+    const theirs = await seedPosContext("owner");
+    signIn(s.tenantId, ["owner"], s.ctx.cashierUserId);
+
+    // The full field-by-field ladder is exercised against the service in
+    // `server/fiscal/config-service.test.ts`; this pins only that the ROUTE
+    // converts that error into a 400 with the path intact rather than letting
+    // it fall through the blanket catch as a 500.
+    const bad = await putTaxCode(taxCodePut({ ...taxCodeBody(), itemCode: "" }), productParams(s.productId));
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).issues).toEqual([expect.objectContaining({ path: "itemCode" })]);
+
+    // The product id comes from the PATH, so a foreign product is caught by the
+    // same tenant predicate the service applies — not by trusting the body.
+    const foreign = await putTaxCode(taxCodePut(taxCodeBody()), productParams(theirs.productId));
+    expect(foreign.status).toBe(400);
+    expect((await foreign.json()).issues).toEqual([expect.objectContaining({ path: "productId" })]);
+
+    const malformed = await putTaxCode(
+      new NextRequest("http://localhost/api/dashboard/fiscal/tax-codes/x", {
+        method: "PUT",
+        body: "{not json",
+        headers: { "content-type": "application/json" },
+      }),
+      productParams(s.productId),
     );
     expect(malformed.status).toBe(400);
   });

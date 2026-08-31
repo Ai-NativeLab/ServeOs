@@ -50,28 +50,13 @@ const BACKOFF_BASE_MS = 30 * 1000;
  *  an attempt. */
 const POLL_INTERVAL_MS = 60 * 1000;
 
-/**
- * ETA's submission window: a receipt must reach ETA within 24 hours of the
- * `dateTimeIssued` it carries. Past it the document needs a formal Late
- * Submission Request (addendum §3), a path this pipeline does not implement.
- *
- * NOT ENFORCED HERE, and deliberately so — a worker that stopped retrying at
- * the deadline would turn a late document into no document, which is strictly
- * worse. It is a REPORTING threshold: `read-model.ts` marks any non-accepted
- * row older than this `overdue`, and the fiscal dashboard shows it, which is
- * where addendum §3's "retry/backoff must respect the 24h budget and flag
- * breaches" is actually satisfied. The arithmetic that keeps ordinary retries
- * inside it:
- *
- *     MAX_ATTEMPTS (6) with backoff 2^n x 30s  ->  ~63 min of retrying
- *     + POLL_INTERVAL_MS (60s) per poll
- *     << SUBMISSION_WINDOW_MS (24h)
- *
- * so a document only goes overdue when ETA is unreachable for a day or the
- * tenant's configuration is broken — both of which are exactly what the
- * dashboard's overdue marker is for.
- */
-export const SUBMISSION_WINDOW_MS = 24 * 60 * 60 * 1000;
+// ETA's 24-hour submission window lives in `./constants` as
+// `SUBMISSION_WINDOW_MS`, not here, even though the retry arithmetic above is
+// sized against it: `read-model.ts` needs it to flag overdue documents, and
+// importing this module for one number dragged the ETA HTTP client and the
+// whole provider graph into every dashboard page and POS route. The arithmetic
+// that keeps ordinary retries inside the window is documented on the constant.
+
 
 /**
  * THE DRAIN BUDGET, stated rather than left to be discovered.
@@ -408,7 +393,7 @@ async function submitPhase(
  * consumes an attempt, which does mean a submitted row can poll indefinitely
  * if ETA never finishes. That is deliberate — refusing a document ETA may still
  * accept would be worse — and it is not invisible: any non-accepted row past
- * `SUBMISSION_WINDOW_MS` comes back from `listSubmissions` /
+ * `SUBMISSION_WINDOW_MS` (./constants) comes back from `listSubmissions` /
  * `getSubmissionById` with `overdue: true`, and the dashboard's submissions
  * table shows its age and marks it.
  */

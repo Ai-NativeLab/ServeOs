@@ -273,12 +273,30 @@ export async function enqueueAndFinalizeReceipt(ctx: { tenantId: string }, order
  * EG orders old enough to have been fiscalised, carrying no `e_receipt` row at
  * all — enqueued and finalized here.
  *
- * THIS IS THE DETECTION SURFACE for row-less sale-path failures. `recordSale`
- * swallows a thrown enqueue so the sale is never blocked (the iron rule),
- * which means that failure leaves NO row — and every other monitoring surface
- * this subsystem has (status counts, attempts, lastError) reads rows. Without
- * this sweep, a database blip during the after-commit enqueue silently drops a
- * receipt from the tenant's fiscal record forever.
+ * IT HAS TWO JOBS, and the second one is not a fallback. Read this before
+ * assuming a sale reaches ETA within seconds; for the online channel it does
+ * not.
+ *
+ * 1. THE DETECTION SURFACE for row-less sale-path failures. `recordSale`
+ *    swallows a thrown enqueue so the sale is never blocked (the iron rule),
+ *    which means that failure leaves NO row — and every other monitoring
+ *    surface this subsystem has (status counts, attempts, lastError) reads
+ *    rows. Without this sweep, a database blip during the after-commit enqueue
+ *    silently drops a receipt from the tenant's fiscal record forever.
+ *
+ * 2. THE PRIMARY ENQUEUE PATH FOR PAID WEB/WHATSAPP ORDERS. There is no
+ *    `recordSale` equivalent on the online checkout path — nothing calls
+ *    `enqueueAndFinalizeReceipt` when a web order is paid — so for those orders
+ *    this sweep is not a backstop at all: it is how they become fiscal
+ *    documents in the first place. The practical consequence is LATENCY. An
+ *    online order waits `RECONCILE_AFTER_MS` before it is eligible and then for
+ *    the next 15-minute cron tick, so it is enqueued roughly 5-20 minutes after
+ *    payment rather than at commit. That is comfortably inside ETA's 24-hour
+ *    window and is not a compliance problem — but it does mean the customer's
+ *    online confirmation carries NO uuid and NO QR, because neither exists yet
+ *    when that page renders. A storefront fiscal surface is a named follow-up
+ *    (addendum §6); until it lands, an online buyer's fiscal receipt is
+ *    reachable only after the fact.
  *
  * BOUNDED AT BOTH ENDS: at least `RECONCILE_AFTER_MS` old so an in-flight sale
  * is never swept out from under its own enqueue, and at most

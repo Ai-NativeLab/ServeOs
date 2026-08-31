@@ -18,11 +18,13 @@ import { z } from "zod";
 import { and, desc, eq } from "drizzle-orm";
 import { withTenant, type Tx } from "@/db/with-tenant";
 import { posDevices } from "@/server/pos/schema";
+import { products } from "@/server/catalog/schema";
 import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import {
   etaTenantConfig,
   etaPosCredentials,
+  productTaxCodes,
   etaEnvironmentEnum,
   etaActivationStatusEnum,
   etaCodeSourceEnum,
@@ -31,6 +33,7 @@ import {
   type EtaEnvironment,
   type EtaActivationStatus,
   type EtaPosCredentialStatus,
+  type EtaCodeSource,
 } from "./schema";
 
 /**
@@ -180,13 +183,30 @@ const wireContextSchema = z.object({
 });
 
 /**
- * A `*Ref` input: the env key (or `env://KEY`) the credential lives behind —
- * never the credential. Optional on every update so the owner can change the
- * RIN or the environment without re-typing a reference the form cannot show
- * them; `undefined` means "leave whatever is stored", and the required-on-create
- * check below is what stops a first save from landing without one.
+ * A `*Ref` input: WHERE the credential lives, never the credential. Optional on
+ * every update so the owner can change the RIN or the environment without
+ * re-typing a reference the form cannot show them; `undefined` means "leave
+ * whatever is stored", and the required-on-create check below is what stops a
+ * first save from landing without one.
+ *
+ * THE `env://` SCHEME IS REQUIRED ON SAVE, and that is a masking decision, not
+ * a formatting preference. `resolveSecretRef` (./config) accepts BOTH spellings
+ * — `env://ETA_SECRET_ACME` and the bare `ETA_SECRET_ACME` — and must keep
+ * doing so for rows written before this rule; but when a ref is stored bare, the
+ * stored VALUE and the env KEY NAME are the same characters. That collapse
+ * matters because the two are treated differently on purpose: the reference is
+ * write-only and must never leave this service, while the key name is
+ * deliberately allowed into an error message, since an operator staring at a
+ * failed receipt needs to know which variable is unset ("The thrown message
+ * names the ENV KEY, which is not itself a secret" — resolveSecretRef). Forcing
+ * the scheme on every new save keeps those two strings distinguishable, so the
+ * masking guarantee stays checkable rather than resting on a coincidence of
+ * format. Legacy bare rows keep resolving; they just cannot be re-saved bare.
  */
-const refSchema = z.string().trim().min(1, "must name the environment key holding the credential, e.g. ETA_CLIENT_SECRET_ACME");
+const refSchema = z
+  .string()
+  .trim()
+  .regex(/^env:\/\/\S+$/, "must be an env:// reference naming the key that holds the credential, e.g. env://ETA_CLIENT_SECRET_ACME — never the credential itself");
 
 const updateConfigSchema = z.object({
   rin: rinSchema,
@@ -712,6 +732,240 @@ function changedCredentialFields(
     "posModelFramework",
     "status",
   ] as const;
+  return columns.filter((column) => before[column] !== after[column]);
+}
+
+// ---------------------------------------------------------------------------
+// Product tax codes
+// ---------------------------------------------------------------------------
+
+/**
+ * One product's ETA classification, as the dashboard shows it.
+ *
+ * Carries the product's own name and SKU because a screen listing bare uuids is
+ * unusable for the job this surface exists to do — the operator is matching
+ * their menu against ETA's published code tables, item by item.
+ */
+export type ProductTaxCodeView = {
+  productId: string;
+  productName: string;
+  productSku: string | null;
+  codeSource: EtaCodeSource;
+  itemCode: string;
+  egsApprovalStatus: string | null;
+  taxType: string;
+  taxSubType: string | null;
+  unitType: string;
+};
+
+/** A product with no classification yet — the rows an operator is here to
+ *  clear. Returned beside the classified ones for the same reason the devices
+ *  route returns tills without credentials. */
+export type UnclassifiedProductView = {
+  productId: string;
+  productName: string;
+  productSku: string | null;
+};
+
+const productTaxCodeSchema = z.object({
+  productId: z.uuid("must be a product id"),
+  codeSource: z.enum(etaCodeSourceEnum.enumValues),
+  itemCode: requiredText("an item code"),
+  /** Only meaningful for `egs`, which ETA must APPROVE before the code may be
+   *  used; GS1 codes are usable directly. Free text because ETA's status
+   *  vocabulary is not published — see the column's JSDoc. */
+  egsApprovalStatus: z.string().trim().min(1).nullable().optional(),
+  taxType: requiredText("a tax type"),
+  // Nullable, not optional, mirroring `product_tax_codes.tax_sub_type`: a line
+  // tax with genuinely no sub-type must be able to say so. `toWireReceipt`
+  // rejects a MISSING sub-type on a taxable line (`MissingTaxSubTypeError`), so
+  // storing null here is a deliberate statement rather than an omission.
+  taxSubType: z.string().trim().min(1).nullable().optional(),
+  unitType: requiredText("a unit type"),
+});
+
+export type UpsertProductTaxCodeInput = z.input<typeof productTaxCodeSchema>;
+
+/**
+ * Every product this tenant sells, split by whether ETA can represent it.
+ *
+ * WHY THIS SURFACE EXISTS AT ALL. `product_tax_codes` had readers — the
+ * document builder resolves each line's codes through it and throws
+ * `MissingTaxCodeError` when a row is absent — and no writer anywhere in the
+ * codebase. An EG tenant could not complete fiscal setup except by hand-writing
+ * SQL, which is the same as saying they could not go live. This is the minimal
+ * surface that closes that: one row per product, typed in.
+ *
+ * DELIBERATELY NOT the bulk EGS-lookup UI the spec defers — no code search, no
+ * catalogue import, no approval polling. Those need ETA's codes API, which is
+ * itself deferred; this needs nothing but the operator and the published tables.
+ */
+export async function listProductTaxCodes(
+  tenantId: string,
+): Promise<{ classified: ProductTaxCodeView[]; unclassified: UnclassifiedProductView[] }> {
+  return withTenant(tenantId, async (tx) => {
+    const rows = await tx
+      .select({
+        productId: products.id,
+        productName: products.nameEn,
+        productSku: products.sku,
+        code: productTaxCodes,
+      })
+      .from(products)
+      // LEFT join FROM products, not from the codes table: the rows an operator
+      // most needs to see are the ones that do not exist yet.
+      .leftJoin(
+        productTaxCodes,
+        and(eq(productTaxCodes.productId, products.id), eq(productTaxCodes.tenantId, tenantId)),
+      )
+      .where(eq(products.tenantId, tenantId))
+      .orderBy(products.nameEn);
+
+    const classified: ProductTaxCodeView[] = [];
+    const unclassified: UnclassifiedProductView[] = [];
+    for (const row of rows) {
+      const base = { productId: row.productId, productName: row.productName, productSku: row.productSku };
+      if (row.code) {
+        classified.push({
+          ...base,
+          codeSource: row.code.codeSource,
+          itemCode: row.code.itemCode,
+          egsApprovalStatus: row.code.egsApprovalStatus,
+          taxType: row.code.taxType,
+          taxSubType: row.code.taxSubType,
+          unitType: row.code.unitType,
+        });
+      } else {
+        unclassified.push(base);
+      }
+    }
+    return { classified, unclassified };
+  });
+}
+
+/**
+ * Confirms `productId` is one of THIS tenant's products.
+ *
+ * Same shape as `assertOwnDevice` and here for a narrower reason: `products` IS
+ * RLS-backed, so a cross-tenant id already reads as absent inside `withTenant` —
+ * but the insert would then fail on the foreign key as an opaque 500 rather than
+ * as a 400 naming the field, and the operator would be told "something went
+ * wrong" about a mistake they could have fixed.
+ */
+async function assertOwnProduct(tx: Tx, tenantId: string, productId: string): Promise<void> {
+  const [product] = await tx
+    .select({ id: products.id })
+    .from(products)
+    .where(and(eq(products.id, productId), eq(products.tenantId, tenantId)))
+    .limit(1);
+  if (!product) fail("productId", "is not one of this tenant's products");
+}
+
+/**
+ * Classifies one product for ETA, and audits it.
+ *
+ * UPSERT on (tenant, product) — `product_tax_codes_product` — so re-classifying
+ * a product is the same operation as classifying it. Every field is replaced;
+ * there is no keep-what-is-stored rule here because, unlike a credential
+ * reference, every one of these values is visible on the form that submits it.
+ *
+ * @throws {FiscalConfigInputError} for a bad shape, or a product that is not
+ * this tenant's.
+ */
+export async function upsertProductTaxCode(
+  tenantId: string,
+  input: UpsertProductTaxCodeInput,
+  audit?: AuditActorInput,
+): Promise<ProductTaxCodeView> {
+  const parsed = parseOrThrow(productTaxCodeSchema, input);
+
+  return withTenant(tenantId, async (tx) => {
+    await assertOwnProduct(tx, tenantId, parsed.productId);
+
+    const [existing] = await tx
+      .select()
+      .from(productTaxCodes)
+      .where(and(eq(productTaxCodes.tenantId, tenantId), eq(productTaxCodes.productId, parsed.productId)))
+      .limit(1);
+
+    const values = {
+      tenantId,
+      productId: parsed.productId,
+      codeSource: parsed.codeSource,
+      itemCode: parsed.itemCode,
+      egsApprovalStatus: parsed.egsApprovalStatus ?? null,
+      taxType: parsed.taxType,
+      taxSubType: parsed.taxSubType ?? null,
+      unitType: parsed.unitType,
+    };
+
+    const [row] = await tx
+      .insert(productTaxCodes)
+      .values(values)
+      .onConflictDoUpdate({
+        target: [productTaxCodes.tenantId, productTaxCodes.productId],
+        set: {
+          codeSource: values.codeSource,
+          itemCode: values.itemCode,
+          egsApprovalStatus: values.egsApprovalStatus,
+          taxType: values.taxType,
+          taxSubType: values.taxSubType,
+          unitType: values.unitType,
+        },
+      })
+      .returning();
+
+    const [product] = await tx
+      .select({ nameEn: products.nameEn, sku: products.sku })
+      .from(products)
+      .where(and(eq(products.id, parsed.productId), eq(products.tenantId, tenantId)))
+      .limit(1);
+
+    await recordAuditEvent(
+      auditContext(tenantId, audit),
+      {
+        action: "eta.product_tax_code.updated",
+        entityType: "product_tax_code",
+        entityId: row.id,
+        summary: existing
+          ? `ETA classification updated for ${product?.nameEn ?? parsed.productId}`
+          : `ETA classification recorded for ${product?.nameEn ?? parsed.productId}`,
+        // FIELD NAMES ONLY, matching eta.config.updated and
+        // eta.device_credentials.updated. Nothing here is a credential, but one
+        // house style for the whole fiscal vocabulary is worth more than a
+        // per-event judgement about which values happen to be harmless.
+        metadata: {
+          productId: parsed.productId,
+          created: !existing,
+          changedFields: changedTaxCodeFields(existing ?? null, row),
+          codeSource: row.codeSource,
+          roleKey: audit?.roleKey ?? null,
+        },
+        actorType: audit?.actorType ?? "user",
+      },
+      tx,
+    );
+
+    return {
+      productId: row.productId,
+      productName: product?.nameEn ?? "",
+      productSku: product?.sku ?? null,
+      codeSource: row.codeSource,
+      itemCode: row.itemCode,
+      egsApprovalStatus: row.egsApprovalStatus,
+      taxType: row.taxType,
+      taxSubType: row.taxSubType,
+      unitType: row.unitType,
+    };
+  });
+}
+
+function changedTaxCodeFields(
+  before: typeof productTaxCodes.$inferSelect | null,
+  after: typeof productTaxCodes.$inferSelect,
+): string[] {
+  if (!before) return [];
+  const columns = ["codeSource", "itemCode", "egsApprovalStatus", "taxType", "taxSubType", "unitType"] as const;
   return columns.filter((column) => before[column] !== after[column]);
 }
 

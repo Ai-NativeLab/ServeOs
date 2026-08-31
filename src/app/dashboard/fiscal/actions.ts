@@ -6,8 +6,10 @@ import {
   FiscalConfigInputError,
   updateFiscalConfig,
   upsertDeviceCredential,
+  upsertProductTaxCode,
   type UpdateFiscalConfigInput,
   type UpsertDeviceCredentialInput,
+  type UpsertProductTaxCodeInput,
 } from "@/server/fiscal/config-service";
 import type { EtaWireContextConfig, EtaFeeLineConfig, EtaCodeSource } from "@/server/fiscal/schema";
 import { requestResubmission } from "./resubmit";
@@ -135,5 +137,32 @@ export async function resubmitAction(formData: FormData): Promise<void | { error
   const ctx = await requireFiscalPermission();
   const outcome = await requestResubmission(ctx, text(formData, "submissionId"));
   if (!outcome.ok) return { error: outcome.error };
+  revalidatePath(PATH);
+}
+
+/**
+ * Classifies one product for ETA — the write path `product_tax_codes` had no UI
+ * for at all, without which an EG tenant cannot ring a single compliant sale.
+ * Every field is replaced on save (unlike a credential reference, all of them
+ * are visible on the form that submits them).
+ */
+export async function saveProductTaxCodeAction(formData: FormData): Promise<void | { error: string }> {
+  const ctx = await requireFiscalPermission();
+  const input: UpsertProductTaxCodeInput = {
+    productId: text(formData, "productId"),
+    codeSource: (text(formData, "codeSource") || "gs1") as UpsertProductTaxCodeInput["codeSource"],
+    itemCode: text(formData, "itemCode"),
+    egsApprovalStatus: optional(formData, "egsApprovalStatus") ?? null,
+    taxType: text(formData, "taxType"),
+    taxSubType: optional(formData, "taxSubType") ?? null,
+    unitType: text(formData, "unitType"),
+  };
+
+  try {
+    await upsertProductTaxCode(ctx.tenantId, input, await actionAudit(ctx));
+  } catch (e) {
+    if (e instanceof FiscalConfigInputError) return { error: e.message };
+    throw e;
+  }
   revalidatePath(PATH);
 }

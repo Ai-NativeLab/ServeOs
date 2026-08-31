@@ -1,7 +1,12 @@
 import { requireFiscalPermission } from "../fiscal-permission";
 import { UnauthorizedError } from "@/server/rbac/authorize";
 import { getTenantById } from "@/server/tenancy";
-import { getFiscalConfig, listDeviceCredentials, listFiscalDevices } from "@/server/fiscal/config-service";
+import {
+  getFiscalConfig,
+  listDeviceCredentials,
+  listFiscalDevices,
+  listProductTaxCodes,
+} from "@/server/fiscal/config-service";
 import { listSubmissions, getSubmissionStatusCounts } from "@/server/fiscal/read-model";
 import {
   etaActivationStatusEnum,
@@ -10,7 +15,12 @@ import {
   etaPosCredentialStatusEnum,
   type EtaFeeLineConfig,
 } from "@/server/fiscal/schema";
-import { saveFiscalConfigAction, saveDeviceCredentialAction, resubmitAction } from "./actions";
+import {
+  saveFiscalConfigAction,
+  saveDeviceCredentialAction,
+  saveProductTaxCodeAction,
+  resubmitAction,
+} from "./actions";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { SubmitButton } from "@/components/dashboard/SubmitButton";
@@ -20,6 +30,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { FiscalCredentialsTable } from "@/components/dashboard/FiscalCredentialsTable";
 import { FiscalSubmissionsTable } from "@/components/dashboard/FiscalSubmissionsTable";
+import { FiscalTaxCodesTable } from "@/components/dashboard/FiscalTaxCodesTable";
 
 const selectCls = "rounded-md border bg-background px-3 py-1.5 text-sm h-9";
 
@@ -65,9 +76,10 @@ function RefField({ name, label, configured }: { name: string; label: string; co
           </span>
         )}
       </Label>
-      <Input id={name} name={name} placeholder="ETA_CLIENT_SECRET_ACME" autoComplete="off" className="font-mono" />
+      <Input id={name} name={name} placeholder="env://ETA_CLIENT_SECRET_ACME" autoComplete="off" className="font-mono" />
       <p className="text-xs text-muted-foreground">
-        The environment key holding the credential — never the credential itself. Leave blank to keep the stored one.
+        An <code>env://</code> reference naming the environment key that holds the credential — never the credential
+        itself. Leave blank to keep the stored one.
       </p>
     </div>
   );
@@ -120,10 +132,11 @@ export default async function FiscalPage() {
     throw e; // requireDashboardUser redirects unauthenticated users
   }
 
-  const [config, devices, credentials, submissions, statusCounts, tenant] = await Promise.all([
+  const [config, devices, credentials, taxCodes, submissions, statusCounts, tenant] = await Promise.all([
     getFiscalConfig(ctx.tenantId),
     listFiscalDevices(ctx.tenantId),
     listDeviceCredentials(ctx.tenantId),
+    listProductTaxCodes(ctx.tenantId),
     listSubmissions(ctx.tenantId, { limit: SUBMISSIONS_PAGE_SIZE }),
     getSubmissionStatusCounts(ctx.tenantId),
     getTenantById(ctx.tenantId),
@@ -298,6 +311,61 @@ export default async function FiscalPage() {
               <Field name="posModelFramework" label="POS model framework" placeholder="1" />
             </div>
             <div><SubmitButton>Save credential</SubmitButton></div>
+          </ToastForm>
+        )}
+      </Card>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* ------------------------------------------------------------------ */}
+      <h2 className="eyebrow text-muted-foreground mb-3">Tax codes</h2>
+      <FiscalTaxCodesTable classified={taxCodes.classified} unclassified={taxCodes.unclassified} />
+
+      <Card className="p-5 mb-8 max-w-2xl">
+        {taxCodes.classified.length + taxCodes.unclassified.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Add a product to the menu first.</p>
+        ) : (
+          <ToastForm action={saveProductTaxCodeAction} successMessage="Product classified" className="grid gap-4">
+            <p className="text-sm font-medium">Classify a product</p>
+            <p className="text-xs text-muted-foreground">
+              ETA needs an item code, a tax type and a unit of measure for every receipt line. Saving again for the
+              same product replaces its classification.
+            </p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-1.5">
+                <Label htmlFor="productId">Product</Label>
+                <select id="productId" name="productId" className={selectCls} required defaultValue="">
+                  <option value="" disabled>Select a product</option>
+                  {/* Unclassified first: those are the ones whose receipts fail
+                      today, so they should not be buried under the finished ones. */}
+                  {taxCodes.unclassified.map((p) => (
+                    <option key={p.productId} value={p.productId}>{p.productName} · not classified</option>
+                  ))}
+                  {taxCodes.classified.map((c) => (
+                    <option key={c.productId} value={c.productId}>{c.productName}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="codeSource">Code source</Label>
+                <select id="codeSource" name="codeSource" className={selectCls} defaultValue="gs1">
+                  {etaCodeSourceEnum.enumValues.map((v) => (
+                    <option key={v} value={v}>{v.toUpperCase()}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  GS1 codes are usable straight away. EGS codes must be approved by ETA before use.
+                </p>
+              </div>
+              <Field name="itemCode" label="Item code" required placeholder="1234567890123" />
+              <Field
+                name="egsApprovalStatus" label="EGS approval status"
+                hint="Leave blank for GS1 codes."
+              />
+              <Field name="taxType" label="Tax type" required placeholder="T1" />
+              <Field name="taxSubType" label="Tax sub-type" placeholder="V009" />
+              <Field name="unitType" label="Unit type" required placeholder="EA" />
+            </div>
+            <div><SubmitButton>Save classification</SubmitButton></div>
           </ToastForm>
         )}
       </Card>

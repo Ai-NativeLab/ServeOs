@@ -188,3 +188,16 @@ Sources: `/document-serialization-approach/`, `/documents/receipt-v1-2/`, `/docu
   version bump as well as a dev→prod flag change. Nothing else in the repo imports zod (house convention is
   hand-rolled validators), so the blast radius is `config-service.ts` alone — but see that file's import
   comment for the one type-level edge that crosses a module boundary.
+- **ONLINE ORDERS FISCALISE VIA THE SWEEP, WITH LATENCY, AND CARRY NO QR ON THE CONFIRMATION PAGE.** Stated
+  here because the pipeline's shape makes it easy to assume otherwise. The POS path finalises inline —
+  `recordSale` calls `enqueueAndFinalizeReceipt` after commit, so the printed customer copy carries the uuid
+  and QR at issuance (C5). **There is no equivalent hook on the web/WhatsApp checkout path.** Paid online
+  orders are picked up by `reconcileMissingReceipts`, which is therefore not merely the detection surface for
+  row-less failures but their PRIMARY enqueue path: an order waits `RECONCILE_AFTER_MS` to become eligible and
+  then for the next 15-minute cron tick, so it is enqueued roughly **5-20 minutes after payment**. That is
+  comfortably inside ETA's 24-hour window, so it is not a compliance breach — but the customer's online order
+  confirmation renders before any of it exists and therefore shows **no uuid and no QR**. Whether the web
+  channel owes the buyer a visible fiscal receipt is the same C5 question already settled for the till, asked
+  of a channel where the answer was never decided: a **storefront fiscal surface is a named follow-up**
+  (VERIFY-10-adjacent), not an oversight, and it is a product decision rather than a pipeline change — the
+  document itself is issued correctly either way.

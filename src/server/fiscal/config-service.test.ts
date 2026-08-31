@@ -25,10 +25,13 @@ import {
   getFiscalConfig,
   listDeviceCredentials,
   listFiscalDevices,
+  listProductTaxCodes,
   updateFiscalConfig,
+  upsertProductTaxCode,
   upsertDeviceCredential,
   type UpdateFiscalConfigInput,
   type UpsertDeviceCredentialInput,
+  type UpsertProductTaxCodeInput,
 } from "./config-service";
 // The READ surfaces live next door (`./read-model`, split along the permission
 // seam) but are tested from HERE on purpose — see this file's header: the
@@ -469,6 +472,7 @@ describe("masking — no *Ref value ever leaves this service", () => {
     const one = await getSubmissionById(t.id, row.id);
     const statusCounts = await getSubmissionStatusCounts(t.id);
     const fiscalDevices = await listFiscalDevices(t.id);
+    const taxCodes = await listProductTaxCodes(t.id);
 
     expectNoRefValues(submissions, "listSubmissions");
     expectNoRefValues(saleStatus, "getSaleFiscalStatus");
@@ -477,6 +481,10 @@ describe("masking — no *Ref value ever leaves this service", () => {
     // today, and it is walked anyway so that stays true if the shape grows.
     expectNoRefValues(statusCounts, "getSubmissionStatusCounts");
     expectNoRefValues(fiscalDevices, "listFiscalDevices");
+    // No references here either, but the walk covers every read surface by
+    // rule rather than by a per-function judgement about which ones could
+    // plausibly carry one.
+    expectNoRefValues(taxCodes, "listProductTaxCodes");
 
     /**
      * DELIBERATE SCOPE, stated so a later reader does not "tighten" it by
@@ -492,11 +500,15 @@ describe("masking — no *Ref value ever leaves this service", () => {
      * SECRET transits. `FORBIDDEN` is exactly those two sets, and the bare key
      * name is deliberately outside it.
      *
-     * The distinction is only legible because this file stores its refs in the
-     * `env://KEY` spelling. `resolveSecretRef` accepts a BARE key too, and a
-     * deployment using that spelling would make the stored column value and the
-     * error's key name the same characters — which is precisely why config.ts's
-     * stance has to be a considered decision rather than an accident of format.
+     * THE DISTINCTION IS NOW ENFORCED AT SAVE TIME, not merely observed here.
+     * `resolveSecretRef` still accepts a BARE key so rows written before that
+     * rule keep resolving — and under that spelling the stored column value and
+     * the error's key name are the SAME characters, collapsing the two sets this
+     * walk is built to tell apart. `refSchema` therefore requires `env://` on
+     * every save (see the test below), so no NEW row can reintroduce the
+     * collapse, and the sentinels in this file are `env://`-spelled for the same
+     * reason. That is what turns the assertion above from an accident of format
+     * into a property of the data.
      */
     expect(one!.lastError).toContain("ZZ_ETA_ERP_SECRET_SENTINEL");
 
@@ -513,6 +525,49 @@ describe("masking — no *Ref value ever leaves this service", () => {
     for (const [what, payload] of planted) {
       expect(() => expectNoRefValues(payload, what), `${what}'s walk did not catch a planted reference`).toThrow();
     }
+  });
+
+  it("refuses a BARE env key on save, while legacy bare rows keep resolving", async () => {
+    const t = await makeTenant();
+    const device = await makeDevice(t.id, "till");
+
+    // Every ref field, both surfaces. A bare key is a valid thing for
+    // `resolveSecretRef` to READ and an invalid thing to WRITE: stored bare,
+    // the reference VALUE and the env KEY NAME are the same characters, and the
+    // masking walk's whole distinction between "never leaves" and "may appear in
+    // an error message" collapses.
+    await expectRejected(() => updateFiscalConfig(t.id, validConfig({ clientSecretRef: "ZZ_BARE_KEY" })), {
+      path: "clientSecretRef",
+      match: /env:\/\//,
+    });
+    await expectRejected(() => updateFiscalConfig(t.id, validConfig({ signingKeyRef: "ZZ_BARE_KEY" })), {
+      path: "signingKeyRef",
+      match: /env:\/\//,
+    });
+    await updateFiscalConfig(t.id, validConfig());
+    for (const field of ["clientSecret1Ref", "clientSecret2Ref", "presharedKeyRef"] as const) {
+      await expectRejected(
+        () => upsertDeviceCredential(t.id, device.id, validCredential({ [field]: "ZZ_BARE_KEY" })),
+        { path: field, match: /env:\/\// },
+      );
+    }
+    // Not merely "starts with something": a scheme with no key behind it names
+    // nothing at all.
+    await expectRejected(() => updateFiscalConfig(t.id, validConfig({ clientSecretRef: "env://" })), {
+      path: "clientSecretRef",
+    });
+
+    // LEGACY ROWS STILL RESOLVE. A row written before this rule holds a bare
+    // key, and refusing to read it would take a working tenant's submissions
+    // down for a formatting change. Seeded past the service, exactly as an old
+    // row would exist.
+    await withTenant(t.id, (tx) =>
+      tx.update(etaTenantConfig)
+        .set({ clientSecretRef: "ZZ_ETA_ERP_SECRET_SENTINEL", activationStatus: "active" })
+        .where(eq(etaTenantConfig.tenantId, t.id)),
+    );
+    const resolved = await resolveEtaConfig(t.id);
+    expect(resolved!.erp.clientSecret()).toBe(SECRET_VALUES.ZZ_ETA_ERP_SECRET_SENTINEL);
   });
 
   it("stores the references verbatim — the masking is a read-side guarantee, not a lossy write", async () => {
@@ -677,6 +732,123 @@ describe("device credentials", () => {
 // ---------------------------------------------------------------------------
 // RLS
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Product tax codes
+// ---------------------------------------------------------------------------
+
+describe("product tax codes", () => {
+  const validTaxCode = (
+    productId: string,
+    over: Partial<UpsertProductTaxCodeInput> = {},
+  ): UpsertProductTaxCodeInput => ({
+    productId,
+    codeSource: "gs1",
+    itemCode: "1234567890123",
+    taxType: "T1",
+    taxSubType: "V009",
+    unitType: "EA",
+    ...over,
+  });
+
+  it("classifies a product, then re-classifies it, and reports both halves of the catalogue", async () => {
+    // A real product through the real catalogue service, so the join and the FK
+    // are exercised rather than assumed.
+    const s = await seedPosContext("owner");
+
+    const before = await listProductTaxCodes(s.tenantId);
+    expect(before.classified).toEqual([]);
+    // The rows an operator opens this screen to clear: an unclassified product
+    // fails its receipt permanently the moment it is sold.
+    expect(before.unclassified).toEqual([
+      { productId: s.productId, productName: "Margherita", productSku: null },
+    ]);
+
+    const saved = await upsertProductTaxCode(s.tenantId, validTaxCode(s.productId));
+    expect(saved).toMatchObject({
+      productId: s.productId,
+      productName: "Margherita",
+      codeSource: "gs1",
+      itemCode: "1234567890123",
+      taxType: "T1",
+      taxSubType: "V009",
+      unitType: "EA",
+      egsApprovalStatus: null,
+    });
+
+    const after = await listProductTaxCodes(s.tenantId);
+    expect(after.unclassified).toEqual([]);
+    expect(after.classified).toHaveLength(1);
+    // The list carries the product's own name and SKU — a screen of bare uuids
+    // cannot be matched against ETA's code tables by hand.
+    expect(after.classified[0].productName).toBe("Margherita");
+
+    // Upsert, not insert: re-classifying is the same operation as classifying.
+    const reclassified = await upsertProductTaxCode(
+      s.tenantId,
+      validTaxCode(s.productId, { codeSource: "egs", itemCode: "EG-9", egsApprovalStatus: "pending" }),
+    );
+    expect(reclassified).toMatchObject({ codeSource: "egs", itemCode: "EG-9", egsApprovalStatus: "pending" });
+    expect((await listProductTaxCodes(s.tenantId)).classified).toHaveLength(1);
+  });
+
+  it("refuses a bad shape, naming the field", async () => {
+    const s = await seedPosContext("owner");
+    for (const [path, input] of [
+      ["itemCode", validTaxCode(s.productId, { itemCode: "  " })],
+      ["taxType", validTaxCode(s.productId, { taxType: "" })],
+      ["unitType", validTaxCode(s.productId, { unitType: "" })],
+      ["codeSource", validTaxCode(s.productId, { codeSource: "gs2" as never })],
+      ["productId", validTaxCode("not-a-uuid")],
+    ] as const) {
+      await expectRejected(() => upsertProductTaxCode(s.tenantId, input), { path });
+    }
+  });
+
+  it("refuses a product that belongs to another tenant", async () => {
+    const mine = await seedPosContext("owner");
+    const theirs = await seedPosContext("owner");
+
+    // `products` is RLS-backed, so this already reads as absent — the point of
+    // the explicit check is that the operator gets a 400 naming the field
+    // instead of an opaque 500 from the foreign key.
+    await expectRejected(() => upsertProductTaxCode(mine.tenantId, validTaxCode(theirs.productId)), {
+      path: "productId",
+      match: /not one of this tenant's products/,
+    });
+
+    // And nothing was written on either side.
+    expect((await listProductTaxCodes(mine.tenantId)).classified).toEqual([]);
+    expect((await listProductTaxCodes(theirs.tenantId)).classified).toEqual([]);
+  });
+
+  it("emits eta.product_tax_code.updated naming the changed FIELDS", async () => {
+    const s = await seedPosContext("owner");
+    await upsertProductTaxCode(s.tenantId, validTaxCode(s.productId));
+    await upsertProductTaxCode(s.tenantId, validTaxCode(s.productId, { itemCode: "9999999999999", unitType: "KGM" }));
+
+    const events = await withTenant(s.tenantId, (tx) =>
+      tx.select().from(auditEvents).where(eq(auditEvents.tenantId, s.tenantId)),
+    );
+    const emitted = events.filter((e) => e.action === "eta.product_tax_code.updated");
+    expect(emitted).toHaveLength(2);
+    expect(emitted[0]).toMatchObject({ entityType: "product_tax_code", actorType: "user" });
+    expect(emitted[0].metadata).toMatchObject({ created: true, changedFields: [] });
+    expect((emitted[1].metadata as { changedFields: string[] }).changedFields).toEqual(
+      expect.arrayContaining(["itemCode", "unitType"]),
+    );
+  });
+
+  it("is tenant-scoped on read — one tenant never sees another's classifications", async () => {
+    const mine = await seedPosContext("owner");
+    const theirs = await seedPosContext("owner");
+    await upsertProductTaxCode(theirs.tenantId, validTaxCode(theirs.productId));
+
+    const seen = await listProductTaxCodes(mine.tenantId);
+    expect(seen.classified).toEqual([]);
+    expect(seen.unclassified.map((p) => p.productId)).toEqual([mine.productId]);
+  });
+});
 
 describe("RLS", () => {
   it("shows one tenant nothing of another's config, credentials or submissions", async () => {

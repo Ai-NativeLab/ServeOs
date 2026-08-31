@@ -7,7 +7,7 @@ import {
   type EtaDocType,
   type EtaSubmissionStatus,
 } from "./schema";
-import { SUBMISSION_WINDOW_MS } from "./worker";
+import { SUBMISSION_WINDOW_MS } from "./constants";
 
 /**
  * The fiscal READ surfaces — what a cashier's till and the owner's dashboard
