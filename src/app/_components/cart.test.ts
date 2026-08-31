@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { cartSubtotal, mergeLine, withLineQuantity, type Cart, type CartLine } from "./cart";
+import {
+  cartSubtotal,
+  mergeLine,
+  withLineQuantity,
+  getProductQuantity,
+  isProductConfigurable,
+  changeSimpleProductQuantity,
+  type Cart,
+  type CartLine,
+} from "./cart";
 
 const lines: CartLine[] = [
   { productId: "p1", nameEn: "A", nameAr: "أ", quantity: 2, unitPrice: 100, selectedOptionIds: [], modifierSummaryEn: "" },
@@ -102,3 +111,90 @@ describe("dimensional merge (P4)", () => {
     expect(c2.lines.length).toBe(2);
   });
 });
+
+describe("getProductQuantity", () => {
+  it("returns total quantity of product across all lines", () => {
+    const cart: Cart = {
+      branchId: "b1",
+      lines: [
+        line({ productId: "p1", quantity: 2 }),
+        line({ productId: "p1", variantId: "v1", quantity: 3 }),
+        line({ productId: "p2", quantity: 1 }),
+      ],
+    };
+    expect(getProductQuantity(cart, "p1")).toBe(5);
+    expect(getProductQuantity(cart, "p2")).toBe(1);
+    expect(getProductQuantity(cart, "p3")).toBe(0);
+  });
+});
+
+describe("isProductConfigurable", () => {
+  it("returns false for a simple product with no modifiers, variants, or dimensional UoM", () => {
+    expect(isProductConfigurable({ modifierGroups: [], variants: [] })).toBe(false);
+    expect(isProductConfigurable({})).toBe(false);
+  });
+
+  it("returns true if product has modifier groups", () => {
+    expect(isProductConfigurable({ modifierGroups: [{ id: "m1" }] })).toBe(true);
+  });
+
+  it("returns true if product has variants", () => {
+    expect(isProductConfigurable({ variants: [{ id: "v1" }] })).toBe(true);
+  });
+
+  it("returns true if product has dimensional unit of measure", () => {
+    expect(isProductConfigurable({ unitOfMeasure: "m" })).toBe(true);
+    expect(isProductConfigurable({ unitOfMeasure: "m2" })).toBe(true);
+    expect(isProductConfigurable({ unitOfMeasure: "each" })).toBe(false);
+  });
+});
+
+describe("changeSimpleProductQuantity", () => {
+  const prod = { id: "p1", nameEn: "Cola", nameAr: "كولا", effectivePrice: 20 };
+
+  it("adds a simple product when delta is +1 and item is not in cart", () => {
+    const cart: Cart = { branchId: "b1", lines: [] };
+    const next = changeSimpleProductQuantity(cart, "b1", prod, 1);
+    expect(next.lines).toHaveLength(1);
+    expect(next.lines[0].productId).toBe("p1");
+    expect(next.lines[0].quantity).toBe(1);
+    expect(next.lines[0].unitPrice).toBe(20);
+    expect(next.lines[0].selectedOptionIds).toEqual([]);
+  });
+
+  it("increments quantity when item is already in cart", () => {
+    const cart: Cart = {
+      branchId: "b1",
+      lines: [{ productId: "p1", nameEn: "Cola", nameAr: "كولا", quantity: 1, unitPrice: 20, selectedOptionIds: [], modifierSummaryEn: "" }],
+    };
+    const next = changeSimpleProductQuantity(cart, "b1", prod, 1);
+    expect(next.lines).toHaveLength(1);
+    expect(next.lines[0].quantity).toBe(2);
+  });
+
+  it("decrements quantity when delta is -1", () => {
+    const cart: Cart = {
+      branchId: "b1",
+      lines: [{ productId: "p1", nameEn: "Cola", nameAr: "كولا", quantity: 3, unitPrice: 20, selectedOptionIds: [], modifierSummaryEn: "" }],
+    };
+    const next = changeSimpleProductQuantity(cart, "b1", prod, -1);
+    expect(next.lines).toHaveLength(1);
+    expect(next.lines[0].quantity).toBe(2);
+  });
+
+  it("removes the line when decrementing from 1 to 0", () => {
+    const cart: Cart = {
+      branchId: "b1",
+      lines: [{ productId: "p1", nameEn: "Cola", nameAr: "كولا", quantity: 1, unitPrice: 20, selectedOptionIds: [], modifierSummaryEn: "" }],
+    };
+    const next = changeSimpleProductQuantity(cart, "b1", prod, -1);
+    expect(next.lines).toHaveLength(0);
+  });
+
+  it("ignores negative delta when item is not in cart", () => {
+    const cart: Cart = { branchId: "b1", lines: [] };
+    const next = changeSimpleProductQuantity(cart, "b1", prod, -1);
+    expect(next.lines).toHaveLength(0);
+  });
+});
+
