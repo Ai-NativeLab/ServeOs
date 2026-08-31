@@ -175,22 +175,48 @@ Sources: `/document-serialization-approach/`, `/documents/receipt-v1-2/`, `/docu
   exists), so `qr_payload` stays null for the document's whole life and the read surfaces show `longId` as
   text. Key ORDER is asserted section-by-section against ETA's own published invoice
   (`__fixtures__/one-doc.json`, the same file the serialization golden vector already proves byte-for-byte).
-  **CAVEAT 1 — signing is BLOCKED, not merely unfinished.** ETA's container (published parsed at
-  `/files/parsed-cades-bes.txt`) is DER CMS `SignedData`: detached, `eContentType` `digestedData`, signed
-  attributes `contentType`/`signingTime`/`messageDigest`/**`signingCertificateV2`** (ESSCertIDv2 with the
-  cert's SHA-256 and its issuerAndSerial). `node:crypto` has **no ASN.1/DER encoder** and **no X.509
-  certificate generation** (`X509Certificate` parses only), so neither the container nor a self-issued test
-  certificate is obtainable — which also means there is no `TestCertSigner`, and none was faked. Smallest
-  candidate dependency recorded and NOT taken: **`pkijs`** (+`asn1js`/`pvutils`), the only single addition
-  covering both halves; `@peculiar/asn1-cms`+`asn1-x509`+`asn1-schema`+`x509` is the multi-package
-  alternative; `node-forge` is insufficient (no `signingCertificateV2`). `signInvoice` therefore throws a
-  permanent, named `EtaConfigError` (`invoice-signing-unavailable`) rather than emitting anything
-  signature-shaped. Steps 2-3 of ETA's five-step process ARE implemented and tested (`invoiceDigest` =
-  SHA-256 over `canonicalSerialize`), and `InvoiceSigner` is drawn at the digest precisely so a real ITIDA
-  e-seal (USB/HSM) satisfies it unchanged. Even once built, a self-issued signature would prove STRUCTURE
-  only — an accepted seal must come from an ITIDA-licensed CA, so this is registration-gated twice over.
-  **CAVEAT 2 — v0.9 availability is unverified.** Every invoice therefore ships as `documentTypeVersion`
-  `"0.9"`, on ETA's own sentence: *"v0.9 of the Invoice document type structure is maintained as v1.0, the
+  **CAVEAT 1 — signing is IMPLEMENTED but REGISTRATION-GATED; it was BLOCKED on node:crypto and was
+  unblocked by a declared dependency.** *The gap as found:* ETA's container (published parsed at
+  `/files/parsed-cades-bes.txt`) is DER CMS `SignedData` — detached, `eContentType` `digestedData`, signed
+  attributes `contentType`/`signingTime`/`messageDigest`/**`signingCertificateV2`** (ESSCertIDv2 carrying the
+  cert's SHA-256 and its issuerSerial) — and `node:crypto` has **no ASN.1/DER encoder** and **no X.509
+  certificate generation** (`X509Certificate` parses only; its statics list is empty, verified), so neither
+  the container nor a self-issued test certificate was obtainable. *The resolution (coordinator decision,
+  same reviewable-dependency treatment as `zod` in round 1):* **`pkijs` 3.4.0** + **`asn1js` 3.0.10** +
+  **`pvutils` 1.2.0** added as declared runtime dependencies (one transitive, `bytestreamjs` 2.0.1; all pure
+  JS, no native build; lockfile +73 lines). `pkijs` was chosen as the only SINGLE addition covering both
+  halves — `node-forge` builds PKCS#7 authenticated attributes but has **no `signingCertificateV2`**, the
+  attribute that makes a container CAdES-BES rather than plain CMS, and generates no certificate either; the
+  `@peculiar/asn1-*`+`x509` set needs four packages. **The PR body must carry the dependency line.**
+  *What is mirrored field-for-field off ETA's dump*, including the three choices a generic CMS recipe gets
+  wrong: `eContentType` is **`digestedData`**, not `id-data`; the SignerInfo's `signatureAlgorithm` is
+  **`rsaEncryption`**, not `sha256WithRSAEncryption`, and carries no NULL params (deliberate on ETA's part —
+  the certificate's own signature field in the same dump *does* use `sha256WithRSAEncryption` WITH a NULL);
+  and ESSCertIDv2 has **two** elements, its `hashAlgorithm` absent under RFC 5035's DEFAULT sha256, so
+  emitting it explicitly would be a different encoding from the one ETA published. Two silent-failure traps
+  are recorded in code: the signature is computed over `DER(SET OF Attribute)` (RFC 5652 §5.4), which is *not*
+  the transmitted `[0]` form — the first byte is retagged `0xa0`→`0x31`, and getting it wrong yields a
+  container that parses perfectly and verifies against nothing; and `crypto.sign(null, DigestInfo, key)` does
+  **not** produce a verifiable sha256 signature on Node 22 (measured), while
+  `privateEncrypt(DigestInfo, RSA_PKCS1_PADDING)` does and is byte-identical to `sign("sha256", message, key)`
+  — which is what keeps the `InvoiceSigner` seam at the DIGEST, the surface a real PKCS#11 token exposes.
+  *Still registration-gated, and this is the caveat:* `TestCertSigner`'s certificate is **issued by nobody**.
+  ETA accepts only "approved eSeal or natural person signature certificates in Egypt" from an ITIDA-licensed
+  CA (Egypt Trust in ETA's own sample), held on hardware ServeOS never sees. The 28-case suite re-parses our
+  own output and verifies the signature **against the certificate that made it** — self-verification, which
+  proves the bytes are internally consistent and proves nothing about ETA accepting them. No signed document
+  has been put in front of preprod, because that needs a registered taxpayer profile.
+  *And the go-live path is not the shipped one:* `PemBundleSigner` (the non-null branch of
+  `resolveInvoiceSigner`) reads a PEM blob holding a PKCS#8 key **and** a certificate, which a soft
+  certificate can provide and a hardware e-seal cannot — an ITIDA token's private key is non-exportable, so
+  production needs a PKCS#11 implementation behind the same interface. Material that is present but unusable
+  throws the same permanent `invoice-signing-unavailable`, so an unusable seal can never silently downgrade a
+  sealed tenant to unsigned v0.9.
+  **CAVEAT 2 — v0.9 availability is unverified, and it is what ships today.** The version flip is live —
+  a tenant whose `signing_key_ref` resolves to usable material gets `documentTypeVersion` `"1.0"` with the
+  CAdES-BES `signatures` element, decided at FINALIZATION rather than at submit time because the version is
+  part of the document's own signed bytes. But **no tenant has an e-seal**, so every invoice in practice ships
+  as `"0.9"`, on ETA's own sentence: *"v0.9 of the Invoice document type structure is maintained as v1.0, the
   only difference is that signature validation is disabled on this version."* That is the **entire** published
   guidance; nothing states whether v0.9 is still accepted in production, and the documents index carries no
   deprecation column. It is one preprod submission away from being settled and cannot be settled by reading.

@@ -22,6 +22,7 @@ import {
 import { drainEtaSubmissions, MAX_ATTEMPTS } from "./worker";
 import { finalizeSubmissionRow, reconcileMissingReceipts } from "./finalize";
 import { enqueueCorrectedResubmission } from "./enqueue";
+import { TestCertSigner } from "./sign-invoice";
 import { stringifyWire } from "./serialize";
 import { EtaTransportError, EtaConfigError } from "./eta-transport-errors";
 import type {
@@ -220,14 +221,17 @@ type Fixture = Awaited<ReturnType<typeof seedPosContext>> & { receipt: Awaited<R
  * and the row reaches the worker unfinalized, exercising the worker's own
  * authoritative fallback.
  */
-async function seedSale(opts: { configureFirst?: boolean; clientOrderId?: string } = {}): Promise<Fixture> {
+async function seedSale(
+  opts: { configureFirst?: boolean; clientOrderId?: string; signingKeyRef?: string } = {},
+): Promise<Fixture> {
   const configureFirst = opts.configureFirst ?? true;
+  const fiscalConfig = opts.signingKeyRef ? { signingKeyRef: opts.signingKeyRef } : {};
   const s = await seedPosContext("owner");
   await openShiftForCtx(s.ctx);
   await seedTaxCode(s.tenantId, s.productId);
 
   if (configureFirst) {
-    await seedFiscalConfig(s.tenantId);
+    await seedFiscalConfig(s.tenantId, fiscalConfig);
     await seedDeviceCredential(s.tenantId, s.ctx.deviceId);
   }
 
@@ -239,7 +243,7 @@ async function seedSale(opts: { configureFirst?: boolean; clientOrderId?: string
   });
 
   if (!configureFirst) {
-    await seedFiscalConfig(s.tenantId);
+    await seedFiscalConfig(s.tenantId, fiscalConfig);
     await seedDeviceCredential(s.tenantId, s.ctx.deviceId);
   }
 
@@ -1205,6 +1209,10 @@ async function placeWebOrder(
 // row with the buyer in `request_json`, and nothing else.
 // ---------------------------------------------------------------------------
 
+/** The env key a signed tenant's `signing_key_ref` points at. Set and deleted
+ *  per test, so no other case sees a configured seal. */
+const SIGNING_KEY_ENV = "TEST_WORKER_ETA_SIGNING_KEY";
+
 const B2B_BUYER: FiscalInvoiceBuyer = {
   rin: "313717919",
   name: "Receiver Company LLC",
@@ -1361,6 +1369,71 @@ describe("B2B e_invoice — the worker's submit/poll path", () => {
     expect(invoice.qrUrl).toBeNull();
     expect(invoice.wire.documentTypeVersion).toBe("0.9");
     expect(invoice.wire.internalID).toBe(String(s.receipt.orderNumber));
+  });
+
+  /**
+   * THE VERSION FLIP, end to end through the real finalizer and the real
+   * signer. A tenant with a usable e-seal ships `documentTypeVersion` "1.0"
+   * with a CAdES-BES `signatures` element; one without ships "0.9" and none.
+   *
+   * REGISTRATION-GATED: the seal here is a self-issued `TestCertSigner`
+   * certificate. This proves the plumbing and the container's structure, never
+   * that ETA would accept the signature — see `sign-invoice.ts`.
+   */
+  it("ships v1.0 with a signature when a seal is configured, and v0.9 without", async () => {
+    const signer = await TestCertSigner.create();
+    // Through the REAL seam: the bundle goes in the env var the tenant's
+    // `signing_key_ref` names, and `resolveInvoiceSigner` parses it back out.
+    // Nothing is injected past the config layer.
+    process.env[SIGNING_KEY_ENV] = signer.pemBundle();
+    try {
+      const s = await seedSale({ clientOrderId: "b2b-signed", configureFirst: false, signingKeyRef: `env://${SIGNING_KEY_ENV}` });
+      await enqueueInvoice(s.tenantId, s.receipt.orderId);
+      await finalizeSubmissionRow(s.tenantId, (await invoiceRowsFor(s.tenantId))[0].id);
+
+      const [row] = await invoiceRowsFor(s.tenantId);
+      expect(row.requestJson.documentTypeVersion).toBe("1.0");
+      // `signatureType`, per ETA's own signed sample — the page's table calls
+      // the field `type`.
+      const signatures = row.requestJson.signatures as { signatureType: string; value: string }[];
+      expect(signatures).toHaveLength(1);
+      expect(signatures[0].signatureType).toBe("I");
+      expect(signatures[0].value.startsWith("MII")).toBe(true);
+      // LAST property, so the signed prefix is still a prefix of what ships.
+      expect(Object.keys(row.requestJson).at(-1)).toBe("signatures");
+      // Still no local uuid and no QR — signing changes neither.
+      expect(row.etaUuid).toBeNull();
+      expect(row.qrPayload).toBeNull();
+    } finally {
+      delete process.env[SIGNING_KEY_ENV];
+    }
+
+    // ...and the unsigned control, same code path, no seal configured.
+    const plain = await seedSale({ clientOrderId: "b2b-unsigned" });
+    await enqueueInvoice(plain.tenantId, plain.receipt.orderId);
+    await finalizeSubmissionRow(plain.tenantId, (await invoiceRowsFor(plain.tenantId))[0].id);
+
+    const [unsigned] = await invoiceRowsFor(plain.tenantId);
+    expect(unsigned.requestJson.documentTypeVersion).toBe("0.9");
+    expect(Object.keys(unsigned.requestJson)).not.toContain("signatures");
+  });
+
+  it("fails a signed tenant permanently when the seal material is unusable, never downgrading to v0.9", async () => {
+    process.env[SIGNING_KEY_ENV] = "this is not a PEM bundle";
+    try {
+      const s = await seedSale({ clientOrderId: "b2b-badseal", configureFirst: false, signingKeyRef: `env://${SIGNING_KEY_ENV}` });
+      await enqueueInvoice(s.tenantId, s.receipt.orderId);
+
+      const error = await finalizeSubmissionRow(s.tenantId, (await invoiceRowsFor(s.tenantId))[0].id).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(EtaConfigError);
+      expect((error as EtaConfigError).code).toBe("invoice-signing-unavailable");
+      // Nothing was written: the row is still unfinalized rather than holding an
+      // unsigned document the tenant did not ask for.
+      const [row] = await invoiceRowsFor(s.tenantId);
+      expect(Object.keys(row.requestJson)).not.toContain("invoiceLines");
+    } finally {
+      delete process.env[SIGNING_KEY_ENV];
+    }
   });
 
   it("fails permanently, with an owner alert, when the buyer was never staged", async () => {

@@ -48,6 +48,24 @@ function resolveOptionalSecretRef(ref: string | null, column: string): string | 
 }
 
 /**
+ * The `EtaConfig.signingKey` thunk for a stored `signing_key_ref`.
+ *
+ * Exported because `./finalize` needs the SAME thunk without assembling a whole
+ * `EtaConfig`: an invoice's `documentTypeVersion` is decided at finalization
+ * (it is part of the document's own signed bytes), so the finalizer has to know
+ * whether a signer exists — but it has no business resolving a device
+ * credential or an ERP secret to find out. Both callers therefore share this
+ * one definition rather than spelling the column name twice.
+ *
+ * Lazy for the reason `EtaConfig.signingKey` documents at length: nothing on
+ * the receipt path reads it, so resolving eagerly let a stale B2B ref take a
+ * tenant's RECEIPTS down with it.
+ */
+export function signingKeyThunk(signingKeyRef: string | null): () => string | null {
+  return () => resolveOptionalSecretRef(signingKeyRef, "eta_tenant_config.signing_key_ref");
+}
+
+/**
  * The tenant's (and optionally the device's) live ETA credentials, or `null`
  * when this tenant/device is not in a state to talk to ETA at all.
  *
@@ -194,6 +212,6 @@ export async function resolveEtaConfig(tenantId: string, deviceId?: string): Pro
      * `null` (no signing material configured) stays a value, not a throw: it is
      * the ordinary state of a receipt-only tenant.
      */
-    signingKey: () => resolveOptionalSecretRef(signingKeyRef, "eta_tenant_config.signing_key_ref"),
+    signingKey: signingKeyThunk(signingKeyRef),
   };
 }

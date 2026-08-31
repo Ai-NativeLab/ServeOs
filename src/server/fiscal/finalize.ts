@@ -11,7 +11,8 @@ import {
 import { buildReceipt, buildReturnReceipt } from "./build-document";
 import { buildInvoice } from "./build-invoice";
 import { finalizeReceipt, type WireContext } from "./eta-wire";
-import { toWireInvoice } from "./eta-invoice-wire";
+import { toWireInvoice, attachSignatures } from "./eta-invoice-wire";
+import { signingKeyThunk } from "./config";
 import { stringifyWire } from "./serialize";
 import { getEtaEnv } from "./eta-env";
 import { EtaConfigError } from "./eta-transport-errors";
@@ -331,33 +332,52 @@ async function finalizeInvoiceRow(tx: Tx, tenantId: string, row: EtaSubmission):
     ? { ...built, referenceOldUuid: row.referenceOldUuid }
     : built;
 
-  // ALWAYS UNSIGNED v0.9 TODAY, and `resolveInvoiceSigner` is deliberately NOT
-  // called here yet — it would be an `EtaConfig` resolution (a secret-manager
-  // read) on a path that can only get `null` back while the CAdES-BES container
-  // is BLOCKED (`./sign-invoice`). When the container lands, THIS is the call
-  // site: resolve the signer, and on a non-null one emit "1.0" instead, hash the
-  // document with `invoiceDigest`, and `attachSignatures` the result.
+  // THE VERSION FLIP, and it happens HERE rather than at submit time because
+  // `documentTypeVersion` is part of the document's own bytes and therefore part
+  // of what the signature covers. Choosing it later would let the signed
+  // document and the transmitted document differ by exactly the field that says
+  // whether the signature is checked.
   //
-  // THE VERSION IS FIXED HERE RATHER THAN AT SUBMIT TIME, and that ordering is
-  // load-bearing: `documentTypeVersion` is part of the document's own bytes, so
-  // it is part of what a signature covers. Choosing it later would let the
-  // signed document and the transmitted document differ by exactly the field
-  // that says whether the signature is checked.
+  //   signer configured  -> "1.0" + a CAdES-BES `signatures` element
+  //   no signer          -> "0.9", unsigned
   //
   // "0.9" is honest rather than convenient: a "1.0" document with no
   // `signatures` element would be refused for a missing Mandatory field, and
   // v0.9 is "maintained as v1.0, the only difference is that signature
   // validation is disabled on this version". Whether ETA still ACCEPTS v0.9 is
-  // VERIFY-gated against preprod — see `./sign-invoice`.
-  const wire = toWireInvoice(doc, {
+  // VERIFY-gated against preprod, as is validation of the signature itself —
+  // see `./sign-invoice`.
+  //
+  // `resolveInvoiceSigner` never falls through: material that is present but
+  // unusable throws a permanent, named `EtaConfigError` rather than silently
+  // downgrading a tenant who configured a seal to an unsigned document.
+  //
+  // DYNAMICALLY IMPORTED, for the same reason this module talks to
+  // `./build-document` rather than to `EtaFiscalProvider`: `recordSale` imports
+  // this file on the SALE path, and a static import would drag pkijs + asn1js
+  // into every till transaction's module graph to serve a branch no receipt ever
+  // takes. B2B invoices are the only caller, and they arrive through the worker.
+  const { resolveInvoiceSigner, invoiceDigest, signInvoice } = await import("./sign-invoice");
+  const signer = resolveInvoiceSigner({ signingKey: config.signingKey });
+
+  const unsigned = toWireInvoice(doc, {
     rin: config.registrationNumber,
     sellerName: config.wireContext.sellerName,
     branchCode: config.wireContext.branchCode,
     branchAddress: config.wireContext.branchAddress,
     activityCode: config.wireContext.activityCode,
     internalId: String(order.orderNumber),
-    documentTypeVersion: INVOICE_UNSIGNED_VERSION,
+    documentTypeVersion: signer ? INVOICE_SIGNED_VERSION : INVOICE_UNSIGNED_VERSION,
   });
+
+  // ETA's steps 3-5, in order: hash the document WITHOUT its signature element
+  // ("no signature element yet"), sign that hash, and put the Base64 result back
+  // into the document "in a new element". The unsigned form is what was hashed,
+  // and `attachSignatures` only appends — so the bytes a verifier
+  // re-canonicalizes are the bytes that were signed.
+  const wire = signer
+    ? attachSignatures(unsigned, [await signInvoice(invoiceDigest(unsigned), signer)])
+    : unsigned;
 
   await tx.update(etaSubmissions).set({
     // `::json`, never `::jsonb`, and never Drizzle's JSON mapper — same reason
@@ -382,6 +402,10 @@ async function finalizeInvoiceRow(tx: Tx, tenantId: string, row: EtaSubmission):
  * ACCEPTS v0.9 is VERIFY-gated against preprod — see `./sign-invoice`.
  */
 const INVOICE_UNSIGNED_VERSION = "0.9" as const;
+
+/** `documentTypeVersion` for a signed document — "Must be `1.0` for this
+ *  version", with `signatures` Mandatory. */
+const INVOICE_SIGNED_VERSION = "1.0" as const;
 
 /** A persisted `request_json` that is a WIRE DOCUMENT rather than staged input.
  *  `invoiceLines` is Mandatory on every invoice and appears in no staging shape,
@@ -606,6 +630,15 @@ type ResolvedConfig = {
   registrationNumber: string;
   environment: "preprod" | "prod";
   wireContext: EtaWireContextConfig;
+  /**
+   * The e-seal material, LAZILY. Only the B2B invoice branch calls it — a
+   * receipt is not signed at all (ETA has not deployed receipt batch-signature
+   * validation; addendum C7) — so resolving eagerly would let a stale B2B secret
+   * ref take every receipt this tenant issues down with it. Exactly the
+   * reasoning `EtaConfig.signingKey` records, sharing its one definition
+   * (`signingKeyThunk`) rather than restating the column name here.
+   */
+  signingKey: () => string | null;
 };
 
 async function loadTenantConfig(tx: Tx, tenantId: string): Promise<ResolvedConfig> {
@@ -613,6 +646,7 @@ async function loadTenantConfig(tx: Tx, tenantId: string): Promise<ResolvedConfi
     registrationNumber: etaTenantConfig.registrationNumber,
     environment: etaTenantConfig.environment,
     wireContextJson: etaTenantConfig.wireContextJson,
+    signingKeyRef: etaTenantConfig.signingKeyRef,
   }).from(etaTenantConfig).where(eq(etaTenantConfig.tenantId, tenantId)).limit(1);
 
   if (!row) {
@@ -623,6 +657,7 @@ async function loadTenantConfig(tx: Tx, tenantId: string): Promise<ResolvedConfi
     registrationNumber: row.registrationNumber,
     environment: row.environment,
     wireContext: requireWireContext(row.wireContextJson),
+    signingKey: signingKeyThunk(row.signingKeyRef),
   };
 }
 
