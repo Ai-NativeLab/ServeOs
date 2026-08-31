@@ -1137,12 +1137,39 @@ const invoiceRows = (tenantId: string) =>
     tx.select().from(etaSubmissions).where(eq(etaSubmissions.docType, "e_invoice")),
   );
 
+/** Drops every `e_receipt` row for a tenant. See `seedInvoiceableSale`. */
+const clearReceiptRows = (tenantId: string) =>
+  withTenant(tenantId, (tx) => tx.delete(etaSubmissions).where(eq(etaSubmissions.docType, "e_receipt")));
+
+/**
+ * A sale that a B2B invoice may actually be issued for: rung through the real
+ * POS path, then with its `e_receipt` row removed.
+ *
+ * WHY THE REMOVAL IS NOT A CHEAT. Under ONE SALE, ONE DOCUMENT FAMILY, an order
+ * carrying a live receipt can never be invoiced — so a fixture that rings a sale
+ * and leaves its receipt in place cannot exercise the trigger's success path at
+ * all. The state constructed here is genuinely reachable today (`recordSale`
+ * swallows a failed enqueue by the iron rule, and an online order carries no row
+ * until the reconciliation sweep adopts it minutes later), and it is the state
+ * every B2B sale will be in once round-2 Task 5 lands: the till will enqueue an
+ * `e_invoice` INSTEAD of an `e_receipt`, so a real business sale never has a
+ * receipt row to begin with. Until that exists, this is how the tests reach it.
+ *
+ * The tests that DO want a receipt present — the cross-family 409 and the one
+ * permitted family switch — use `seedSale` directly and say so.
+ */
+async function seedInvoiceableSale() {
+  const s = await seedSale({ configureFirst: true });
+  await clearReceiptRows(s.tenantId);
+  return s;
+}
+
 const auditRows = (tenantId: string) =>
   withTenant(tenantId, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.tenantId, tenantId)));
 
 describe("requestB2bInvoice — buyer validation", () => {
   it("names EVERY one of the seven mandatory fields, at its own path", async () => {
-    const s = await seedSale({ configureFirst: true });
+    const s = await seedInvoiceableSale();
 
     // The whole point of validating HERE rather than in the worker: each of
     // these is a form error with the operator still looking at the form, not a
@@ -1168,7 +1195,7 @@ describe("requestB2bInvoice — buyer validation", () => {
   });
 
   it("holds the buyer's RIN to exactly the shape the seller's is held to", async () => {
-    const s = await seedSale({ configureFirst: true });
+    const s = await seedInvoiceableSale();
     // A document naming a 9-digit issuer and an 8-digit receiver is not well
     // formed — ETA's Registration Identification Number is one kind of value.
     for (const rin of ["12345678", "1234567890", "20017370x", "200 173 707", ""]) {
@@ -1185,7 +1212,7 @@ describe("requestB2bInvoice — buyer validation", () => {
   });
 
   it("validates the buyer BEFORE the order lookup — the operator's own typing comes first", async () => {
-    const s = await seedSale({ configureFirst: true });
+    const s = await seedInvoiceableSale();
     // Both the order id and the buyer are wrong. The buyer is the half they can
     // see and fix, so it is what they are told about.
     await expectRejected(
@@ -1197,8 +1224,8 @@ describe("requestB2bInvoice — buyer validation", () => {
 
 describe("requestB2bInvoice — ownership and the live-invoice ladder", () => {
   it("404s an unknown order, a malformed id, and another tenant's order alike", async () => {
-    const mine = await seedSale({ configureFirst: true });
-    const theirs = await seedSale({ configureFirst: true });
+    const mine = await seedInvoiceableSale();
+    const theirs = await seedInvoiceableSale();
 
     for (const orderId of ["00000000-0000-4000-8000-000000000000", "not-a-uuid", theirs.receipt.orderId]) {
       const outcome = await requestB2bInvoice(mine.tenantId, orderId, B2B_BUYER());
@@ -1212,7 +1239,7 @@ describe("requestB2bInvoice — ownership and the live-invoice ladder", () => {
   });
 
   it("409s a second request — one live invoice per sale, or the sale is declared twice", async () => {
-    const s = await seedSale({ configureFirst: true });
+    const s = await seedInvoiceableSale();
 
     const first = await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER());
     expect(first.ok).toBe(true);
@@ -1227,7 +1254,7 @@ describe("requestB2bInvoice — ownership and the live-invoice ladder", () => {
   });
 
   it("409s the loser of two CONCURRENT requests rather than letting it overwrite the winner", async () => {
-    const s = await seedSale({ configureFirst: true });
+    const s = await seedInvoiceableSale();
 
     // WHAT THIS PINS, STATED PRECISELY, because the obvious reading is wrong.
     // It pins the OUTCOME of two overlapping calls — one row, one audit event,
@@ -1257,7 +1284,7 @@ describe("requestB2bInvoice — ownership and the live-invoice ladder", () => {
   });
 
   it("409s a REJECTED invoice by pointing at the correction path, not by silently no-opping", async () => {
-    const s = await seedSale({ configureFirst: true });
+    const s = await seedInvoiceableSale();
     await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER());
     await withTenant(s.tenantId, (tx) =>
       tx.update(etaSubmissions)
@@ -1274,9 +1301,77 @@ describe("requestB2bInvoice — ownership and the live-invoice ladder", () => {
     expect(await invoiceRows(s.tenantId)).toHaveLength(1);
   });
 
+  it("409s an order already filed as an e-receipt — ONE SALE, ONE DOCUMENT FAMILY", async () => {
+    // `seedSale` rings a real POS sale, so the order already carries a live
+    // `e_receipt`. Two accepted documents for one sale is that sale declared
+    // twice in the taxpayer's filings — the same harm the in-family check
+    // refuses, one step wider, and the partial unique indexes cannot see it
+    // (they are keyed on (tenant, docType, order), so a receipt and an invoice
+    // collide with nothing). This rung is the only thing enforcing it.
+    const s = await seedSale({ configureFirst: true });
+    const [receipt] = await withTenant(s.tenantId, (tx) =>
+      tx.select().from(etaSubmissions).where(eq(etaSubmissions.docType, "e_receipt")),
+    );
+    expect(receipt.status).not.toBe("rejected");
+
+    const outcome = await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER());
+    expect(outcome).toMatchObject({ ok: false, status: 409 });
+    const error = (outcome as { error: string }).error;
+    // Names the document that stands in the way, its status, and the reason the
+    // ordinary workflow it blocks is unavailable rather than forbidden.
+    expect(error).toContain(String(s.receipt.orderNumber));
+    expect(error).toContain(`e-receipt (${receipt.status})`);
+    expect(error).toMatch(/VERIFY-12/);
+    expect(await invoiceRows(s.tenantId)).toEqual([]);
+
+    // ACCEPTED counts too, not just pending: a filed document is exactly the one
+    // that must not be doubled.
+    await withTenant(s.tenantId, (tx) =>
+      tx.update(etaSubmissions).set({ status: "accepted", acceptedAt: new Date() })
+        .where(eq(etaSubmissions.docType, "e_receipt")),
+    );
+    expect(await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER())).toMatchObject({ status: 409 });
+
+    // And a rejected receipt whose CORRECTION is in flight still blocks — the
+    // correction is itself a non-rejected `e_receipt` row for this order, which
+    // is why "non-rejected" is the whole test and `referenceOldUuid` never has
+    // to be reasoned about.
+    await withTenant(s.tenantId, (tx) =>
+      tx.update(etaSubmissions).set({ status: "rejected", lastError: "InvalidTaxpayer" })
+        .where(eq(etaSubmissions.docType, "e_receipt")),
+    );
+    expect(await enqueueCorrectedResubmission({ tenantId: s.tenantId }, receipt.id)).not.toBeNull();
+    expect(await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER())).toMatchObject({ status: 409 });
+    expect(await invoiceRows(s.tenantId)).toEqual([]);
+  });
+
+  it("ALLOWS the one family switch: every receipt rejected and no correction queued", async () => {
+    // The deliberate hole in the rule above. ETA holds no document for this sale
+    // at all, so refusing would leave it permanently UNDECLARED — strictly worse
+    // than the double-declaration the rule prevents, because there is nothing to
+    // double. The invoice becomes the sale's first and only filing.
+    const s = await seedSale({ configureFirst: true });
+    await withTenant(s.tenantId, (tx) =>
+      tx.update(etaSubmissions).set({ status: "rejected", lastError: "InvalidTaxpayer" })
+        .where(eq(etaSubmissions.docType, "e_receipt")),
+    );
+
+    const outcome = await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER());
+    expect(outcome.ok).toBe(true);
+    const [invoice] = await invoiceRows(s.tenantId);
+    expect(invoice.buyerJson).toEqual(B2B_BUYER());
+    // The rejected receipt is left exactly as ETA left it — under the same
+    // 5-year retention as every other fiscal record, superseded by nothing.
+    const receipts = await withTenant(s.tenantId, (tx) =>
+      tx.select().from(etaSubmissions).where(eq(etaSubmissions.docType, "e_receipt")),
+    );
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0].status).toBe("rejected");
+  });
+
   it("409s a cancelled or rejected order — a cancelled sale has nothing to invoice", async () => {
     for (const status of ["cancelled", "rejected"] as const) {
-      const s = await seedSale({ configureFirst: true });
+      const s = await seedInvoiceableSale();
       await withTenant(s.tenantId, (tx) =>
         tx.update(orders).set({ status }).where(eq(orders.id, s.receipt.orderId)),
       );
@@ -1292,7 +1387,7 @@ describe("requestB2bInvoice — ownership and the live-invoice ladder", () => {
 
 describe("requestB2bInvoice — the happy path", () => {
   it("queues the invoice, captures the buyer in buyer_json, and audits who asked", async () => {
-    const s = await seedSale({ configureFirst: true });
+    const s = await seedInvoiceableSale();
 
     const outcome = await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER(), {
       actorUserId: s.ctx.cashierUserId,
@@ -1332,7 +1427,7 @@ describe("requestB2bInvoice — the happy path", () => {
   });
 
   it("finalizes immediately after the commit, so bad config surfaces at the form", async () => {
-    const s = await seedSale({ configureFirst: true });
+    const s = await seedInvoiceableSale();
     await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER());
 
     // The best-effort finalize has already run by the time the call returns:
@@ -1357,7 +1452,7 @@ describe("requestB2bInvoice — the happy path", () => {
     // The product's ETA classification is removed, so the build throws inside
     // `finalizeAfterCommit`. (One expected "finalize-at-request failed" line is
     // logged here.)
-    const s = await seedSale({ configureFirst: true });
+    const s = await seedInvoiceableSale();
     await withTenant(s.tenantId, (tx) => tx.delete(productTaxCodes));
 
     const outcome = await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER());
@@ -1375,13 +1470,16 @@ describe("requestB2bInvoice — the happy path", () => {
     // acceptedDocuments and rejectedDocuments on it because an invoice has no
     // uuid at submission. Two live invoices sharing one value would cross-map
     // ETA's assigned uuid/longId onto the wrong document.
-    const s = await seedSale({ configureFirst: true });
+    const s = await seedInvoiceableSale();
     const second = await recordSale(s.ctx, {
       clientOrderId: `internalid-${n++}`,
       lines: [{ productId: s.productId, quantity: 1, selectedOptionIds: [] }],
       expectedTotal: s.total,
       payments: [{ clientPaymentId: "p-1", method: "cash", amount: s.total, tenderedAmount: s.total }],
     });
+    // The second sale rang its own `e_receipt`, which ONE SALE, ONE DOCUMENT
+    // FAMILY would refuse an invoice for — see `seedInvoiceableSale`.
+    await clearReceiptRows(s.tenantId);
 
     await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER());
     await requestB2bInvoice(s.tenantId, second.orderId, B2B_BUYER());
@@ -1410,7 +1508,7 @@ describe("requestB2bInvoice — the happy path", () => {
     // above: `buyer_json` holds no credential and the outcome is an id, but the
     // masking guarantee is kept as "nothing ever leaves", so every new surface
     // joins the walk whether or not it could plausibly carry one.
-    const s = await seedSale({ configureFirst: true });
+    const s = await seedInvoiceableSale();
     await withTenant(s.tenantId, (tx) =>
       tx.update(etaTenantConfig).set({ signingKeyRef: REFS.signing }).where(eq(etaTenantConfig.tenantId, s.tenantId)),
     );

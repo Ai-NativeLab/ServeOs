@@ -23,6 +23,18 @@ import { requestB2bInvoiceAction } from "./fiscal-actions";
  * WHY THE BUYER IS TYPED IN AT ALL: ServeOS stores nothing about a customer's
  * tax identity, and invoice v1.0 makes the receiver Mandatory for a business
  * buyer. There is nothing to prefill from.
+ *
+ * FOUR OPTIONAL ADDRESS FIELDS ARE DELIBERATELY NOT OFFERED HERE — `floor`,
+ * `room`, `landmark` and `additionalInformation` — while `postalCode` is. The
+ * SERVICE accepts all five (`buyerSchema` carries them for the same reason the
+ * seller's address does: a field the form cannot set is a field the tenant
+ * cannot comply with), so the API and a future richer form can send them and
+ * they reach the wire verbatim. The difference is that the seller's address is
+ * typed ONCE at setup, where eleven boxes are proportionate, whereas this form
+ * is filled per sale with a customer waiting — so it offers the five Mandatory
+ * components plus the one optional field an Egyptian business address is
+ * routinely written with, and leaves the rest to the API rather than making
+ * every operator scroll past four boxes they will not use.
  */
 export function B2bInvoiceForm({ orderId }: { orderId: string }) {
   return (

@@ -25,7 +25,9 @@ import { fiscalErrorResponse, redactedCause } from "../../../fiscal-errors";
  * the dashboard's server action so neither surface can drift from the other.
  *
  * 403 no `fiscal:manage` · 400 malformed body or a buyer field · 404 not this
- * tenant's order · 409 already invoiced, rejected, or a cancelled order · 201.
+ * tenant's order · 409 already invoiced, previously rejected, already filed as
+ * an e-receipt (one sale, one document family — see `requestB2bInvoice`), or a
+ * cancelled order · 201.
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { ctx, denied } = await resolveFiscalContext();

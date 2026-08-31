@@ -1058,6 +1058,36 @@ const isUuid = (value: string): boolean => z.uuid().safeParse(value).success;
  * act, and `eta.invoice.requested` is the record of it.
  *
  * ---------------------------------------------------------------------------
+ * ONE SALE, ONE DOCUMENT FAMILY.
+ *
+ * A sale is declared to ETA EITHER as an `e_receipt` OR as an `e_invoice`, never
+ * as both. So this refuses an invoice for an order that already carries a
+ * non-rejected receipt, and the reason is the same harm the in-family check
+ * exists to prevent, one step wider: two accepted documents describing one sale
+ * is that sale declared twice in the taxpayer's ETA filings. The partial unique
+ * indexes cannot express this — they are keyed on (tenant, docType, order), so a
+ * receipt and an invoice for one sale collide with nothing — which makes this
+ * rung the ONLY thing enforcing it.
+ *
+ * WHAT THIS DELIBERATELY EXCLUDES, AND WHY THAT IS A GAP RATHER THAN A DECISION.
+ * A customer asking for a tax invoice AFTER their receipt has been filed is a
+ * real, ordinary workflow, and this refuses it. Serving it needs an ETA
+ * conversion or replacement mechanism — cancel-and-reissue? a reference from the
+ * invoice back to the superseded receipt? — and ServeOS's research has never
+ * covered one, so there is nothing to implement against. That open question is
+ * VERIFY-12 in the addendum's §5 ledger. Until it is answered, refusing is the
+ * honest failure: the alternative is inventing a filing shape and finding out
+ * from a tax adviser. It is NOT a bypass to be quietly relaxed — a caller who
+ * needs the invoice must capture the buyer at the till so the sale is filed as
+ * one from the start (round 2, Task 5).
+ *
+ * THE ONE PERMITTED FAMILY SWITCH: every receipt row rejected, with no
+ * correction queued. Then ETA holds no document for the sale at all, and
+ * refusing would leave it permanently undeclared — strictly worse than the
+ * double-declaration this rule prevents, because there is nothing to double. The
+ * branch is marked at its site.
+ *
+ * ---------------------------------------------------------------------------
  * `internalID` IS A MATCH KEY — THE ASSERTION `enqueue.ts` ASKED THIS TASK FOR.
  *
  * `finalize.ts` sets an invoice's `internalID` to `String(order.orderNumber)`,
@@ -1131,16 +1161,23 @@ export async function requestB2bInvoice(
     // `eta_submissions_order` caps live rows), but `onConflictDoNothing` fails
     // SILENTLY by design — the operator would get a success toast and no
     // invoice. Reading the rows first is what turns each index into a sentence.
+    //
+    // EVERY docType for this order, not just `e_invoice`: the fourth rung below
+    // is CROSS-family, and the indexes cannot express it (they are keyed on
+    // (tenant, docType, order), so a receipt and an invoice for one sale collide
+    // with nothing). `eta_submissions_parent_xor` guarantees the only docTypes
+    // that can carry an `order_id` are `e_receipt` and `e_invoice`, so this
+    // needs no docType predicate at all.
     const existing = await tx
-      .select({ id: etaSubmissions.id, status: etaSubmissions.status })
+      .select({ id: etaSubmissions.id, docType: etaSubmissions.docType, status: etaSubmissions.status })
       .from(etaSubmissions)
       .where(and(
         eq(etaSubmissions.tenantId, tenantId),
-        eq(etaSubmissions.docType, "e_invoice"),
         eq(etaSubmissions.orderId, orderId),
       ));
 
-    const live = existing.find((row) => row.status !== "rejected");
+    const invoices = existing.filter((row) => row.docType === "e_invoice");
+    const live = invoices.find((row) => row.status !== "rejected");
     if (live) {
       return {
         ok: false,
@@ -1148,7 +1185,7 @@ export async function requestB2bInvoice(
         error: `Order ${order.orderNumber} already has a tax invoice (${live.status}) — one live invoice per sale, or the sale is declared twice`,
       };
     }
-    if (existing.length > 0) {
+    if (invoices.length > 0) {
       // Every row is rejected, so the LIVE index would admit an insert — but the
       // ORIGINAL index would not (it ignores status), and ETA does not accept a
       // fix in place anyway. The supported move is a corrected resubmission,
@@ -1159,6 +1196,33 @@ export async function requestB2bInvoice(
         error: `Order ${order.orderNumber}'s tax invoice was rejected by ETA — queue a corrected resubmission from the fiscal dashboard rather than a new invoice`,
       };
     }
+
+    // ONE SALE, ONE DOCUMENT FAMILY — see this function's JSDoc for the rule and
+    // for VERIFY-12, the open question it stands in for.
+    //
+    // "Non-rejected" is the whole test, and it covers the corrected-resubmission
+    // case for free: a correction is itself a non-rejected `e_receipt` row for
+    // this order, so a rejected receipt WITH a correction in flight is caught by
+    // exactly this find, without having to reason about `referenceOldUuid`.
+    const liveReceipt = existing.find((row) => row.docType === "e_receipt" && row.status !== "rejected");
+    if (liveReceipt) {
+      return {
+        ok: false,
+        status: 409,
+        error:
+          `Order ${order.orderNumber} is already filed with ETA as an e-receipt (${liveReceipt.status}) — issuing a ` +
+          "tax invoice as well would declare the same sale twice. Converting a filed receipt into a B2B invoice " +
+          "needs an ETA mechanism ServeOS does not yet have (VERIFY-12); capture the buyer at the till instead so " +
+          "the sale is filed as an invoice from the start",
+      };
+    }
+    // FALLING THROUGH HERE IS THE ONE FAMILY SWITCH THAT IS ALLOWED, and it is a
+    // deliberate branch rather than an oversight: every `e_receipt` row for this
+    // order is REJECTED and nobody queued a correction, so ETA holds no document
+    // for this sale at all. Refusing would leave it permanently UNDECLARED,
+    // which is a worse outcome than the double-declaration the rung above
+    // prevents — there is nothing to double. The invoice becomes the sale's
+    // first and only filing.
 
     // ONE TRANSACTION for the enqueue, the buyer and the audit event. The buyer
     // is the only reason this row can become a document at all, so a row that

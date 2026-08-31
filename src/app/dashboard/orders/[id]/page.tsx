@@ -55,6 +55,16 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
   // `tenants.country === "EG"`: offering the button to a non-EG tenant would
   // queue a document nothing will ever submit. The fiscal dashboard says the
   // same thing in its own banner.
+  //
+  // NOT gated on the order's FISCAL state, and that is a decision. The
+  // one-sale-one-document-family rule (`requestB2bInvoice`) refuses an order
+  // already filed as an e-receipt, so on a receipted sale this form is offered
+  // and then answers 409 — worse UX than hiding it. Hiding it would mean reading
+  // `getSaleFiscalStatus` here, and that function's docType filter is about to
+  // change meaning under round-2 Task 5 (it widens to the invoice family), so a
+  // button gated on it would silently start hiding itself for a different reason
+  // than the one written here. The LADDER is the enforcement; the gate stays
+  // permission + country + order status until Task 5 settles that read.
   const canInvoice =
     can(ctx.roleKeys, "fiscal:manage") &&
     tenant?.country === "EG" &&
