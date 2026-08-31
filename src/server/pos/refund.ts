@@ -21,6 +21,7 @@ import {
   allocateLargestRemainder,
   compareDecimal,
   divideDecimal,
+  isZeroDecimal,
   multiplyDecimal,
   subtractDecimal,
   sumDecimal,
@@ -88,28 +89,51 @@ type RefundVat = { headerVat: string; lineVats: string[] };
  *
  * THE SERVICE-CHARGE DECISION (and its consequence). The service charge is
  * order-level: it bears VAT but has no `order_items` row to hang it on. It is
- * therefore given its OWN weight bucket, and item lines only ever claim the
- * item bucket. The consequence, stated plainly: an itemised refund reverses
- * exactly the VAT inside the money handed back for those items and NOT the
- * service charge's VAT share — that share is reversed only by a full
- * (headerless) refund, which works from the order's remaining VAT. The
- * alternative — spreading the service charge's VAT across the items — would
- * make a line's stored VAT exceed the VAT actually contained in that line's
- * refunded amount (on a 14% VAT-inclusive 100.00 item under a 10% service
- * charge: 6.14 of VAT in 50.00 returned, but 6.76 stored), i.e. it would
- * over-reverse output VAT. Under-reversing a service charge nobody itemises is
- * the safe side of that trade; over-declaring is corrected by refunding the
- * balance, which the full-refund path does capture.
+ * therefore given its OWN weight bucket, and a PARTIAL refund's item lines only
+ * ever claim the item bucket. The consequence, stated plainly: an itemised
+ * partial refund reverses exactly the VAT inside the money handed back for
+ * those items and NOT the service charge's VAT share — that share stays
+ * declared until the balance itself is refunded. The alternative — spreading
+ * the service charge's VAT across the items — would make a line's stored VAT
+ * exceed the VAT actually contained in that line's refunded amount (on a 14%
+ * VAT-inclusive 100.00 item under a 10% service charge: 6.14 of VAT in 50.00
+ * returned, but 6.76 stored), i.e. it would over-reverse output VAT.
+ * Under-reversing a service charge nobody itemises is the safe side of that
+ * trade, and the refund of the balance is what recovers it.
  *
- * EXACTNESS. Every split is `allocateLargestRemainder`, so the parts sum to the
- * whole to the cent, and each item's VAT is split again across its own UNITS —
- * so a 1-of-2 return takes one unit's cents and a later 1-of-2 return takes the
- * rest. (A `lineVat × qty/orderQty` half-up would store 4.10 twice against a
- * line whose VAT is 8.19, reversing a cent that was never charged.)
+ * THE ITEMISED-FULL TOP-UP. A `full` refund whose payments cover the whole
+ * outstanding balance returns ALL the remaining money — the service charge
+ * included — so ALL the remaining VAT belongs in its stored figures, whether or
+ * not the refund happened to name lines. Left as Σ lines, an itemised full
+ * refund would orphan the service charge's share permanently: no balance
+ * remains for a later refund to recover it (unlike the partial case above). So
+ * the residual `remaining − Σ lines` is distributed across THIS refund's lines,
+ * largest-remainder over their amounts, making `Σ lines == header == remaining`
+ * — which is also what Task 2's `Σ taxableItems == taxTotals` reconciliation
+ * needs. Attributing an order-level charge's VAT to product lines is the same
+ * documented pro-rata simplification round 1's full-refund gross split already
+ * makes (`finalize.ts` resolveFullRefundLines). An itemised full refund of LESS
+ * than the balance is a goodwill payment that leaves money outstanding, so it
+ * gets no top-up.
+ *
+ * EXACTNESS, AND WHAT IS AND IS NOT FLOAT-FREE. Every split is
+ * `allocateLargestRemainder`, so the parts sum to the whole to the cent, and
+ * each item's VAT is split again across its own UNITS — so a 1-of-2 return
+ * takes one unit's cents and a later 1-of-2 return takes the rest. (A
+ * `lineVat × qty/orderQty` half-up would store 4.10 twice against a line whose
+ * VAT is 8.19, reversing a cent that was never charged, and would then trip the
+ * invariant below on a perfectly legitimate second return.) All arithmetic
+ * introduced here is scaled-BigInt end to end. Two INPUTS are not: `thisTotal`
+ * and `outstanding` arrive as `money(n)` of pre-existing float sums
+ * (issueRefund's `thisTotal`/`netPaid`, computed with `round2` at :420-424).
+ * That is deliberate — they are the very figures the net-paid ceiling enforces
+ * and `refunds.totalAmount` stores, so the VAT scales against exactly the money
+ * the refund recorded rather than a second, differently-derived total.
  */
 async function computeRefundVat(
   tx: Tx,
   order: Order,
+  kind: RefundInput["kind"],
   lines: RefundLineInput[],
   items: OrderItem[],
   alreadyReturned: Map<string, number>,
@@ -121,13 +145,17 @@ async function computeRefundVat(
     .from(refunds)
     .where(eq(refunds.orderId, order.id));
   const priorVat = sumDecimal("prior refund VAT", priorRefunds.map((r) => r.vatAmount));
+  const remaining = subtractDecimal("remaining order VAT", order.vatAmount, priorVat);
+  // A full refund that clears the balance takes the rest of the VAT with it,
+  // lines or no lines — see THE ITEMISED-FULL TOP-UP above.
+  const clearsBalance = kind === "full" && compareDecimal(thisTotal, outstanding) >= 0;
 
   const lineVats = lines.length
-    ? itemisedLineVat(order, lines, items, alreadyReturned)
+    ? topUpToRemaining(itemisedLineVat(order, lines, items, alreadyReturned), lines, clearsBalance ? remaining : null)
     : [];
   const headerVat = lines.length
     ? sumDecimal("refund VAT", lineVats)
-    : headerlessRefundVat(order.vatAmount, priorVat, thisTotal, outstanding);
+    : headerlessRefundVat(remaining, thisTotal, outstanding);
 
   // INVARIANT: an order's refunds may never reverse more VAT than the order
   // charged. It holds by construction within either path on its own, but not
@@ -137,7 +165,8 @@ async function computeRefundVat(
   // accounted for honestly is refused, not silently clamped.
   if (compareDecimal(addDecimal("refund VAT", priorVat, headerVat), order.vatAmount) > 0) {
     throw new PosRefundError(
-      `This refund would reverse ${headerVat} of VAT on top of ${priorVat} already returned, above the ${order.vatAmount} the order charged`,
+      `This refund would reverse ${headerVat} of VAT on top of ${priorVat} already returned, above the ${order.vatAmount} the order charged` +
+        " — this order's items were already covered by an earlier goodwill refund; issue this as a full refund without item lines instead",
     );
   }
 
@@ -182,19 +211,40 @@ function itemisedLineVat(
 }
 
 /**
+ * Lifts a full refund's line VATs so they sum to `remaining` — the order's VAT
+ * not yet reversed — by spreading the residual across the lines largest-
+ * remainder over the money each returned. `null` (a partial refund, or a
+ * goodwill full refund that leaves a balance) passes the lines through
+ * untouched.
+ *
+ * The residual is normally positive (the service charge's share, which item
+ * weights withhold). It can be negative when an earlier goodwill refund already
+ * took part of the VAT unattributed, and then this correctly scales the lines
+ * DOWN — the order's declared VAT is a ceiling in both directions.
+ */
+function topUpToRemaining(lineVats: string[], lines: RefundLineInput[], remaining: string | null): string[] {
+  if (remaining === null) return lineVats;
+  const residual = subtractDecimal("refund VAT top-up", remaining, sumDecimal("refund VAT", lineVats));
+  if (isZeroDecimal(residual)) return lineVats;
+  // Weight by the money each line returned; a full refund need not itemise its
+  // amounts at all (only a partial must equal its tenders), so a set of
+  // zero-amount lines falls back to the quantities, which are always present.
+  const amounts = lines.map((l) => money(l.amount));
+  const weights = isZeroDecimal(sumDecimal("refund line amounts", amounts))
+    ? lines.map((l) => String(l.quantity))
+    : amounts;
+  const shares = allocateLargestRemainder("refund VAT top-up", residual, weights);
+  return lineVats.map((vat, i) => addDecimal("refund line VAT", vat, shares[i]));
+}
+
+/**
  * The VAT of a HEADERLESS (goodwill or whole-balance) full refund, which names
  * no items: the order's VAT not yet reversed by earlier refunds, scaled by the
  * share of the outstanding balance actually handed back (2dp, half-up). A
  * refund of the whole balance therefore reverses the whole remaining VAT —
  * including the service charge's share, which no item line claims.
  */
-function headerlessRefundVat(
-  orderVat: string,
-  priorVat: string,
-  thisTotal: string,
-  outstanding: string,
-): string {
-  const remaining = subtractDecimal("remaining order VAT", orderVat, priorVat);
+function headerlessRefundVat(remaining: string, thisTotal: string, outstanding: string): string {
   if (compareDecimal(remaining, "0") <= 0) return "0.00";
   // Guarded rather than assumed: the net-paid ceiling makes a zero balance
   // unreachable for a positive refund, and dividing by it would throw.
@@ -427,7 +477,7 @@ export async function issueRefund(
     //     the same figure the ceiling above enforces, so a goodwill full refund
     //     scales against what was actually still owed back.
     const { headerVat, lineVats } = await computeRefundVat(
-      tx, order, lines, items, alreadyReturned, money(thisTotal), money(netPaid),
+      tx, order, input.kind, lines, items, alreadyReturned, money(thisTotal), money(netPaid),
     );
 
     // 6. Insert header → lines → payments. All-or-nothing inside withTenant.

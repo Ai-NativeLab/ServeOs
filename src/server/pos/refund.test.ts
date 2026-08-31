@@ -759,6 +759,74 @@ describe("issueRefund VAT persistence", () => {
     expect(sumDecimal("refund vat", rows.map((r) => r.vatAmount))).toBe(order.vatAmount);
   });
 
+  it("an itemised FULL refund of the whole balance tops its lines up to the order's whole VAT", async () => {
+    // Same 100.00 item under a 10% service charge as above: 12.28 of the 13.51
+    // VAT sits on the item, 1.23 on the service charge. Handing back the whole
+    // 110.00 returns the service charge too, so its VAT belongs in the stored
+    // figures — and there is no balance left for a later refund to recover it.
+    const s = await seedPricedPaidSale({
+      pricesIncludeVat: true,
+      serviceChargeRate: 10,
+      lines: [{ basePrice: "100", quantity: 1 }],
+    });
+    const order = await getOrder(s.tenantId, s.receipt.orderId);
+    expect(order.vatAmount).toBe("13.51");
+
+    const res = await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "full",
+      lines: [{ orderItemId: order.items[0].id, quantity: 1, amount: 110, restock: false }],
+      payments: [{ method: "cash", amount: 110 }],
+      reasonCode: "customer_changed_mind",
+      clientRefundId: "r1",
+    });
+
+    // 12.28 from the item bucket + the 1.23 top-up = the order's whole VAT.
+    expect((await refundLineRows(s.tenantId, res.refundId))[0].vatAmount).toBe("13.51");
+    const [r] = await refundRows(s.tenantId);
+    expect(r.vatAmount).toBe("13.51");
+  });
+
+  it("an itemised FULL refund after a partial one tops up only to the VAT still un-reversed", async () => {
+    // 100.00 + 33.33 under a 10% service charge (13.33), VAT-inclusive 14% on
+    // the 146.66 taxable → 18.01, split 12.28 / 4.09 across the items and 1.64
+    // onto the service charge. The 33.33 line goes back first (4.09), then the
+    // rest of the balance is refunded itemised: 18.01 − 4.09 = 13.92, i.e. the
+    // 100.00 line's 12.28 topped up by the service charge's whole 1.64.
+    const s = await seedPricedPaidSale({
+      pricesIncludeVat: true,
+      serviceChargeRate: 10,
+      lines: [{ basePrice: "100", quantity: 1 }, { basePrice: "33.33", quantity: 1 }],
+    });
+    const order = await getOrder(s.tenantId, s.receipt.orderId);
+    expect(order.serviceChargeAmount).toBe("13.33");
+    expect(order.vatAmount).toBe("18.01");
+    const big = order.items.find((i) => i.productId === s.productIds[0])!;
+    const small = order.items.find((i) => i.productId === s.productIds[1])!;
+
+    await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "partial",
+      lines: [{ orderItemId: small.id, quantity: 1, amount: 33.33, restock: false }],
+      payments: [{ method: "cash", amount: 33.33 }],
+      reasonCode: "wrong_item",
+      clientRefundId: "r1",
+    });
+    const rest = await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "full",
+      lines: [{ orderItemId: big.id, quantity: 1, amount: 113.33, restock: false }],
+      payments: [{ method: "cash", amount: 113.33 }],
+      reasonCode: "customer_changed_mind",
+      clientRefundId: "r2",
+    });
+
+    expect((await refundLineRows(s.tenantId, rest.refundId))[0].vatAmount).toBe("13.92");
+    const rows = await refundRows(s.tenantId);
+    expect(rows.map((r) => r.vatAmount)).toEqual(["4.09", "13.92"]);
+    expect(sumDecimal("refund vat", rows.map((r) => r.vatAmount))).toBe(order.vatAmount);
+  });
+
   it("a zero-VAT order stores zeros on both the header and its lines", async () => {
     const s = await seedPricedPaidSale({
       vatEnabled: false,
@@ -809,14 +877,18 @@ describe("issueRefund VAT persistence", () => {
       clientRefundId: "goodwill",
     });
 
-    await expect(issueRefund(actorFrom(s.ctx), {
+    const err = await issueRefund(actorFrom(s.ctx), {
       orderId: s.receipt.orderId,
       kind: "partial",
       lines: [{ orderItemId: order.items[0].id, quantity: 2, amount: 100, restock: false }],
       payments: [{ method: "cash", amount: 100 }],
       reasonCode: "wrong_item",
       clientRefundId: "over",
-    })).rejects.toThrow(PosRefundError);
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PosRefundError);
+    // The message has to tell the cashier what to DO, not just that it failed.
+    expect((err as Error).message).toContain("24.56 the order charged");
+    expect((err as Error).message).toContain("issue this as a full refund without item lines instead");
 
     // Nothing of the refused refund survives — one refund row, one payment.
     const rows = await refundRows(s.tenantId);
