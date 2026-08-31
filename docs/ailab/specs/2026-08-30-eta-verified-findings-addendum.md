@@ -62,6 +62,11 @@ in `docs/references/eta/` (see its README). Secondary/vendor claims are marked `
   `submitted` and `accepted|rejected`.
 - **Window:** submit within **24 hours** of issuance; beyond it, the formal **Late Submission Request** path
   (configurable "Late Submission Window (Days)"). Retry/backoff must respect the 24h budget and flag breaches.
+  **As built:** the budget is respected by arithmetic (six attempts on a 2^n x 30s backoff spans ~1 hour, far
+  inside 24h) and the breach is FLAGGED AT THE READ LAYER, not enforced at the worker — stopping retries at the
+  deadline would turn a late document into no document. `SUBMISSION_WINDOW_MS` (`fiscal/worker.ts`) is the
+  threshold; `listSubmissions`/`getSubmissionById` return `overdue: boolean` and the fiscal dashboard shows each
+  submission's age with an overdue marker.
 - **QR:** the C5 format string, rendered at issuance.
 - **Returns:** Return Receipt referencing the original UUID, ≤ **540 days**.
 - **Environments:** APIs `api[.preprod].invoicing.eta.gov.eg`; **preprod TLS chains to ETA's internally-issued
@@ -169,6 +174,11 @@ Sources: `/document-serialization-approach/`, `/documents/receipt-v1-2/`, `/docu
   `orders.orderNumber` and must settle branch-vs-device uniqueness (ETA scopes it per branch per submission,
   while the uuid chain is per device).
 - **Sale-path enqueue failures are row-less; the Task 5 reconciliation sweep is the detection surface.**
+- **The sweep does NOT back-submit pre-activation history (decision, 2026-08-31).** It reaches back at most 7 days
+  (`RECONCILE_HORIZON_MS`). Older EG orders carry a `dateTimeIssued` months in the past, which is outside the 24-hour
+  window and belongs to the formal Late Submission Request path this pipeline does not implement — submitting them on a
+  cron tick is not a decision to make by accident. Activating a tenant with genuinely recent history still back-submits,
+  up to that bound; anything older is an explicit human call.
 - **Task 6 added `zod` as a declared runtime dependency, and BUMPED it 4.4.3 → 4.5.4.** Disclosed here because
   the PR diff makes it look like a pure dev→prod hoist and it is not. `zod` was already in `node_modules` as a
   **dev-only transitive** of `eslint-plugin-react-hooks` (via `zod-validation-error`), so importing it from

@@ -7,6 +7,7 @@ import {
   type EtaDocType,
   type EtaSubmissionStatus,
 } from "./schema";
+import { SUBMISSION_WINDOW_MS } from "./worker";
 
 /**
  * The fiscal READ surfaces — what a cashier's till and the owner's dashboard
@@ -69,6 +70,21 @@ export type SubmissionRowView = {
   referenceOldUuid: string | null;
   createdAt: Date;
   acceptedAt: Date | null;
+  /**
+   * Past ETA's 24-hour submission window with no acceptance to show for it.
+   *
+   * `createdAt` stands in for the document's `dateTimeIssued`, and the two are
+   * the same moment for every practical purpose: the row is inserted by
+   * `recordSale`'s after-commit enqueue (or, for a return, inside the refund's
+   * own transaction), while `dateTimeIssued` is the parent's `placedAt` /
+   * `createdAt` — seconds apart, against a 24-hour budget. Using the column we
+   * already select beats parsing `requestJson` for a field the table does not
+   * otherwise need.
+   *
+   * Derived on read rather than stored: it is a function of the clock, so a
+   * persisted flag would be wrong the moment nobody wrote to the row.
+   */
+  overdue: boolean;
 };
 
 /** The dashboard table's column set, shared by the list and single-row reads so
@@ -177,6 +193,7 @@ export async function listSubmissions(
   tenantId: string,
   opts: ListSubmissionsOptions = {},
 ): Promise<{ rows: SubmissionRowView[]; hasMore: boolean }> {
+  const now = Date.now();
   const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 25), 1), SUBMISSIONS_PAGE_LIMIT);
   const offset = Math.max(Math.trunc(opts.offset ?? 0), 0);
 
@@ -196,7 +213,24 @@ export async function listSubmissions(
       .offset(offset),
   );
 
-  return { rows: rows.slice(0, limit), hasMore: rows.length > limit };
+  return { rows: rows.slice(0, limit).map((row) => withOverdue(row, now)), hasMore: rows.length > limit };
+}
+
+/**
+ * Stamps the 24-hour-window verdict onto a row.
+ *
+ * `accepted` is the only status that closes the obligation — a `rejected` or
+ * `failed` document past the window is still a receipt ETA never accepted, and
+ * hiding that behind "it is terminal" is exactly the reporting gap addendum §3
+ * asks to close ("retry/backoff must respect the 24h budget and flag
+ * breaches"). The worker deliberately does not enforce the deadline, because
+ * giving up at it would turn a late document into no document; flagging it here
+ * is the other half of that decision.
+ */
+function withOverdue<T extends { status: EtaSubmissionStatus; createdAt: Date; acceptedAt: Date | null }>(
+  row: T, now: number,
+): T & { overdue: boolean } {
+  return { ...row, overdue: row.status !== "accepted" && now - row.createdAt.getTime() > SUBMISSION_WINDOW_MS };
 }
 
 /**
@@ -219,7 +253,7 @@ export async function getSubmissionById(
       .from(etaSubmissions)
       .where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, submissionId)))
       .limit(1);
-    return row ?? null;
+    return row ? withOverdue(row, Date.now()) : null;
   });
 }
 

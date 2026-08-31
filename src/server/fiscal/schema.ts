@@ -42,7 +42,9 @@ export const etaSubmissions = pgTable("eta_submissions", {
    *  submission. For e_invoice, ETA assigns this uuid; it stays null until
    *  ETA's response arrives. */
   etaUuid: text("eta_uuid"),
-  /** ETA-returned; used to build the public QR-code verification link. */
+  /** ETA-returned long id, retained for support and portal lookups. NOT the QR
+   *  link's input: the printed QR is built from the self-computed `etaUuid` at
+   *  issuance, long before ETA has assigned this (addendum C2/C5). */
   etaLongId: text("eta_long_id"),
   /** ETA's per-submission (batch) id, returned in the HTTP 202 response. */
   submissionUuid: text("submission_uuid"),

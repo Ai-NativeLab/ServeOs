@@ -27,6 +27,19 @@ const STATUS_CHIP: Record<string, string> = {
   failed: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
 };
 
+/**
+ * How long ago, coarsely — the question this column answers is "is this close
+ * to ETA's 24-hour window", not "when exactly", which the When column already
+ * gives to the minute.
+ */
+function formatAge(at: Date): string {
+  const minutes = Math.max(0, Math.floor((Date.now() - at.getTime()) / 60_000));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
 function StatusChip({ status, children }: { status: string; children: React.ReactNode }) {
   return (
     <span
@@ -86,6 +99,7 @@ export function FiscalSubmissionsTable({
             <TableHeader>
               <TableRow>
                 <TableHead>When</TableHead>
+                <TableHead>Age</TableHead>
                 <TableHead>Document</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>ETA uuid</TableHead>
@@ -99,6 +113,24 @@ export function FiscalSubmissionsTable({
                 <TableRow key={row.id}>
                   <TableCell className="whitespace-nowrap text-muted-foreground text-xs">
                     {formatDayTime(row.createdAt, timezone)}
+                  </TableCell>
+                  {/* Age + the overdue marker. ETA gives 24 hours from
+                      issuance to submit a receipt; past that a document needs a
+                      formal Late Submission Request, which nothing here can do
+                      for the owner — so the one useful thing the dashboard can
+                      offer is to stop it being a surprise. */}
+                  <TableCell className="whitespace-nowrap text-xs">
+                    <span className={row.overdue ? "font-medium text-red-700 dark:text-red-400" : "text-muted-foreground"}>
+                      {formatAge(row.createdAt)}
+                    </span>
+                    {row.overdue && (
+                      <span
+                        className="ml-1.5 inline-flex items-center rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-800 dark:bg-red-950 dark:text-red-300"
+                        title="Past ETA's 24-hour submission window and not accepted. Submitting it now needs a Late Submission Request."
+                      >
+                        overdue
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell className="text-xs">
                     {row.docType}

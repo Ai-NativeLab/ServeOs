@@ -1,9 +1,9 @@
-import { and, eq, inArray, sql, lt, asc } from "drizzle-orm";
+import { and, eq, inArray, sql, lt, gt, asc } from "drizzle-orm";
 import { withTenant, type Tx } from "@/db/with-tenant";
 import { orders, orderItems, type Order, type OrderItem } from "@/server/ordering/schema";
 import { orderPayments } from "@/server/pos/tender-schema";
 import { posOrderReceipts } from "@/server/pos/schema";
-import { refunds, refundLines } from "@/server/pos/refund-schema";
+import { refunds, refundLines, refundPayments, type Refund, type RefundLine } from "@/server/pos/refund-schema";
 import {
   etaSubmissions, etaTenantConfig, etaPosCredentials, etaDeviceChains, productTaxCodes,
   type EtaSubmission, type EtaWireContextConfig,
@@ -13,6 +13,11 @@ import { finalizeReceipt, type WireContext } from "./eta-wire";
 import { stringifyWire } from "./serialize";
 import { getEtaEnv } from "./eta-env";
 import { EtaConfigError } from "./eta-transport-errors";
+import { IrreconcilableOrderError } from "./errors";
+import {
+  allocateLargestRemainder, assertDecimal, compareDecimal, divideDecimal, multiplyDecimal,
+  subtractDecimal, sumDecimal,
+} from "./decimal";
 import { enqueueFiscalDocument } from "./enqueue";
 import type { FiscalDocument, FiscalSaleInput } from "./provider";
 
@@ -58,6 +63,26 @@ const CHAIN_GENESIS = "";
  *  enqueue. */
 const RECONCILE_AFTER_MS = 5 * 60 * 1000;
 
+/**
+ * How far BACK the reconciliation sweep will reach. Orders older than this are
+ * left alone, permanently.
+ *
+ * Without an upper bound, the first pass after a tenant activates would adopt
+ * its entire pre-activation order history and submit each one with its real
+ * `dateTimeIssued` — months in the past. ETA requires submission within 24
+ * hours of issuance and puts anything later through a formal Late Submission
+ * Request (addendum §3), which this pipeline does not implement and cannot
+ * fake: back-dating is not ours to decide, and a flood of months-old documents
+ * is not a thing to do to a taxpayer's account by accident on a cron tick.
+ *
+ * 7 days keeps the sweep doing its actual job — catching a sale whose enqueue
+ * threw, or a backlog from a short outage — while making pre-activation history
+ * an explicit, human decision rather than a side effect of finishing setup. A
+ * tenant that activates with genuinely recent history still gets it
+ * back-submitted, up to this bound.
+ */
+const RECONCILE_HORIZON_MS = 7 * 24 * 60 * 60 * 1000;
+
 export type FinalizeOutcome =
   /** Nothing was written: this document cannot be built YET, and that is not a
    *  failure. Today the only case is a return receipt whose parent sale has
@@ -82,7 +107,15 @@ export type FinalizeOutcome =
  * first, because the tenant lock is the one OTHER code already takes:
  * `recordAuditEvent` and `placeOrder` both acquire `hashtext(tenantId)`, and
  * the worker calls `recordAuditEvent` later in transactions that may already
- * hold both of these. Re-acquiring an advisory xact lock the session already
+ * hold both of these. ACCEPTED COST: because the tenant lock comes first, two
+ * sales on DIFFERENT devices of the same tenant serialize through this
+ * transaction during inline finalization. That is deliberate — compatibility
+ * with the tenant lock `recordAuditEvent` and `placeOrder` already take is
+ * worth more than the parallelism — and it is cheap at the volumes this serves:
+ * the critical section is a chain read, a hash and two writes, with no network
+ * call in it. A tenant ringing enough concurrent sales for it to matter needs
+ * per-device lock ordering, which is a bigger change than it is worth today.
+ * Re-acquiring an advisory xact lock the session already
  * holds returns immediately, so tenant-before-device can never be inverted by
  * a later audit write.
  *
@@ -114,6 +147,10 @@ export async function finalizeSubmissionRow(tenantId: string, submissionId: stri
     // permanent.
     const parentUuid = row.docType === "return_receipt" ? await loadParentUuid(tx, tenantId, row) : null;
     if (row.docType === "return_receipt" && !parentUuid) {
+      // Returns structurally CANNOT carry a QR at issuance the way sales do
+      // (addendum C5 applies to the sale receipt only): the Mandatory
+      // referenceUUID does not exist until ETA accepts the parent, and there is
+      // no refund slip printed at the till for one to go on anyway.
       return { status: "deferred", reason: "parent e_receipt is not accepted by ETA yet" } as const;
     }
 
@@ -243,6 +280,11 @@ export async function enqueueAndFinalizeReceipt(ctx: { tenantId: string }, order
  * this sweep, a database blip during the after-commit enqueue silently drops a
  * receipt from the tenant's fiscal record forever.
  *
+ * BOUNDED AT BOTH ENDS: at least `RECONCILE_AFTER_MS` old so an in-flight sale
+ * is never swept out from under its own enqueue, and at most
+ * `RECONCILE_HORIZON_MS` old so activating a tenant does not back-submit its
+ * whole pre-ETA history past the 24-hour window.
+ *
  * SCOPE — orders where money actually moved. `unpaid` and
  * `pending_verification` are excluded (no sale has occurred yet; a receipt
  * would be premature and its 24-hour submission clock would start early), as
@@ -254,10 +296,11 @@ export async function enqueueAndFinalizeReceipt(ctx: { tenantId: string }, order
  */
 export async function reconcileMissingReceipts(
   ctx: { tenantId: string },
-  opts: { limit?: number; olderThanMs?: number } = {},
+  opts: { limit?: number; olderThanMs?: number; newerThanMs?: number } = {},
 ): Promise<{ enqueued: number }> {
   const limit = opts.limit ?? 50;
   const cutoff = new Date(Date.now() - (opts.olderThanMs ?? RECONCILE_AFTER_MS));
+  const horizon = new Date(Date.now() - (opts.newerThanMs ?? RECONCILE_HORIZON_MS));
 
   // Read and write in separate transactions: `enqueueAndFinalizeReceipt` opens
   // its own (and takes advisory locks), so holding this select's transaction
@@ -268,6 +311,8 @@ export async function reconcileMissingReceipts(
       .where(and(
         eq(orders.tenantId, ctx.tenantId),
         lt(orders.placedAt, cutoff),
+        // The back-submission horizon — see RECONCILE_HORIZON_MS.
+        gt(orders.placedAt, horizon),
         sql`${orders.status} not in ('cancelled','rejected')`,
         sql`${orders.paymentStatus} not in ('unpaid','pending_verification')`,
         sql`not exists (select 1 from ${etaSubmissions} where ${etaSubmissions.orderId} = ${orders.id} and ${etaSubmissions.docType} = 'e_receipt')`,
@@ -481,16 +526,140 @@ async function buildReturnDocument(
     .where(and(eq(refunds.tenantId, tenantId), eq(refunds.id, row.refundId!))).limit(1);
   if (!refund) throw new Error(`fiscal: refund ${row.refundId} not found for submission ${row.id}`);
 
-  const lines = await tx.select().from(refundLines)
+  const stored = await tx.select().from(refundLines)
     .where(and(eq(refundLines.tenantId, tenantId), eq(refundLines.refundId, refund.id)));
   const order = await loadOrder(tx, tenantId, refund.orderId);
   const items = await loadOrderItems(tx, tenantId, order.id);
   const taxCodes = await loadTaxCodes(tx, tenantId, items);
+  const lines = stored.length > 0 ? stored : await resolveFullRefundLines(tx, tenantId, refund, items);
 
   return {
     doc: buildReturnReceipt({ parentUuid, refund, lines, items, taxCodes, previousUuid, deviceSerial }),
     receiptNumber: await returnReceiptNumber(tx, tenantId, order, refund.id),
   };
+}
+
+/**
+ * The lines of a HEADERLESS FULL REFUND, resolved from the parent order.
+ *
+ * THE PROBLEM THIS SOLVES. `issueRefund` requires lines only for a `partial`
+ * refund; a `full` one "may be headerless (goodwill) or itemised" (refund.ts),
+ * and both POS refund surfaces default to `kind: "full"` with `lines: []`. So
+ * the single most common refund shape stores no `refund_lines` at all — and
+ * receipt v1.2 marks `itemData` Mandatory, which made every one of them a
+ * permanent `EmptyReturnReceiptError` and an owner alert naming nothing the
+ * owner could fix. The most common refund was filing no return document.
+ *
+ * WHY LINES CAN BE RESOLVED AT ALL. Everything below is on record: the order's
+ * items with their quantities, every prior refund's lines and payments, and
+ * this refund's own `totalAmount`. Nothing is invented — the quantities are the
+ * order's, less what earlier refunds already took back, and the money is this
+ * refund's own stored total, split across those quantities by the same
+ * largest-remainder machinery the sale document uses (so the parts sum to the
+ * stored total EXACTLY, never to a rounded approximation of it).
+ *
+ * WHY `kind: "full"` IS NOT ENOUGH ON ITS OWN, and what the arbiter is.
+ * `issueRefund` bounds a refund only by the NET-PAID CEILING — tenders less
+ * prior refunds — and explicitly permits a `full` refund of less than that as a
+ * goodwill gesture. So "full" does NOT mean "the whole remaining sale", and a
+ * goodwill 50.00 against a 114.00 balance names no particular items. Rather
+ * than guess which ones came back, this refuses: the refund's total must equal
+ * the balance outstanding when it was issued, and anything else raises
+ * `IrreconcilableOrderError` naming both figures. That is the same fail-closed
+ * rule the wire mapper applies — a document we cannot total honestly is not
+ * emitted.
+ *
+ * WHAT THE AMOUNTS MEAN. `buildReturnReceipt` declares `netAmount ==
+ * totalAmount` with no `taxableItems` (the documented no-VAT-reversal
+ * exposure), so each line's amount is the GROSS the customer got back, not a
+ * tax-exclusive figure. Splitting the refunded total across the remaining
+ * items' `lineTotal`s therefore also spreads the order's VAT, discount, service
+ * charge and delivery fee across them pro rata. That is a simplification and is
+ * recorded as one: ETA needs `itemData`, a returned service charge has no
+ * product line to sit on, and the document's total — the number that is
+ * actually reported — is the stored refund total either way.
+ */
+async function resolveFullRefundLines(
+  tx: Tx, tenantId: string, refund: Refund, items: OrderItem[],
+): Promise<RefundLine[]> {
+  // A partial refund without lines cannot exist — `issueRefund` rejects it —
+  // so an empty partial is a corrupted row, not a shape to reconstruct.
+  if (refund.kind !== "full") {
+    throw new IrreconcilableOrderError(
+      refund.orderId,
+      `refund ${refund.id} is ${refund.kind} but stores no refund_lines; issueRefund requires lines for a partial refund, so this row cannot be mapped`,
+    );
+  }
+
+  const priorLines = await tx.select({ orderItemId: refundLines.orderItemId, quantity: refundLines.quantity })
+    .from(refundLines)
+    .innerJoin(refunds, eq(refundLines.refundId, refunds.id))
+    .where(and(eq(refunds.tenantId, tenantId), eq(refunds.orderId, refund.orderId)));
+
+  const takenBack = new Map<string, number>();
+  for (const line of priorLines) {
+    takenBack.set(line.orderItemId, (takenBack.get(line.orderItemId) ?? 0) + line.quantity);
+  }
+
+  const remaining = items
+    .map((item) => ({ item, quantity: item.quantity - (takenBack.get(item.id) ?? 0) }))
+    .filter((entry) => entry.quantity > 0);
+
+  if (remaining.length === 0) {
+    throw new IrreconcilableOrderError(
+      refund.orderId,
+      `refund ${refund.id} is a headerless full refund but every line of the order has already been returned, so there is nothing to put on the document`,
+    );
+  }
+
+  const outstanding = await outstandingNetPaid(tx, tenantId, refund);
+  if (compareDecimal(refund.totalAmount, outstanding) !== 0) {
+    throw new IrreconcilableOrderError(
+      refund.orderId,
+      `refund ${refund.id} is a headerless full refund of ${refund.totalAmount}, but ${outstanding} was outstanding when it was issued. ` +
+        "A full refund of part of the balance is a goodwill payment that names no items, and this mapper will not guess which came back — itemise the refund instead.",
+    );
+  }
+
+  // Weight by the share of each line still outstanding, so a full refund that
+  // follows a partial one splits the remainder the way the sale priced it.
+  const weights = remaining.map(({ item, quantity }) =>
+    quantity === item.quantity
+      ? assertDecimal(item.lineTotal, "order_items.lineTotal")
+      : divideDecimal("remaining line", multiplyDecimal("remaining line", item.lineTotal, String(quantity)), String(item.quantity), 5),
+  );
+  const amounts = allocateLargestRemainder("refund totalAmount", refund.totalAmount, weights);
+
+  return remaining.map(({ item, quantity }, index) => ({
+    // Synthetic rows: they are the document's lines, never persisted. `id`
+    // carries the order item so an error naming a line is still traceable.
+    id: `resolved:${item.id}`,
+    tenantId,
+    refundId: refund.id,
+    orderItemId: item.id,
+    quantity,
+    amount: amounts[index],
+    restock: false,
+  }));
+}
+
+/** The balance still refundable immediately BEFORE this refund — tenders less
+ *  every earlier refund's payments. Exactly the ceiling `issueRefund` enforces,
+ *  recomputed from the same stored rows. */
+async function outstandingNetPaid(tx: Tx, tenantId: string, refund: Refund): Promise<string> {
+  const tenders = await tx.select({ amount: orderPayments.amount }).from(orderPayments)
+    .where(and(eq(orderPayments.tenantId, tenantId), eq(orderPayments.orderId, refund.orderId)));
+  const priorPayments = await tx.select({ amount: refundPayments.amount, refundId: refundPayments.refundId })
+    .from(refundPayments)
+    .innerJoin(refunds, eq(refundPayments.refundId, refunds.id))
+    .where(and(eq(refunds.tenantId, tenantId), eq(refunds.orderId, refund.orderId)));
+
+  const paid = sumDecimal("order tenders", tenders.map((t) => t.amount));
+  const returned = sumDecimal(
+    "prior refund payments",
+    priorPayments.filter((p) => p.refundId !== refund.id).map((p) => p.amount),
+  );
+  return subtractDecimal("outstanding", paid, returned);
 }
 
 /**

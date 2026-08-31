@@ -51,6 +51,53 @@ const BACKOFF_BASE_MS = 30 * 1000;
 const POLL_INTERVAL_MS = 60 * 1000;
 
 /**
+ * ETA's submission window: a receipt must reach ETA within 24 hours of the
+ * `dateTimeIssued` it carries. Past it the document needs a formal Late
+ * Submission Request (addendum §3), a path this pipeline does not implement.
+ *
+ * NOT ENFORCED HERE, and deliberately so — a worker that stopped retrying at
+ * the deadline would turn a late document into no document, which is strictly
+ * worse. It is a REPORTING threshold: `read-model.ts` marks any non-accepted
+ * row older than this `overdue`, and the fiscal dashboard shows it, which is
+ * where addendum §3's "retry/backoff must respect the 24h budget and flag
+ * breaches" is actually satisfied. The arithmetic that keeps ordinary retries
+ * inside it:
+ *
+ *     MAX_ATTEMPTS (6) with backoff 2^n x 30s  ->  ~63 min of retrying
+ *     + POLL_INTERVAL_MS (60s) per poll
+ *     << SUBMISSION_WINDOW_MS (24h)
+ *
+ * so a document only goes overdue when ETA is unreachable for a day or the
+ * tenant's configuration is broken — both of which are exactly what the
+ * dashboard's overdue marker is for.
+ */
+export const SUBMISSION_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * THE DRAIN BUDGET, stated rather than left to be discovered.
+ *
+ * One pass claims at most `limit` (default 20) rows per tenant, and a document
+ * needs two passes to reach a verdict — one to submit, one to poll. On the
+ * 15-minute cron this task registers, that is
+ *
+ *     20 rows/pass x 96 passes/day / 2 passes per document
+ *       ~= 960 documents per tenant per day
+ *
+ * comfortably above a single restaurant's volume and comfortably inside the
+ * 24-hour window above. A tenant that genuinely exceeds it needs a larger
+ * `limit` or a tighter schedule, not a code change.
+ *
+ * THE OTHER EDGE — wall-clock, not throughput. Each row can hold the pass for
+ * up to `ETA_HTTP_TIMEOUT_MS` (60s) if ETA stops answering, so a full batch of
+ * 20 stalled rows would want 20 minutes and will instead be killed by whatever
+ * serverless execution budget the deployment has. That is survivable BY DESIGN
+ * rather than by luck: a killed pass leaves its claimed rows leased, the lease
+ * expires, and the next pass picks them up exactly where this one stopped. It
+ * is said out loud here because "the worker sometimes gets killed" should be a
+ * known property, not a mystery in the logs.
+ */
+
+/**
  * The claim lease. `eta_submissions` has no "in flight" status to flip a row
  * into (its enum is the FISCAL lifecycle, and inventing a transport state
  * there would make the fiscal record lie), so exclusivity rides on
@@ -359,9 +406,11 @@ async function submitPhase(
  * asynchronously — so it is NOT a failure: the clock moves on by one poll
  * interval and `attempts` is untouched. Only a genuine transport failure
  * consumes an attempt, which does mean a submitted row can poll indefinitely
- * if ETA never finishes; surfacing that (against the 24-hour submission
- * window) is the fiscal dashboard's job, not a reason to fail a document ETA
- * may still accept.
+ * if ETA never finishes. That is deliberate — refusing a document ETA may still
+ * accept would be worse — and it is not invisible: any non-accepted row past
+ * `SUBMISSION_WINDOW_MS` comes back from `listSubmissions` /
+ * `getSubmissionById` with `overdue: true`, and the dashboard's submissions
+ * table shows its age and marks it.
  */
 async function pollPhase(
   tenantId: string, row: ClaimedRow, provider: FiscalProvider, cfg: EtaConfig, now: () => Date,
@@ -435,8 +484,11 @@ async function persistRejected(
       responseJson: result.responseJson,
       lastError: `rejected: ${detail}`,
       ...(result.submissionUuid ? { submissionUuid: result.submissionUuid } : {}),
-      // Clears the claim lease. A terminal row waits for nothing, and leaving a
-      // future clock on it would read as "retrying shortly" on the dashboard.
+      // A terminal row is waiting for nothing, so a FUTURE nextAttemptAt on it
+      // is meaningless — and worse than meaningless on the dashboard, where it
+      // reads as "retrying shortly". Setting it to now says the opposite. (An
+      // `accepted` row keeps whatever lease residue it had: harmless, because
+      // the claim query filters on status before it ever looks at the clock.)
       nextAttemptAt: now(),
     }).where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, row.id)));
 
@@ -507,7 +559,7 @@ async function failPermanently(
     // UPDATE parks attempts at the cap; the second matches nothing, returns no
     // row, and stays quiet. One terminal failure, one alert.
     const terminalized = await tx.update(etaSubmissions)
-      // nextAttemptAt clears the claim lease — see persistRejected.
+      // nextAttemptAt: a terminal row waits for nothing — see persistRejected.
       .set({ status: "failed", attempts: MAX_ATTEMPTS, lastError, nextAttemptAt: now() })
       .where(and(
         eq(etaSubmissions.tenantId, tenantId),

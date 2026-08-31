@@ -11,6 +11,7 @@ import { notifications } from "@/server/notifications/schema";
 import { seedPosContext, openShiftForCtx } from "@/server/pos/test-helpers";
 import { recordSale } from "@/server/pos/record-sale";
 import { issueRefund, type RefundActor } from "@/server/pos/refund";
+import { refundLines } from "@/server/pos/refund-schema";
 import type { PosCashierContext } from "@/server/pos/require-cashier";
 import {
   etaSubmissions, etaTenantConfig, etaPosCredentials, etaDeviceChains, productTaxCodes,
@@ -777,6 +778,27 @@ describe("drainEtaSubmissions — reconciliation sweep", () => {
     expect(rows.some((row) => row.orderId === newer)).toBe(false);
   });
 
+  it("does not reach back past the horizon, so activating a tenant never back-submits its history", async () => {
+    const s = await seedPosContext("owner");
+    await seedTaxCode(s.tenantId, s.productId);
+    await seedFiscalConfig(s.tenantId, { onlineDeviceId: s.ctx.deviceId });
+    await seedDeviceCredential(s.tenantId, s.ctx.deviceId);
+
+    const ancient = await placeWebOrder(s.tenantId, s.branchId, s.productId, { minutesAgo: 60 * 24 * 30 });
+    const recent = await placeWebOrder(s.tenantId, s.branchId, s.productId, { minutesAgo: 60 * 24 * 2 });
+
+    const res = await reconcileMissingReceipts({ tenantId: s.tenantId });
+    expect(res.enqueued).toBe(1);
+
+    const rows = await rowsFor(s.tenantId);
+    // A month-old order would carry a month-old dateTimeIssued — outside ETA's
+    // 24-hour window and into the Late Submission path this pipeline does not
+    // implement. Recent history still gets adopted.
+    expect(rows).toHaveLength(1);
+    expect(rows[0].orderId).toBe(recent);
+    expect(rows.some((row) => row.orderId === ancient)).toBe(false);
+  });
+
   it("ignores an unpaid order — no sale, no receipt", async () => {
     const s = await seedPosContext("owner");
     await seedTaxCode(s.tenantId, s.productId);
@@ -873,6 +895,133 @@ describe("drainEtaSubmissions — corrected resubmission", () => {
   });
 });
 
+describe("drainEtaSubmissions — headerless full refunds", () => {
+  /** Drives the sale to `accepted` so a return can reference it. */
+  async function acceptTheSale(tenantId: string) {
+    await drainEtaSubmissions({ provider: new FakeEta([accepted202("sub-sale")]), reconcile: false });
+    await makeEligibleAll(tenantId);
+    await drainEtaSubmissions({ provider: new FakeEta([], [pollValid("LONG-SALE")]), reconcile: false });
+  }
+
+  it("files a return receipt for a full refund that stores NO refund_lines", async () => {
+    const s = await seedSale({ configureFirst: true });
+    await acceptTheSale(s.tenantId);
+
+    // Exactly what both POS surfaces send: kind "full", lines []. This is the
+    // most common refund shape there is, and it used to file no document at
+    // all — buildReturnReceipt threw EmptyReturnReceiptError, the worker made
+    // it permanent, and the owner got an alert naming nothing they could fix.
+    const refund = await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "full",
+      lines: [],
+      payments: [{ method: "cash", amount: s.receipt.paidAmount }],
+      reasonCode: "other",
+      clientRefundId: "r-headerless",
+    });
+    expect(await refundLineCount(s.tenantId, refund.refundId)).toBe(0);
+
+    await makeEligibleAll(s.tenantId);
+    const returnProvider = new FakeEta([accepted202("sub-return")], [pollValid("LONG-RETURN")]);
+    await drainEtaSubmissions({ provider: returnProvider, reconcile: false });
+    await makeEligibleAll(s.tenantId);
+    await drainEtaSubmissions({ provider: returnProvider, reconcile: false });
+
+    const ret = (await rowsFor(s.tenantId)).find((row) => row.refundId === refund.refundId)!;
+    expect(ret.status).toBe("accepted");
+
+    // The lines came from the PARENT ORDER, and the document totals to the
+    // refund's own stored figure — the invariant toWireReceipt enforces.
+    const items = ret.requestJson.itemData as Record<string, unknown>[];
+    expect(items).toHaveLength(1);
+    expect(items[0].description).toBe("Margherita");
+    expect(items[0].quantity).toBe(1);
+    expect(Number(items[0].total)).toBeCloseTo(s.receipt.paidAmount, 2);
+    expect(Number(ret.requestJson.totalAmount)).toBeCloseTo(s.receipt.paidAmount, 2);
+    expect(header(ret.requestJson).referenceUUID).toBe(
+      (await rowsFor(s.tenantId)).find((row) => row.orderId === s.receipt.orderId)!.etaUuid,
+    );
+  });
+
+  it("resolves a full refund that FOLLOWS a partial one from what is left", async () => {
+    // Two units, so a partial can take one and the headerless full refund can
+    // take the remainder — the case `issueRefund` permits and the net-paid
+    // ceiling bounds.
+    const s = await seedPosContext("owner");
+    await openShiftForCtx(s.ctx);
+    await seedTaxCode(s.tenantId, s.productId);
+    await seedFiscalConfig(s.tenantId);
+    await seedDeviceCredential(s.tenantId, s.ctx.deviceId);
+    const receipt = await recordSale(s.ctx, {
+      clientOrderId: "sale-two-units",
+      lines: [{ productId: s.productId, quantity: 2, selectedOptionIds: [] }],
+      expectedTotal: s.total * 2,
+      payments: [{ clientPaymentId: "p-1", method: "cash", amount: s.total * 2, tenderedAmount: s.total * 2 }],
+    });
+    await acceptTheSale(s.tenantId);
+
+    const [orderItemId] = await orderItemIds(s.tenantId, receipt.orderId);
+    await issueRefund(actorFrom(s.ctx), {
+      orderId: receipt.orderId,
+      kind: "partial",
+      lines: [{ orderItemId, quantity: 1, amount: s.total, restock: false }],
+      payments: [{ method: "cash", amount: s.total }],
+      reasonCode: "other",
+      clientRefundId: "r-partial",
+    });
+    const full = await issueRefund(actorFrom(s.ctx), {
+      orderId: receipt.orderId,
+      kind: "full",
+      lines: [],
+      payments: [{ method: "cash", amount: s.total }],
+      reasonCode: "other",
+      clientRefundId: "r-remainder",
+    });
+
+    await makeEligibleAll(s.tenantId);
+    const provider = new FakeEta([accepted202("sub-r1"), accepted202("sub-r2")]);
+    await drainEtaSubmissions({ provider, reconcile: false });
+
+    const ret = (await rowsFor(s.tenantId)).find((row) => row.refundId === full.refundId)!;
+    expect(ret.status).toBe("submitted");
+    const items = ret.requestJson.itemData as Record<string, unknown>[];
+    // ONE unit, not two: the quantity already returned by the partial is off
+    // the table, and the money is this refund's own stored total.
+    expect(items).toHaveLength(1);
+    expect(items[0].quantity).toBe(1);
+    expect(Number(ret.requestJson.totalAmount)).toBeCloseTo(s.total, 2);
+  });
+
+  it("refuses to guess which items a goodwill full refund returned", async () => {
+    const s = await seedSale({ configureFirst: true });
+    await acceptTheSale(s.tenantId);
+
+    // `issueRefund` permits a `full` refund of LESS than the outstanding
+    // balance — a goodwill gesture that names no items. There is no honest
+    // mapping from that to itemData, so the document is refused rather than
+    // invented.
+    const goodwill = await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "full",
+      lines: [],
+      payments: [{ method: "cash", amount: 10 }],
+      reasonCode: "other",
+      clientRefundId: "r-goodwill",
+    });
+
+    await makeEligibleAll(s.tenantId);
+    await drainEtaSubmissions({ provider: new FakeEta([accepted202()]), reconcile: false });
+
+    const ret = (await rowsFor(s.tenantId)).find((row) => row.refundId === goodwill.refundId)!;
+    expect(ret.status).toBe("failed");
+    expect(ret.attempts).toBe(MAX_ATTEMPTS);
+    // The alert names both figures, so the owner can see the shape of the fix
+    // (itemise the refund) rather than being told a document "failed".
+    expect(ret.lastError).toContain("irreconcilable-order");
+    expect(ret.lastError).toContain("goodwill");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Helpers that reach past the service layer, and say why.
 // ---------------------------------------------------------------------------
@@ -889,6 +1038,14 @@ function makeEligibleAll(tenantId: string) {
   return withTenant(tenantId, (tx) => tx.update(etaSubmissions)
     .set({ nextAttemptAt: new Date(Date.now() - 1000) })
     .where(eq(etaSubmissions.tenantId, tenantId)));
+}
+
+/** How many refund_lines a refund actually stored — the whole point of the
+ *  headerless case is that this is zero. */
+async function refundLineCount(tenantId: string, refundId: string): Promise<number> {
+  const rows = await withTenant(tenantId, (tx) => tx.select({ id: refundLines.id }).from(refundLines)
+    .where(and(eq(refundLines.tenantId, tenantId), eq(refundLines.refundId, refundId))));
+  return rows.length;
 }
 
 async function orderItemIds(tenantId: string, orderId: string): Promise<string[]> {
