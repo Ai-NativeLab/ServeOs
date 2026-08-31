@@ -12,6 +12,8 @@ import { StorefrontFooter } from "../StorefrontFooter";
 import { BranchSelector } from "@/app/_components/BranchSelector";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 
+import type { CatalogDisplayMode } from "@/server/tenancy/settings";
+
 export type StorefrontTemplateProps = {
   tenant: Pick<Tenant, "name" | "logoUrl" | "coverImageUrl" | "tagline" | "cuisine" | "currency">;
   accent: string;
@@ -30,6 +32,8 @@ export type StorefrontTemplateProps = {
   openLabel?: string | null;
   etaLabel?: string | null;
   minOrderLabel?: string | null;
+  catalogDisplayMode?: CatalogDisplayMode;
+  itemsPerPage?: number;
   /** Shop verticals inject their catalog UI here; undefined = restaurant menu. */
   catalog?: React.ReactNode;
 };
@@ -38,7 +42,7 @@ export function StorefrontShell(props: StorefrontTemplateProps) {
   const {
     tenant, accent, config, banners, menu, branches, branchSummaries,
     activeBranch, openState, paused, orderingEnabled, slug, popularIds,
-    whatsappNumber, openLabel, etaLabel, minOrderLabel,
+    whatsappNumber, openLabel, etaLabel, minOrderLabel, catalogDisplayMode, itemsPerPage,
   } = props;
 
   return (
@@ -103,6 +107,8 @@ export function StorefrontShell(props: StorefrontTemplateProps) {
               branches={branchSummaries}
               currency={tenant.currency}
               popularIds={[...popularIds]}
+              catalogDisplayMode={catalogDisplayMode}
+              itemsPerPage={itemsPerPage}
             />
           )
         )}

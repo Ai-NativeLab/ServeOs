@@ -6,7 +6,7 @@ import { getActiveBanners } from "@/server/banners/service";
 import { listBranches, listDeliveryAreas } from "@/server/branches/service";
 import { hasFeature } from "@/server/entitlements/service";
 import { getBranchOpenState, isBranchOrderableAt } from "@/server/branches/slots";
-import { getWhatsappNumber } from "@/server/tenancy/settings";
+import { getWhatsappNumber, getCatalogDisplaySettings } from "@/server/tenancy/settings";
 import { getPopularProductIds } from "@/server/catalog/popular";
 import { formatMoney } from "@/lib/money";
 import { selectStorefrontTemplate, getVerticalTerms, type VerticalId } from "@/server/verticals";
@@ -55,13 +55,14 @@ export default async function Home({
     // our brand. The tenant comes from the host header, never from the token.
     const handoffToken = handoff ? await redeemHandoff(tenant.id, handoff) : null;
 
-    const [banners, menu, branches, orderingEnabled, whatsappNumber, popularSet] = await Promise.all([
+    const [banners, menu, branches, orderingEnabled, whatsappNumber, popularSet, displaySettings] = await Promise.all([
       getActiveBanners(tenant.id),
       getPublishedMenu(tenant.id, branchId),
       listBranches(tenant.id),
       hasFeature(tenant.id, "online_ordering"),
       getWhatsappNumber(tenant.id),
       getPopularProductIds(tenant.id),
+      getCatalogDisplaySettings(tenant.id),
     ]);
 
     const activeBranch =
@@ -145,7 +146,9 @@ export default async function Home({
         openLabel={openLabel}
         etaLabel={etaLabel}
         minOrderLabel={minOrderLabel}
-        />
+        catalogDisplayMode={displaySettings.catalogDisplayMode}
+        itemsPerPage={displaySettings.itemsPerPage}
+      />
       </>
     );
   }

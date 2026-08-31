@@ -29,6 +29,8 @@ export type ShiftPolicy = {
   varianceThreshold: number;
 };
 
+export type CatalogDisplayMode = "sections" | "category_grid" | "paginated";
+
 export type TenantSettingsData = {
   vatRate?: number;
   vatEnabled?: boolean;
@@ -38,6 +40,8 @@ export type TenantSettingsData = {
   upgradeRequest?: { planKey: string; requestedAt: string };
   shiftPolicy?: Partial<ShiftPolicy>;
   allowNegativeStock?: boolean;
+  catalogDisplayMode?: CatalogDisplayMode;
+  itemsPerPage?: number;
 };
 
 const E164_RE = /^\+[1-9]\d{6,14}$/;
@@ -233,4 +237,54 @@ export async function getAllowNegativeStock(tenantId: string): Promise<boolean> 
 /** Pass `null` to clear the override and revert to the vertical default. */
 export async function setAllowNegativeStock(tenantId: string, value: boolean | null): Promise<void> {
   await patchTenantSettings(tenantId, { allowNegativeStock: value ?? undefined });
+}
+
+export async function getCatalogDisplaySettings(tenantId: string): Promise<{
+  catalogDisplayMode: CatalogDisplayMode;
+  itemsPerPage: number;
+}> {
+  const s = await getTenantSettings(tenantId);
+  const mode = s.catalogDisplayMode;
+  const validMode: CatalogDisplayMode =
+    mode === "category_grid" || mode === "paginated" || mode === "sections" ? mode : "sections";
+  const itemsPerPage = typeof s.itemsPerPage === "number" && s.itemsPerPage > 0 ? s.itemsPerPage : 12;
+  return {
+    catalogDisplayMode: validMode,
+    itemsPerPage,
+  };
+}
+
+export async function setCatalogDisplaySettings(
+  tenantId: string,
+  settings: { catalogDisplayMode?: CatalogDisplayMode; itemsPerPage?: number },
+  audit?: AuditActorInput,
+): Promise<void> {
+  await withTenant(tenantId, async (tx) => {
+    await applySettingsPatch(tx, tenantId, {
+      ...(settings.catalogDisplayMode !== undefined
+        ? { catalogDisplayMode: settings.catalogDisplayMode }
+        : {}),
+      ...(settings.itemsPerPage !== undefined
+        ? { itemsPerPage: settings.itemsPerPage }
+        : {}),
+    });
+    if (audit) {
+      await recordAuditEvent(
+        auditCtx(tenantId, audit),
+        {
+          action: "settings.catalog_display_changed",
+          entityType: "settings",
+          entityId: "catalog_display",
+          summary: `Catalog display mode updated to ${settings.catalogDisplayMode ?? "default"}`,
+          metadata: {
+            catalogDisplayMode: settings.catalogDisplayMode ?? null,
+            itemsPerPage: settings.itemsPerPage ?? null,
+            roleKey: audit.roleKey ?? null,
+          },
+          actorType: audit.actorType,
+        },
+        tx,
+      );
+    }
+  });
 }
