@@ -220,7 +220,15 @@ function itemisedLineVat(
  * The residual is normally positive (the service charge's share, which item
  * weights withhold). It can be negative when an earlier goodwill refund already
  * took part of the VAT unattributed, and then this correctly scales the lines
- * DOWN — the order's declared VAT is a ceiling in both directions.
+ * DOWN — the order's declared VAT is a ceiling, enforced PER LINE and not only
+ * on the header: a pro-rata scale-down can drive an individual line past zero
+ * (a full refund's line amounts are never validated against its tenders, so
+ * amounts and VAT weights can point in opposite directions — 190.00/10.00 items
+ * refunded as 10.00/190.00 lines), and a NEGATIVE `refund_lines.vatAmount`
+ * would be an invented input tax credit on the return document. So each pass
+ * floors the offenders at zero and re-spreads what they could not absorb over
+ * the lines still carrying VAT, until every line is >= 0 and the parts still sum
+ * to `remaining` exactly.
  */
 function topUpToRemaining(lineVats: string[], lines: RefundLineInput[], remaining: string | null): string[] {
   if (remaining === null) return lineVats;
@@ -234,7 +242,43 @@ function topUpToRemaining(lineVats: string[], lines: RefundLineInput[], remainin
     ? lines.map((l) => String(l.quantity))
     : amounts;
   const shares = allocateLargestRemainder("refund VAT top-up", residual, weights);
-  return lineVats.map((vat, i) => addDecimal("refund line VAT", vat, shares[i]));
+  return floorLineVatsAt0(lineVats.map((vat, i) => addDecimal("refund line VAT", vat, shares[i])), remaining);
+}
+
+/**
+ * Clips negative line VATs to zero and pushes the shortfall onto the lines that
+ * can still absorb it, weighted by what they currently hold, until Σ parts is
+ * `target` again with nothing below zero.
+ *
+ * Each pass zeroes at least one line and never revives one, so it terminates in
+ * at most one pass per line; the bounded loop is belt-and-braces against a
+ * future edit breaking that. When every line floors, Σ is 0 — which can only be
+ * consistent if `target` is 0 too, and the invariant in `computeRefundVat`
+ * already guarantees `target >= 0`, so a non-zero target there is a bug and
+ * says so rather than silently storing a header its lines contradict.
+ */
+function floorLineVatsAt0(parts: string[], target: string): string[] {
+  let current = parts;
+  for (let pass = 0; pass <= parts.length; pass++) {
+    if (current.every((p) => compareDecimal(p, "0") >= 0)) return current;
+
+    const shortfall = sumDecimal("floored refund line VAT", current.filter((p) => compareDecimal(p, "0") < 0));
+    const clipped = current.map((p) => (compareDecimal(p, "0") < 0 ? "0.00" : p));
+    // Only the lines that still hold VAT take part: a zero-weight entry left in
+    // the allocation would be handed a leftover cent by `allocateLargestRemainder`
+    // (its remainder of 0 sorts FIRST for a negative total) and go negative again.
+    const absorbing = clipped.map((p, i) => ({ p, i })).filter(({ p }) => compareDecimal(p, "0") > 0);
+    if (absorbing.length === 0) {
+      if (!isZeroDecimal(target)) {
+        throw new Error(`fiscal: cannot floor refund line VAT at 0 and still total ${target}`);
+      }
+      return clipped;
+    }
+    const shares = allocateLargestRemainder("floored refund line VAT", shortfall, absorbing.map(({ p }) => p));
+    const share = new Map(absorbing.map(({ i }, k) => [i, shares[k]]));
+    current = clipped.map((p, i) => addDecimal("refund line VAT", p, share.get(i) ?? "0.00"));
+  }
+  throw new Error("fiscal: refund line VAT flooring did not converge");
 }
 
 /**
