@@ -3,6 +3,7 @@ import {
   addDecimal, sumDecimal, subtractDecimal, multiplyDecimal, divideDecimal, absDecimal,
   compareDecimal, assertDecimal, isZeroDecimal, hundredAtRateScale, dec,
 } from "./decimal";
+import { LINE_TAX_TOLERANCE } from "./constants";
 import { computeReceiptUuid, buildQrUrl } from "./serialize";
 import {
   EtaTotalsMismatchError, UnsupportedTaxTypeError, BuyerIdRequiredError,
@@ -142,12 +143,6 @@ const DEFAULT_BUYER_ID_THRESHOLD = "150000";
  *  own +/- 0.5 allowance — unreachable for integer F&B quantities, so it is
  *  documented rather than guarded.) */
 const UNIT_PRICE_ROUNDING_BOUND = "0.00001";
-
-/** ETA's own allowance on every published calculation: "All the above
- *  calculations are subject to (± 0.5) tolerance" (Main Calculations). Used
- *  verbatim for the per-line tax equation, where a tighter bound of our own
- *  would refuse documents ETA accepts. */
-const LINE_TAX_TOLERANCE = "0.5";
 
 /** ETA's `itemType`: "Must be GS1 or EGS for this version". */
 function itemType(codeSource: FiscalDocLine["codeSource"]): string {

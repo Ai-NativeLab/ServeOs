@@ -14,8 +14,9 @@ import {
 } from "./decimal";
 import {
   MissingTaxCodeError, FeeLineConfigMissingError, IrreconcilableOrderError,
-  EmptyReturnReceiptError, RefundLineOrphanError,
+  EmptyReturnReceiptError, RefundLineOrphanError, DisproportionateRefundLineError,
 } from "./errors";
+import { LINE_TAX_TOLERANCE } from "./constants";
 
 /**
  * PURE document builders: a sale or refund plus its resolved
@@ -419,6 +420,45 @@ function attributeReturnVat(
 }
 
 /**
+ * Refuses a return whose lines report materially LESS tax than their own
+ * netSale implies — the one failure `attributeReturnVat` can produce but not
+ * repair.
+ *
+ * Every line is capped at the tax its money contains, so a line can only ever
+ * come out UNDER rule 42, never over; and it comes out under only when the
+ * refund's line amounts are distributed differently from the VAT stored against
+ * them (`DisproportionateRefundLineError` says which shapes do that). Lines
+ * carrying no tax at all are skipped: they emit no `taxableItems`, so rule 42
+ * does not reach them.
+ *
+ * WHY HERE AND NOT AT THE WIRE. `assertLineTaxesDerivable` (./eta-wire) already
+ * catches this and stays the deep backstop — it guards every document from
+ * every builder. But it can only name the equation that failed ("expected 0.56,
+ * computed 1.32"), which tells a tenant's owner nothing they can act on. This
+ * runs first, on the one input shape that reaches it, and names the cause and
+ * the remedy instead. The two use the SAME drift and the SAME published
+ * tolerance, so this never refuses a document the wire would have accepted.
+ */
+function assertLinesCarryTheirOwnVat(
+  lines: FiscalDocLine[], drafts: ReturnDraft[], refundId: string, rate: string,
+): void {
+  for (const [index, line] of lines.entries()) {
+    for (const tax of line.taxes) {
+      // Rule 42's own right-hand side: what ETA will re-derive for this line.
+      const capacity = divideDecimal(
+        "line tax capacity",
+        multiplyDecimal("line tax capacity", line.lineTotal, rate),
+        hundredAtRateScale(rate),
+        2,
+      );
+      if (compareDecimal(subtractDecimal("line tax shortfall", capacity, tax.amount), LINE_TAX_TOLERANCE) > 0) {
+        throw new DisproportionateRefundLineError(refundId, drafts[index].amount, tax.amount, capacity);
+      }
+    }
+  }
+}
+
+/**
  * A refund as an ETA return receipt.
  *
  * AMOUNTS ARE POSITIVE. Return Receipt v1.2 describes totalSales / netAmount /
@@ -610,6 +650,8 @@ export function buildReturnReceipt(input: FiscalRefundInput): FiscalDocument {
       lineTotal: netSale,
     };
   });
+
+  assertLinesCarryTheirOwnVat(lines, drafts, refund.id, rate);
 
   const taxed = drafts.find((_, index) => !isZeroDecimal(vats[index]));
   const reported = sumDecimal("return VAT", vats);

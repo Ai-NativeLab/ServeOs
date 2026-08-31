@@ -106,6 +106,44 @@ export class EtaTotalsMismatchError extends FiscalDocumentError {
 }
 
 /**
+ * A refund whose LINE AMOUNTS are disproportionate to the VAT distribution
+ * stored against them, by more than ETA's own tolerance.
+ *
+ * ETA taxes each line on its own base (Main Calculations rule 42), so a line
+ * may carry only the tax the money it returns contains — and by the same token
+ * it must carry roughly ALL of it. `issueRefund` never validates a FULL
+ * refund's line amounts against its tenders or against the items those lines
+ * name, so a refund can legitimately record amounts pointing the opposite way
+ * to the VAT its items bear (`refund-vat.ts` stage [5] floors the resulting
+ * negative shares at zero, which is what leaves one line holding a token amount
+ * of tax against a large amount of money).
+ *
+ * The document is refused rather than emitted: reporting the stored split would
+ * be rejected by ETA, and re-proportioning it here would be inventing an
+ * attribution the refund never made. This is thrown by the BUILDER, ahead of
+ * the wire's own per-line check, so the owner is told the cause (the refund's
+ * shape) rather than the symptom (a failed equation).
+ */
+export class DisproportionateRefundLineError extends FiscalDocumentError {
+  readonly code = "disproportionate-refund-line";
+  constructor(
+    readonly refundId: string,
+    readonly lineAmount: string,
+    readonly lineVat: string,
+    readonly capacity: string,
+  ) {
+    super(
+      `fiscal: refund ${refundId} returns ${lineAmount} on a line carrying only ${lineVat} of VAT, where the money itself ` +
+        `contains ${capacity}. ETA taxes every return line on its own netSale (Main Calculations rule 42, ± 0.5), so this ` +
+        "refund's line amounts are distributed differently from the VAT stored against them — typically because a full " +
+        "refund's line amounts were entered out of proportion to the items, or mixed with an earlier goodwill refund. " +
+        "Reissue it as a headerless full refund, which needs no per-line split.",
+    );
+    this.name = "DisproportionateRefundLineError";
+  }
+}
+
+/**
  * A `taxableItems` entry whose amount is not strictly positive.
  *
  * Main Calculations pins a line's tax to its own base — rule 42:

@@ -13,6 +13,7 @@ import {
   MissingReferenceUuidError,
   EtaTotalsMismatchError,
   NonPositiveLineTaxError,
+  DisproportionateRefundLineError,
 } from "./errors";
 import { EtaFiscalProvider } from "./eta-provider";
 import { stringifyWire } from "./serialize";
@@ -880,21 +881,63 @@ describe("buildReturnReceipt — VAT reversal", () => {
     expect(() => buildReturnReceipt(input)).toThrow("-0.01");
   });
 
+  it("names the CAUSE when a refund's line amounts are disproportionate to its stored VAT", () => {
+    // `refund-vat.ts` stage [5]'s floored shape, reached for real: 190.00/10.00
+    // items refunded in full with INVERTED line amounts (10.00/190.00) after a
+    // goodwill refund already took most of the VAT, leaving 0.56/0.00 against a
+    // 0.56 header. The 10.00 line's money contains 1.23, so reporting 0.56 on
+    // it is 0.67 out — past ETA's 0.5 — and no attribution can fix it, because
+    // the refund's own amounts and VAT point in opposite directions.
+    const invertedOrder: Order = {
+      ...inclusiveOrder, subtotal: "200.00", serviceChargeAmount: "0.00", vatAmount: "24.56", total: "200.00",
+    };
+    const invertedItems: OrderItem[] = [
+      { ...items[0], quantity: 1, lineTotal: "190.00", unitBasePrice: "190.00", discountAmount: "0.00" },
+      { ...items[1], quantity: 1, lineTotal: "10.00", unitBasePrice: "10.00" },
+    ];
+    const input = returnInput({
+      order: invertedOrder,
+      items: invertedItems,
+      refund: vatRefund({ kind: "full", totalAmount: "200.00", vatAmount: "0.56" }),
+      lines: [
+        vatRefundLine({ orderItemId: invertedItems[0].id, amount: "10.00", vatAmount: "0.56" }),
+        vatRefundLine({ orderItemId: invertedItems[1].id, amount: "190.00", vatAmount: "0.00" }),
+      ],
+    });
+
+    try {
+      buildReturnReceipt(input);
+      expect.unreachable("buildReturnReceipt should have refused the disproportionate refund");
+    } catch (err) {
+      expect(err).toBeInstanceOf(DisproportionateRefundLineError);
+      const failure = err as DisproportionateRefundLineError;
+      expect(failure.code).toBe("disproportionate-refund-line");
+      // The figures the owner needs, and a remedy they can actually carry out.
+      expect(failure.lineAmount).toBe("10.00");
+      expect(failure.lineVat).toBe("0.56");
+      expect(failure.capacity).toBe("1.32");
+      expect(failure.message).toContain("headerless full refund");
+    }
+  });
+
   it("shrinks to the header rather than reporting past it when the lines store more", () => {
     // Unreachable from `issueRefund` (Σ lines IS the header), so this is the
     // corrupted-row guard: the document may never reverse more than the refund
-    // itself recorded.
+    // itself recorded. 18.42 stored against an 18.00 header shrinks 2:1 across
+    // the same amounts, staying inside rule 42 — a shrink big enough to leave a
+    // line disproportionate is refused by name instead (test above).
     const doc = buildReturnReceipt(returnInput({
       order: inclusiveOrder,
       items: inclusiveItems,
-      refund: vatRefund({ kind: "partial", totalAmount: "150.00", vatAmount: "10.00" }),
+      refund: vatRefund({ kind: "partial", totalAmount: "150.00", vatAmount: "18.00" }),
       lines: [
         vatRefundLine({ orderItemId: inclusiveItems[0].id, amount: "100.00", vatAmount: "12.28" }),
         vatRefundLine({ orderItemId: inclusiveItems[1].id, amount: "50.00", vatAmount: "6.14" }),
       ],
     }));
-    expect(doc.lines.map((line) => line.taxes[0].amount)).toEqual(["6.67", "3.33"]);
-    expect(doc.taxTotals[0].amount).toBe("10.00");
+    expect(doc.lines.map((line) => line.taxes[0].amount)).toEqual(["12.00", "6.00"]);
+    expect(doc.taxTotals[0].amount).toBe("18.00");
+    expect(toWireReceipt(doc, wireCtx)).toBeTruthy();
   });
 
   it("refuses lines that account for more money than the refund recorded", () => {

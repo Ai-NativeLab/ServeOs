@@ -168,7 +168,10 @@ Sources: `/document-serialization-approach/`, `/documents/receipt-v1-2/`, `/docu
   type is added — withholding support is deliberate work, so T1/T2/T3/T5-T20 are allowed and T4 is rejected);
   `BuyerIdRequiredError` for a `B` buyer or a `P` buyer at/above the threshold with no `buyer.id`;
   `EmptyReturnReceiptError` for a header-only full refund (`issueRefund` inserts `refund_lines` only when the
-  caller names them, but `itemData` is Mandatory); `NonPositiveLineTaxError` for a zero or negative
+  caller names them, but `itemData` is Mandatory); `DisproportionateRefundLineError` for a return whose line
+  amounts are distributed differently from the VAT stored against them (round 2 — thrown by the BUILDER, ahead
+  of the wire's own per-line check, so the owner is told the cause and the remedy "reissue as a headerless full
+  refund" instead of a failed equation); `NonPositiveLineTaxError` for a zero or negative
   `taxableItems` amount (round 2 — zero is OMITTED per the rule above, negative would be an invented input tax
   credit); and `EtaTotalsMismatchError` for `totalAmount`, `taxTotals<taxType>`,
   `totalSale = quantity * unitPrice` and (round 2) the per-line rule 42

@@ -35,3 +35,18 @@
  * dashboard's overdue marker is for.
  */
 export const SUBMISSION_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * ETA's own allowance on every published calculation: "All the above
+ * calculations are subject to (± 0.5) tolerance" (Main Calculations).
+ *
+ * Shared for the same reason `SUBMISSION_WINDOW_MS` is: `./eta-wire` holds
+ * documents to it as the last check before transmission, and
+ * `./build-document` uses the SAME figure to refuse a return whose stored
+ * split cannot satisfy it — naming the cause while the wire can only name the
+ * equation. Two copies could drift apart and let the builder pass something the
+ * wire then refuses with the unhelpful message, which is exactly the outcome
+ * the builder-side check exists to prevent. Used verbatim rather than tightened:
+ * a stricter bound of our own would refuse documents ETA accepts.
+ */
+export const LINE_TAX_TOLERANCE = "0.5";
