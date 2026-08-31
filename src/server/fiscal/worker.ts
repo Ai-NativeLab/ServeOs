@@ -1,8 +1,9 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db/client";
-import { withTenant, type Tx } from "@/db/with-tenant";
+import { withTenant } from "@/db/with-tenant";
 import { tenants } from "@/server/tenancy/schema";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
+import type { AuditContext } from "@/server/audit/service";
 import { etaSubmissions } from "./schema";
 import type { EtaDocType, EtaSubmissionStatus } from "./schema";
 import { resolveEtaConfig } from "./config";
@@ -57,6 +58,26 @@ const POLL_INTERVAL_MS = 60 * 1000;
  * same trick the outbox worker's `STALL_RECLAIM_MS` uses. `FOR UPDATE SKIP
  * LOCKED` alone would not do it — those row locks die with the claim
  * transaction, and each row is then processed in its own.
+ *
+ * THIS NUMBER IS COUPLED TO ETA'S DUPLICATE WINDOW. Do not raise it without
+ * reading the arithmetic:
+ *
+ *     CLAIM_LEASE_MS (5 min) + ETA_HTTP_TIMEOUT_MS (60s, ./eta-provider)
+ *       < ETA's ~10-minute DuplicateSubmission window
+ *
+ * A lease can expire while a submit is still in flight; when it does, a second
+ * drain claims the same row and POSTs the same document again. That is only
+ * SAFE because ETA answers the second copy with 422 `DuplicateSubmission` —
+ * "identical submission detected based on the previous submissions sent by the
+ * same taxpayer within the past 10 minutes" — which arrives as a retryable
+ * `EtaTransportError` carrying `Retry-After`. The 60s fetch timeout is what
+ * bounds how far past the lease an in-flight call can run, and it is the reason
+ * that timeout exists at all: without it a hung connection could outlive the
+ * window entirely.
+ *
+ * Push the lease (or the timeout) past ~10 minutes and that guarantee is gone:
+ * the re-POST lands outside ETA's dedupe and files a SECOND legal document for
+ * one sale. There is no cheap way to unfile one.
  */
 const CLAIM_LEASE_MS = 5 * 60 * 1000;
 
@@ -300,9 +321,13 @@ async function submitPhase(
       nextAttemptAt: new Date(now().getTime() + POLL_INTERVAL_MS),
     }).where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, row.id)));
 
-    await audit(tx, tenantId, row, FISCAL_AUDIT_ACTIONS.submitted,
-      `Fiscal ${row.docType} submitted to ETA (submission ${result.submissionUuid})`,
-      { submissionUuid: result.submissionUuid, etaUuid: finalized.uuid });
+    await recordFiscalAudit(auditActor(tenantId), {
+      action: FISCAL_AUDIT_ACTIONS.submitted,
+      entityId: row.id,
+      summary: `Fiscal ${row.docType} submitted to ETA (submission ${result.submissionUuid})`,
+      metadata: { docType: row.docType, submissionUuid: result.submissionUuid, etaUuid: finalized.uuid },
+      actorType: "system",
+    }, tx);
   });
 
   return "submitted"; // Not terminal: the verdict comes from a later poll.
@@ -358,8 +383,13 @@ async function persistAccepted(
       lastError: null,
     }).where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, row.id)));
 
-    await audit(tx, tenantId, row, FISCAL_AUDIT_ACTIONS.accepted,
-      `Fiscal ${row.docType} accepted by ETA`, { etaLongId: result.etaLongId ?? null });
+    await recordFiscalAudit(auditActor(tenantId), {
+      action: FISCAL_AUDIT_ACTIONS.accepted,
+      entityId: row.id,
+      summary: `Fiscal ${row.docType} accepted by ETA`,
+      metadata: { docType: row.docType, etaLongId: result.etaLongId ?? null },
+      actorType: "system",
+    }, tx);
   });
   return "accepted";
 }
@@ -391,8 +421,13 @@ async function persistRejected(
       nextAttemptAt: now(),
     }).where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, row.id)));
 
-    await audit(tx, tenantId, row, FISCAL_AUDIT_ACTIONS.rejected,
-      `Fiscal ${row.docType} rejected by ETA`, { detail });
+    await recordFiscalAudit(auditActor(tenantId), {
+      action: FISCAL_AUDIT_ACTIONS.rejected,
+      entityId: row.id,
+      summary: `Fiscal ${row.docType} rejected by ETA`,
+      metadata: { docType: row.docType, detail },
+      actorType: "system",
+    }, tx);
 
     await notifyFiscalFailure({ tenantId }, {
       title: "A fiscal document was rejected by ETA",
@@ -494,16 +529,18 @@ async function failTransiently(tenantId: string, row: ClaimedRow, err: unknown, 
   return "failed";
 }
 
-/** Every audit event this worker writes: same entity, same system actor, on
- *  the caller's transaction (`recordAuditEvent`'s own requirement). */
-function audit(
-  tx: Tx, tenantId: string, row: ClaimedRow, action: string, summary: string, metadata: Record<string, unknown>,
-): Promise<void> {
-  return recordFiscalAudit(
-    { tenantId, actorUserId: null, fingerprint: emptyFingerprint() },
-    { action, entityId: row.id, summary, metadata: { ...metadata, docType: row.docType }, actorType: "system" },
-    tx,
-  );
+/**
+ * The actor half of every audit event this worker writes: no user, no device —
+ * a scheduled drain is a system action (F8: submission carries no RBAC grant).
+ *
+ * Only the CONTEXT is factored out. Each writer calls `recordFiscalAudit`
+ * itself rather than going through a local wrapper, so the emission is visible
+ * where the write is — to a reader, to grep, and to the audit-coverage
+ * guardrail, whose whole method is looking for that call inside a function
+ * that writes.
+ */
+function auditActor(tenantId: string): AuditContext {
+  return { tenantId, actorUserId: null, fingerprint: emptyFingerprint() };
 }
 
 /**

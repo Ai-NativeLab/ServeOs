@@ -468,6 +468,53 @@ describe("EtaFiscalProvider.submit", () => {
     expect((error as EtaTransportError).status).toBeNull();
   });
 
+  it("abandons a hanging request as a retryable timeout rather than waiting forever", async () => {
+    // A connection that opens and then goes silent. The stub honours the
+    // AbortSignal exactly as a real fetch does — which is the point of the
+    // test: nothing here rejects on its own, so only the provider's own
+    // deadline can end it. Without one, Node's fetch would hang until the peer
+    // or the OS gave up, holding the worker's claim lease the whole time.
+    let sawSignal = false;
+    const hanging: FetchLike = (input, init) => {
+      if (String(input).endsWith("/connect/token")) return Promise.resolve(tokenOk());
+      sawSignal = init?.signal instanceof AbortSignal;
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+      });
+    };
+
+    // 50ms rather than the real 60s so the suite does not wait a minute; the
+    // deadline is the behaviour under test, not its exact value.
+    const provider = new EtaFiscalProvider(hanging, { timeoutMs: 50 });
+    const error = await provider.submit(finalized, cfg).catch((e: unknown) => e);
+
+    expect(sawSignal).toBe(true);
+    // RETRYABLE: an abandoned request says nothing about whether the document
+    // was judged, so it must never become a terminal "rejected".
+    expect(error).toBeInstanceOf(EtaTransportError);
+    expect((error as EtaTransportError).status).toBeNull();
+    expect((error as EtaTransportError).message).toMatch(/timed out after 50ms/);
+    // The cause is preserved for the logs, redacted of nothing — it carries no
+    // credential material.
+    expect(((error as EtaTransportError).cause as Error).name).toBe("TimeoutError");
+  });
+
+  it("applies the deadline to the token call too, not just the API call", async () => {
+    const hanging: FetchLike = (_input, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+      });
+
+    const provider = new EtaFiscalProvider(hanging, { timeoutMs: 50 });
+    const error = await provider.submit(finalized, cfg).catch((e: unknown) => e);
+
+    // A hung /connect/token is the same class of failure — the login is the
+    // first thing a submission does, so an unbounded one strands the row just
+    // as effectively.
+    expect(error).toBeInstanceOf(EtaTransportError);
+    expect((error as EtaTransportError).message).toMatch(/timed out after 50ms/);
+  });
+
   it("renews the token once on a 401 and retries the call", async () => {
     const { http, calls, tokenCalls } = makeHttp({
       api: [

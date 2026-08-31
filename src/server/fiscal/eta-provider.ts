@@ -43,6 +43,23 @@ const TOKEN_PATH = "/connect/token";
 const SUBMIT_PATH = "/api/v1/receiptsubmissions";
 
 /**
+ * How long any single ETA call may hang before it is abandoned as a transport
+ * failure.
+ *
+ * Node's `fetch` has no timeout of its own: a connection that opens and then
+ * goes silent hangs until the peer or the OS gives up, which can be minutes.
+ * That is not a theoretical tidiness problem here — the submission worker holds
+ * a claim lease while this call is in flight, and a hang that outlives the
+ * lease lets a second drain claim the same row and re-POST a document ETA may
+ * already hold. `ETA_HTTP_TIMEOUT_MS` is therefore part of the worker's
+ * lease arithmetic; `CLAIM_LEASE_MS` in `./worker` cites it by name.
+ *
+ * 60s is generous for a single-document submission and still an order of
+ * magnitude inside ETA's ~10-minute duplicate-submission window.
+ */
+export const ETA_HTTP_TIMEOUT_MS = 60_000;
+
+/**
  * The single error status both login pages document for `/connect/token`.
  * Every documented `error` value under it names a credential, header or grant
  * that is wrong and will stay wrong, so it maps to `EtaConfigError` rather
@@ -98,6 +115,7 @@ export class EtaFiscalProvider implements FiscalProvider {
   readonly name = "eta";
 
   readonly #http: FetchLike;
+  readonly #timeoutMs: number;
   readonly #tokens = new Map<string, CachedToken>();
   readonly #logins = new Map<string, Promise<string>>();
 
@@ -106,9 +124,14 @@ export class EtaFiscalProvider implements FiscalProvider {
    * call time (rather than capturing it) so a test that stubs `globalThis.fetch`
    * still works, and so a deployment can pass a fetch bound to an undici
    * dispatcher carrying ETA's preprod root CA — see `./eta-env`'s CA-seam note.
+   * @param opts.timeoutMs Per-call deadline, defaulting to
+   * `ETA_HTTP_TIMEOUT_MS`. Overridable so a test can prove the deadline without
+   * waiting a real minute; production has no reason to change it, and the
+   * worker's lease arithmetic assumes it has not.
    */
-  constructor(http?: FetchLike) {
+  constructor(http?: FetchLike, opts: { timeoutMs?: number } = {}) {
     this.#http = http ?? ((input, init) => globalThis.fetch(input, init));
+    this.#timeoutMs = opts.timeoutMs ?? ETA_HTTP_TIMEOUT_MS;
   }
 
   buildReceipt(input: FiscalSaleInput): FiscalDocument {
@@ -429,16 +452,35 @@ export class EtaFiscalProvider implements FiscalProvider {
     return token;
   }
 
-  /** Every outbound call funnels through here so a network-level failure
-   *  becomes an `EtaTransportError` (retryable) instead of a raw `TypeError`
-   *  that a worker would have no way to classify. */
+  /**
+   * Every outbound call funnels through here so a network-level failure becomes
+   * an `EtaTransportError` (retryable) instead of a raw `TypeError` that a
+   * worker would have no way to classify.
+   *
+   * A TIMEOUT IS A TRANSPORT FAILURE, not a verdict: nothing about an abandoned
+   * request says the document was judged, so it is raised as the same retryable
+   * error as a reset connection. `AbortSignal.timeout` is set here rather than
+   * by each caller so no call site can forget it — see `ETA_HTTP_TIMEOUT_MS`
+   * for why an unbounded hang is a correctness problem and not just a slow one.
+   *
+   * The signal is applied over `init`, which no caller sets, so nothing is
+   * silently overridden.
+   */
   async #fetch(url: string, init: RequestInit): Promise<Response> {
     try {
-      return await this.#http(url, init);
+      return await this.#http(url, { ...init, signal: AbortSignal.timeout(this.#timeoutMs) });
     } catch (cause) {
-      throw new EtaTransportError(`fiscal: ETA request failed before a response was received (${hostOf(url)})`, {
-        cause,
-      });
+      // `AbortSignal.timeout` rejects with a TimeoutError DOMException; an
+      // AbortError would mean someone else cancelled us. Both are "no answer
+      // arrived", and both are worth telling apart from a refused connection in
+      // the message that lands in `eta_submissions.lastError`.
+      const aborted = cause instanceof Error && (cause.name === "TimeoutError" || cause.name === "AbortError");
+      throw new EtaTransportError(
+        aborted
+          ? `fiscal: ETA request timed out after ${this.#timeoutMs}ms with no response (${hostOf(url)})`
+          : `fiscal: ETA request failed before a response was received (${hostOf(url)})`,
+        { cause },
+      );
     }
   }
 }

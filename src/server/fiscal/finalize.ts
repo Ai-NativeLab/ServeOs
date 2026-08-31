@@ -275,17 +275,23 @@ export async function reconcileMissingReceipts(
       .orderBy(asc(orders.placedAt))
       .limit(limit));
 
+  let enqueued = 0;
   for (const order of stale) {
     // One order's failure must not abandon the rest of the batch; the enqueue
     // half throws (see `enqueueAndFinalizeReceipt`), so it is caught here.
     try {
       await enqueueAndFinalizeReceipt(ctx, order.id);
+      enqueued++;
     } catch (err) {
       console.error(`[fiscal] reconciliation enqueue failed for tenant ${ctx.tenantId} order ${order.id}`, err);
     }
   }
 
-  return { enqueued: stale.length };
+  // Rows that actually landed, not orders considered. This sweep exists to make
+  // an invisible failure visible, so a count that also counted the ones it
+  // FAILED to enqueue would read the same whether it worked or not — precisely
+  // the blindness it is here to close.
+  return { enqueued };
 }
 
 // ---------------------------------------------------------------------------

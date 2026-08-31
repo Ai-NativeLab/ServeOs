@@ -493,7 +493,7 @@ Mirrors Spec 5's outbox worker. Claims `pending|failed` rows (`SELECT … FOR UP
 
 - [x] **Step 0 (added 2026-08-31, review finding): reconciliation sweep** — the worker pass must also detect EG orders older than a threshold with NO eta_submissions row (a thrown sale-path enqueue leaves no row, so no row-based monitoring can see it) and enqueue them, closing the only gap where "never block the sale" trades away the compliance guarantee.
 
-- [x] **Step 1: Write the failing tests.** Create `src/server/fiscal/worker.test.ts`, injecting a stubbed provider (accept / reject / throw variants):
+- [x] **Step 1 (as-built: implementation-then-tests — see bullet 8): Write the failing tests.** Create `src/server/fiscal/worker.test.ts`, injecting a stubbed provider (accept / reject / throw variants):
   - **Accept:** a `pending e_receipt` → the worker records `etaUuid`/`qrPayload`, sets `status='accepted'` + `acceptedAt`, and emits the `eta.submission.accepted` audit event.
   - **Reject:** the provider returns `rejected` → `status='rejected'`, `responseJson` captured, `lastError` set, owner notified, and `eta.submission.rejected` emitted. The sale stands.
   - **Transient error:** the provider throws → `attempts++`, `status='failed'`, backoff set; after `MAX_ATTEMPTS` the row stays `failed` and a Spec 5 `critical` `notify` fires **once**.
@@ -501,7 +501,7 @@ Mirrors Spec 5's outbox worker. Claims `pending|failed` rows (`SELECT … FOR UP
   - **Concurrency:** two `drainEtaSubmissions` runs over the same row submit it **exactly once** (`SKIP LOCKED`).
   - **Credit-note deferral:** a `credit_note` whose parent receipt is not yet `accepted` is left `pending` and **not** submitted; once the parent has an `etaUuid`, the next pass submits it with `referenceUuid` = the parent UUID.
 
-- [x] **Step 2: Run to verify they fail.** `npx vitest run src/server/fiscal/worker.test.ts`. Expected: FAIL — module not found.
+- [x] **Step 2 (as-built: implementation-then-tests — see bullet 8): Run to verify they fail.** `npx vitest run src/server/fiscal/worker.test.ts`. Expected: FAIL — module not found.
 
 - [x] **Step 3: Implement `drainEtaSubmissions`.** Create `src/server/fiscal/worker.ts`. Per claimed row, inside a `withTenant` tx:
   1. `resolveEtaConfig(tenantId)` → if `null` (config inactive), leave `pending`, skip (durable, no spray at ETA).
@@ -541,6 +541,13 @@ git commit -m "feat(fiscal): drainEtaSubmissions worker — claim/build/sign/sub
   - **Order of work** was implementation-then-tests, not the plan's strict red-first (Steps 1-2). The tests did their job regardless: the first run failed 5 of 19 and is what surfaced the jsonb ordering bug above.
   - One unrelated test was adjusted: `pos/offline-lifecycle.test.ts`'s concurrent-ingest case asserted that the losing run reports all 8 events as duplicates, which assumed both runs advance at the same rate. EG sale events now cost visibly more (inline finalization), so the two interleave; the assertion is now per-event (exactly one `applied` and one `duplicate` across the two runs), which is stronger and scheduling-independent.
   - Actual commit message: `feat(fiscal): finalize-at-enqueue + drainEtaSubmissions worker (chain, poll, reconciliation, resubmission)` — no trailers, per house convention.
+
+  **post-review follow-up (2026-08-31), commit 3:**
+
+  - **Guardrail scan coverage.** `finalize.ts` and `worker.ts` joined `AUDITED_SERVICE_FILES`; `recordFiscalAudit` joined the test's `EMIT_RE` (it is a real emitter — a named wrapper over `recordAuditEvent`); `finalize.finalizeSubmissionRow` is allowlisted (it prepares a document, and the lifecycle it feeds is audited on the same row); the now-paid `forward:eta.*` entry was retired. The worker's three status writers had been calling a local `audit()` wrapper, which no scan could ever recognise — they now call `recordFiscalAudit` inline, so the emission is visible where the write is.
+    **Honest limit, worth a decision later:** the scanner enumerates EXPORTED functions only, and the worker's writers are private helpers, so `worker.ts` contributes zero symbols today — it is forward coverage (a future exported writer gets caught), not present coverage. Widening `enumerateMutatingSymbols` to private top-level functions was measured: **14 new gaps repo-wide, 8 of them outside fiscal** (inventory ×6, recipes, tenancy/settings). That is a shared-guardrail semantic change and other domains' justifications to write, so it was not taken here.
+  - **HTTP timeout + lease coupling.** `ETA_HTTP_TIMEOUT_MS = 60_000` now bounds every provider call via `AbortSignal.timeout`, aborting into a **retryable** `EtaTransportError` (an abandoned request says nothing about whether the document was judged). `CLAIM_LEASE_MS` documents the arithmetic it is half of: `lease (5 min) + fetch timeout (60s) < ETA's ~10-minute DuplicateSubmission window`. A lease that expires mid-submit lets a second drain re-POST, which is safe ONLY while ETA still answers 422 `DuplicateSubmission`; raising either constant past that window files a second legal document for one sale.
+  - **Sweep count** now counts rows that actually landed, not orders considered — a count including its own failures would read the same whether the sweep worked or not, which is the blindness it exists to close.
 
 ---
 
