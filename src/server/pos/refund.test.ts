@@ -3,11 +3,18 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { orders } from "@/server/ordering/schema";
-import { getCheckoutPricing } from "@/server/tenancy/settings";
+import {
+  getCheckoutPricing,
+  setPricesIncludeVat,
+  setServiceChargeRate,
+  setVatEnabled,
+} from "@/server/tenancy/settings";
 import { computeCartTotals } from "@/lib/order-totals";
 import { tenants } from "@/server/tenancy/schema";
 import { getOrder, placeOrder, cancelOrderByToken } from "@/server/ordering/service";
 import { products } from "@/server/catalog/schema";
+import { createProduct, updateProduct } from "@/server/catalog/service";
+import { sumDecimal } from "@/server/fiscal/decimal";
 import { orderPayments } from "./tender-schema";
 import { refunds, refundLines, refundPayments } from "./refund-schema";
 import { auditEvents } from "@/server/audit/schema";
@@ -494,5 +501,353 @@ describe("issueRefund restock", () => {
       expect(paidOut).toBe(unit);
       expect(net).toBe(round2(gross - unit));
     });
+  });
+});
+
+/**
+ * A paid sale under PINNED pricing (VAT on/off, inclusive/exclusive, service
+ * charge) with one or more product lines at chosen prices.
+ *
+ * The VAT-persistence assertions below are string-exact, so the pricing that
+ * produced `orders.vatAmount` has to be stated rather than inherited from the
+ * fixture defaults, and more than one line at different prices is what makes
+ * the largest-remainder split observable at all.
+ */
+async function seedPricedPaidSale(opts: {
+  vatEnabled?: boolean;
+  pricesIncludeVat?: boolean;
+  serviceChargeRate?: number;
+  lines: { basePrice: string; quantity: number }[];
+}) {
+  const s = await seedPosContext("owner");
+  await openShiftForCtx(s.ctx);
+  if (opts.vatEnabled !== undefined) await setVatEnabled(s.tenantId, opts.vatEnabled);
+  if (opts.pricesIncludeVat !== undefined) await setPricesIncludeVat(s.tenantId, opts.pricesIncludeVat);
+  if (opts.serviceChargeRate !== undefined) await setServiceChargeRate(s.tenantId, opts.serviceChargeRate);
+
+  const [fixture] = await withTenant(s.tenantId, (tx) =>
+    tx.select().from(products).where(eq(products.id, s.productId)));
+
+  const productIds: string[] = [];
+  for (const [i, line] of opts.lines.entries()) {
+    if (i === 0 && line.basePrice === fixture.basePrice) {
+      productIds.push(s.productId);
+      continue;
+    }
+    const p = await createProduct(s.tenantId, {
+      nameEn: `Extra ${i}`, nameAr: `إضافي ${i}`,
+      basePrice: line.basePrice, categoryId: fixture.categoryId,
+    });
+    await updateProduct(s.tenantId, p.id, { isPublished: true });
+    productIds.push(p.id);
+  }
+
+  const pricing = await getCheckoutPricing(s.tenantId);
+  const total = computeCartTotals(
+    pricing,
+    opts.lines.map((l) => ({ unitPrice: Number(l.basePrice), quantity: l.quantity })),
+    0,
+  ).total;
+  const receipt = await recordSale(s.ctx, {
+    clientOrderId: "sale-1",
+    lines: opts.lines.map((l, i) => ({ productId: productIds[i], quantity: l.quantity, selectedOptionIds: [] })),
+    expectedTotal: total,
+    payments: [{ clientPaymentId: "pay-1", method: "cash", amount: total, tenderedAmount: total }],
+  });
+
+  return { ...s, productIds, receipt, total };
+}
+
+const refundRows = (tenantId: string) =>
+  withTenant(tenantId, (tx) => tx.select().from(refunds).orderBy(refunds.createdAt));
+const refundLineRows = (tenantId: string, refundId: string) =>
+  withTenant(tenantId, (tx) => tx.select().from(refundLines).where(eq(refundLines.refundId, refundId)));
+const orderRow = (tenantId: string, orderId: string) =>
+  withTenant(tenantId, async (tx) => (await tx.select().from(orders).where(eq(orders.id, orderId)))[0]);
+
+/**
+ * Every number here is asserted as a STRING. `refunds.vatAmount` exists so the
+ * fiscal layer can reverse exactly what the sale declared; a float comparison
+ * would hide the very cent-level drift the largest-remainder allocation is
+ * there to prevent.
+ */
+describe("issueRefund VAT persistence", () => {
+  it("itemised partial refunds carry each line's largest-remainder share of the order's VAT, summing to it exactly", async () => {
+    // 100.00 + 33.33 VAT-INCLUSIVE at 14% → taxable 133.33, VAT 16.37, which
+    // splits 12.28 / 4.09 across the two lines (the odd cent goes to the larger
+    // remainder, i.e. the 100.00 line).
+    const s = await seedPricedPaidSale({
+      pricesIncludeVat: true,
+      lines: [{ basePrice: "100", quantity: 1 }, { basePrice: "33.33", quantity: 1 }],
+    });
+    const order = await getOrder(s.tenantId, s.receipt.orderId);
+    expect(order.vatAmount).toBe("16.37");
+    const big = order.items.find((i) => i.productId === s.productIds[0])!;
+    const small = order.items.find((i) => i.productId === s.productIds[1])!;
+
+    const first = await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "partial",
+      lines: [{ orderItemId: big.id, quantity: 1, amount: 100, restock: false }],
+      payments: [{ method: "cash", amount: 100 }],
+      reasonCode: "wrong_item",
+      clientRefundId: "r1",
+    });
+    const firstLines = await refundLineRows(s.tenantId, first.refundId);
+    expect(firstLines.map((l) => l.vatAmount)).toEqual(["12.28"]);
+
+    const second = await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "partial",
+      lines: [{ orderItemId: small.id, quantity: 1, amount: 33.33, restock: false }],
+      payments: [{ method: "cash", amount: 33.33 }],
+      reasonCode: "wrong_item",
+      clientRefundId: "r2",
+    });
+    const secondLines = await refundLineRows(s.tenantId, second.refundId);
+    expect(secondLines.map((l) => l.vatAmount)).toEqual(["4.09"]);
+
+    const rows = await refundRows(s.tenantId);
+    expect(rows.map((r) => r.vatAmount)).toEqual(["12.28", "4.09"]);
+    // The whole order returned ⇒ the whole order's VAT reversed, to the cent.
+    expect(sumDecimal("refund vat", rows.map((r) => r.vatAmount))).toBe(order.vatAmount);
+  });
+
+  it("splits a line's VAT across its units so repeated 1-of-n refunds never over-allocate", async () => {
+    // 33.33 × 2 VAT-inclusive → VAT 8.19 on the line, which is an ODD number of
+    // cents over two units: 4.10 + 4.09. A naive `lineVat × qty/orderQty`
+    // half-up would store 4.10 twice and reverse 8.20 — a cent more VAT than
+    // the sale ever declared.
+    const s = await seedPricedPaidSale({
+      pricesIncludeVat: true,
+      lines: [{ basePrice: "33.33", quantity: 2 }],
+    });
+    const order = await getOrder(s.tenantId, s.receipt.orderId);
+    expect(order.vatAmount).toBe("8.19");
+    const item = order.items[0];
+
+    const a = await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "partial",
+      lines: [{ orderItemId: item.id, quantity: 1, amount: 33.33, restock: false }],
+      payments: [{ method: "cash", amount: 33.33 }],
+      reasonCode: "wrong_item",
+      clientRefundId: "r1",
+    });
+    const b = await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "partial",
+      lines: [{ orderItemId: item.id, quantity: 1, amount: 33.33, restock: false }],
+      payments: [{ method: "cash", amount: 33.33 }],
+      reasonCode: "wrong_item",
+      clientRefundId: "r2",
+    });
+
+    expect((await refundLineRows(s.tenantId, a.refundId))[0].vatAmount).toBe("4.10");
+    expect((await refundLineRows(s.tenantId, b.refundId))[0].vatAmount).toBe("4.09");
+    const rows = await refundRows(s.tenantId);
+    expect(sumDecimal("refund vat", rows.map((r) => r.vatAmount))).toBe("8.19");
+  });
+
+  it("a headerless full refund stores the order's whole VAT", async () => {
+    // Fixture default: VAT-exclusive 14% on 100.00 → VAT 14.00, total 114.00.
+    const s = await seedPaidSale("owner");
+    const order = await orderRow(s.tenantId, s.receipt.orderId);
+    expect(order.vatAmount).toBe("14.00");
+
+    const res = await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "full",
+      lines: [],
+      payments: [{ method: "cash", amount: s.receipt.paidAmount }],
+      reasonCode: "customer_changed_mind",
+      clientRefundId: "r1",
+    });
+
+    const [r] = await refundRows(s.tenantId);
+    expect(r.vatAmount).toBe("14.00");
+    expect(await refundLineRows(s.tenantId, res.refundId)).toHaveLength(0);
+  });
+
+  it("a headerless full refund after a partial one stores only the VAT still un-reversed", async () => {
+    const s = await seedPricedPaidSale({
+      pricesIncludeVat: true,
+      lines: [{ basePrice: "100", quantity: 2 }],
+    });
+    const order = await getOrder(s.tenantId, s.receipt.orderId);
+    expect(order.vatAmount).toBe("24.56");
+
+    await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "partial",
+      lines: [{ orderItemId: order.items[0].id, quantity: 1, amount: 100, restock: false }],
+      payments: [{ method: "cash", amount: 100 }],
+      reasonCode: "wrong_item",
+      clientRefundId: "r1",
+    });
+    await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "full",
+      lines: [],
+      payments: [{ method: "cash", amount: 100 }],
+      reasonCode: "customer_changed_mind",
+      clientRefundId: "r2",
+    });
+
+    const rows = await refundRows(s.tenantId);
+    expect(rows.map((r) => r.vatAmount)).toEqual(["12.28", "12.28"]);
+    expect(sumDecimal("refund vat", rows.map((r) => r.vatAmount))).toBe(order.vatAmount);
+  });
+
+  it("a goodwill full refund of part of the balance scales the remaining VAT, half-up at 2dp", async () => {
+    // 14.00 VAT on a 114.00 balance, 45.00 handed back → 14.00 × 45 / 114 =
+    // 5.5263…, which is 5.53 half-up (5.52 if it were truncated).
+    const s = await seedPaidSale("owner");
+    const res = await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "full",
+      lines: [],
+      payments: [{ method: "cash", amount: 45 }],
+      reasonCode: "other",
+      clientRefundId: "r1",
+    });
+
+    const [r] = await refundRows(s.tenantId);
+    expect(r.totalAmount).toBe("45.00");
+    expect(r.vatAmount).toBe("5.53");
+    expect(await refundLineRows(s.tenantId, res.refundId)).toHaveLength(0);
+  });
+
+  it("the service charge's VAT share is withheld from item lines and only returned by a full refund", async () => {
+    // 100.00 + a 10% service charge, VAT-inclusive 14% → taxable 110.00, VAT
+    // 13.51, of which 12.28 sits on the item and 1.23 on the service charge.
+    // Returning the item reverses 12.28 — exactly the VAT inside the 100.00
+    // handed back — and the service charge's 1.23 stays declared until the
+    // balance itself is refunded.
+    const s = await seedPricedPaidSale({
+      pricesIncludeVat: true,
+      serviceChargeRate: 10,
+      lines: [{ basePrice: "100", quantity: 1 }],
+    });
+    const order = await getOrder(s.tenantId, s.receipt.orderId);
+    expect(order.serviceChargeAmount).toBe("10.00");
+    expect(order.vatAmount).toBe("13.51");
+
+    const itemised = await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "partial",
+      lines: [{ orderItemId: order.items[0].id, quantity: 1, amount: 100, restock: false }],
+      payments: [{ method: "cash", amount: 100 }],
+      reasonCode: "wrong_item",
+      clientRefundId: "r1",
+    });
+    expect((await refundLineRows(s.tenantId, itemised.refundId))[0].vatAmount).toBe("12.28");
+
+    // The 10.00 service charge is the only balance left; refunding it reverses
+    // the VAT share the item lines deliberately never claimed.
+    await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "full",
+      lines: [],
+      payments: [{ method: "cash", amount: 10 }],
+      reasonCode: "other",
+      clientRefundId: "r2",
+    });
+
+    const rows = await refundRows(s.tenantId);
+    expect(rows.map((r) => r.vatAmount)).toEqual(["12.28", "1.23"]);
+    expect(sumDecimal("refund vat", rows.map((r) => r.vatAmount))).toBe(order.vatAmount);
+  });
+
+  it("a zero-VAT order stores zeros on both the header and its lines", async () => {
+    const s = await seedPricedPaidSale({
+      vatEnabled: false,
+      lines: [{ basePrice: "100", quantity: 2 }],
+    });
+    const order = await getOrder(s.tenantId, s.receipt.orderId);
+    expect(order.vatAmount).toBe("0.00");
+
+    const itemised = await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "partial",
+      lines: [{ orderItemId: order.items[0].id, quantity: 1, amount: 100, restock: false }],
+      payments: [{ method: "cash", amount: 100 }],
+      reasonCode: "wrong_item",
+      clientRefundId: "r1",
+    });
+    expect((await refundLineRows(s.tenantId, itemised.refundId))[0].vatAmount).toBe("0.00");
+
+    await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "full",
+      lines: [],
+      payments: [{ method: "cash", amount: 100 }],
+      reasonCode: "other",
+      clientRefundId: "r2",
+    });
+    const rows = await refundRows(s.tenantId);
+    expect(rows.map((r) => r.vatAmount)).toEqual(["0.00", "0.00"]);
+  });
+
+  it("refuses a refund whose VAT would push the order's reversed VAT above what it charged", async () => {
+    // A goodwill full refund takes a scaled share of the remaining VAT without
+    // naming items; itemising the SAME units afterwards would reverse their VAT
+    // a second time. The refund is refused rather than over-reversing — the
+    // order's declared VAT is the ceiling, always.
+    const s = await seedPricedPaidSale({
+      pricesIncludeVat: true,
+      lines: [{ basePrice: "100", quantity: 2 }],
+    });
+    const order = await getOrder(s.tenantId, s.receipt.orderId);
+
+    await issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "full",
+      lines: [],
+      payments: [{ method: "cash", amount: 100 }],
+      reasonCode: "other",
+      clientRefundId: "goodwill",
+    });
+
+    await expect(issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "partial",
+      lines: [{ orderItemId: order.items[0].id, quantity: 2, amount: 100, restock: false }],
+      payments: [{ method: "cash", amount: 100 }],
+      reasonCode: "wrong_item",
+      clientRefundId: "over",
+    })).rejects.toThrow(PosRefundError);
+
+    // Nothing of the refused refund survives — one refund row, one payment.
+    const rows = await refundRows(s.tenantId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].vatAmount).toBe("12.28");
+    expect(await withTenant(s.tenantId, (tx) => tx.select().from(refundPayments))).toHaveLength(1);
+  });
+
+  it("an idempotent replay returns the stored refund without doubling its VAT", async () => {
+    const s = await seedPaidSale("owner", 2);
+    const item = (await getOrder(s.tenantId, s.receipt.orderId)).items[0];
+    const unit = perUnit(s.receipt.paidAmount, 2);
+    const input: RefundInput = {
+      orderId: s.receipt.orderId,
+      kind: "partial",
+      lines: [{ orderItemId: item.id, quantity: 1, amount: unit, restock: false }],
+      payments: [{ method: "cash", amount: unit }],
+      reasonCode: "wrong_item",
+      clientRefundId: "dup",
+    };
+
+    const a = await issueRefund(actorFrom(s.ctx), input);
+    const b = await issueRefund(actorFrom(s.ctx), input);
+    expect(b.idempotent).toBe(true);
+    expect(b.refundId).toBe(a.refundId);
+
+    const rows = await refundRows(s.tenantId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].vatAmount).toBe("14.00"); // half of the 28.00 VAT on the 2-unit sale
+    const lines = await refundLineRows(s.tenantId, a.refundId);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].vatAmount).toBe("14.00");
   });
 });

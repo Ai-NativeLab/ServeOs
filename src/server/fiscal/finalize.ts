@@ -657,6 +657,11 @@ async function resolveFullRefundLines(
     orderItemId: item.id,
     quantity,
     amount: amounts[index],
+    // A resolved line has no STORED VAT — the refund it stands for was written
+    // headerless, so its VAT lives on `refunds.vatAmount` alone. Zero here keeps
+    // the synthetic row type-complete without inventing a per-line figure;
+    // splitting the header's VAT across these lines is round 2 Task 2's job.
+    vatAmount: "0.00",
     restock: false,
   }));
 }

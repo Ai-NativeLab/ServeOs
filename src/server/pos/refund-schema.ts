@@ -22,6 +22,11 @@ export const refunds = pgTable("refunds", {
   reasonCode: text("reason_code").notNull(),
   reasonText: text("reason_text"),
   totalAmount: numeric("total_amount").notNull(),
+  /** The VAT contained in `totalAmount`, computed once at issuance from the
+   *  order's stored figures (see `issueRefund`) so the fiscal layer can reverse
+   *  exactly what the sale declared instead of re-deriving it. `'0'` for a
+   *  non-VAT order and for every refund written before this column existed. */
+  vatAmount: numeric("vat_amount").notNull().default("0"),
   byUserId: uuid("by_user_id").notNull().references(() => users.id),
   authorizedByUserId: uuid("authorized_by_user_id").references(() => users.id),
   shiftId: uuid("shift_id"),
@@ -41,6 +46,9 @@ export const refundLines = pgTable("refund_lines", {
   orderItemId: uuid("order_item_id").notNull().references(() => orderItems.id, { onDelete: "cascade" }),
   quantity: integer("quantity").notNull(),
   amount: numeric("amount").notNull(),
+  /** This line's share of the order's VAT for the returned quantity. Σ over a
+   *  refund's lines is its header `vatAmount` exactly (`issueRefund`). */
+  vatAmount: numeric("vat_amount").notNull().default("0"),
   restock: boolean("restock").notNull().default(false),
 }, (t) => [index("refund_lines_refund").on(t.refundId)]);
 

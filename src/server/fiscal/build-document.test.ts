@@ -500,6 +500,10 @@ const refund: Refund = {
   reasonCode: "damaged",
   reasonText: null,
   totalAmount: "90.00",
+  // Type-completeness only: `buildReturnReceipt` still reverses no VAT (round
+  // 1's documented exposure). Round 2 Task 2 is what makes these figures mean
+  // something on the wire.
+  vatAmount: "0.00",
   byUserId: "4a4a4a4a-4a4a-4a4a-8a4a-4a4a4a4a4a4a",
   authorizedByUserId: null,
   shiftId: null,
@@ -516,6 +520,7 @@ const refundLines: RefundLine[] = [
     orderItemId: items[0].id,
     quantity: 1,
     amount: "90.00",
+    vatAmount: "0.00",
     restock: true,
   },
 ];

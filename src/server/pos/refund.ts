@@ -1,10 +1,10 @@
 import { and, eq } from "drizzle-orm";
-import { withTenant } from "@/db/with-tenant";
+import { withTenant, type Tx } from "@/db/with-tenant";
 import { recordAuditEvent } from "@/server/audit/service";
 import { publishTenantEvent } from "@/server/realtime/publish";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { money, restockRefundedLines } from "@/server/ordering/service";
-import { orders, orderItems, type Order } from "@/server/ordering/schema";
+import { orders, orderItems, type Order, type OrderItem } from "@/server/ordering/schema";
 import { branches } from "@/server/branches/schema";
 import { orderPayments } from "./tender-schema";
 import { refunds, refundLines, refundPayments } from "./refund-schema";
@@ -13,6 +13,18 @@ import { REASON_CODES, type ReasonCode } from "./record-sale";
 import { PosRefundError } from "./errors";
 import type { Permission } from "@/server/rbac/permissions";
 import { isFiscalEnabled, enqueueFiscalDocument } from "@/server/fiscal/enqueue";
+// `@/server/fiscal/decimal` is a PURE, side-effect-free module (scaled-bigint
+// string arithmetic — no db, no config, no I/O), so the refund domain imports
+// it rather than growing a second, drifting copy of exact money math.
+import {
+  addDecimal,
+  allocateLargestRemainder,
+  compareDecimal,
+  divideDecimal,
+  multiplyDecimal,
+  subtractDecimal,
+  sumDecimal,
+} from "@/server/fiscal/decimal";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -51,6 +63,151 @@ export type RefundInput = {
   grantToken?: string;
 };
 
+/** The VAT this refund carries: the header figure and, for an itemised refund,
+ *  one figure per input line in the SAME order as `RefundInput.lines`. */
+type RefundVat = { headerVat: string; lineVats: string[] };
+
+/**
+ * The VAT contained in a refund — the one new money computation in the refund
+ * domain, done ONCE here so every downstream reader (the fiscal return receipt
+ * above all) maps a stored figure instead of re-deriving one.
+ *
+ * WHY IT EXISTS. `refunds` stored only money, so an EG tenant's return receipt
+ * had no VAT to reverse and the tenant over-declared output VAT on every
+ * refund. The order already knows its VAT (`orders.vatAmount`, written by
+ * `computeOrderTotals`); what was missing was *how much of it came back*.
+ *
+ * THE BASIS, MIRRORING `computeOrderTotals` (src/lib/order-totals.ts:23-38,
+ * and its cart wrapper at :54-71). VAT is charged on
+ * `taxable = subtotal − discount + serviceCharge`; `deliveryFee` is OUTSIDE the
+ * taxable base and therefore carries no VAT and never appears below.
+ * `orders.subtotal` is already the discounted subtotal (placeOrder passes
+ * `subtotal − orderDiscount` into `computeOrderTotals`), and each
+ * `order_items.lineTotal` is already net of its own line discount, so the two
+ * are consistent weights for a proportional split.
+ *
+ * THE SERVICE-CHARGE DECISION (and its consequence). The service charge is
+ * order-level: it bears VAT but has no `order_items` row to hang it on. It is
+ * therefore given its OWN weight bucket, and item lines only ever claim the
+ * item bucket. The consequence, stated plainly: an itemised refund reverses
+ * exactly the VAT inside the money handed back for those items and NOT the
+ * service charge's VAT share — that share is reversed only by a full
+ * (headerless) refund, which works from the order's remaining VAT. The
+ * alternative — spreading the service charge's VAT across the items — would
+ * make a line's stored VAT exceed the VAT actually contained in that line's
+ * refunded amount (on a 14% VAT-inclusive 100.00 item under a 10% service
+ * charge: 6.14 of VAT in 50.00 returned, but 6.76 stored), i.e. it would
+ * over-reverse output VAT. Under-reversing a service charge nobody itemises is
+ * the safe side of that trade; over-declaring is corrected by refunding the
+ * balance, which the full-refund path does capture.
+ *
+ * EXACTNESS. Every split is `allocateLargestRemainder`, so the parts sum to the
+ * whole to the cent, and each item's VAT is split again across its own UNITS —
+ * so a 1-of-2 return takes one unit's cents and a later 1-of-2 return takes the
+ * rest. (A `lineVat × qty/orderQty` half-up would store 4.10 twice against a
+ * line whose VAT is 8.19, reversing a cent that was never charged.)
+ */
+async function computeRefundVat(
+  tx: Tx,
+  order: Order,
+  lines: RefundLineInput[],
+  items: OrderItem[],
+  alreadyReturned: Map<string, number>,
+  thisTotal: string,
+  outstanding: string,
+): Promise<RefundVat> {
+  const priorRefunds = await tx
+    .select({ vatAmount: refunds.vatAmount })
+    .from(refunds)
+    .where(eq(refunds.orderId, order.id));
+  const priorVat = sumDecimal("prior refund VAT", priorRefunds.map((r) => r.vatAmount));
+
+  const lineVats = lines.length
+    ? itemisedLineVat(order, lines, items, alreadyReturned)
+    : [];
+  const headerVat = lines.length
+    ? sumDecimal("refund VAT", lineVats)
+    : headerlessRefundVat(order.vatAmount, priorVat, thisTotal, outstanding);
+
+  // INVARIANT: an order's refunds may never reverse more VAT than the order
+  // charged. It holds by construction within either path on its own, but not
+  // ACROSS them: a goodwill full refund takes a scaled share of the remaining
+  // VAT without naming items, and itemising those same units afterwards would
+  // claim their VAT a second time. Fail closed — a refund that cannot be
+  // accounted for honestly is refused, not silently clamped.
+  if (compareDecimal(addDecimal("refund VAT", priorVat, headerVat), order.vatAmount) > 0) {
+    throw new PosRefundError(
+      `This refund would reverse ${headerVat} of VAT on top of ${priorVat} already returned, above the ${order.vatAmount} the order charged`,
+    );
+  }
+
+  return { headerVat, lineVats };
+}
+
+/** The VAT of each refunded line: the order's VAT split over the service-charge
+ *  and item buckets, then over the items, then over each item's units — with
+ *  the units already returned by earlier refunds skipped. */
+function itemisedLineVat(
+  order: Order,
+  lines: RefundLineInput[],
+  items: OrderItem[],
+  alreadyReturned: Map<string, number>,
+): string[] {
+  // Sorted so the allocation is deterministic for a given order: the largest
+  // remainder decides which line takes an odd cent, and only an exact TIE falls
+  // through to input order — which `order_items` has no column to guarantee.
+  const sorted = [...items].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const [itemsVat] = allocateLargestRemainder("orders.vatAmount", order.vatAmount, [
+    order.subtotal,
+    order.serviceChargeAmount ?? "0",
+  ]);
+  const perItem = allocateLargestRemainder("order item VAT", itemsVat, sorted.map((i) => i.lineTotal));
+  const perUnit = new Map(
+    sorted.map((item, i) => [
+      item.id,
+      allocateLargestRemainder("order item unit VAT", perItem[i], Array.from({ length: item.quantity }, () => "1")),
+    ]),
+  );
+
+  // A cursor, not a lookup: two lines of the same order item inside ONE refund
+  // must take DIFFERENT units, never the same ones twice.
+  const cursor = new Map(alreadyReturned);
+  return lines.map((l) => {
+    const taken = cursor.get(l.orderItemId) ?? 0;
+    cursor.set(l.orderItemId, taken + l.quantity);
+    // `slice` past the end yields fewer units, so a line that somehow claims
+    // more than was sold can only ever under-allocate VAT, never invent it.
+    return sumDecimal("refund line VAT", (perUnit.get(l.orderItemId) ?? []).slice(taken, taken + l.quantity));
+  });
+}
+
+/**
+ * The VAT of a HEADERLESS (goodwill or whole-balance) full refund, which names
+ * no items: the order's VAT not yet reversed by earlier refunds, scaled by the
+ * share of the outstanding balance actually handed back (2dp, half-up). A
+ * refund of the whole balance therefore reverses the whole remaining VAT —
+ * including the service charge's share, which no item line claims.
+ */
+function headerlessRefundVat(
+  orderVat: string,
+  priorVat: string,
+  thisTotal: string,
+  outstanding: string,
+): string {
+  const remaining = subtractDecimal("remaining order VAT", orderVat, priorVat);
+  if (compareDecimal(remaining, "0") <= 0) return "0.00";
+  // Guarded rather than assumed: the net-paid ceiling makes a zero balance
+  // unreachable for a positive refund, and dividing by it would throw.
+  if (compareDecimal(outstanding, "0") <= 0) return "0.00";
+  if (compareDecimal(thisTotal, outstanding) >= 0) return remaining;
+  return divideDecimal(
+    "goodwill refund VAT",
+    multiplyDecimal("goodwill refund VAT", remaining, thisTotal),
+    outstanding,
+    2,
+  );
+}
+
 export type RefundResult = {
   refundId: string;
   totalAmount: number;
@@ -64,7 +221,10 @@ export type RefundResult = {
  * pos:refund through resolveAuthorizer (a manager grant lets a pos:sell-only
  * cashier refund, captured as authorizedByUserId). The original order is never
  * mutated: only the three refund tables are written plus the DERIVED
- * payment_status on the order. Any failure rolls back the whole refund —
+ * payment_status on the order. Each refund also stores the VAT it takes back
+ * (header and per line — see computeRefundVat), computed once here from the
+ * order's stored figures so the fiscal layer reverses a recorded number rather
+ * than re-deriving one months later. Any failure rolls back the whole refund —
  * including, for an EG tenant, its fiscal `return_receipt` enqueue (step 10
  * below): unlike the sale path's after-commit, catch-and-log enqueue
  * (record-sale.ts), this one runs INSIDE the refund's own transaction on
@@ -218,23 +378,31 @@ export async function issueRefund(
     // 5. Per-line quantity bounds. Applied to ANY refund that names lines (an
     //    itemised full refund included) — "return three of two" is wrong in
     //    every kind. Already-refunded quantities count against the remaining.
+    //    Both reads are hoisted out of the loop because step 5b needs the same
+    //    two facts — what was sold and what has come back — to split the VAT.
+    const items = lines.length
+      ? await tx.select().from(orderItems).where(eq(orderItems.orderId, input.orderId))
+      : [];
+    const priorLines = lines.length
+      ? await tx
+          .select({ refundLine: refundLines })
+          .from(refundLines)
+          .innerJoin(refunds, eq(refundLines.refundId, refunds.id))
+          .where(eq(refunds.orderId, input.orderId))
+      : [];
+    const alreadyReturned = new Map<string, number>();
+    for (const p of priorLines) {
+      alreadyReturned.set(
+        p.refundLine.orderItemId,
+        (alreadyReturned.get(p.refundLine.orderItemId) ?? 0) + p.refundLine.quantity,
+      );
+    }
     if (lines.length > 0) {
-      const items = await tx
-        .select()
-        .from(orderItems)
-        .where(eq(orderItems.orderId, input.orderId));
-      const priorLines = await tx
-        .select({ refundLine: refundLines })
-        .from(refundLines)
-        .innerJoin(refunds, eq(refundLines.refundId, refunds.id))
-        .where(eq(refunds.orderId, input.orderId));
       for (const l of lines) {
         const item = items.find((i) => i.id === l.orderItemId);
         if (!item)
           throw new PosRefundError("Refund line does not belong to this order");
-        const already = priorLines
-          .filter((p) => p.refundLine.orderItemId === l.orderItemId)
-          .reduce((s, p) => s + p.refundLine.quantity, 0);
+        const already = alreadyReturned.get(l.orderItemId) ?? 0;
         if (l.quantity < 1 || l.quantity > item.quantity - already)
           throw new PosRefundError("Cannot return more than was sold");
       }
@@ -253,6 +421,15 @@ export async function issueRefund(
         );
     }
 
+    // 5b. The VAT this refund takes back, computed from the order's STORED
+    //     figures now that the line amounts are settled — see computeRefundVat.
+    //     `netPaid` is the balance outstanding immediately before this refund,
+    //     the same figure the ceiling above enforces, so a goodwill full refund
+    //     scales against what was actually still owed back.
+    const { headerVat, lineVats } = await computeRefundVat(
+      tx, order, lines, items, alreadyReturned, money(thisTotal), money(netPaid),
+    );
+
     // 6. Insert header → lines → payments. All-or-nothing inside withTenant.
     const [refund] = await tx
       .insert(refunds)
@@ -264,6 +441,7 @@ export async function issueRefund(
         reasonCode: input.reasonCode,
         reasonText: input.reasonText ?? null,
         totalAmount: money(thisTotal),
+        vatAmount: headerVat,
         byUserId: actor.actorUserId,
         authorizedByUserId,
         shiftId: input.shiftId ?? null,
@@ -273,12 +451,13 @@ export async function issueRefund(
 
     if (lines.length) {
       await tx.insert(refundLines).values(
-        lines.map((l) => ({
+        lines.map((l, i) => ({
           tenantId: actor.tenantId,
           refundId: refund.id,
           orderItemId: l.orderItemId,
           quantity: l.quantity,
           amount: money(l.amount),
+          vatAmount: lineVats[i],
           restock: l.restock,
         })),
       );
