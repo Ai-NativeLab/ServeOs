@@ -784,46 +784,74 @@ _No commit for this section — it is a gate, not a change. Do not remove a `TOD
 
 **Files:** none — this task changes nothing. It proves the spec.
 
-- [ ] **Step 1: Run everything.** `npm test && npx tsc --noEmit && npx eslint src` and `cd apps/pos && npx vitest run && npx tsc --noEmit`. Expected: all PASS, all clean.
+- [x] **Step 1: Run everything.** *(As-built 2026-08-31: root suite **1543/1543** — incl. the once-flaky `offline-lifecycle` test, green; `npx tsc --noEmit` clean; `npx eslint src` = exactly the **6 pre-existing** `no-html-link-for-pages` errors in 5 files untouched on this branch (`git diff main...HEAD` empty for each) — documented debt, not a regression; apps/pos **157/13** + both typechecks clean; `npx next build` clean, all 7 fiscal paths dynamic; `npm run db:migrate:test` **51/51**.)*
 
 - [ ] **Step 2: Walk the spec's acceptance path** (on a tenant with `country="EG"` and an `active` `eta_tenant_config`, POS paired):
-  - [ ] Classify a product in `product_tax_codes`; ring a sale of it → an `eta_submissions` row `docType='e_receipt'`, `status='pending'` appears; the **sale returns immediately** (no ETA wait).
-  - [ ] Run the worker with a stubbed accepting provider → the row flips to `accepted` with `etaUuid` + `qrPayload`; `/api/pos/v1/sales/:orderId/fiscal` returns them; the receipt renders the QR + UUID.
-  - [ ] Ring a sale of an **unclassified** product → the sale still completes; the worker marks the row `failed` with a product-naming `lastError` and the owner is notified. The sale is **not** blocked.
-  - [ ] Issue a Spec 3 refund on the accepted receipt → a `credit_note` row referencing the parent `etaUuid` is enqueued and (after the worker) accepted.
-  - [ ] Ring a sale on a **non-EG** tenant → **no** `eta_submissions` row, and the receipt renders with no fiscal footer.
+  - [x] Classify a product in `product_tax_codes`; ring a sale of it → an `eta_submissions` row `docType='e_receipt'`, `status='pending'` appears; the **sale returns immediately** (no ETA wait). *(Evidence: `enqueue.test.ts` EG-sale-via-real-`recordSale` test; finalize-at-enqueue also stamps uuid+QR — `worker.test.ts` accept path.)*
+  - [x] Run the worker with a stubbed accepting provider → the row flips to `accepted` with `etaUuid` + `qrPayload`; `/api/pos/v1/sales/[id]/fiscal` returns them; the receipt renders the QR + UUID. *(Evidence: `worker.test.ts` accept path; read-model status-flow test via real `recordSale`; POS route test; `Receipt.test.tsx` — QR renders from `pending` onward per addendum C5.)*
+  - [x] Ring a sale of an **unclassified** product → the sale still completes; the worker marks the row `failed` with a product-naming `lastError` and the owner is notified. The sale is **not** blocked. *(Evidence: `worker.test.ts` MissingTaxCodeError → permanent-fail + notify-once tests.)*
+  - [x] Issue a Spec 3 refund on the accepted receipt → a **`return_receipt`** row (as-built per addendum C4 — not `credit_note`) referencing the parent `etaUuid` is enqueued atomically and, after the worker (deferral until the parent is `accepted`), accepted. *(Evidence: `enqueue.test.ts` refund-path atomicity; `worker.test.ts` return-deferral + acceptance.)*
+  - [x] Ring a sale on a **non-EG** tenant → **no** `eta_submissions` row, and the receipt renders with no fiscal footer. *(Evidence: `enqueue.test.ts` country gate; `Receipt.test.tsx` exact-string-equality baseline — byte-identical output.)*
   - [ ] Ring an EG sale with the till **offline** → the receipt prints with **NO fiscal footer**; after sync, a reprint carries the QR + UUID. Confirm the compliance stance on the QR-less original with ETA/a tax adviser before go-live (VERIFY 10).
-  - [ ] Confirm `GET /api/dashboard/fiscal/config` **never** returns a secret; a `manager`/`staff` user gets **403**.
+  - [x] Confirm `GET /api/dashboard/fiscal/config` **never** returns a secret; a `manager`/`staff` user gets **403**. *(Evidence: mutation-verified deep masking walk over every read surface + audit rows; route 403 tests; `redactedCause` log-redaction test.)*
   - [ ] Confirm the Vercel plan tier supports sub-daily cron (`*/15` fiscal worker) BEFORE enabling any EG tenant — Hobby tier silently runs daily; see `/api/fiscal/worker/route.ts` comment.
 
-- [ ] **Step 3: Open the PR.**
+- [ ] **Step 3: Open the PR.** *(As-built body below — supersedes the original template, which predated the addendum and carried an attribution footer contrary to repo commit policy.)*
 
 ```bash
 git push -u origin HEAD
 gh pr create --title "feat(fiscal): ETA e-invoicing & e-receipts behind a FiscalProvider (EG-gated, async, non-blocking)" --body "$(cat <<'EOF'
-Implements docs/ailab/specs/2026-07-24-eta-einvoicing-and-ereceipts-design.md (Spec 11, decision D8).
+Implements Spec 11 (roadmap D8): Egyptian Tax Authority e-receipts for POS + online
+sales behind a FiscalProvider interface. Authority: the 2026-08-30 verified-findings
+addendum (docs/ailab/specs/) — every wire claim traces to official ETA SDK pages,
+with ETA's published serialization example committed as a CI golden vector.
 
-- eta_submissions + product_tax_codes + eta_tenant_config (FORCE RLS); secrets are
-  env/secret-manager REFERENCES, never stored in a row.
-- FiscalProvider interface (shaped like BillingProvider) with NoopFiscalProvider and
-  EtaFiscalProvider; resolveFiscalProvider gates on tenants.country === "EG".
-- Pure buildReceipt/buildCreditNote mappers (no new money arithmetic); a sale commits
-  and returns, then enqueues a pending e_receipt (non-blocking); drainEtaSubmissions
-  submits asynchronously with retry/backoff, idempotency, audit (Spec 4) + notify (Spec 5).
-- Refund → credit_note referencing the original UUID; Receipt.tsx renders UUID + QR
-  once accepted. fiscal:manage (owner only) gates config; submission is a system action.
+WHAT SHIPPED (28 commits, task-by-task with two-stage review on each):
+- Schema: 5 FORCE-RLS tables (submissions outbox, product tax codes, tenant config,
+  per-device uuid chains, per-device POS credentials), partial unique arbiters that
+  admit corrected resubmissions, parent XOR CHECK, RESTRICT FKs for 5-year retention.
+- Contract: FiscalProvider (buildReceipt/buildReturnReceipt pure; submit/poll async)
+  with a wire-agnostic money model mapped verbatim from order figures (F9).
+- Wire core: receipt v1.2 mapping, canonical serialization byte-identical to ETA's
+  published example, client-side SHA-256 uuid chained per device, QR at issuance,
+  exact largest-remainder VAT allocation with ETA's validation equations enforced
+  fail-closed (T4, buyer-id threshold, fee lines as itemData since feesAmount must
+  be zero).
+- Transport: POS token client (4 auth headers, single-flight login, 60s abort),
+  submit/poll mapped to the three-family error taxonomy, substring secret redaction,
+  preprod CA seam (never TLS-disable), request_json stored as `json` (jsonb reorders
+  keys and would corrupt the hash — caught in review).
+- Pipeline: finalize-at-enqueue (uuid+QR exist at sale time; sale is NEVER blocked),
+  15-min cron worker with lease-based claim (lease + timeout < ETA's ~10-min duplicate
+  window, documented), 24h budget, reconciliation sweep for row-less failures,
+  dashboard-triggered corrected resubmission with actor audit.
+- Config surface: fiscal:manage (owner-only), Zod-validated wire context/devices,
+  write-only credential refs with mutation-verified masking, status-count chips.
+- POS: receipt fiscal footer (QR at pending-finalized), bounded 30s poll, offline
+  degrades silently, non-EG receipts byte-identical.
 
-BLOCKED until confirmed against the ETA developer portal (see plan "Blocked — VERIFY
-with ETA"): submission window/synchronicity, e-seal requirement for B2C e-receipts, and
-the e-receipt credit-note mechanism. The wire format in EtaFiscalProvider.submit is
-marked TODO(VERIFY) and must not ship to prod until these are resolved.
+VERIFICATION: root 1543/1543 · apps/pos 157/13 · migrations 51/51 · next build clean ·
+eslint = 6 pre-existing errors in files untouched here (documented debt).
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
+GO-LIVE GATES (no code can close these — see plan "Blocked — VERIFY" + addendum §5):
+- VERIFY 9: uuid blanking rule (one line in computeReceiptUuid) — confirm on ETA preprod.
+- VERIFY 10: EG offline sales print without a QR (reprint carries it after sync) —
+  ETA/tax-adviser question; mirrors ZATCA PRD-003 Q3.
+- Vercel tier must support sub-daily cron (*/15) — Hobby silently runs daily.
+- Per-tenant: real registration (tax office / e-seal), B2C tag, device serials at
+  pos.eta.gov.eg — activationStatus gates all submission until then.
+
+DECISIONS FOR PRODUCT REVIEW (deliberate, documented in addendum §6):
+- Returns carry no VAT reversal (refund tables store no VAT) — tenants over-declare
+  output VAT on refunds until Spec 3 stores it. LIVE FISCAL EXPOSURE, flagged.
+- Order-level VAT is allocated per line (largest remainder, exact reconciliation).
+- zod is now a declared runtime dependency (and moved 4.4.3 → 4.5.4).
+Follow-up tickets noted in-repo: audit-scanner private-helper widening (8 pre-existing
+gaps outside fiscal), transitive global-db read in the refund tx (pre-existing),
+date-filtered submissions listing.
 EOF
 )"
 ```
-
----
 
 ## Self-Review
 
