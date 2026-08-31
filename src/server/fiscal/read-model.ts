@@ -144,6 +144,14 @@ export async function getSaleFiscalStatus(
         and(
           eq(etaSubmissions.tenantId, tenantId),
           eq(etaSubmissions.orderId, orderId),
+          // B2B SALES ARE INVISIBLE HERE UNTIL TASK 5 WIDENS THIS. A sale with a
+          // business buyer enqueues an `e_invoice` INSTEAD of an `e_receipt`, so
+          // this filter finds nothing and the function returns `null` — which the
+          // POS footer cannot tell apart from "non-EG tenant", and so shows
+          // nothing at all, with no error anywhere. Task 5 widens the filter to
+          // the invoice family AND adds `etaLongId` to `SaleFiscalStatus`, which
+          // the accepted-invoice footer needs (there is no QR to show instead).
+          // See the round-2 plan's Task 5 entry.
           eq(etaSubmissions.docType, "e_receipt"),
         ),
       )

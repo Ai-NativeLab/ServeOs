@@ -41,7 +41,10 @@ export class NoopFiscalProvider implements FiscalProvider {
     return { status: "skipped", responseJson: {} };
   }
 
-  async poll(_submissionUuid: string, _cfg: EtaConfig, _docType?: EtaDocType): Promise<FiscalSubmitResult> {
+  // `_docType` is REQUIRED, matching the interface exactly. This class is what a
+  // future provider gets copied from, so an optional parameter here would
+  // propagate a laxer contract than `FiscalProvider` actually declares.
+  async poll(_submissionUuid: string, _cfg: EtaConfig, _docType: EtaDocType): Promise<FiscalSubmitResult> {
     return { status: "skipped", responseJson: {} };
   }
 }

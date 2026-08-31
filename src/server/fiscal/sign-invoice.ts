@@ -328,6 +328,17 @@ function signedAttrsDer(signedAttrs: pkijs.SignedAndUnsignedAttributes): Buffer 
  * Structure mirrored from ETA's dump; see the module header for the nesting and
  * for why `hashAlgorithm` is omitted (RFC 5035 DEFAULT sha256) and why the
  * issuer is the certificate's ISSUER.
+ *
+ * TO CHECK THIS AGAINST ETA'S SAMPLE, RE-RUN THE TEST RATHER THAN RE-DERIVING
+ * IT BY HAND. `sign-invoice.test.ts` -> "signInvoice — the CAdES-BES container,
+ * parsed back from its own output" re-PARSES our own Base64 with pkijs and
+ * asserts every field independently of how it was built: element counts, the
+ * four attribute OIDs in order, `certHash` against the embedded certificate,
+ * and — for the one deliberate divergence — the issuerSerial GeneralName tag
+ * byte ("emits the issuerSerial DN under RFC 5280's [4] directoryName"). Point
+ * the same parse at `/files/one-doc-I.json`'s `signatures[0].value` to compare
+ * ETA's container field-for-field; that is exactly how the `[0]` vs `[4]`
+ * divergence (VERIFY-11) was measured rather than inferred.
  */
 function signingCertificateV2(certificate: pkijs.Certificate, certificateDer: Buffer): asn1js.Sequence {
   const essCertIDv2 = new asn1js.Sequence({
