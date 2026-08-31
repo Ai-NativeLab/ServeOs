@@ -10,6 +10,7 @@ import {
   updateProductAction, deleteProductAction, upsertModifierGroupAction,
   deleteModifierGroupAction, upsertModifierOptionAction, deleteModifierOptionAction,
 } from "../actions";
+import { PromotionalPricingSection } from "./PromotionalPricingSection";
 import { VariantsEditor } from "./VariantsEditor";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { SubmitButton } from "@/components/dashboard/SubmitButton";
@@ -60,6 +61,15 @@ export default async function EditProductPage({ params }: { params: Promise<{ id
             <Label htmlFor="basePrice">Base price</Label>
             <Input id="basePrice" name="basePrice" type="number" step="0.01" min="0" defaultValue={String(product.basePrice)} required />
           </div>
+          <PromotionalPricingSection
+            initialActive={product.discountActive}
+            initialSalePrice={product.salePrice}
+            initialDiscountPercent={product.discountPercent}
+            initialStartsAt={product.discountStartsAt}
+            initialEndsAt={product.discountEndsAt}
+            basePrice={Number(product.basePrice)}
+            currency={tenant?.currency ?? "EGP"}
+          />
           {caps.variants && (
             <>
               <input type="hidden" name="retailFields" value="true" />
