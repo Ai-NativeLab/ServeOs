@@ -1,6 +1,8 @@
 import { requireTenantManagePermission } from "../profile-permission";
 import { getTenantById } from "@/server/tenancy";
-import { updateTenantProfileAction } from "./actions";
+import { getCatalogDisplaySettings } from "@/server/tenancy/settings";
+import { updateTenantProfileAction, updateCatalogDisplayAction } from "./actions";
+import { CatalogDisplaySettingsCard } from "./CatalogDisplaySettingsCard";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { ToastForm } from "@/components/dashboard/ToastForm";
 import { ImageInput } from "@/components/dashboard/ImageInput";
@@ -16,10 +18,16 @@ export default async function BusinessProfilePage() {
   const { tenantId } = await requireTenantManagePermission();
   const tenant = await getTenantById(tenantId);
   if (!tenant) throw new Error(`Tenant not found: ${tenantId}`);
+  const displaySettings = await getCatalogDisplaySettings(tenantId);
 
   return (
     <>
       <PageHeader title="Business Profile" description="Restaurant name, logo, brand color, locale, and timezone." />
+      <CatalogDisplaySettingsCard
+        initialMode={displaySettings.catalogDisplayMode}
+        initialItemsPerPage={displaySettings.itemsPerPage}
+        action={updateCatalogDisplayAction}
+      />
       <Card className="p-5 max-w-xl mb-6">
         <ToastForm action={updateTenantProfileAction} successMessage="Profile saved" className="grid gap-4">
           <div className="grid gap-1.5">
