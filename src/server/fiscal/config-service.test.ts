@@ -604,6 +604,12 @@ describe("masking — no *Ref value ever leaves this service", () => {
      */
     expect(one!.lastError).toContain("ZZ_ETA_ERP_SECRET_SENTINEL");
 
+    // NON-VACUITY FOR THE SIDE-EFFECT VIEW (round 2, Task 8). The seeded email
+    // failure really does reach the walked payload, and it reaches it INSIDE the
+    // named state rather than as a bare column — so the plants below are planting
+    // where a real leak would actually land.
+    expect(one!.sideEffects.email).toEqual({ kind: "failed", error: "Error: RESEND_API_KEY is not set" });
+
     // And the walk is LIVE on all four shapes — the nested array, the wrapper
     // object, the flat record and the plain list. Planting a reference where an
     // accidental leak would actually land must fail, or the four assertions
@@ -615,12 +621,21 @@ describe("masking — no *Ref value ever leaves this service", () => {
       // text and the one new string a B2B read can hand back.
       ["getSaleFiscalStatus (e_invoice)", { ...invoiceStatus, etaLongId: REFS.erp }],
       ["getSubmissionById", { ...one, lastError: SECRET_VALUES.ZZ_ETA_DEVICE_S1_SENTINEL }],
-      // The two columns round 2 Task 7 added to this surface. `customerEmailError`
-      // is worker-written free text exactly as `lastError` is, so it is exactly
-      // as capable of carrying a reference by accident — and a walk over a field
-      // proves nothing until a plant into that field is shown to fail.
-      ["listSubmissions (customerEmailError)", { ...submissions, rows: [{ ...submissions.rows[0], customerEmailError: REFS.signing }] }],
-      ["getSubmissionById (customerEmailError)", { ...one, customerEmailError: SECRET_VALUES.ZZ_ETA_SIGNING_SENTINEL }],
+      // The email failure text round 2 Task 7 added to this surface, now reached
+      // through the named state round 2 Task 8 wrapped it in. It is worker-written
+      // free text exactly as `lastError` is, so it is exactly as capable of
+      // carrying a reference by accident — and a walk over a field proves nothing
+      // until a plant into that field is shown to fail. PLANTED INSIDE THE UNION
+      // rather than beside it: the raw column is no longer on the view, so a plant
+      // at the old path would sail through the walk while proving nothing, which
+      // is precisely the silent hole this pair exists to close.
+      ["listSubmissions (email state)", {
+        ...submissions,
+        rows: [{ ...submissions.rows[0], sideEffects: { ...submissions.rows[0].sideEffects, email: { kind: "failed", error: REFS.signing } } }],
+      }],
+      ["getSubmissionById (email state)", {
+        ...one, sideEffects: { ...one!.sideEffects, email: { kind: "failed", error: SECRET_VALUES.ZZ_ETA_SIGNING_SENTINEL } },
+      }],
       ["listFiscalDevices", [{ ...fiscalDevices[0], label: REFS.psk }]],
     ];
     for (const [what, payload] of planted) {

@@ -7,7 +7,7 @@ import {
   type EtaDocType,
   type EtaSubmissionStatus,
 } from "./schema";
-import { SUBMISSION_WINDOW_MS } from "./constants";
+import { SUBMISSION_WINDOW_MS, isReceiptSubmissionWindowFamily } from "./constants";
 
 /**
  * The fiscal READ surfaces — what a cashier's till, the owner's dashboard and
@@ -106,29 +106,12 @@ export type SubmissionRowView = {
   createdAt: Date;
   acceptedAt: Date | null;
   /**
-   * When the customer was sent their own copy of this document, and null in TWO
-   * different situations the table has to render differently — which is why
-   * `customerEmailError` travels beside it rather than being folded in.
-   *
-   *   both null            nobody to email. An em-dash: not a failure.
-   *   emailedAt set        sent, at that moment.
-   *   error set            it was tried and it did not go out.
-   *
-   * Collapsing those into one nullable field would make a broken EMAIL_FROM
-   * look exactly like a guest who declined to give an address, which is the
-   * failure mode this pair exists to prevent (see the columns' own JSDoc).
+   * WHAT HAPPENED ALONGSIDE THE FILING — the customer's copy and the late-window
+   * alert, each as a NAMED STATE rather than as the nullable columns underneath.
+   * See `submissionSideEffects` for why the mapping happens here and not in the
+   * component that renders it.
    */
-  customerEmailedAt: Date | null;
-  /**
-   * Why the customer's copy did not go out. SAME AUDIENCE STANCE AS
-   * `lastError`, and it joins the masking walk on the same terms: this is an
-   * owner-only surface (`fiscal:manage`), an env KEY name in it is acceptable,
-   * a VALUE never is. `FORBIDDEN`, not `TOKEN_FORBIDDEN` — and the reason the
-   * distinction survives here is that neither of these two fields is selected
-   * by `getSaleFiscalStatus`, so the customer-facing token surface cannot reach
-   * them at all.
-   */
-  customerEmailError: string | null;
+  sideEffects: SubmissionSideEffects;
   /**
    * Past ETA's 24-hour submission window with no acceptance to show for it.
    *
@@ -142,9 +125,149 @@ export type SubmissionRowView = {
    *
    * Derived on read rather than stored: it is a function of the clock, so a
    * persisted flag would be wrong the moment nobody wrote to the row.
+   *
+   * ---------------------------------------------------------------------------
+   * `overdue` IS NOT `sideEffects.late`, AND KEEPING BOTH IS THE POINT. They
+   * answer different questions and disagree in both directions:
+   *
+   *   overdue  A LIVE CONDITION, computed from the clock on every read: this
+   *            document is past the window and ETA still has not accepted it.
+   *            It goes FALSE the instant acceptance lands, because the thing it
+   *            describes has stopped being true. It says nothing about whether
+   *            anyone was told.
+   *
+   *   late     A HISTORICAL FACT, read off `late_notified_at`: the worker
+   *            claimed this row past the window and alerted the owner about it.
+   *            It never clears — a document that went in late needs a Late
+   *            Submission Request at ETA's portal whether or not it was
+   *            eventually accepted, so the fact must outlive the condition.
+   *
+   * A row can be overdue and NOT late: a `rejected` document ages past 24h and
+   * the worker will never claim it again, so nothing ever flags it — correctly,
+   * since there is nothing left to submit late. And a row can be late and NOT
+   * overdue: flagged at hour 25, accepted at hour 26. Collapsing them into one
+   * boolean would lose whichever half the reader did not have in mind.
    */
   overdue: boolean;
 };
+
+/**
+ * WHY THE CUSTOMER'S COPY WAS OR WAS NOT SENT — four states, because the
+ * columns underneath encode four and the dashboard was rendering three.
+ *
+ *   sent           it went out, at that moment.
+ *   failed         it was tried and did not go out; `error` is the reason.
+ *   no-recipient   there was nobody to email. NOT a failure: an online guest who
+ *                  left the optional checkout field blank, and every POS sale,
+ *                  since the till captures no address anywhere in its flow.
+ *   not-attempted  the send has not run yet, because it only runs on acceptance.
+ *
+ * THE LAST TWO WERE ONE STATE UNTIL NOW, AND THAT WAS A SMALL LIE. Task 7 read
+ * "both columns null" as "nobody to email" and the table rendered an em-dash for
+ * it — but a `pending` row has both columns null too, and it has not been tried:
+ * `deliverFiscalDocumentEmail` is called from `persistAccepted` and nowhere
+ * else. So every document still working its way through ETA displayed as though
+ * the customer had declined to give an address. `status` is what tells them
+ * apart, which is why this mapping needs the row and not just the two columns.
+ *
+ * A REJECTED OR PERMANENTLY-FAILED ROW STAYS `not-attempted` FOREVER, and that
+ * is the honest reading rather than a gap: no copy was ever sent and none ever
+ * will be, because there is no accepted document to send one of.
+ *
+ * ONE RESIDUAL AMBIGUITY, STATED. `deliverFiscalDocumentEmail` catches even its
+ * own stamping failure (the database is then the thing that broke, and
+ * acceptance still stands), so an accepted row whose stamp did not land reads as
+ * `no-recipient`. Bounded and deliberate: the alternative is letting a failed
+ * UPDATE roll back a filed tax document.
+ */
+export type SubmissionEmailState =
+  | { kind: "sent"; at: Date }
+  | { kind: "failed"; error: string }
+  | { kind: "no-recipient" }
+  | { kind: "not-attempted" };
+
+/**
+ * WHETHER THIS DOCUMENT WAS CAUGHT PAST ETA'S SUBMISSION WINDOW.
+ *
+ *   on-time         receipt family, never flagged.
+ *   late            the worker claimed it past the window and told the owner
+ *                   once, at `notifiedAt`.
+ *   not-applicable  a family ETA publishes no submission deadline for — today
+ *                   that is `e_invoice`. Rendering "on-time" for one would be
+ *                   asserting it beat a deadline nobody has shown us; the third
+ *                   state is what lets the table say nothing instead of saying
+ *                   something unverified. See `isReceiptSubmissionWindowFamily`
+ *                   and VERIFY-13.
+ */
+export type SubmissionLateState =
+  | { kind: "on-time" }
+  | { kind: "late"; notifiedAt: Date }
+  | { kind: "not-applicable" };
+
+export type SubmissionSideEffects = {
+  email: SubmissionEmailState;
+  late: SubmissionLateState;
+};
+
+/**
+ * THE DERIVED SIDE-EFFECT VIEW: raw nullable columns in, named states out.
+ *
+ * ONE FUNCTION FOR BOTH EFFECTS, and they are grouped rather than merged. A
+ * fiscal row accumulates side effects that are not lifecycle stages — the
+ * customer was emailed, the owner was warned — each recorded as its own nullable
+ * timestamp because none of them belongs on `status`. What they share is a
+ * SHAPE, not a meaning: a small set of columns that only makes sense read
+ * together, whose combinations mean different things, and whose reader is a
+ * table cell. So they share a mapping function and keep separate unions.
+ *
+ * WHY IT LIVES HERE AND NOT IN THE COMPONENT. `FiscalSubmissionsTable` used to
+ * hold this as a JSX ternary ladder — `customerEmailedAt ? … : customerEmailError
+ * ? … : —` — which put a rule about what null MEANS inside a `.tsx` that no
+ * harness in this repo can execute: the root suite is `environment: "node"` and
+ * its include glob matches `.test.ts` only. The null semantics were therefore
+ * asserted nowhere, and were documented only in a comment beside the markup.
+ * Moved here they are ordinary data, tested as data (`read-model.test.ts`), and
+ * the component's job shrinks to choosing a chip per named kind — which is what
+ * made the missing fourth state visible at all.
+ *
+ * IT IS DASHBOARD-ONLY. Neither state reaches `SaleFiscalStatus`, so neither
+ * reaches the till or `/order/[token]`. That containment is deliberate and is
+ * the same line Task 7 drew for the columns themselves: these are owner-facing
+ * operational facts about OUR pipeline, and `sideEffects.email.error` carries
+ * `lastError`'s audience stance verbatim — an env KEY name is acceptable in it,
+ * a VALUE never is — which is a trade made for one owner and not for whoever a
+ * status link was forwarded to. `config-service.test.ts`'s masking walk covers
+ * this object, with planted cases in the union's own `error` field.
+ */
+export function submissionSideEffects(row: {
+  docType: EtaDocType;
+  status: EtaSubmissionStatus;
+  customerEmailedAt: Date | null;
+  customerEmailError: string | null;
+  lateNotifiedAt: Date | null;
+}): SubmissionSideEffects {
+  return {
+    email: row.customerEmailedAt
+      ? { kind: "sent", at: row.customerEmailedAt }
+      : row.customerEmailError
+        ? { kind: "failed", error: row.customerEmailError }
+        // The send runs once, from `persistAccepted`. Before acceptance there is
+        // nothing to report; after it, two null columns mean the recipient
+        // ladder came back empty.
+        : row.status === "accepted"
+          ? { kind: "no-recipient" }
+          : { kind: "not-attempted" },
+    // ORDER MATTERS: the family gate comes FIRST. A stray `late_notified_at` on
+    // an invoice — which nothing writes today, and which a future invoice
+    // deadline would start writing — must not render as `late` until the family
+    // is one this codebase claims a window for.
+    late: !isReceiptSubmissionWindowFamily(row.docType)
+      ? { kind: "not-applicable" }
+      : row.lateNotifiedAt
+        ? { kind: "late", notifiedAt: row.lateNotifiedAt }
+        : { kind: "on-time" },
+  };
+}
 
 /** The dashboard table's column set, shared by the list and single-row reads so
  *  the two can never drift into showing different fields. */
@@ -162,6 +285,7 @@ const SUBMISSION_ROW_COLUMNS = {
   acceptedAt: etaSubmissions.acceptedAt,
   customerEmailedAt: etaSubmissions.customerEmailedAt,
   customerEmailError: etaSubmissions.customerEmailError,
+  lateNotifiedAt: etaSubmissions.lateNotifiedAt,
 } as const;
 
 /**
@@ -387,24 +511,71 @@ export async function listSubmissions(
       .offset(offset),
   );
 
-  return { rows: rows.slice(0, limit).map((row) => withOverdue(row, now)), hasMore: rows.length > limit };
+  return { rows: rows.slice(0, limit).map((row) => toRowView(row, now)), hasMore: rows.length > limit };
 }
 
 /**
- * Stamps the 24-hour-window verdict onto a row.
- *
- * `accepted` is the only status that closes the obligation — a `rejected` or
- * `failed` document past the window is still a receipt ETA never accepted, and
- * hiding that behind "it is terminal" is exactly the reporting gap addendum §3
- * asks to close ("retry/backoff must respect the 24h budget and flag
- * breaches"). The worker deliberately does not enforce the deadline, because
- * giving up at it would turn a late document into no document; flagging it here
- * is the other half of that decision.
+ * The raw column shape both reads select — the input side of `toRowView`, stated
+ * as the view MINUS what is derived PLUS what is derived FROM. Spelling it this
+ * way rather than listing eleven columns again keeps the two ends of the mapping
+ * from drifting: a column added to `SUBMISSION_ROW_COLUMNS` and to the view needs
+ * no edit here, while one that feeds a derived state has to be named.
  */
-function withOverdue<T extends { status: EtaSubmissionStatus; createdAt: Date; acceptedAt: Date | null }>(
-  row: T, now: number,
-): T & { overdue: boolean } {
-  return { ...row, overdue: row.status !== "accepted" && now - row.createdAt.getTime() > SUBMISSION_WINDOW_MS };
+type SubmissionRowColumns = Omit<SubmissionRowView, "overdue" | "sideEffects"> & {
+  customerEmailedAt: Date | null;
+  customerEmailError: string | null;
+  lateNotifiedAt: Date | null;
+};
+
+/**
+ * Raw columns → what the dashboard renders: the 24-hour-window verdict, plus the
+ * named side-effect states.
+ *
+ * ONE MAPPER FOR BOTH READS. `listSubmissions` and `getSubmissionById` show the
+ * same table cells, so a second derivation would be a second answer to "is this
+ * row late" that nothing keeps in step — the same reason the two share
+ * `SUBMISSION_ROW_COLUMNS`.
+ *
+ * THE OVERDUE RULE. `accepted` is the only status that closes the obligation — a
+ * `rejected` or `failed` document past the window is still a receipt ETA never
+ * accepted, and hiding that behind "it is terminal" is exactly the reporting gap
+ * addendum §3 asks to close ("retry/backoff must respect the 24h budget and flag
+ * breaches"). The worker deliberately does not REFUSE past the deadline, because
+ * giving up at it would turn a late document into no document; flagging here is
+ * the other half of that decision, and the worker's own late notify (round 2
+ * Task 8) is the third.
+ *
+ * ---------------------------------------------------------------------------
+ * THE CLOCK ORIGIN IS `createdAt`, AND IT IS NOT ALWAYS `dateTimeIssued`.
+ * ETA's window runs from the moment the document says it was issued; this
+ * derivation runs from the moment ServeOS wrote the row. For a POS sale those
+ * are seconds apart against a 24-hour budget. For a SWEPT ONLINE ORDER — the
+ * online channel's primary path, since `reconcileMissingReceipts` adopts orders
+ * the enqueue never covered — `createdAt` TRAILS `dateTimeIssued` by anything
+ * from ~5 minutes up to `RECONCILE_HORIZON_MS` (7 days).
+ *
+ * WHAT THAT COSTS, EXACTLY: a backlog-adopted row reads on-time (and not
+ * overdue) for its first 24 hours even though ETA's clock started days earlier,
+ * so the flag arrives late for a document that was already late. BOUNDED BY THE
+ * SWEEP HORIZON and accepted rather than fixed: the alternative is parsing
+ * `dateTimeIssued` out of `request_json` on every read of every row, for a
+ * correction that only affects rows adopted from the backlog — and a row that
+ * sat unfiled for days has a larger problem than the timing of its chip. Stated
+ * here, at the derivation, so it is read by whoever next wonders why an old
+ * order's document looks fresh.
+ */
+function toRowView(row: SubmissionRowColumns, now: number): SubmissionRowView {
+  // THE THREE RAW COLUMNS ARE DROPPED, not carried alongside their derived
+  // states. Returning both would leave two representations of one fact on the
+  // same object, and the next cell that needed "was it emailed?" would read the
+  // nullable pair directly and re-invent the semantics this view exists to own —
+  // which is exactly how the not-attempted state got lost the first time.
+  const { customerEmailedAt: _at, customerEmailError: _error, lateNotifiedAt: _late, ...rest } = row;
+  return {
+    ...rest,
+    overdue: row.status !== "accepted" && now - row.createdAt.getTime() > SUBMISSION_WINDOW_MS,
+    sideEffects: submissionSideEffects(row),
+  };
 }
 
 /**
@@ -427,7 +598,7 @@ export async function getSubmissionById(
       .from(etaSubmissions)
       .where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, submissionId)))
       .limit(1);
-    return row ? withOverdue(row, Date.now()) : null;
+    return row ? toRowView(row, Date.now()) : null;
   });
 }
 

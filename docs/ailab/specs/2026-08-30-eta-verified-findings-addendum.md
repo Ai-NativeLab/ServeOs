@@ -68,6 +68,30 @@ in `docs/references/eta/` (see its README). Secondary/vendor claims are marked `
   deadline would turn a late document into no document. `SUBMISSION_WINDOW_MS` (`fiscal/constants.ts`) is the
   threshold; `listSubmissions`/`getSubmissionById` return `overdue: boolean` and the fiscal dashboard shows each
   submission's age with an overdue marker.
+  **IT IS AN E-RECEIPT RULE, and round 2 Task 8 checked rather than assumed** (2026-09-01, fetch-first). The 24
+  hours and the whole Late Submission apparatus appear on exactly ONE SDK page — the **Receipt Issuance FAQ**
+  (`/receiptissuancefaq/`) — in receipt nouns: *"The receipt is allowed to be submitted within the allowed
+  duration (24 hours), unless this receipt is being resubmitted and has the OLD UUID added to the receipt/return
+  receipt"*, with *"Late Submission Window (Days) - Sets the maximum age of documents that will be accepted by a
+  Late Submission Request"*, *"Late Submission Period (Hours) - …"* and *"Late Submission Request will consume
+  from users current yearly quota…"*. Those two parameters are configuration ON the LSR path (how stale a
+  document an LSR may rescue), not a second ordinary deadline. **No invoice page states any submission
+  deadline:** `/documents/invoice-v1-0/` constrains only the field (*"Date and time cannot be in future. Time to
+  be supplied in UTC timezone."*), `/einvoicingapi/01-submit-documents/` rejects on BadStructure /
+  MaximumSizeExceeded / IncorrectSubmitter / Forbidden / DuplicateSubmission with nothing temporal, and
+  `/integrationpractices/` and `/faq/` carry none. So the late machinery is **receipt-scoped** —
+  `isReceiptSubmissionWindowFamily` (`fiscal/constants.ts`) covers `e_receipt` + `return_receipt`, both named in
+  ETA's own sentence — and an `e_invoice` is never flagged. Open as **VERIFY-13** below.
+- **Late state (round 2 Task 8):** past the window the worker **still submits** and additionally tells the owner
+  **once** — `eta_submissions.late_notified_at`, set by a compare-and-set on `IS NULL` with the notify gated on
+  that UPDATE having affected a row (the `failPermanently` precedent; an expired claim lease can put two drains
+  on one row). Flagging consumes no `attempts` and runs outside the row's try/catch, so a notification failure
+  can never become a submission failure. `late` is DISTINCT from `overdue` and both are kept: `overdue` is the
+  live clock condition and goes false on acceptance; `late` is the historical fact and does not, because an LSR
+  is owed for a document that WAS late whether or not ETA eventually took it. The clock origin is `created_at`,
+  which for a sweep-adopted online order trails `dateTimeIssued` by up to the 7-day sweep horizon — a
+  backlog-adopted row therefore reads on-time for its first window; bounded, stated at the derivation, pinned by
+  a test.
 - **QR:** the C5 format string, rendered at issuance.
 - **Returns:** Return Receipt referencing the original UUID, ≤ **540 days**.
 - **Environments:** APIs `api[.preprod].invoicing.eta.gov.eg`; **preprod TLS chains to ETA's internally-issued
@@ -102,6 +126,7 @@ inquiry tool) remains an operational check, not a build blocker.
 | 11 issuerSerial GeneralName tag | **OPEN** — ETA's published signed sample (`/files/one-doc-I.json`) wraps the `signingCertificateV2` issuerSerial DN in `[0]` (0xa0, the `otherName` alternative) while RFC 5280 spells `directoryName` `[4]`; both measured off real bytes, not inferred. ServeOS emits the RFC-correct `[4]`, because copying a known-wrong tag assumes ETA's VALIDATOR shares its ENCODER's bug — which the sample cannot tell us. Signature validation is undeployed, so nothing judges it today. **One line in `sign-invoice.ts`** (`type: 4` → `0` in `signingCertificateV2`), pinned as bytes by `sign-invoice.test.ts` so a flip is deliberate. **Test BOTH forms against preprod before any tenant configures a real seal.** Raised by round 2 Task 3 spec review. See §6. |
 
 | 12 Receipt→invoice conversion | **OPEN** — whether/how ETA supports issuing a B2B invoice for a sale already filed as an e-receipt (cancel + reissue? a reference mechanism from the invoice back to the superseded receipt? nothing at all?). ServeOS's research has never covered it, so there is no filing shape to implement against. **Until it is answered, ServeOS refuses cross-family issuance:** `config-service.requestB2bInvoice` 409s any order carrying a non-rejected `e_receipt`, because two accepted documents for one sale is that sale declared twice in the taxpayer's filings. The refusal blocks a real and ordinary workflow — a customer asking for a tax invoice after their receipt was filed — and the sanctioned workaround is to capture the buyer at the till so the sale is filed as an invoice from the start — **shipped in round 2 Task 5** (the payment screen's "Business buyer (فاتورة ضريبية)" section), so the workaround is now available rather than merely named, and the refusal only bites on a sale nobody flagged as B2B at the counter. ONE exception is permitted and is not a bypass: an order whose every `e_receipt` row is REJECTED with no correction queued has no ETA document at all, so refusing would leave it permanently undeclared. Raised by round 2 Task 4 quality review. |
+| 13 Invoice submission deadline | **OPEN** — whether ETA imposes ANY submission window on an e-invoice, as it does the 24 hours on an e-receipt. **None found on the SDK pages** — checked page by page on 2026-09-01: `/documents/invoice-v1-0/` (only *"Date and time cannot be in future. Time to be supplied in UTC timezone."*), `/einvoicingapi/01-submit-documents/` (rejection codes only — BadStructure, MaximumSizeExceeded, IncorrectSubmitter, Forbidden, DuplicateSubmission), `/integrationpractices/`, `/faq/`. The 24-hour rule and the Late Submission apparatus live solely on the **Receipt Issuance FAQ** and are spelled in receipt nouns ("…the receipt/return receipt"). **Absence of documentation is not absence of a rule**: the portal's Late Submission parameters are worded document-agnostically, and a deadline could sit in the taxpayer portal or in the law rather than in the SDK. **Until answered, the late machinery is RECEIPT-SCOPED** (`isReceiptSubmissionWindowFamily`): an invoice is never flagged and the dashboard renders `not-applicable` rather than `on-time`, so nothing asserts an invoice beat a deadline nobody has shown us. Confirm on preprod or with a tax adviser. **The fix, if a deadline exists, is small and pre-shaped:** one more constant plus a docType branch in `isReceiptSubmissionWindowFamily` — the read model already carries the third state to move an invoice out of, and `read-model.test.ts` pins that the read must not start reporting `late` before that predicate is updated to agree. Raised by round 2 Task 8's pre-check. |
 
 ## Deployment constraints
 

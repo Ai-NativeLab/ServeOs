@@ -198,6 +198,41 @@ export const etaSubmissions = pgTable("eta_submissions", {
    * walk holds that surface to the stricter `TOKEN_FORBIDDEN` set.
    */
   customerEmailError: text("customer_email_error"),
+  /**
+   * When the owner was told this document went past ETA's 24-hour submission
+   * window — an ORTHOGONAL SIDE-EFFECT RECORD, exactly like
+   * `customer_emailed_at` above, and deliberately NOT a lifecycle stage.
+   *
+   * IT IS NOT A STATUS. `status` is the FISCAL lifecycle (pending → submitted →
+   * accepted|rejected|failed) and lateness is not a point on it: a late document
+   * is still pending, still submitted, and can still be accepted. Adding a
+   * `late` status would have made "past the window" and "with ETA awaiting a
+   * verdict" mutually exclusive when they are routinely both true, and the
+   * dashboard would then have to invent a way to say the second thing again.
+   * This column records that ONE notification was emitted; it decides nothing.
+   *
+   * WRITE-ONCE, AND THE WRITE IS THE ARBITER. The worker sets it with a
+   * compare-and-set on `IS NULL` and notifies only when that UPDATE affected a
+   * row (`worker.ts`, `noteLateSubmission` — the same shape `failPermanently`
+   * uses for its own alert). Two drains can hold one row at once (an expired
+   * claim lease, see `CLAIM_LEASE_MS`), so a read-then-write here would send the
+   * owner the same alert twice for one document.
+   *
+   * NON-NULL MEANS "THE PIPELINE CAUGHT IT PAST THE WINDOW", WHICH SURVIVES
+   * ACCEPTANCE — and that permanence is the whole reason a column exists rather
+   * than another derived flag. `SubmissionRowView.overdue` is a function of the
+   * clock and goes FALSE the moment ETA accepts the document, taking with it the
+   * only trace that the filing was late. But ETA's Late Submission Request is a
+   * portal action about a document that WAS late, so the fact has to outlive the
+   * condition that produced it.
+   *
+   * RECEIPT FAMILY ONLY. The 24-hour window is documented for receipts
+   * (`e_receipt` / `return_receipt`); no ETA SDK page states any submission
+   * deadline for invoice v1.0, so an `e_invoice` is never flagged and this
+   * column stays null on one for the whole of its life. See
+   * `RECEIPT_SUBMISSION_WINDOW_FAMILY` in `./constants` and VERIFY-13.
+   */
+  lateNotifiedAt: timestamp("late_notified_at", { withTimezone: true }),
   submittedAt: timestamp("submitted_at", { withTimezone: true }),
   acceptedAt: timestamp("accepted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

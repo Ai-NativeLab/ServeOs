@@ -79,6 +79,20 @@ export async function recordFiscalAudit(
  * `tx` is optional, exactly like `notify` itself: pass it to keep the
  * notification atomic with the same-transaction status write; omit it to
  * let `notify` open its own `withTenant`.
+ *
+ * ONE CALLER IS NOT A FAILURE, and it is named here rather than left to be
+ * discovered as a misuse. Round 2 Task 8's LATE-WINDOW NOTICE (`worker.ts`,
+ * `noteLateSubmission`) goes through this same seam while the document is still
+ * pending and may yet be accepted — nothing has failed. It belongs on the same
+ * feed at the same severity anyway: a receipt past ETA's 24-hour window needs a
+ * Late Submission Request made by a taxpayer representative on ETA's portal
+ * against a yearly quota, which is a compliance obligation with a deadline
+ * already behind it, and burying that under a lower severity than "a document
+ * was rejected" would rank it by how ServeOS feels about it rather than by what
+ * it costs the owner. It stays bounded because the write that precedes it is a
+ * compare-and-set: ONE alert per document, forever, not one per drain pass.
+ * If a genuinely lower-stakes fiscal notice ever appears, split the shape then —
+ * a second severity is a `notification_type` conversation, not a rename here.
  */
 export async function notifyFiscalFailure(
   ctx: { tenantId: string },

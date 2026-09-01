@@ -21,6 +21,8 @@ import {
   type EtaWireContextConfig, type EtaDocType,
 } from "./schema";
 import { drainEtaSubmissions, MAX_ATTEMPTS } from "./worker";
+import { SUBMISSION_WINDOW_MS } from "./constants";
+import { getSubmissionById, listSubmissions } from "./read-model";
 import { finalizeSubmissionRow, reconcileMissingReceipts } from "./finalize";
 import { enqueueCorrectedResubmission } from "./enqueue";
 import { BuyerIdRequiredError } from "./errors";
@@ -1781,5 +1783,179 @@ describe("drainEtaSubmissions — the customer's fiscal-document email", () => {
     // BOTH FAMILIES REACH THE HOOK, and the invoice's mail links nowhere —
     // the non-vacuity twin of the receipt case at the top of this describe.
     expect(emailProvider.sent[0].html).not.toContain("href=");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE LATE WINDOW (round 2 Task 8)
+//
+// ETA gives a receipt 24 hours from issuance and, past that, offers a Late
+// Submission Request rather than a refusal. So the worker's job past the window
+// is unchanged — submit — plus exactly one thing: tell the owner, once.
+// ---------------------------------------------------------------------------
+
+/** Backdates the row's clock so it is past ETA's window on the next claim. The
+ *  worker reads `created_at`, so that is what moves — not `placed_at`, which is
+ *  a different clock and the subject of its own test at the end of this block. */
+function ageBeyondWindow(tenantId: string) {
+  return withTenant(tenantId, (tx) => tx.update(etaSubmissions)
+    .set({
+      createdAt: new Date(Date.now() - SUBMISSION_WINDOW_MS - 60_000),
+      nextAttemptAt: new Date(Date.now() - 1000),
+    })
+    .where(eq(etaSubmissions.tenantId, tenantId)));
+}
+
+/** Only the late-window alerts. The tenant's other fiscal notifications (a
+ *  rejection, an exhausted retry ladder) share the type and severity, so
+ *  counting them all would make "once" unfalsifiable. */
+const lateNotificationsFor = async (tenantId: string) =>
+  (await notificationsFor(tenantId)).filter((n) => n.title.includes("24-hour window"));
+
+describe("drainEtaSubmissions — the late window", () => {
+  it("STILL SUBMITS a document past the window, and charges it no attempt for being late", async () => {
+    const s = await seedSale();
+    await ageBeyondWindow(s.tenantId);
+    const provider = new FakeEta([accepted202("sub-late")]);
+
+    await drainEtaSubmissions({ provider, reconcile: false });
+
+    // THE LOAD-BEARING ASSERTION OF THE WHOLE TASK. ETA's remedy for a stale
+    // document is a Late Submission Request, not a refusal, so a worker that
+    // stopped here would turn a late document into NO document — strictly worse,
+    // and on our own authority rather than ETA's.
+    expect(provider.submitted).toHaveLength(1);
+    const [row] = await rowsFor(s.tenantId);
+    expect(row.status).toBe("submitted");
+    // Noticing a date is not an attempt at anything. Charging one would park a
+    // document for a human sooner BECAUSE it was late — punishing the row for
+    // the condition being reported.
+    expect(row.attempts).toBe(0);
+    expect(row.lastError).toBeNull();
+  });
+
+  it("tells the owner once, naming the Late Submission Request and saying it kept trying", async () => {
+    const s = await seedSale();
+    await ageBeyondWindow(s.tenantId);
+
+    await drainEtaSubmissions({ provider: new FakeEta([accepted202("sub-late-1")]), reconcile: false });
+
+    const [alert] = await lateNotificationsFor(s.tenantId);
+    expect(alert.body).toContain("past the 24h window");
+    expect(alert.body).toContain("Late Submission Request");
+    // The owner must not read this as "ServeOS gave up": the one action left is
+    // theirs, at ETA's portal, and it is not a thing this dashboard can do.
+    expect(alert.body).toContain("keeps trying");
+    const [row] = await rowsFor(s.tenantId);
+    expect(row.lateNotifiedAt).not.toBeNull();
+  });
+
+  it("flags a late row exactly ONCE across racing and repeated drains — the CAS pin", async () => {
+    const s = await seedSale();
+    await ageBeyondWindow(s.tenantId);
+
+    // HALF ONE: two drains in flight together. This catches losing claim
+    // exclusivity, but on its own it would pass even without the compare-and-set
+    // — the claim's row locks serialize the two passes anyway.
+    const provider = new FakeEta([accepted202("sub-race-late-a"), accepted202("sub-race-late-b")]);
+    await Promise.all([
+      drainEtaSubmissions({ provider, reconcile: false }),
+      drainEtaSubmissions({ provider, reconcile: false }),
+    ]);
+
+    const [afterRace] = await rowsFor(s.tenantId);
+    const firstFlaggedAt = afterRace.lateNotifiedAt;
+    expect(firstFlaggedAt).not.toBeNull();
+    expect(await lateNotificationsFor(s.tenantId)).toHaveLength(1);
+
+    // HALF TWO — THE ONE THE CAS IS ACTUALLY FOR. A claim lease can expire while
+    // a row is in flight, so the SAME row is legitimately claimed again on a
+    // later pass, still past the window; putting it back in the eligible set is
+    // exactly what an expired lease does. Without `late_notified_at IS NULL` in
+    // the UPDATE's WHERE clause, every subsequent pass over an old row would
+    // send the owner the same critical alert again — once per drain, forever,
+    // for one document.
+    await ageBeyondWindow(s.tenantId);
+    await drainEtaSubmissions({ provider, reconcile: false });
+    await ageBeyondWindow(s.tenantId);
+    await drainEtaSubmissions({ provider, reconcile: false });
+
+    expect(await lateNotificationsFor(s.tenantId)).toHaveLength(1);
+    // And the write did not merely stay quiet — it did not happen at all. A
+    // rewritten timestamp would make "when did this go late" unanswerable.
+    const [afterRedrains] = await rowsFor(s.tenantId);
+    expect(afterRedrains.lateNotifiedAt).toEqual(firstFlaggedAt);
+  });
+
+  it("never flags an e_invoice — no ETA page publishes an invoice deadline (VERIFY-13)", async () => {
+    const s = await ringB2bSale();
+    await ageBeyondWindow(s.tenantId);
+
+    await drainEtaSubmissions({ provider: new FakeEta([accepted202("sub-b2b-old")]), reconcile: false });
+
+    const [row] = await invoiceRowsFor(s.tenantId);
+    // Submitted exactly as an in-window invoice would be — the scoping decides
+    // who gets ALERTED, never what gets filed.
+    expect(row.status).toBe("submitted");
+    expect(row.lateNotifiedAt).toBeNull();
+    expect(await lateNotificationsFor(s.tenantId)).toHaveLength(0);
+    // And the dashboard says nothing rather than claiming it beat a deadline.
+    const view = await getSubmissionById(s.tenantId, row.id);
+    expect(view!.sideEffects.late).toEqual({ kind: "not-applicable" });
+  });
+
+  it("surfaces the flag on the dashboard as `late`, distinct from the derived `overdue`", async () => {
+    const s = await seedSale();
+    await ageBeyondWindow(s.tenantId);
+    await drainEtaSubmissions({ provider: new FakeEta([accepted202("sub-late-view")]), reconcile: false });
+
+    const { rows: [view] } = await listSubmissions(s.tenantId);
+    // BOTH, and they are not the same statement: `overdue` is the live clock
+    // condition (past the window, still not accepted), `late` is the historical
+    // fact that the pipeline caught it and told someone.
+    expect(view.overdue).toBe(true);
+    expect(view.sideEffects.late.kind).toBe("late");
+
+    // THE DIVERGENCE THAT PROVES THEY ARE DIFFERENT FACTS. Accept the document
+    // and `overdue` goes false — the condition has stopped being true — while
+    // `late` stands, because a Late Submission Request is owed for a document
+    // that WAS late whether or not ETA eventually took it. One boolean could not
+    // have carried both, and the half it would have dropped is the one an owner
+    // still has to act on.
+    await withTenant(s.tenantId, (tx) => tx.update(etaSubmissions)
+      .set({ status: "accepted", acceptedAt: new Date() }).where(eq(etaSubmissions.tenantId, s.tenantId)));
+
+    const { rows: [accepted] } = await listSubmissions(s.tenantId);
+    expect(accepted.overdue).toBe(false);
+    expect(accepted.sideEffects.late.kind).toBe("late");
+  });
+
+  it("A SWEPT ORDER'S ROW READS ON-TIME FOR ITS FIRST WINDOW — the clock-origin caveat, pinned", async () => {
+    // The documented cost of deriving lateness from `created_at` rather than from
+    // the document's own `dateTimeIssued`. An online order is fiscalised by the
+    // reconciliation sweep, so a sale placed SIX DAYS ago gets its row written
+    // today — and reads on-time for the next 24 hours even though ETA's clock
+    // started six days back. Bounded by the sweep horizon (7 days), accepted
+    // rather than fixed, and pinned here so it is a known property with a test
+    // naming it rather than a surprise found on a dashboard.
+    const s = await seedPosContext("owner");
+    await seedTaxCode(s.tenantId, s.productId);
+    await seedFiscalConfig(s.tenantId, { onlineDeviceId: s.ctx.deviceId });
+    await seedDeviceCredential(s.tenantId, s.ctx.deviceId);
+    const orderId = await placeWebOrder(s.tenantId, s.branchId, s.productId, { minutesAgo: 6 * 24 * 60 });
+
+    await drainEtaSubmissions({ provider: new FakeEta([accepted202("sub-swept-old")]), limit: 10 });
+
+    const [row] = await rowsFor(s.tenantId);
+    expect(row.orderId).toBe(orderId);
+    // The row was written now, so neither derivation fires: not flagged, not
+    // overdue. The FIX, if this is ever worth making, is to read `dateTimeIssued`
+    // out of `request_json` — and the reason it has not been is that a document
+    // nothing filed for six days has a larger problem than the timing of its chip.
+    expect(row.lateNotifiedAt).toBeNull();
+    const { rows: [view] } = await listSubmissions(s.tenantId);
+    expect(view.overdue).toBe(false);
+    expect(view.sideEffects.late).toEqual({ kind: "on-time" });
+    expect(await lateNotificationsFor(s.tenantId)).toHaveLength(0);
   });
 });

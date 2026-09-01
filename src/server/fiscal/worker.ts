@@ -1,4 +1,4 @@
-import { and, eq, lt, sql } from "drizzle-orm";
+import { and, eq, isNull, lt, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { tenants } from "@/server/tenancy/schema";
@@ -13,6 +13,7 @@ import { FiscalDocumentError } from "./errors";
 import { EtaConfigError, EtaTransportError } from "./eta-transport-errors";
 import type { EmailProvider } from "@/server/email/provider";
 import { FISCAL_AUDIT_ACTIONS, recordFiscalAudit, notifyFiscalFailure } from "./effects";
+import { SUBMISSION_WINDOW_MS, isReceiptSubmissionWindowFamily } from "./constants";
 import { deliverFiscalDocumentEmail } from "./customer-email";
 import { finalizeSubmissionRow, reconcileMissingReceipts } from "./finalize";
 import { parseWire } from "./parse-wire";
@@ -53,11 +54,14 @@ const BACKOFF_BASE_MS = 30 * 1000;
 const POLL_INTERVAL_MS = 60 * 1000;
 
 // ETA's 24-hour submission window lives in `./constants` as
-// `SUBMISSION_WINDOW_MS`, not here, even though the retry arithmetic above is
-// sized against it: `read-model.ts` needs it to flag overdue documents, and
-// importing this module for one number dragged the ETA HTTP client and the
-// whole provider graph into every dashboard page and POS route. The arithmetic
-// that keeps ordinary retries inside the window is documented on the constant.
+// `SUBMISSION_WINDOW_MS` rather than here, even though the retry arithmetic
+// above is sized against it and this module now reads it (see
+// `noteLateSubmission`): `read-model.ts` needs the same number to flag overdue
+// documents, and importing THIS module for it dragged the ETA HTTP client and
+// the whole provider graph into every dashboard page and POS route. The
+// dependency runs worker -> constants <- read-model, never worker <-> read-model.
+// The arithmetic that keeps ordinary retries inside the window is documented on
+// the constant itself.
 
 
 /**
@@ -139,6 +143,23 @@ type ClaimedRow = {
   status: EtaSubmissionStatus;
   attempts: number;
   submissionUuid: string | null;
+  /**
+   * When ServeOS wrote the row — the clock the late check runs on. See
+   * `noteLateSubmission` for how far it can trail `dateTimeIssued`.
+   *
+   * A STRING, NOT A `Date`, AND THAT IS THE DRIVER RATHER THAN A CHOICE. This
+   * row comes back from `tx.execute` — raw SQL, because the claim is an
+   * `UPDATE … RETURNING` no query builder expresses — and drizzle's raw path
+   * hands `timestamptz` back as the wire text (measured: `typeof === "string"`,
+   * not a `Date`). Column codecs only run on the mapped `select()` path. Typed
+   * honestly here so the one place that needs a moment has to say `new Date(…)`,
+   * rather than a `Date` annotation that lies and throws at the call site.
+   */
+  createdAt: string;
+  /** Read only to SKIP a write that would match nothing — the UPDATE's own
+   *  `IS NULL` predicate is what decides. Same raw-path caveat as `createdAt`;
+   *  never parsed, only tested for presence. */
+  lateNotifiedAt: string | null;
 };
 
 export type DrainOptions = {
@@ -236,6 +257,11 @@ export async function drainEtaSubmissions(opts: DrainOptions = {}): Promise<Drai
     }
 
     for (const row of await claim(tenant.id, limit)) {
+      // BEFORE the row is driven, and OUTSIDE `processRow`'s try/catch, which is
+      // the whole placement argument — see `noteLateSubmission`. Whatever it
+      // does or fails to do, the row is submitted next exactly as it would have
+      // been.
+      await noteLateSubmission(tenant.id, row, now);
       const outcome = await processRow(tenant.id, row, provider, now, opts.emailProvider);
       result.processed++;
       if (outcome === "submitted") result.submitted++;
@@ -278,10 +304,105 @@ async function claim(tenantId: string, limit: number): Promise<ClaimedRow[]> {
           FOR UPDATE SKIP LOCKED
           LIMIT ${limit}
        )
-      RETURNING id, doc_type AS "docType", status, attempts, submission_uuid AS "submissionUuid"
+      RETURNING id, doc_type AS "docType", status, attempts, submission_uuid AS "submissionUuid",
+                created_at AS "createdAt", late_notified_at AS "lateNotifiedAt"
     `);
     return rows;
   });
+}
+
+/**
+ * THE LATE-WINDOW STATE: notice it, say so once, and submit it anyway.
+ *
+ * ETA gives a receipt 24 hours from issuance ("The receipt is allowed to be
+ * submitted within the allowed duration (24 hours)…", Receipt Issuance FAQ,
+ * quoted in full on `SUBMISSION_WINDOW_MS`). Past it the document is not
+ * forbidden, it is LATE: ETA's own remedy is a **Late Submission Request** —
+ * "Late Submission Window (Days) - Sets the maximum age of documents that will
+ * be accepted by a Late Submission Request" — a portal action, performed by a
+ * taxpayer representative against a yearly quota, that nothing in this pipeline
+ * can perform on the owner's behalf.
+ *
+ * SO THE WORKER STILL SUBMITS. That is the addendum §3 stance restated where it
+ * bites: "the budget is respected by arithmetic … and the breach is FLAGGED AT
+ * THE READ LAYER, not enforced at the worker — stopping retries at the deadline
+ * would turn a late document into no document." Refusing at hour 25 would
+ * guarantee the outcome the deadline exists to prevent — an undeclared sale —
+ * and would do it on our own authority, since ETA has not refused anything. The
+ * only thing that changes past the window is that the owner gets told.
+ *
+ * ONCE, AND THE UPDATE IS THE ARBITER. `late_notified_at IS NULL` in the WHERE
+ * clause, notify only if a row came back — the same shape `failPermanently` uses
+ * for its own alert, and for the same reason: two drains can hold one row at
+ * once when a claim lease expires mid-flight (`CLAIM_LEASE_MS`), and a
+ * read-then-write would send one document's alert twice. `row.lateNotifiedAt` is
+ * consulted first only to skip a write that would match nothing — every already
+ * flagged row, i.e. every pass after the first — and never to decide.
+ *
+ * IT CONSUMES NO ATTEMPT AND CANNOT FAIL THE ROW. `attempts` is the retry budget
+ * for talking to ETA; noticing a date is not an attempt at anything, and
+ * charging one would mean a document parked for a human sooner because it was
+ * late — punishing the row for the condition being reported. It also runs
+ * OUTSIDE `processRow`'s try/catch, so its own failure cannot be mistaken for a
+ * submission failure by `handleFailure`: a throw here would otherwise be
+ * classified as unrecognised, back the row off and eventually terminalize it,
+ * which would turn a notification bug into an unfiled tax document. A failure is
+ * logged and the pass continues; the flag is unset, so the next pass retries it.
+ *
+ * WHY AT CLAIM TIME. Only a claimed row is one the worker is about to act on,
+ * and the claim query has already filtered to `pending`/`failed`/`submitted` —
+ * every non-terminal status and nothing else. So "non-terminal" needs no second
+ * check here: an `accepted` or `rejected` row is never claimed, and therefore
+ * never flagged. That is the intended reading and not an omission — a rejected
+ * document has nothing left to submit late, and an accepted one made it.
+ *
+ * RECEIPT FAMILY ONLY (`isReceiptSubmissionWindowFamily`). No ETA SDK page
+ * publishes a submission deadline for invoice v1.0 — checked page by page, see
+ * the constant — so an `e_invoice` is never flagged. VERIFY-13.
+ *
+ * THE CLOCK IS `created_at`, WHICH CAN TRAIL `dateTimeIssued`. For a POS sale
+ * the two are seconds apart. For an order adopted by `reconcileMissingReceipts`
+ * — the online channel's normal path — the row is written when the sweep found
+ * it, so an order placed six days ago is flagged only 24 hours after ADOPTION,
+ * not 24 hours after issuance. Bounded by the sweep horizon (7 days) and
+ * accepted: the alternative is reading `dateTimeIssued` out of `request_json`
+ * for every claimed row on every pass, to sharpen the timing of an alert about
+ * a document whose real problem is that nothing filed it for six days.
+ */
+async function noteLateSubmission(tenantId: string, row: ClaimedRow, now: () => Date): Promise<void> {
+  if (row.lateNotifiedAt) return;
+  if (!isReceiptSubmissionWindowFamily(row.docType)) return;
+  if (now().getTime() - new Date(row.createdAt).getTime() <= SUBMISSION_WINDOW_MS) return;
+
+  try {
+    await withTenant(tenantId, async (tx) => {
+      const flagged = await tx.update(etaSubmissions)
+        .set({ lateNotifiedAt: now() })
+        .where(and(
+          eq(etaSubmissions.tenantId, tenantId),
+          eq(etaSubmissions.id, row.id),
+          isNull(etaSubmissions.lateNotifiedAt),
+        ))
+        .returning({ id: etaSubmissions.id });
+
+      if (flagged.length === 0) return;
+
+      await notifyFiscalFailure({ tenantId }, {
+        title: "A fiscal document is past ETA's 24-hour window",
+        body: "This submission is past the 24h window — a Late Submission Request may be required at the portal. " +
+          "ServeOS keeps trying to submit it: the document is not abandoned, and no action here can replace the " +
+          "request, which a taxpayer representative makes on ETA's portal against a yearly quota.",
+        entityType: "eta_submission",
+        entityId: row.id,
+        targets: [{ role: "owner" }],
+        channels: ["in_app"],
+      }, tx);
+    });
+  } catch (err) {
+    // The row is about to be submitted regardless — see the header. Unflagged,
+    // so the next pass tries again rather than losing the alert silently.
+    console.error(`[fiscal] late-window notify failed for submission ${row.id}`, err);
+  }
 }
 
 type RowOutcome = "submitted" | "accepted" | "rejected" | "failed" | "deferred";

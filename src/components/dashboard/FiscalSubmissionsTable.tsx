@@ -5,27 +5,32 @@ import { ToastForm } from "@/components/dashboard/ToastForm";
 import { Card } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { SubmissionRowView, SubmissionStatusCounts } from "@/server/fiscal/read-model";
+import type { EtaSubmissionStatus } from "@/server/fiscal/schema";
+import {
+  EMAIL_MARKER, LATE_MARKER, OVERDUE_MARKER, STATUS_CHIP,
+  TIER_CHIP_CLS, TIER_MARKER_CLS, type SubmissionMarker,
+} from "./fiscal-chips";
 
 /**
  * The ETA submission feed: a status summary over the WHOLE table, then the
  * newest page of documents, with a resubmit control on the rows that can take
  * one.
  *
- * Entirely props-driven — the two `import type`s are erased at compile time and
- * emit nothing, so this file pulls no server module into the component tree. It
- * takes its server action as a prop for the same reason: the component decides
- * WHERE the button goes, the page decides WHAT it does.
+ * Entirely props-driven — the `import type`s are erased at compile time and emit
+ * nothing, and `./fiscal-chips` is a plain `.ts` of tokens, so this file pulls no
+ * server module into the component tree. It takes its server action as a prop for
+ * the same reason: the component decides WHERE the button goes, the page decides
+ * WHAT it does.
+ *
+ * IT RENDERS NAMED STATES, IT DOES NOT DERIVE THEM (round 2, Task 8). The email
+ * cell used to be a ternary ladder over two nullable columns — a rule about what
+ * null MEANS, living in a file no harness in this repo can execute. That mapping
+ * now lives in `read-model.ts`'s `submissionSideEffects` and arrives here as
+ * `row.sideEffects.{email,late}`, each a discriminated union; this file's whole
+ * remaining job is choosing a token per `kind`. Moving it is what surfaced the
+ * fourth email state the ladder had been collapsing (`not-attempted` vs
+ * `no-recipient`), which is the argument for the split in one sentence.
  */
-
-/** `rejected` and `failed` are the two rows an owner opens this screen to find,
- *  so they read as warnings rather than as neutral state. */
-const STATUS_CHIP: Record<string, string> = {
-  pending: "bg-muted text-muted-foreground",
-  submitted: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
-  accepted: "bg-green-500/10 text-green-700 dark:text-green-400",
-  rejected: "bg-red-500/10 text-red-700 dark:text-red-400",
-  failed: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
-};
 
 /**
  * How long ago, coarsely — the question this column answers is "is this close
@@ -40,12 +45,26 @@ function formatAge(at: Date): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
-function StatusChip({ status, children }: { status: string; children: React.ReactNode }) {
+function StatusChip({ status, children }: { status: EtaSubmissionStatus; children: React.ReactNode }) {
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap ${STATUS_CHIP[status] ?? ""}`}
+      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap ${TIER_CHIP_CLS[STATUS_CHIP[status]]}`}
     >
       {children}
+    </span>
+  );
+}
+
+/** The dense annotation form: a flag attached to the value beside it (an age, a
+ *  send time), not a state of its own. `title` is overridable so the email
+ *  failure can carry its own reason while sharing the token. */
+function Marker({ marker, title }: { marker: SubmissionMarker; title?: string }) {
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${TIER_MARKER_CLS[marker.tier]}`}
+      title={title ?? marker.title}
+    >
+      {marker.label}
     </span>
   );
 }
@@ -104,7 +123,7 @@ export function FiscalSubmissionsTable({
                 <TableHead>Status</TableHead>
                 <TableHead>ETA uuid</TableHead>
                 <TableHead>Attempts</TableHead>
-                <TableHead>Email</TableHead>
+                <TableHead>Notified</TableHead>
                 <TableHead>Last error</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
@@ -125,11 +144,8 @@ export function FiscalSubmissionsTable({
                       {formatAge(row.createdAt)}
                     </span>
                     {row.overdue && (
-                      <span
-                        className="ml-1.5 inline-flex items-center rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-800 dark:bg-red-950 dark:text-red-300"
-                        title="Past ETA's 24-hour submission window and not accepted. Submitting it now needs a Late Submission Request."
-                      >
-                        overdue
+                      <span className="ml-1.5">
+                        <Marker marker={OVERDUE_MARKER} />
                       </span>
                     )}
                   </TableCell>
@@ -148,42 +164,60 @@ export function FiscalSubmissionsTable({
                     {row.etaUuid ? `${row.etaUuid.slice(0, 12)}…` : "—"}
                   </TableCell>
                   <TableCell className="text-xs">{row.attempts}</TableCell>
-                  {/* THE CUSTOMER'S COPY — three states, and the em-dash is a
-                      real one rather than a blank. For an ONLINE order this
-                      email is the customer's primary copy of the QR (the status
-                      page's fiscal block is written 5-20 minutes after payment,
-                      so it is what a revisit shows), which is why a failure
-                      belongs on the screen an owner already watches instead of
-                      only in the logs.
+                  {/* WHO WAS TOLD WHAT — the two side-effect records, stacked in
+                      ONE cell rather than given a column each.
 
-                        a time   sent.
-                        "failed" tried and did not go out; the reason is in the
-                                 tooltip, which is the SAME owner-audience text
-                                 as `lastError` beside it — an env key name may
-                                 appear in it, a secret value never can.
-                        "—"      nobody to email. Not a failure: an online guest
-                                 who left the optional field blank, and every
-                                 POS sale, since the till captures no address
-                                 anywhere in its flow.
+                      THE HOLISTIC TOUCH THE REVIEWS ASKED FOR, and it is a
+                      column NOT added. This table was already at nine columns
+                      and a tenth for the late flag would have been a whole
+                      column that is empty on all but a handful of rows ever —
+                      cost paid by every row, value delivered to almost none.
+                      What the two records share is not a subject (one is the
+                      customer's copy, one is an owner alert) but a KIND: both
+                      are things that happened ALONGSIDE the filing and neither
+                      is a lifecycle stage, which is exactly the framing
+                      `late_notified_at` was given at the schema — "an orthogonal
+                      side-effect record, like `customer_emailed_at`". Grouping
+                      them says that in the layout.
 
-                      AMBER, NOT THE RED `overdue` USES: by the time this can
-                      fail the fiscal obligation is already discharged — ETA
-                      holds the document and the sale is declared — so an email
-                      failure is OPERATIONAL, not fiscal, and must not read on
-                      this table as though the filing itself went wrong. */}
+                      THE `overdue` MARKER DELIBERATELY STAYS IN THE AGE CELL. It
+                      is not a side effect and nothing emitted it: it is the age
+                      beside it, read against a deadline. Putting it here would
+                      have grouped by mood rather than by meaning, and would have
+                      separated it from the only number that explains it.
+
+                      Line one, the CUSTOMER's copy — four named states, the
+                      em-dash a real answer rather than a blank. For an ONLINE
+                      order this email is the customer's primary copy of the QR
+                      (the status page's fiscal block is written 5-20 minutes
+                      after payment, so it is what a revisit shows), which is why
+                      a failure belongs on the screen an owner already watches
+                      instead of only in the logs. `failed` carries its reason in
+                      the tooltip — the SAME owner-audience text as `lastError`
+                      beside it: an env key name may appear in it, a secret value
+                      never can.
+
+                      Line two, the OWNER's late alert, rendered only when there
+                      is one. */}
                   <TableCell className="whitespace-nowrap text-xs">
-                    {row.customerEmailedAt ? (
-                      <span className="text-muted-foreground">{formatDayTime(row.customerEmailedAt, timezone)}</span>
-                    ) : row.customerEmailError ? (
-                      <span
-                        className="inline-flex items-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-                        title={row.customerEmailError}
-                      >
-                        failed
+                    <div className="flex flex-col gap-1">
+                      <span className="text-muted-foreground">
+                        {row.sideEffects.email.kind === "sent" ? (
+                          formatDayTime(row.sideEffects.email.at, timezone)
+                        ) : row.sideEffects.email.kind === "failed" ? (
+                          <Marker marker={EMAIL_MARKER.failed} title={row.sideEffects.email.error} />
+                        ) : row.sideEffects.email.kind === "no-recipient" ? (
+                          <span title="No address to send to — a guest who left the optional checkout field blank, or a till sale (the POS captures no address).">—</span>
+                        ) : (
+                          <span title="The customer's copy is sent when ETA accepts the document; this one has not been accepted yet.">not sent yet</span>
+                        )}
                       </span>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
+                      {row.sideEffects.late.kind === "late" && (
+                        <span>
+                          <Marker marker={LATE_MARKER.late} />
+                        </span>
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground max-w-xs truncate" title={row.lastError ?? ""}>
                     {row.lastError ?? "—"}

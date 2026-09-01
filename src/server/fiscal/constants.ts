@@ -1,3 +1,5 @@
+import type { EtaDocType } from "./schema";
+
 /**
  * Fiscal constants shared by modules that must NOT import each other.
  *
@@ -11,6 +13,11 @@
  * Folding it into `read-model.ts` instead would invert a worse dependency — the
  * submission worker importing the dashboard's read layer — so the constant lives
  * on its own, imported by both and importing nothing.
+ *
+ * IT STILL IMPORTS NOTHING AT RUNTIME. The one import above is `import type`,
+ * which TypeScript erases — so `isReceiptSubmissionWindowFamily` below can be
+ * typed against the docType enum without putting `./schema` (and drizzle) on the
+ * graph of anything that only wanted a number.
  */
 
 /**
@@ -18,12 +25,39 @@
  * `dateTimeIssued` it carries. Past it the document needs a formal Late
  * Submission Request (addendum §3), a path this pipeline does not implement.
  *
+ * ETA'S OWN WORDS, from the Receipt Issuance FAQ
+ * (`https://sdk.invoicing.eta.gov.eg/receiptissuancefaq/`), which is the ONLY
+ * SDK page that states the window at all:
+ *
+ *   "The receipt is allowed to be submitted within the allowed duration (24
+ *    hours), unless this receipt is being resubmitted and has the OLD UUID added
+ *    to the receipt/return receipt"
+ *
+ * and, on the escape hatch past it:
+ *
+ *   "Late Submission Window (Days) - Sets the maximum age of documents that will
+ *    be accepted by a Late Submission Request"
+ *   "Late Submission Period (Hours) - Sets the duration of the Late Submission
+ *    Request that allows the taxpayer representatives to submit their requests
+ *    within this duration"
+ *   "Late Submission Request will consume from users current yearly quota and
+ *    accept and reject submission based on the maximum number allowed."
+ *
+ * Those two parameters are tenant configuration ON the Late Submission Request
+ * path — they say how stale a document an LSR may rescue, not when the ordinary
+ * clock runs out — so they are not a second deadline and nothing here reads them.
+ *
  * NOT ENFORCED BY THE WORKER, and deliberately so — a worker that stopped
  * retrying at the deadline would turn a late document into no document, which is
- * strictly worse. It is a REPORTING threshold: `read-model.ts` marks any
- * non-accepted row older than this `overdue`, and the fiscal dashboard shows it,
- * which is where addendum §3's "retry/backoff must respect the 24h budget and
- * flag breaches" is actually satisfied. The arithmetic that keeps ordinary
+ * strictly worse, and ETA's own answer to a stale document is an LSR rather than
+ * a refusal to try. Round 2 Task 8 made the worker OBSERVE the window without
+ * enforcing it: on claiming a receipt-family row past it, the worker tells the
+ * owner ONCE (`eta_submissions.late_notified_at`) and then submits exactly as
+ * before. Noticing and refusing are different things, and only the first is
+ * done here. It remains a REPORTING threshold otherwise: `read-model.ts` marks
+ * any non-accepted row older than this `overdue`, and the fiscal dashboard shows
+ * it, which is where addendum §3's "retry/backoff must respect the 24h budget
+ * and flag breaches" is actually satisfied. The arithmetic that keeps ordinary
  * retries inside it (constants in `./worker`):
  *
  *     MAX_ATTEMPTS (6) with backoff 2^n x 30s  ->  ~31 min of retrying (60+120+240+480+960s; the 6th backoff is written but never served — the claim excludes attempts >= MAX_ATTEMPTS)
@@ -35,6 +69,64 @@
  * dashboard's overdue marker is for.
  */
 export const SUBMISSION_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * WHICH DOCUMENT FAMILIES `SUBMISSION_WINDOW_MS` ACTUALLY GOVERNS — and the
+ * honest answer is "the ones ETA published a deadline for", which is the receipt
+ * pair and not the invoice.
+ *
+ * THE 24-HOUR RULE IS AN E-RECEIPT RULE. It appears on exactly one SDK page, the
+ * Receipt Issuance FAQ, and it is spelled in receipt nouns throughout — "the
+ * receipt is allowed to be submitted within the allowed duration (24 hours)…
+ * added to the receipt/return receipt". `return_receipt` is inside the quote,
+ * which is why both members of the family are here.
+ *
+ * NO SUBMISSION DEADLINE IS PUBLISHED FOR AN INVOICE, and that was checked
+ * before this constant was written rather than assumed (round 2 Task 8's
+ * pre-check, 2026-09-01). Fetched, and each came back with nothing:
+ *
+ *   /documents/invoice-v1-0/           — the only time constraint on the whole
+ *                                        page is on the field itself: "Date and
+ *                                        time cannot be in future. Time to be
+ *                                        supplied in UTC timezone."
+ *   /einvoicingapi/01-submit-documents/ — no deadline; its rejection vocabulary
+ *                                        is BadStructure, MaximumSizeExceeded,
+ *                                        IncorrectSubmitter, Forbidden,
+ *                                        DuplicateSubmission — nothing temporal.
+ *   /integrationpractices/             — no deadline (callback, polling and
+ *                                        anti-patterns only).
+ *   /faq/                              — no deadline (environment setup only).
+ *
+ * SO THE LATE MACHINERY IS RECEIPT-SCOPED, AND THAT IS A SCOPE RATHER THAN A
+ * CLAIM. "ETA does not publish an invoice deadline" is not the same statement as
+ * "an invoice has no deadline" — the ETA portal's Late Submission parameters are
+ * document-agnostic in their wording, and a deadline could live in the taxpayer
+ * portal or in the law rather than in the SDK. Carried as **VERIFY-13** in the
+ * addendum's §5 ledger and the round-1 plan's Blocked section, to be answered on
+ * preprod or by a tax adviser. Flagging an invoice today would mean alerting an
+ * owner about a deadline nobody has shown us, which is worse than the silence:
+ * a false alarm on a compliance surface teaches an owner to ignore it.
+ *
+ * WHEN THE ANSWER ARRIVES the change is small and local: an invoice window is a
+ * second constant plus a docType branch on the one lookup below — nothing that
+ * reads it needs to learn a new shape, because the read model already has a
+ * `not-applicable` late state to move an invoice OUT of.
+ */
+const RECEIPT_SUBMISSION_WINDOW_FAMILY: ReadonlySet<EtaDocType> = new Set(["e_receipt", "return_receipt"]);
+
+/**
+ * Whether `SUBMISSION_WINDOW_MS` applies to this document family at all.
+ *
+ * Used by the worker (to decide whether a claimed row can be late) and by the
+ * read model (to decide whether "on-time" is even a meaningful thing to say
+ * about a row). ONE predicate rather than two `docType === "e_receipt" || …`
+ * spellings, because the two would answer differently the day a third receipt
+ * variant is added, and the disagreement would be invisible: the worker would
+ * flag a document the dashboard renders as not-applicable.
+ */
+export function isReceiptSubmissionWindowFamily(docType: EtaDocType): boolean {
+  return RECEIPT_SUBMISSION_WINDOW_FAMILY.has(docType);
+}
 
 /**
  * ETA's own allowance on every published calculation: "All the above
