@@ -10,8 +10,18 @@ import {
 import { SUBMISSION_WINDOW_MS } from "./constants";
 
 /**
- * The fiscal READ surfaces — what a cashier's till and the owner's dashboard
- * ask about documents that already exist.
+ * The fiscal READ surfaces — what a cashier's till, the owner's dashboard and
+ * the customer's own status link ask about documents that already exist.
+ *
+ * THREE AUDIENCES, AND THE WIDEST ONE IS UNGATED. The dashboard reads answer to
+ * `fiscal:manage` (one owner); `getSaleFiscalStatus` answers to `pos:sell`;
+ * `getSaleFiscalStatusByToken` (round 2, Task 6) answers to nothing but
+ * possession of a link the customer may have forwarded. That last one is why
+ * `lastError` matters below rather than being a footnote: it is worker-written
+ * free text that legitimately names an env KEY, which is a fair trade for an
+ * owner debugging a failed receipt and not one to make with the public. The
+ * token surface therefore returns `SaleFiscalStatus` and only that, and the
+ * masking walk holds it to a STRICTER forbidden set than the dashboard reads.
  *
  * SPLIT FROM `./config-service` DELIBERATELY, along the permission seam. Every
  * function in that module is gated by `fiscal:manage` (owner only) and most of
@@ -243,6 +253,65 @@ export async function getSaleFiscalStatus(
     qrPayload: row.qrPayload,
     qrImageDataUrl: row.qrPayload ? await QRCode.toDataURL(row.qrPayload) : null,
   };
+}
+
+/**
+ * The SAME sale status, reached by the online customer's status token.
+ *
+ * WHO READS IT: `src/app/order/[token]/page.tsx`, whose audience is not a role
+ * but "whoever holds the link". THE TOKEN IS THE AUTH and there is no second
+ * one: `orders.status_token` is a unique random column handed to the customer at
+ * checkout, and holding it is already what authorises seeing that order's items,
+ * totals and delivery address on that page. The fiscal identity of the same sale
+ * is not a wider fact than those, so this adds no permission surface — no role
+ * check, no session, deliberately.
+ *
+ * IT DELEGATES; IT DOES NOT QUERY. `getSaleFiscalStatus` above owns the widened
+ * both-families lookup AND the four-rung precedence, and this function runs
+ * neither of its own — it resolves the token to an order id and calls it. That
+ * is a rule rather than a convenience. A second query here would be the
+ * storefront quietly re-acquiring the `docType = 'e_receipt'` blindness the read
+ * model shed in round 2 Task 5: a B2B order would come back `null`, and `null`
+ * on this page means "nothing filed yet", so a business customer's tax invoice
+ * would render as a pending consumer receipt with no error anywhere. A second
+ * ORDER BY would be a second answer to "which document IS this sale" on an
+ * anomalous both-family order, with nothing keeping the two in step.
+ *
+ * `null` COVERS EVERY MISS IDENTICALLY — no such token, another tenant's token,
+ * a real order with no fiscal row yet. The page renders the same thing for all
+ * three, and collapsing them is what stops a caller probing tokens from telling
+ * "wrong token" apart from "right token, nothing filed".
+ *
+ * WHAT IT MAY RETURN, and why it is this function and not one of the dashboard
+ * reads. `listSubmissions` and `getSubmissionById` both carry `lastError`, which
+ * is worker-written free text that legitimately names an env KEY (see
+ * `resolveSecretRef`) — a trade made for a surface gated on `fiscal:manage`, one
+ * owner. This function selects no such column: `SaleFiscalStatus` is the
+ * document's own identity and nothing else. Reaching for either of the other two
+ * here, to show the customer "why", would hand a deployment's variable names to
+ * anyone the link was forwarded to. `config-service.test.ts`'s masking walk
+ * holds this surface to a STRICTER forbidden set than the dashboard's for
+ * exactly that reason.
+ *
+ * `getOrderByToken` IS IMPORTED DYNAMICALLY, mirroring `./finalize`'s dynamic
+ * `./sign-invoice` import and for the same reason. `@/server/ordering/service`
+ * pulls entitlements, inventory, catalog, payments, realtime and the WhatsApp
+ * queue onto whatever imports it, and this module sits on the graph of every POS
+ * fiscal read and every dashboard fiscal page — none of which will ever take
+ * this branch. The split this file's header describes would be undone by a
+ * static import here.
+ */
+export async function getSaleFiscalStatusByToken(
+  tenantId: string,
+  token: string,
+): Promise<SaleFiscalStatus | null> {
+  const { getOrderByToken } = await import("@/server/ordering/service");
+  // Tenant-scoped by the `withTenant` inside it, so another tenant's token
+  // resolves to nothing rather than to their order — RLS, not a WHERE clause we
+  // could forget.
+  const order = await getOrderByToken(tenantId, token);
+  if (!order) return null;
+  return getSaleFiscalStatus(tenantId, order.id);
 }
 
 export type ListSubmissionsOptions = {

@@ -341,7 +341,19 @@ Sources: `/document-serialization-approach/`, `/documents/receipt-v1-2/`, `/docu
   channel owes the buyer a visible fiscal receipt is the same C5 question already settled for the till, asked
   of a channel where the answer was never decided: a **storefront fiscal surface is a named follow-up**
   (VERIFY-10-adjacent), not an oversight, and it is a product decision rather than a pipeline change — the
-  document itself is issued correctly either way.
+  document itself is issued correctly either way. **BUILT in round 2 Task 6 — see the next bullet; the latency
+  described here is unchanged by it, and is what makes "pending" the state most visitors meet.**
+- **THE ONLINE STATUS PAGE NOW SHOWS THE FISCAL DOCUMENT (round 2, Task 6) — the "storefront fiscal surface" the
+  bullet above named as a follow-up, now built.** `/order/[token]` renders the e-receipt's QR and ETA uuid, or a tax
+  invoice's ETA long id, family-aware off `SaleFiscalStatus.docType`; a non-EG tenant's page is unchanged in bytes and
+  in query count. The token is the whole authorisation — no new route and no new permission surface — and the read
+  delegates to `getSaleFiscalStatus`, so the storefront cannot re-acquire the receipt-only blindness the read model
+  shed in Task 5. **THE LATENCY CAVEAT IN THE PRECEDING BULLET IS UNCHANGED AND STILL GOVERNS WHAT A CUSTOMER SEES:**
+  the document is still enqueued by the sweep rather than at checkout, so a page opened straight from payment shows
+  "Fiscal receipt pending" — honest, and the state most visitors will meet. The page does not live-update either
+  (`StatusPoller` never re-renders the server component, and no realtime event is published when a fiscal row is
+  written), so the QR appears on a revisit. The surface that actually delivers it to the customer is the receipt email,
+  Task 7.
 - **TILL B2B CAPTURE: A SALE IS DECLARED AS ONE FAMILY, DECIDED AT THE COUNTER (round 2, Task 5).** A cashier who
   opens the payment screen's "Business buyer (فاتورة ضريبية)" section and fills in the seven fields ETA requires of
   a type-`B` receiver rings a sale that is filed as an **`e_invoice` INSTEAD of an `e_receipt`** — never as well as

@@ -43,6 +43,7 @@ import {
 // guarantees that can drift apart.
 import {
   getSaleFiscalStatus,
+  getSaleFiscalStatusByToken,
   getSubmissionById,
   getSubmissionStatusCounts,
   listSubmissions,
@@ -96,6 +97,36 @@ const SECRET_VALUES = {
 /** Everything that must never appear in a response: the references AND the
  *  secrets behind them. */
 const FORBIDDEN = [...Object.values(REFS), ...Object.values(SECRET_VALUES)];
+
+/**
+ * THE STRICTER SET, applied to the UNAUTHENTICATED surface alone — and the
+ * difference between the two sets is the AUDIENCE, not an inconsistency.
+ *
+ * `FORBIDDEN` above deliberately excludes the bare env KEY name: a ref is stored
+ * `env://KEY`, so `"env://ZZ_ETA_ERP_SECRET_SENTINEL"` does not substring-match
+ * a message that says `"...points at env key ZZ_ETA_ERP_SECRET_SENTINEL..."`,
+ * and that pass is intentional. `resolveSecretRef` names the key on purpose
+ * ("the ENV KEY, which is not itself a secret, and never the value") because an
+ * owner staring at a failed receipt needs to know which variable is unset. The
+ * long note in the read-surfaces walk below records that stance, and this set
+ * does not overturn it — every dashboard surface is still walked with
+ * `FORBIDDEN`, and `getSubmissionById`'s `lastError` still asserts the key IS
+ * present.
+ *
+ * `getSaleFiscalStatusByToken` backs `/order/[token]`, which has no permission
+ * gate of any kind: its audience is whoever holds a link the customer may have
+ * forwarded, screenshotted or left open. A deployment's env-var NAMES are an
+ * operator-facing detail there, not a customer-facing one, so the same string
+ * that is acceptable at `fiscal:manage` is not acceptable here — the bare keys
+ * join the set for this surface and no other.
+ *
+ * NOTHING THIS SURFACE RETURNS CAN CARRY ONE TODAY: it delegates to
+ * `getSaleFiscalStatus`, whose select list has no `lastError` column in it. That
+ * is what makes the assertion cheap, and it is precisely why it is worth having
+ * — it is what fails if someone later widens `SaleFiscalStatus` with a "why is
+ * it stuck?" field, which is the obvious next request for this page.
+ */
+const TOKEN_FORBIDDEN = [...FORBIDDEN, ...Object.keys(SECRET_VALUES)];
 
 beforeAll(() => {
   for (const [key, value] of Object.entries(SECRET_VALUES)) process.env[key] = value;
@@ -220,10 +251,12 @@ function deepStrings(value: unknown, out: string[] = []): string[] {
 }
 
 /** Substring, not equality: a reference embedded in an error message or a
- *  summary line is exactly the leak this guards against. */
-function expectNoRefValues(payload: unknown, what: string) {
+ *  summary line is exactly the leak this guards against. `forbidden` defaults to
+ *  the set every gated surface is held to; the token surface passes
+ *  `TOKEN_FORBIDDEN` instead, for the reason recorded on it. */
+function expectNoRefValues(payload: unknown, what: string, forbiddenSet: readonly string[] = FORBIDDEN) {
   const strings = deepStrings(payload);
-  for (const forbidden of FORBIDDEN) {
+  for (const forbidden of forbiddenSet) {
     const hit = strings.find((s) => s.includes(forbidden));
     expect(hit, `${what} leaked ${forbidden} in ${JSON.stringify(hit)}`).toBeUndefined();
   }
@@ -499,6 +532,13 @@ describe("masking — no *Ref value ever leaves this service", () => {
     const submissions = await listSubmissions(t.id);
     const saleStatus = await getSaleFiscalStatus(t.id, order.id);
     const invoiceStatus = await getSaleFiscalStatus(t.id, b2bOrder.id);
+    // THE TOKEN SURFACE (round 2, Task 6) — the same two sales, reached the way
+    // the online status page reaches them. Walked with the STRICTER set, because
+    // this one answers to a link rather than to a permission (see
+    // `TOKEN_FORBIDDEN`). Both families, so the B2B path is inside the
+    // guarantee here too.
+    const tokenStatus = await getSaleFiscalStatusByToken(t.id, order.statusToken);
+    const tokenInvoice = await getSaleFiscalStatusByToken(t.id, b2bOrder.statusToken);
     const one = await getSubmissionById(t.id, row.id);
     const statusCounts = await getSubmissionStatusCounts(t.id);
     const fiscalDevices = await listFiscalDevices(t.id);
@@ -513,6 +553,16 @@ describe("masking — no *Ref value ever leaves this service", () => {
     // walking something.
     expect(invoiceStatus!.docType).toBe("e_invoice");
     expect(invoiceStatus!.etaLongId).toBe("BFNGXFA17265TQX34");
+
+    expectNoRefValues(tokenStatus, "getSaleFiscalStatusByToken", TOKEN_FORBIDDEN);
+    expectNoRefValues(tokenInvoice, "getSaleFiscalStatusByToken (e_invoice)", TOKEN_FORBIDDEN);
+    // Non-vacuity for the token pair, and the delegation rule stated as data:
+    // the token read is not merely non-leaky, it is the SAME value the order-id
+    // read produced — which is what a second query in the storefront would stop
+    // being the moment the two disagreed.
+    expect(tokenStatus).toEqual(saleStatus);
+    expect(tokenInvoice).toEqual(invoiceStatus);
+    expect(tokenInvoice!.docType).toBe("e_invoice");
     // Numbers under fixed enum keys — nothing here could carry a reference
     // today, and it is walked anyway so that stays true if the shape grows.
     expectNoRefValues(statusCounts, "getSubmissionStatusCounts");
@@ -564,6 +614,30 @@ describe("masking — no *Ref value ever leaves this service", () => {
     for (const [what, payload] of planted) {
       expect(() => expectNoRefValues(payload, what), `${what}'s walk did not catch a planted reference`).toThrow();
     }
+
+    // The token surface's own liveness, on both families and under its own set.
+    for (const [what, payload] of [
+      ["getSaleFiscalStatusByToken", { ...tokenStatus, qrPayload: REFS.erp }],
+      ["getSaleFiscalStatusByToken (e_invoice)", { ...tokenInvoice, etaLongId: SECRET_VALUES.ZZ_ETA_SIGNING_SENTINEL }],
+    ] as [string, unknown][]) {
+      expect(() => expectNoRefValues(payload, what, TOKEN_FORBIDDEN), `${what}'s walk did not catch a planted reference`).toThrow();
+    }
+
+    // AND THE TWO SETS ARE DEMONSTRABLY DIFFERENT, in the direction claimed.
+    // A BARE env key planted where an accidental leak would land fails the token
+    // walk and PASSES the dashboard one — which is the whole distinction, shown
+    // rather than asserted in prose. If someone later folds the bare keys into
+    // `FORBIDDEN` wholesale, the second line here fails and points at the
+    // `resolveSecretRef` stance they would be overturning by accident.
+    const bareKeyLeak = { ...tokenStatus, etaLongId: "ZZ_ETA_ERP_SECRET_SENTINEL" };
+    expect(
+      () => expectNoRefValues(bareKeyLeak, "token surface", TOKEN_FORBIDDEN),
+      "the token surface's stricter set did not catch a bare env key",
+    ).toThrow();
+    expect(
+      () => expectNoRefValues(bareKeyLeak, "gated surface", FORBIDDEN),
+      "FORBIDDEN caught a bare env key — the `lastError` stance below has been overturned",
+    ).not.toThrow();
   });
 
   it("refuses a BARE env key on save, while legacy bare rows keep resolving", async () => {
@@ -1122,6 +1196,98 @@ describe("getSaleFiscalStatus", () => {
     const status = await getSaleFiscalStatus(s.tenantId, s.receipt.orderId);
     expect(status!.docType).toBe("e_receipt");
     expect(status!.etaUuid).toBe(receipt.etaUuid);
+  });
+});
+
+/** The `orders.status_token` a checkout hands the customer — the whole auth for
+ *  `/order/[token]`. Read back rather than passed in, because `recordSale`
+ *  allocates it and nothing else knows the value. */
+async function statusTokenOf(tenantId: string, orderId: string): Promise<string> {
+  const [row] = await withTenant(tenantId, (tx) =>
+    tx.select({ statusToken: orders.statusToken }).from(orders).where(eq(orders.id, orderId)),
+  );
+  return row.statusToken;
+}
+
+describe("getSaleFiscalStatusByToken", () => {
+  it("returns exactly what the order-id read returns, for the same sale", async () => {
+    // THE DELEGATION RULE, pinned as an equality rather than trusted to a
+    // comment. `getSaleFiscalStatus` owns the widened both-families query and
+    // the four-rung precedence; if this function ever grew a query of its own,
+    // the two would start answering differently on some order and this is what
+    // notices. Walked through every state the page renders, since a second
+    // implementation would most plausibly diverge on the unfinalized one.
+    const s = await seedSale({ configureFirst: true });
+    const token = await statusTokenOf(s.tenantId, s.receipt.orderId);
+
+    const byToken = await getSaleFiscalStatusByToken(s.tenantId, token);
+    expect(byToken).toEqual(await getSaleFiscalStatus(s.tenantId, s.receipt.orderId));
+    // Non-vacuity: `toEqual(null)` would pass against two nulls, so the value
+    // being compared is a real finalized receipt with a QR to show.
+    expect(byToken!.docType).toBe("e_receipt");
+    expect(byToken!.qrImageDataUrl).toMatch(/^data:image\/png;base64,/);
+    expect(byToken!.etaUuid).toMatch(/^[0-9a-f]{64}$/);
+
+    await withTenant(s.tenantId, (tx) =>
+      tx.update(etaSubmissions).set({ status: "accepted", etaLongId: "LONG-TOK" })
+        .where(eq(etaSubmissions.tenantId, s.tenantId)));
+    expect(await getSaleFiscalStatusByToken(s.tenantId, token))
+      .toEqual(await getSaleFiscalStatus(s.tenantId, s.receipt.orderId));
+  });
+
+  it("SEES A B2B SALE — the round-trip rule applied to the read side", async () => {
+    // The optional-field silent-degrade rule, in this task's own form. A B2B
+    // sale is filed as an `e_invoice` INSTEAD of an `e_receipt`, so a token read
+    // that re-derived the round-1 `docType = 'e_receipt'` filter would return
+    // `null` here — and `null` on the status page means "nothing filed yet", so
+    // a business customer's tax invoice would render as a pending consumer
+    // receipt, silently, with no failing row and no log line.
+    const s = await seedSale({ configureFirst: true });
+    await withTenant(s.tenantId, (tx) =>
+      tx.update(etaSubmissions)
+        .set({ docType: "e_invoice", status: "accepted", etaUuid: null, qrPayload: null, etaLongId: "BFNGXFA17265TQX34" })
+        .where(eq(etaSubmissions.tenantId, s.tenantId)));
+
+    const byToken = await getSaleFiscalStatusByToken(s.tenantId, await statusTokenOf(s.tenantId, s.receipt.orderId));
+    expect(byToken).not.toBeNull();
+    expect(byToken!.docType).toBe("e_invoice");
+    // The long id IS the storefront's B2B surface — an invoice has no QR at any
+    // point in its life, so there is nothing else to show.
+    expect(byToken!.etaLongId).toBe("BFNGXFA17265TQX34");
+    expect(byToken!.qrImageDataUrl).toBeNull();
+  });
+
+  it("is null for a token that names no order — and the miss is indistinguishable", async () => {
+    const s = await seedSale({ configureFirst: true });
+    const token = await statusTokenOf(s.tenantId, s.receipt.orderId);
+
+    // A wrong token, a near-miss of a real one, and an empty one. All `null`,
+    // and identical to the `null` a real order with no fiscal row returns — so
+    // someone guessing tokens learns nothing from the difference.
+    for (const wrong of ["not-a-token", `${token}x`, token.slice(0, -1), ""]) {
+      expect(await getSaleFiscalStatusByToken(s.tenantId, wrong), `token ${JSON.stringify(wrong)}`).toBeNull();
+    }
+    // Non-vacuity: the RIGHT token against the same tenant is not null, so the
+    // loop above is measuring the token and not a broken fixture.
+    expect(await getSaleFiscalStatusByToken(s.tenantId, token)).not.toBeNull();
+  });
+
+  it("is null for ANOTHER TENANT'S token, even though the token itself is real", async () => {
+    // The token is globally unique (`orders.status_token` carries a UNIQUE
+    // constraint), so a stranger's token is a valid lookup key everywhere — RLS
+    // inside `getOrderByToken` is what refuses it, not a WHERE clause this
+    // function could forget. A storefront serving tenant B must never answer
+    // about tenant A's sale, however the link was obtained.
+    const s = await seedSale({ configureFirst: true });
+    const other = await makeTenant();
+    const token = await statusTokenOf(s.tenantId, s.receipt.orderId);
+
+    expect(await getSaleFiscalStatusByToken(other.id, token)).toBeNull();
+    // Non-vacuity, both halves: the token resolves for its OWN tenant, and the
+    // other tenant is a real EG tenant that would have been shown a document if
+    // one had been visible to it.
+    expect(await getSaleFiscalStatusByToken(s.tenantId, token)).not.toBeNull();
+    expect(other.country).toBe("EG");
   });
 });
 
