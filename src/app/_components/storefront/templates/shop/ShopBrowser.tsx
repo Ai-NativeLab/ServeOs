@@ -1,7 +1,16 @@
 "use client";
 import { useEffect, useState } from "react";
 import type { PublishedMenu } from "@/server/catalog/schema";
-import { addLine, loadCart, setLineQuantity, cartSubtotal, type Cart, type CartLine } from "@/app/_components/cart";
+import {
+  addLine,
+  loadCart,
+  setLineQuantity,
+  cartSubtotal,
+  getSimpleProductQuantity,
+  updateSimpleProductQuantity,
+  type Cart,
+  type CartLine,
+} from "@/app/_components/cart";
 import { computeDimensionalUnitPrice } from "@/server/catalog/dimensional-pricing";
 import { isDimensionalUom } from "@/server/catalog/uom-values";
 import { type MenuProduct } from "@/app/_components/storefront/ProductCard";
@@ -81,15 +90,54 @@ export function ShopBrowser({
         <div key={cat.id} id={`category-${cat.id}`} className="scroll-mt-32 py-6">
           <SectionHeader eyebrow={cat.nameAr} title={cat.nameEn} count={cat.products.length} />
           <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-            {cat.products.map((p) => (
-              <ShopProductCard
-                key={p.id}
-                product={p}
-                interactive={orderingEnabled}
-                onOpen={() => (needsBranchPick ? setBranchPickFor(p.id) : setActiveProduct(p))}
-                currency={currency}
-              />
-            ))}
+            {cat.products.map((p) => {
+              const simpleQty = getSimpleProductQuantity(cart, p.id);
+              return (
+                <ShopProductCard
+                  key={p.id}
+                  product={p}
+                  interactive={orderingEnabled}
+                  onOpen={() => (needsBranchPick ? setBranchPickFor(p.id) : setActiveProduct(p))}
+                  currency={currency}
+                  quantity={simpleQty}
+                  onQuickAdd={() => {
+                    if (needsBranchPick) {
+                      setBranchPickFor(p.id);
+                    } else {
+                      setCart(
+                        updateSimpleProductQuantity(
+                          branchId,
+                          { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
+                          1,
+                        ),
+                      );
+                    }
+                  }}
+                  onIncrement={() => {
+                    if (needsBranchPick) {
+                      setBranchPickFor(p.id);
+                    } else {
+                      setCart(
+                        updateSimpleProductQuantity(
+                          branchId,
+                          { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
+                          1,
+                        ),
+                      );
+                    }
+                  }}
+                  onDecrement={() => {
+                    setCart(
+                      updateSimpleProductQuantity(
+                        branchId,
+                        { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
+                        -1,
+                      ),
+                    );
+                  }}
+                />
+              );
+            })}
           </div>
         </div>
       ))}

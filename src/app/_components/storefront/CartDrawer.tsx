@@ -19,8 +19,19 @@ export function CartDrawer({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="flex flex-col gap-0">
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <SheetHeader>
+          <SheetHeader className="flex flex-row items-center justify-between">
             <SheetTitle>Your cart</SheetTitle>
+            {cart.lines.length > 1 && (
+              <button
+                type="button"
+                onClick={() => {
+                  cart.lines.forEach((_, idx) => onSetQuantity(idx, 0));
+                }}
+                className="text-xs text-muted-foreground hover:text-destructive transition-colors"
+              >
+                Clear all
+              </button>
+            )}
           </SheetHeader>
 
           {cart.lines.length === 0 && (
@@ -35,11 +46,20 @@ export function CartDrawer({
                   {l.modifierSummaryEn && (
                     <div className="truncate text-xs text-muted-foreground">{l.modifierSummaryEn}</div>
                   )}
-                  <div className="mt-2 inline-flex items-center gap-1 rounded-full border border-border">
-                    {/* size-11 (44px) hit area — was a bare glyph with no padding, well under the 44px tap-target minimum */}
-                    <button type="button" onClick={() => onSetQuantity(i, l.quantity - 1)} className="grid size-11 place-items-center rounded-full text-base leading-none text-ink transition-colors hover:text-primary" aria-label={`Decrease ${l.nameEn}`}>−</button>
-                    <span className="w-4 text-center text-sm font-medium text-ink">{l.quantity}</span>
-                    <button type="button" onClick={() => onSetQuantity(i, l.quantity + 1)} className="grid size-11 place-items-center rounded-full text-base leading-none text-ink transition-colors hover:text-primary" aria-label={`Increase ${l.nameEn}`}>+</button>
+                  <div className="mt-2 flex items-center gap-2">
+                    <div className="inline-flex items-center gap-1 rounded-full border border-border">
+                      <button type="button" onClick={() => onSetQuantity(i, l.quantity - 1)} className="grid size-11 place-items-center rounded-full text-base leading-none text-ink transition-colors hover:text-primary" aria-label={`Decrease ${l.nameEn}`}>−</button>
+                      <span className="w-4 text-center text-sm font-medium text-ink">{l.quantity}</span>
+                      <button type="button" onClick={() => onSetQuantity(i, l.quantity + 1)} className="grid size-11 place-items-center rounded-full text-base leading-none text-ink transition-colors hover:text-primary" aria-label={`Increase ${l.nameEn}`}>+</button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onSetQuantity(i, 0)}
+                      className="px-2 py-1 text-xs text-muted-foreground transition-colors hover:text-destructive"
+                      aria-label={`Remove ${l.nameEn} from cart`}
+                    >
+                      Remove
+                    </button>
                   </div>
                 </div>
                 <div className="shrink-0 text-right font-display font-bold text-ink">

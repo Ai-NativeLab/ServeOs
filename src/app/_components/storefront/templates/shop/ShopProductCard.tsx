@@ -1,41 +1,68 @@
 "use client";
 import { formatMoney } from "@/lib/money";
 import type { MenuProduct } from "@/app/_components/storefront/ProductCard";
+import { isProductConfigurable } from "@/app/_components/cart";
 
 /** Dense retail card: brand eyebrow, image, name, price (or "From X" with variants), stock state. */
 export function ShopProductCard({
-  product, interactive, onOpen, currency,
+  product,
+  interactive,
+  onOpen,
+  currency,
+  quantity = 0,
+  onQuickAdd,
+  onIncrement,
+  onDecrement,
 }: {
   product: MenuProduct;
   interactive: boolean;
   onOpen: () => void;
   currency: string;
+  quantity?: number;
+  onQuickAdd?: () => void;
+  onIncrement?: () => void;
+  onDecrement?: () => void;
 }) {
   const inStock = product.inStock;
   const prices = product.variants.length > 0 ? product.variants.map((v) => v.price) : [product.effectivePrice];
   const min = Math.min(...prices);
   const hasRange = product.variants.length > 1 && new Set(prices).size > 1;
+  const configurable = isProductConfigurable(product);
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={interactive && inStock ? 0 : -1}
       onClick={interactive && inStock ? onOpen : undefined}
-      disabled={!interactive || !inStock}
+      onKeyDown={(e) => {
+        if (interactive && inStock && (e.key === "Enter" || e.key === " ")) {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
       aria-label={product.nameEn}
-      className="card-lift group relative flex flex-col overflow-hidden rounded-2xl bg-card text-left"
+      aria-disabled={!interactive || !inStock ? true : undefined}
+      className={`card-lift group relative flex flex-col overflow-hidden rounded-2xl bg-card text-left ${
+        !interactive || !inStock ? "cursor-default" : "cursor-pointer"
+      }`}
     >
       <div className="relative aspect-square w-full">
-        {product.imageUrl
+        {product.imageUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
-          ? <img src={product.imageUrl} alt="" loading="lazy" className={`sf-img h-full w-full ${!inStock ? "opacity-40 grayscale" : ""}`} />
-          : <div className="sf-img h-full w-full" />}
+          <img
+            src={product.imageUrl}
+            alt=""
+            loading="lazy"
+            className={`sf-img h-full w-full ${!inStock ? "opacity-40 grayscale" : ""}`}
+          />
+        ) : (
+          <div className="sf-img h-full w-full" />
+        )}
         {!inStock && (
           <span className="absolute left-2 top-2 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
             Out of stock
           </span>
         )}
-        {/* P3: a customer should know a script is needed BEFORE they get to
-            checkout and hit the gate. */}
         {product.requiresPrescription && (
           <span className="absolute right-2 top-2 rounded-full bg-status-pending/20 px-2 py-0.5 text-[11px] font-medium text-status-pending-fg">
             Rx
@@ -51,10 +78,60 @@ export function ShopProductCard({
             {hasRange ? `From ${formatMoney(min, currency)}` : formatMoney(min, currency)}
           </span>
           {interactive && inStock && (
-            <span className="grid size-8 place-items-center rounded-full bg-primary text-lg leading-none text-primary-foreground shadow-sm">+</span>
+            <div>
+              {configurable || quantity === 0 ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (configurable) {
+                      onOpen();
+                    } else if (onQuickAdd) {
+                      onQuickAdd();
+                    }
+                  }}
+                  aria-label={configurable ? "Select options" : "Quick add"}
+                  className="grid size-8 place-items-center rounded-full bg-primary text-lg leading-none text-primary-foreground shadow-sm transition-transform active:scale-90"
+                >
+                  +
+                </button>
+              ) : (
+                <div
+                  className="flex items-center gap-1 rounded-full bg-primary/10 p-0.5"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDecrement?.();
+                    }}
+                    aria-label="Decrease quantity"
+                    className="grid size-7 place-items-center rounded-full bg-primary text-sm font-bold text-primary-foreground shadow-sm transition-transform active:scale-90"
+                  >
+                    −
+                  </button>
+                  <span className="min-w-[1.25rem] text-center font-display text-xs font-bold text-ink" aria-live="polite">
+                    {quantity}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onIncrement?.();
+                    }}
+                    aria-label="Increase quantity"
+                    className="grid size-7 place-items-center rounded-full bg-primary text-sm font-bold text-primary-foreground shadow-sm transition-transform active:scale-90"
+                  >
+                    +
+                  </button>
+                </div>
+              )}
+            </div>
           )}
         </div>
       </div>
-    </button>
+    </div>
   );
 }
+

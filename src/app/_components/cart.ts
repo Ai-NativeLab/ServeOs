@@ -101,3 +101,76 @@ export function setLineQuantity(index: number, quantity: number): Cart {
 export function removeLine(index: number): Cart {
   return setLineQuantity(index, 0);
 }
+
+/** Total quantity of a product across all variants, cuts, and modifier configurations. */
+export function getProductQuantity(cart: Cart, productId: string): number {
+  return cart.lines
+    .filter((l) => l.productId === productId)
+    .reduce((sum, l) => sum + l.quantity, 0);
+}
+
+/** Quantity of the simple (unconfigured) line for a product in the cart. */
+export function getSimpleProductQuantity(cart: Cart, productId: string): number {
+  const line = cart.lines.find(
+    (l) => l.productId === productId && !l.variantId && l.selectedOptionIds.length === 0 && !l.dimensions,
+  );
+  return line ? line.quantity : 0;
+}
+
+/** Returns true if a product requires configuration (modifiers, retail variants, or cut dimensions). */
+export function isProductConfigurable(product: {
+  modifierGroups?: unknown[];
+  variants?: unknown[];
+  unitOfMeasure?: string | null;
+}): boolean {
+  if (product.modifierGroups && product.modifierGroups.length > 0) return true;
+  if (product.variants && product.variants.length > 0) return true;
+  if (product.unitOfMeasure && (product.unitOfMeasure === "m" || product.unitOfMeasure === "m2" || product.unitOfMeasure === "bf")) {
+    return true;
+  }
+  return false;
+}
+
+/** Pure function to increment or decrement a simple product's quantity in the cart. */
+export function changeSimpleProductQuantity(
+  current: Cart,
+  branchId: string | null,
+  product: { id: string; nameEn: string; nameAr: string; effectivePrice: number },
+  delta: number,
+): Cart {
+  const idx = current.lines.findIndex(
+    (l) => l.productId === product.id && !l.variantId && l.selectedOptionIds.length === 0 && !l.dimensions,
+  );
+
+  if (delta > 0) {
+    if (idx >= 0) {
+      return withLineQuantity(current, idx, current.lines[idx].quantity + delta);
+    }
+    return mergeLine(current, branchId, {
+      productId: product.id,
+      nameEn: product.nameEn,
+      nameAr: product.nameAr,
+      quantity: delta,
+      unitPrice: product.effectivePrice,
+      selectedOptionIds: [],
+      modifierSummaryEn: "",
+    });
+  }
+
+  if (delta < 0 && idx >= 0) {
+    return withLineQuantity(current, idx, current.lines[idx].quantity + delta);
+  }
+
+  return current;
+}
+
+/** Impure helper that updates a simple product's quantity, persists to localStorage, and emits the cart change event. */
+export function updateSimpleProductQuantity(
+  branchId: string | null,
+  product: { id: string; nameEn: string; nameAr: string; effectivePrice: number },
+  delta: number,
+): Cart {
+  const cart = changeSimpleProductQuantity(loadCart(), branchId, product, delta);
+  saveCart(cart);
+  return cart;
+}

@@ -1,7 +1,15 @@
 "use client";
 import { useEffect, useState } from "react";
 import type { PublishedMenu } from "@/server/catalog/schema";
-import { addLine, loadCart, setLineQuantity, cartSubtotal, type Cart } from "./cart";
+import {
+  addLine,
+  loadCart,
+  setLineQuantity,
+  cartSubtotal,
+  getSimpleProductQuantity,
+  updateSimpleProductQuantity,
+  type Cart,
+} from "./cart";
 import { CategoryNav } from "./storefront/CategoryNav";
 import { ProductCard, type MenuProduct } from "./storefront/ProductCard";
 import { ProductSheet } from "./storefront/ProductSheet";
@@ -81,16 +89,55 @@ export function StorefrontMenu({
               </div>
             )}
             <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-              {rest.map((p) => (
-                <ProductCard
-                  key={p.id}
-                  product={p}
-                  interactive={orderingEnabled}
-                  onOpen={() => (needsBranchPick ? setBranchPickFor(p.id) : setActiveProduct(p))}
-                  currency={currency}
-                  badge={popularIds.includes(p.id) ? "popular" : isNewProduct(p.createdAt) ? "new" : null}
-                />
-              ))}
+              {rest.map((p) => {
+                const simpleQty = getSimpleProductQuantity(cart, p.id);
+                return (
+                  <ProductCard
+                    key={p.id}
+                    product={p}
+                    interactive={orderingEnabled}
+                    onOpen={() => (needsBranchPick ? setBranchPickFor(p.id) : setActiveProduct(p))}
+                    currency={currency}
+                    badge={popularIds.includes(p.id) ? "popular" : isNewProduct(p.createdAt) ? "new" : null}
+                    quantity={simpleQty}
+                    onQuickAdd={() => {
+                      if (needsBranchPick) {
+                        setBranchPickFor(p.id);
+                      } else {
+                        setCart(
+                          updateSimpleProductQuantity(
+                            branchId,
+                            { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
+                            1,
+                          ),
+                        );
+                      }
+                    }}
+                    onIncrement={() => {
+                      if (needsBranchPick) {
+                        setBranchPickFor(p.id);
+                      } else {
+                        setCart(
+                          updateSimpleProductQuantity(
+                            branchId,
+                            { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
+                            1,
+                          ),
+                        );
+                      }
+                    }}
+                    onDecrement={() => {
+                      setCart(
+                        updateSimpleProductQuantity(
+                          branchId,
+                          { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
+                          -1,
+                        ),
+                      );
+                    }}
+                  />
+                );
+              })}
             </div>
           </div>
         );
