@@ -379,3 +379,61 @@ Sources: `/document-serialization-approach/`, `/documents/receipt-v1-2/`, `/docu
   invoice. For a B2C sale this is exactly VERIFY-10's QR-less copy; for a B2B one the buyer is told nothing at all.
   The number appears on a reprint after sync. Fixing it needs the captured buyer carried into the receipt data so
   the footer can say "pending sync" without a server round trip — a named follow-up, not a filing defect.
+- **THE ONLINE CUSTOMER'S FISCAL DOCUMENT ARRIVES BY EMAIL, AND THAT IS THE PRIMARY CHANNEL RATHER THAN A CONVENIENCE (round 2, Task 7).**
+  *Why it is primary:* an online order is fiscalised by `reconcileMissingReceipts`, so its `eta_submissions` row is
+  written **5-20 minutes after payment** — long after the customer closed the status page. Task 6's storefront fiscal
+  block does not live-update (`StatusPoller` sets its own state and never calls `router.refresh()`; the worker
+  publishes no realtime event when it writes a fiscal row; the poller stops at a terminal order status, which a
+  10-minute order reaches *before* the fiscal row exists), so that block is **what a revisit shows** and its own
+  rationale defers the reliable copy here. `src/server/fiscal/customer-email.ts` is the only thing that reaches a
+  customer who has left.
+  *Family-aware, on the same axes `orderFiscalView` splits on:* an `e_receipt` carries ETA's uuid plus the QR's
+  **portal link**; an `e_invoice` carries ETA's long id, **no QR ever**, and **links to nothing** — `qr_payload` is
+  null for an invoice's whole life (no invoice QR template exists, §6 above) and no URL is invented to stand in for
+  one.
+  *The inline-QR finding:* it is not satisfiable through this provider surface. `EmailMessage` is exactly
+  `{from, replyTo, to, subject, html, idempotencyKey}` — no attachments array, no content-id map — so a CID inline
+  image needs a widening of a shared interface plus both implementations. The `data:` URI alternative was refused
+  deliberately: Gmail and Outlook strip `data:` image sources, so it renders as a broken-image icon for most
+  recipients, which is worse than no image because a quiet failure that looks like a broken tax document is exactly
+  what this work exists to prevent. **The portal link IS the QR delivery** — `qr_payload` is a public ETA URL
+  (`{portal}/receipts/search/{uuid}/share/{date}#Total:…,IssuerRIN:…`), the identical string the printed QR encodes,
+  so scanning and clicking land on the same page.
+  *It sends DIRECTLY, diverging from both house patterns:* `notify()` addresses staff only (`{userId}`/`{role}`), and
+  the outbox pattern `sendPurchaseOrder` uses — which would buy retries, backoff and an exhaustion alert — was
+  rejected because **it makes the outcome asynchronous, and the outcome is the deliverable**. A queued row can only
+  stamp "handed off"; the verdict would land in `notification_outbox.last_error`, keyed by nothing the fiscal
+  dashboard reads, leaving `customer_email_error` a column nothing could populate. The honest cost is **one attempt,
+  no backoff**: a transient blip loses that customer's email permanently, and what replaces the retry ladder is
+  visibility. That trade is only acceptable because the **fiscal obligation is already discharged** — ETA holds the
+  document and the sale is declared; the customer's copy is a courtesy and must never be confused with compliance.
+  Retries later mean an outbox row PLUS a callback that stamps these columns, never a second silent send path.
+  *Visible failure is a correctness gate:* `eta_submissions` gains `customer_emailed_at` + `customer_email_error`
+  (migration **0053**, family-neutral names) and the dashboard's submissions table gains an "Email" cell with **three**
+  states — a time, an amber `failed` marker carrying the redacted reason, or an em-dash for **nobody to email**. The
+  third is not a failure and must stay distinguishable from one, or a broken `EMAIL_FROM` looks exactly like a guest
+  who declined to give an address. `customer_email_error` follows `last_error`'s stance exactly (owner audience, env
+  KEY names acceptable, values never); neither column is selected by `getSaleFiscalStatus`, so the token surface
+  cannot reach either, and the rendered **email payload** is walked at the stricter `TOKEN_FORBIDDEN` — a forwarded
+  email is the widest audience in the subsystem, wider than `/order/[token]`, with no expiry and no revocation.
+  *The hook sits after the acceptance transaction COMMITS*, deliberately the opposite placement to the audit and
+  notify calls beside it (which must be atomic with the status write): a throw inside would roll back the status,
+  `acceptedAt`, `etaLongId` and the audit event, so a failed courtesy email would have unfiled a fiscal fact.
+  Idempotent on `customer_emailed_at`, because an expired claim lease can put two drains through `persistAccepted`
+  for one document.
+  *THE CAPTURE RULING, and the reality check behind it:* ServeOS captured an email **nowhere** — `orders` had no such
+  column, and `customers.email` sits on a table a **guest never has a row in** (`orders.customer_id` is null forever
+  for guests, who are the online channel's majority). Sending "only for orders that have an email" would therefore
+  have shipped a path firing for approximately nobody. So `orders` gains a **nullable `customer_email`** and checkout
+  gains **one optional input**, labelled with its purpose. Recipient resolution is
+  `orders.customer_email` → `customers.email` via `customer_id` → **none**, with rung 1 beating rung 2 on purpose (a
+  signed-in customer typing a different address for this order is expressing a preference about this document).
+  *PURPOSE LIMITATION AT BIRTH:* there is **no marketing-consent flag anywhere in the schema**, so nothing can refuse
+  a marketing send except the column's own JSDoc, which names the refusal in as many words — this order's tax
+  document and nothing else, and any other use requires a consent flag and a withdrawal path FIRST. Stated because an
+  address column with no declared purpose does not stay single-purpose, and the repurposing never looks like a
+  decision when it happens.
+  *POS SCOPE, recorded rather than worked around:* **the till captures no email at any point in its flow**, so every
+  POS sale resolves to "none" and is silently not emailed, by design. Asking a cashier to type a customer's address
+  at the counter is the seven-field B2B form's problem again; if till-side delivery is ever wanted, the shape is the
+  same directory-and-picker fix that form needs, not a sixth field.

@@ -12,14 +12,17 @@ export type SlotOption = { iso: string; label: string; day: "Today" | "Tomorrow"
 type Area = { id: string; nameEn: string; nameAr: string; deliveryFee: string; minOrderAmount: string; etaMinutes: number | null };
 
 const CUSTOMER_KEY = "serveos.customer";
-type SavedCustomer = { name: string; phone: string; address: string };
+type SavedCustomer = { name: string; phone: string; address: string; email: string };
 
 function loadCustomer(): SavedCustomer {
   try {
     const raw = window.localStorage.getItem(CUSTOMER_KEY);
-    return raw ? (JSON.parse(raw) as SavedCustomer) : { name: "", phone: "", address: "" };
+    // `email` is read with a fallback rather than trusted: this key predates
+    // the field, so an existing browser has a two-field object in it.
+    const saved = raw ? (JSON.parse(raw) as Partial<SavedCustomer>) : {};
+    return { name: saved.name ?? "", phone: saved.phone ?? "", address: saved.address ?? "", email: saved.email ?? "" };
   } catch {
-    return { name: "", phone: "", address: "" };
+    return { name: "", phone: "", address: "", email: "" };
   }
 }
 
@@ -27,7 +30,7 @@ export type OfflineMethodOption = { type: string; label: string; payToDetail: st
 
 export function CheckoutForm({
   slug, branchId, branchName, pricing, currency, openNow, slots, methods,
-  initialName = "", initialPhone = "", initialAddress = "",
+  initialName = "", initialPhone = "", initialAddress = "", initialEmail = "",
 }: {
   slug: string;
   branchId: string;
@@ -40,6 +43,7 @@ export function CheckoutForm({
   initialName?: string;
   initialPhone?: string;
   initialAddress?: string;
+  initialEmail?: string;
 }) {
   const [cart, setCart] = useState<Cart>({ branchId: null, lines: [] });
   const [fulfillment, setFulfillment] = useState<"pickup" | "delivery">("delivery");
@@ -51,6 +55,7 @@ export function CheckoutForm({
   const [name, setName] = useState(initialName);
   const [phone, setPhone] = useState(initialPhone);
   const [address, setAddress] = useState(initialAddress);
+  const [email, setEmail] = useState(initialEmail);
   const [notes, setNotes] = useState("");
   const [payMethod, setPayMethod] = useState<string>("cash");
   const [payRef, setPayRef] = useState("");
@@ -65,6 +70,7 @@ export function CheckoutForm({
     setName(saved.name);
     setPhone(saved.phone);
     setAddress(saved.address);
+    setEmail(saved.email);
     window.addEventListener("serveos-cart-changed", sync);
     return () => window.removeEventListener("serveos-cart-changed", sync);
   }, []);
@@ -112,6 +118,16 @@ export function CheckoutForm({
       setError("Please enter your payment reference.");
       return;
     }
+    // A PRE-CHECK, exactly like the stale-slot one above, and for the same
+    // reason: `placeOrder` refuses a malformed address too, but its
+    // `OrderValidationError` renders as the generic "please review your cart" —
+    // which for a mistyped email points the customer at the wrong field
+    // entirely. The server check stays (this route is public and the form is
+    // not the only caller); this one is what makes the message actionable.
+    if (email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim())) {
+      setError("That email doesn't look right — fix it, or clear it to skip the receipt.");
+      return;
+    }
     setSubmitting(true);
     try {
       const res = await fetch("/api/orders", {
@@ -119,7 +135,7 @@ export function CheckoutForm({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           slug, branchId, fulfillmentType: fulfillment,
-          customerName: name, customerPhone: phone, notes,
+          customerName: name, customerPhone: phone, customerEmail: email, notes,
           areaId: fulfillment === "delivery" ? areaId : undefined,
           addressText: fulfillment === "delivery" ? address : undefined,
           scheduledFor: when === "scheduled" ? slotIso : undefined,
@@ -142,7 +158,7 @@ export function CheckoutForm({
         return;
       }
       try {
-        window.localStorage.setItem(CUSTOMER_KEY, JSON.stringify({ name, phone, address }));
+        window.localStorage.setItem(CUSTOMER_KEY, JSON.stringify({ name, phone, address, email }));
       } catch { /* best-effort */ }
       rememberOrder({
         token: data.statusToken, orderNumber: data.orderNumber,
@@ -253,6 +269,21 @@ export function CheckoutForm({
         <div className="grid gap-1.5">
           <Label htmlFor="co-phone">Phone</Label>
           <Input id="co-phone" placeholder="Phone" inputMode="tel" value={phone} onChange={(e) => setPhone(e.target.value)} />
+        </div>
+        {/* OPTIONAL, and the label says what it is FOR rather than just what it
+            is. An address asked for with no stated purpose reads as a mailing
+            list, which is both why people decline and why the column it lands
+            in carries a purpose-limitation contract (`orders.customerEmail`).
+            The only thing sent to it is this order's own tax document.
+
+            Not in the submit-disabled guard below, deliberately: name and phone
+            gate the order because the restaurant cannot deliver without them; a
+            tax receipt is the seller's obligation to FILE, not the buyer's to
+            receive, so a blank here costs the customer their emailed copy and
+            nothing else. */}
+        <div className="grid gap-1.5">
+          <Label htmlFor="co-email">Email (optional) — for your tax receipt</Label>
+          <Input id="co-email" placeholder="you@example.com" type="email" inputMode="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
         </div>
         {fulfillment === "delivery" && (
           <>

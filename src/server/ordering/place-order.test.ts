@@ -895,3 +895,81 @@ describe("placeOrder realtime propagation", () => {
     ]);
   });
 });
+
+/**
+ * THE CHECKOUT CAPTURE (round 2, Task 7) — `orders.customerEmail`, the online
+ * customer's route to their own ETA fiscal document.
+ *
+ * WHY IT IS TESTED AT THE ORDERING LAYER and not only at the fiscal one: the
+ * field crosses four hops (form -> POST body -> API allowlist -> placeOrder) and
+ * NONE of them would break if a hop dropped it — every reconstruction on that
+ * path is a hand-built object literal, so an unnamed field is a silent null
+ * rather than a type error. That is the exact failure the round-2 plan's
+ * OPTIONAL-FIELD SILENT-DEGRADE RULE names, and this is its round trip.
+ */
+describe("placeOrder — the optional fiscal email", () => {
+  it("lands the captured address on the order", async () => {
+    const { t, branch, pizza } = await setup("po-email-1");
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup",
+      customerName: "Ahmed", customerPhone: "0100", customerEmail: "  ahmed@example.test  ",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+
+    const [row] = await withTenant(t.id, (tx) => tx.select().from(orders).where(eq(orders.id, res.orderId)));
+    // Trimmed, exactly as `customerName`/`customerPhone` beside it are.
+    expect(row.customerEmail).toBe("ahmed@example.test");
+  });
+
+  it("stores NULL when the customer left it blank — which is the common case", async () => {
+    const { t, branch, pizza } = await setup("po-email-2");
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup",
+      customerName: "Ahmed", customerPhone: "0100",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+
+    const [row] = await withTenant(t.id, (tx) => tx.select().from(orders).where(eq(orders.id, res.orderId)));
+    // Null, never "" — the recipient ladder treats empty and absent alike, but
+    // the column should not carry two spellings of "nobody".
+    expect(row.customerEmail).toBeNull();
+  });
+
+  it("treats a whitespace-only address as blank rather than as a recipient", async () => {
+    const { t, branch, pizza } = await setup("po-email-3");
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup",
+      customerName: "Ahmed", customerPhone: "0100", customerEmail: "   ",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+
+    const [row] = await withTenant(t.id, (tx) => tx.select().from(orders).where(eq(orders.id, res.orderId)));
+    expect(row.customerEmail).toBeNull();
+  });
+
+  it("refuses a malformed address at the boundary, so the typo is fixable at checkout", async () => {
+    const { t, branch, pizza } = await setup("po-email-4");
+    const { OrderValidationError } = await import("./errors");
+    // A shape error caught HERE is a 422 the customer can still correct. The
+    // same typo caught later is a provider rejection recorded on a fiscal row
+    // hours after they closed the page, which nobody can act on.
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup",
+      customerName: "Ahmed", customerPhone: "0100", customerEmail: "ahmed@@example",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(OrderValidationError);
+  });
+
+  it("does NOT block an order over a missing email — a receipt is the seller's obligation to file", async () => {
+    const { t, branch, pizza } = await setup("po-email-5");
+    // Stated as a test because it is the decision most likely to be "fixed" by
+    // someone making the field required: the customer's copy is a courtesy, the
+    // FILING is the compliance act, and no order may be refused for want of one.
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup",
+      customerName: "Ahmed", customerPhone: "0100",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    expect(res.orderNumber).toBeGreaterThan(0);
+  });
+});

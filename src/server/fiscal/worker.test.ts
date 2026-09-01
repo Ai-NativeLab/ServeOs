@@ -8,6 +8,7 @@ import { placeOrder } from "@/server/ordering/service";
 import { createCategory, createProduct, updateProduct } from "@/server/catalog/service";
 import { auditEvents } from "@/server/audit/schema";
 import { notifications } from "@/server/notifications/schema";
+import { FakeEmailProvider } from "@/server/email/fake-provider";
 import { seedPosContext, openShiftForCtx } from "@/server/pos/test-helpers";
 import { recordSale } from "@/server/pos/record-sale";
 import { issueRefund, type RefundActor } from "@/server/pos/refund";
@@ -1600,5 +1601,185 @@ describe("B2B e_invoice — the worker's submit/poll path", () => {
     expect(row.lastError).toContain("missing-buyer");
     const alerts = await notificationsFor(s.tenantId);
     expect(alerts.some((n) => n.title === "A fiscal document could not be submitted")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The customer's copy of their fiscal document (round 2, Task 7)
+//
+// The CONTENT and the RECIPIENT LADDER are pinned in `customer-email.test.ts`,
+// which needs no ETA at all. What is pinned HERE is everything that is a
+// property of the HOOK rather than of the module: that acceptance triggers a
+// send, that it triggers exactly ONE, and — the one that matters most — that a
+// send which fails cannot disturb the acceptance it rides behind.
+// ---------------------------------------------------------------------------
+
+/** A web order carrying an email at checkout, aged past the sweep threshold so
+ *  the reconciliation sweep adopts it — the real online path. */
+async function placeWebOrderWithEmail(
+  tenantId: string, branchId: string, productId: string, customerEmail: string | null,
+): Promise<string> {
+  const placed = await placeOrder(tenantId, {
+    branchId, fulfillmentType: "pickup", customerName: "Web Buyer", customerPhone: "01000000000",
+    ...(customerEmail ? { customerEmail } : {}),
+    channel: "web", lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+  });
+  await withTenant(tenantId, (tx) => tx.update(orders).set({
+    paymentStatus: "paid", placedAt: new Date(Date.now() - 30 * 60 * 1000),
+  }).where(eq(orders.id, placed.orderId)));
+  return placed.orderId;
+}
+
+/** Sweep the order in, submit it, then poll it to `accepted` — the two passes a
+ *  document needs, with the poll clock nudged between them. */
+async function driveToAccepted(tenantId: string, opts: {
+  emailProvider?: FakeEmailProvider; submissionUuid?: string;
+} = {}) {
+  const provider = new FakeEta([accepted202(opts.submissionUuid ?? "sub-mail")], [pollValid("LONG-MAIL")]);
+  await drainEtaSubmissions({ provider, limit: 10, emailProvider: opts.emailProvider });
+  const [submitted] = await rowsFor(tenantId);
+  await makeEligible(tenantId, submitted.id);
+  await drainEtaSubmissions({ provider, reconcile: false, emailProvider: opts.emailProvider });
+  return submitted.id;
+}
+
+describe("drainEtaSubmissions — the customer's fiscal-document email", () => {
+  it("emails the customer on acceptance and stamps the row", async () => {
+    const s = await seedPosContext("owner");
+    await seedTaxCode(s.tenantId, s.productId);
+    await seedFiscalConfig(s.tenantId, { onlineDeviceId: s.ctx.deviceId });
+    await seedDeviceCredential(s.tenantId, s.ctx.deviceId, "POS-ONLINE");
+    await placeWebOrderWithEmail(s.tenantId, s.branchId, s.productId, "buyer@example.test");
+
+    const emailProvider = new FakeEmailProvider();
+    await driveToAccepted(s.tenantId, { emailProvider });
+
+    const [row] = await rowsFor(s.tenantId);
+    expect(row.status).toBe("accepted");
+    expect(row.customerEmailedAt).not.toBeNull();
+    expect(row.customerEmailError).toBeNull();
+
+    expect(emailProvider.sent).toHaveLength(1);
+    expect(emailProvider.sent[0].to).toBe("buyer@example.test");
+    // A RECEIPT, so the QR's portal link is the delivery — and it is the row's
+    // own stored payload, not one rebuilt here.
+    expect(emailProvider.sent[0].html).toContain(row.qrPayload!);
+    expect(emailProvider.sent[0].subject).toContain("tax receipt");
+  });
+
+  it("sends NOTHING for an order with no address, and leaves both columns null", async () => {
+    const s = await seedPosContext("owner");
+    await seedTaxCode(s.tenantId, s.productId);
+    await seedFiscalConfig(s.tenantId, { onlineDeviceId: s.ctx.deviceId });
+    await seedDeviceCredential(s.tenantId, s.ctx.deviceId, "POS-ONLINE");
+    await placeWebOrderWithEmail(s.tenantId, s.branchId, s.productId, null);
+
+    const emailProvider = new FakeEmailProvider();
+    await driveToAccepted(s.tenantId, { emailProvider });
+
+    const [row] = await rowsFor(s.tenantId);
+    expect(row.status).toBe("accepted");
+    // TWO NULLS IS THE THIRD STATE — the dashboard's em-dash. Not a failure,
+    // and deliberately not distinguishable from "we never tried" by a marker
+    // column, because there is nothing for an owner to do about it.
+    expect(row.customerEmailedAt).toBeNull();
+    expect(row.customerEmailError).toBeNull();
+    expect(emailProvider.sent).toHaveLength(0);
+  });
+
+  it("does not re-send when an accepted row is driven through persistAccepted again", async () => {
+    const s = await seedPosContext("owner");
+    await seedTaxCode(s.tenantId, s.productId);
+    await seedFiscalConfig(s.tenantId, { onlineDeviceId: s.ctx.deviceId });
+    await seedDeviceCredential(s.tenantId, s.ctx.deviceId, "POS-ONLINE");
+    await placeWebOrderWithEmail(s.tenantId, s.branchId, s.productId, "buyer@example.test");
+
+    const emailProvider = new FakeEmailProvider();
+    const submissionId = await driveToAccepted(s.tenantId, { emailProvider });
+    expect(emailProvider.sent).toHaveLength(1);
+    const [afterFirst] = await rowsFor(s.tenantId);
+    const stampedAt = afterFirst.customerEmailedAt;
+
+    // THE RACE THIS GUARDS, reproduced rather than described: the claim lease
+    // can expire while a poll is in flight, so a second drain can claim the
+    // same row and reach `persistAccepted` for a document that is already
+    // accepted. Putting the row back to `submitted` and re-polling it is
+    // exactly that shape — one document, two trips through the accept path.
+    await withTenant(s.tenantId, (tx) => tx.update(etaSubmissions)
+      .set({ status: "submitted", nextAttemptAt: new Date(Date.now() - 1000) })
+      .where(and(eq(etaSubmissions.tenantId, s.tenantId), eq(etaSubmissions.id, submissionId))));
+
+    const second = new FakeEta([], [pollValid("LONG-MAIL")]);
+    await drainEtaSubmissions({ provider: second, reconcile: false, emailProvider });
+
+    const [row] = await rowsFor(s.tenantId);
+    expect(row.status).toBe("accepted");
+    // One email, and the original timestamp untouched — the guard skipped the
+    // send rather than sending and re-stamping.
+    expect(emailProvider.sent).toHaveLength(1);
+    expect(row.customerEmailedAt?.getTime()).toBe(stampedAt?.getTime());
+  });
+
+  it("records a failed send WITHOUT disturbing the acceptance", async () => {
+    const s = await seedPosContext("owner");
+    await seedTaxCode(s.tenantId, s.productId);
+    await seedFiscalConfig(s.tenantId, { onlineDeviceId: s.ctx.deviceId });
+    await seedDeviceCredential(s.tenantId, s.ctx.deviceId, "POS-ONLINE");
+    await placeWebOrderWithEmail(s.tenantId, s.branchId, s.productId, "buyer@example.test");
+
+    const emailProvider = new FakeEmailProvider();
+    emailProvider.failNext = new Error("Resend send failed: 503");
+    await driveToAccepted(s.tenantId, { emailProvider });
+
+    const [row] = await rowsFor(s.tenantId);
+    // THE POINT OF THE WHOLE TASK: the fiscal facts are untouched. The document
+    // is filed, ETA has named it, the audit event stands — a courtesy email
+    // that did not go out may not look like a tax document that did not.
+    expect(row.status).toBe("accepted");
+    expect(row.acceptedAt).not.toBeNull();
+    expect(row.etaLongId).toBe("LONG-MAIL");
+    expect(row.lastError).toBeNull();
+    // …and the failure is VISIBLE rather than lost: this column is what the
+    // dashboard's submissions table renders as a "failed" marker.
+    expect(row.customerEmailedAt).toBeNull();
+    expect(row.customerEmailError).toContain("Resend send failed: 503");
+    // The audits are exactly the two a clean acceptance writes — no email
+    // failure leaked into the fiscal audit trail.
+    const audits = await auditsFor(s.tenantId);
+    expect(audits.map((a) => a.action).sort()).toEqual(["eta.submission.accepted", "eta.submission.submitted"]);
+  });
+
+  it("emails a B2B buyer their tax invoice — long id, no QR, same hook", async () => {
+    const s = await seedSale();
+    await withTenant(s.tenantId, (tx) => tx.update(orders)
+      .set({ customerEmail: "finance@buyer.test" })
+      .where(eq(orders.tenantId, s.tenantId)));
+    // Supersede the sale's own receipt so the invoice is the live document, the
+    // one sanctioned family switch (`requestB2bInvoice`'s shape).
+    await withTenant(s.tenantId, (tx) => tx.update(etaSubmissions)
+      .set({ status: "rejected" })
+      .where(eq(etaSubmissions.tenantId, s.tenantId)));
+    const [order] = await withTenant(s.tenantId, (tx) =>
+      tx.select().from(orders).where(eq(orders.tenantId, s.tenantId)));
+    await enqueueInvoice(s.tenantId, order.id);
+
+    const emailProvider = new FakeEmailProvider();
+    const provider = new FakeEta([accepted202("sub-inv-mail")], [pollValid("EG-LONG-9")]);
+    await drainEtaSubmissions({ provider, reconcile: false, emailProvider });
+    const [invoiceRow] = await invoiceRowsFor(s.tenantId);
+    await makeEligible(s.tenantId, invoiceRow.id);
+    await drainEtaSubmissions({ provider, reconcile: false, emailProvider });
+
+    const [row] = await invoiceRowsFor(s.tenantId);
+    expect(row.status).toBe("accepted");
+    expect(row.customerEmailedAt).not.toBeNull();
+
+    expect(emailProvider.sent).toHaveLength(1);
+    expect(emailProvider.sent[0].to).toBe("finance@buyer.test");
+    expect(emailProvider.sent[0].subject).toContain("tax invoice");
+    expect(emailProvider.sent[0].html).toContain("EG-LONG-9");
+    // BOTH FAMILIES REACH THE HOOK, and the invoice's mail links nowhere —
+    // the non-vacuity twin of the receipt case at the top of this describe.
+    expect(emailProvider.sent[0].html).not.toContain("href=");
   });
 });

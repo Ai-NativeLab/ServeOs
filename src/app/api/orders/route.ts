@@ -45,6 +45,11 @@ export async function POST(req: NextRequest) {
     fulfillmentType: body.fulfillmentType === "delivery" ? "delivery" : "pickup",
     customerName: String(body.customerName ?? ""),
     customerPhone: String(body.customerPhone ?? ""),
+    // Optional, and shaped-checked (not coerced) exactly like `notes` beside
+    // it: a non-string is absent rather than the literal "undefined" that
+    // `String(...)` would produce. The address itself is validated in
+    // `placeOrder`, with the other order-shape rules.
+    customerEmail: typeof body.customerEmail === "string" ? body.customerEmail : undefined,
     notes: typeof body.notes === "string" ? body.notes : undefined,
     areaId: typeof body.areaId === "string" ? body.areaId : undefined,
     addressText: typeof body.addressText === "string" ? body.addressText : undefined,

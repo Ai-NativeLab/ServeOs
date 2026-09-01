@@ -60,6 +60,7 @@ const order: Order = {
   paymentProviderRef: null,
   customerName: "Walk-in",
   customerPhone: "+201000000000",
+  customerEmail: null,
   notes: null,
   cashierUserId: null,
   rxReviewStatus: "not_required",

@@ -184,14 +184,26 @@ export default async function OrderStatusPage({ params }: { params: Promise<{ to
                 )}
               </>
             )}
-            {fiscalView.kind === "receipt-pending" && (
-              <p className="mt-1.5 text-muted-foreground">Fiscal receipt pending</p>
-            )}
             {fiscalView.kind === "invoice" && (
               <p className="mt-1.5 break-all text-ink">ETA number: {fiscalView.etaLongId}</p>
             )}
-            {fiscalView.kind === "invoice-pending" && (
-              <p className="mt-1.5 text-muted-foreground">Tax invoice — pending ETA number</p>
+            {/* THE FALLBACK IS `else`-SHAPED, not a third equality test, and
+                that is what makes it total. The two branches above are the
+                states that have something to SHOW (a QR, a number); everything
+                else is "filed, nothing to print yet" — which is true of both
+                pending kinds today and would be true of any kind added to
+                `orderFiscalView` tomorrow. Enumerating `receipt-pending` and
+                `invoice-pending` by name instead would leave a future kind
+                rendering an eyebrow over an empty box, which reads to the
+                customer as a broken page rather than as a pending document.
+                Degrading to the honest pending line costs nothing and cannot
+                be wrong. */}
+            {fiscalView.kind !== "receipt" && fiscalView.kind !== "invoice" && (
+              <p className="mt-1.5 text-muted-foreground">
+                {fiscalView.kind === "invoice-pending"
+                  ? "Tax invoice — pending ETA number"
+                  : "Fiscal receipt pending"}
+              </p>
             )}
           </section>
         )}

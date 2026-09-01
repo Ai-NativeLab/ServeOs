@@ -151,6 +151,53 @@ export const etaSubmissions = pgTable("eta_submissions", {
    *  alone cannot express "eligible again at T" across worker restarts. */
   nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
   lastError: text("last_error"),
+  /**
+   * When the customer was emailed THEIR copy of this document, and the reason
+   * the pair below exists at all.
+   *
+   * FAMILY-NEUTRAL NAMES, DELIBERATELY. Not `receiptEmailedAt`: both families
+   * are emailed (a receipt with its QR, an invoice with ETA's long id), and a
+   * receipt-shaped name on an invoice-carrying column is the same silent
+   * mismatch `docType` exists to prevent everywhere else in this table.
+   *
+   * IT IS ALSO THE IDEMPOTENCY KEY. `persistAccepted` runs on the submit path
+   * AND on the poll path, and a row can reach it more than once (an expired
+   * claim lease lets two drains hold one row — see `CLAIM_LEASE_MS`). Non-null
+   * here means "already sent", and the send is skipped. Belt and braces with
+   * the provider's own dedupe, which keys on this row's id.
+   *
+   * NULL WITH A NULL `customer_email_error` IS A THIRD STATE, not a missing
+   * one: nobody to email. An online guest who left the optional checkout field
+   * blank, and EVERY POS SALE — the till captures no address at any point in
+   * its flow. The dashboard renders that as an em-dash rather than as a
+   * failure, because it is not one.
+   */
+  customerEmailedAt: timestamp("customer_emailed_at", { withTimezone: true }),
+  /**
+   * Why the customer's copy did not go out — the VISIBLE-FAILURE half, and the
+   * reason this is a column rather than a log line.
+   *
+   * A send that fails silently is indistinguishable from a customer who never
+   * looked, and the failure surfaces (if at all) as "I never got my receipt"
+   * weeks later with nothing to check. This column is what the dashboard's
+   * submissions table reads to mark the row, so a broken EMAIL_FROM or an
+   * unset provider key is visible on the screen an owner already watches.
+   *
+   * SAME AUDIENCE STANCE AS `last_error`, restated because the two are written
+   * by different code paths and could drift. This is owner-audience text: an
+   * env KEY name is acceptable in it (an owner debugging an unsent receipt
+   * needs to know which variable is unset — see `resolveSecretRef`), a
+   * VALUE never is. It is truncated and redacted at the write site
+   * (`@/server/fiscal/customer-email`), which is also why the provider's own
+   * error text is not stored verbatim: `ResendEmailProvider` is careful, but
+   * this column must not depend on a third party's discretion about what it
+   * puts in a message.
+   *
+   * NEVER read by the customer-facing token surface. `SaleFiscalStatus`
+   * selects neither of these columns, and `config-service.test.ts`'s masking
+   * walk holds that surface to the stricter `TOKEN_FORBIDDEN` set.
+   */
+  customerEmailError: text("customer_email_error"),
   submittedAt: timestamp("submitted_at", { withTimezone: true }),
   acceptedAt: timestamp("accepted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

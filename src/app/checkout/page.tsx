@@ -85,6 +85,7 @@ export default async function CheckoutPage({
           initialName={me?.name ?? ""}
           initialPhone={me?.phone ?? ""}
           initialAddress={me?.defaultAddressText ?? ""}
+          initialEmail={me?.email ?? ""}
           branchId={branch.id}
           branchName={branch.name}
           pricing={pricing}

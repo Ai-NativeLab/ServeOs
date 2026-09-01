@@ -83,6 +83,14 @@ export type PlaceOrderInput = {
   fulfillmentType: "pickup" | "delivery";
   customerName: string;
   customerPhone: string;
+  /**
+   * OPTIONAL, and for ONE purpose: sending the customer their own ETA fiscal
+   * document for this order (`@/server/fiscal/customer-email`). The column it
+   * lands in carries the full contract — `orders.customerEmail` — and that
+   * contract forbids every other use, because no consent flag exists to refuse
+   * one on its behalf. Read it before adding a second caller.
+   */
+  customerEmail?: string;
   notes?: string;
   areaId?: string;
   addressText?: string;
@@ -140,9 +148,30 @@ export function money(n: number): string {
  * per the manual-payments spec, never authoritative. */
 const sanitizeProofUrl = sanitizeHttpUrl;
 
+/**
+ * The same deliberately-loose test `@/app/subscribe/enquiry-input` uses, and
+ * loose for the same stated reason: it validates just enough to keep the mail
+ * provider from rejecting the send, not enough to adjudicate RFC 5322. Copied
+ * rather than imported — that module is a public marketing form's input parser
+ * and this is the ordering domain; a shared "email rules" module is worth
+ * having the moment a third caller appears, and not before.
+ *
+ * 254 is the addressable maximum, matching that module's `FIELD_LIMITS.email`.
+ */
+function isEmailShaped(email: string): boolean {
+  return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email);
+}
+
 export async function placeOrder(tenantId: string, input: PlaceOrderInput): Promise<PlaceOrderResult> {
   if (!input.lines || input.lines.length === 0) throw new OrderValidationError("empty cart");
   if (!input.customerName.trim() || !input.customerPhone.trim()) throw new OrderValidationError("missing customer details");
+  // SHAPE ONLY, and only when one was given — an absent email is the normal
+  // case, not an error (a tax receipt is the seller's obligation to FILE, not
+  // the buyer's to receive). The check exists so a typo becomes a 422 the
+  // customer can still fix at checkout rather than a provider rejection
+  // recorded on a fiscal row hours later, where nobody can act on it.
+  const customerEmail = input.customerEmail?.trim() || null;
+  if (customerEmail && !isEmailShaped(customerEmail)) throw new OrderValidationError("invalid email");
 
   const paymentMethod = input.paymentMethod ?? "cash";
   let paymentStatus: "unpaid" | "pending_verification" = "unpaid";
@@ -476,7 +505,7 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       channel: input.channel ?? "web",
       cashierUserId: input.cashierUserId ?? null,
       customerId: input.customerId ?? null,
-      customerName: input.customerName.trim(), customerPhone: input.customerPhone.trim(), notes: input.notes?.trim() || null,
+      customerName: input.customerName.trim(), customerPhone: input.customerPhone.trim(), customerEmail, notes: input.notes?.trim() || null,
       deliveryAreaId, deliveryAreaNameSnapshot: deliveryAreaName, deliveryAddressText: deliveryAddress,
       subtotal: money(totals.subtotal),
       vatRateSnapshot: money(totals.vatRate),

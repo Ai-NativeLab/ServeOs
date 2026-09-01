@@ -104,6 +104,7 @@ export function FiscalSubmissionsTable({
                 <TableHead>Status</TableHead>
                 <TableHead>ETA uuid</TableHead>
                 <TableHead>Attempts</TableHead>
+                <TableHead>Email</TableHead>
                 <TableHead>Last error</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
@@ -147,6 +148,37 @@ export function FiscalSubmissionsTable({
                     {row.etaUuid ? `${row.etaUuid.slice(0, 12)}…` : "—"}
                   </TableCell>
                   <TableCell className="text-xs">{row.attempts}</TableCell>
+                  {/* THE CUSTOMER'S COPY — three states, and the em-dash is a
+                      real one rather than a blank. For an ONLINE order this
+                      email is the customer's primary copy of the QR (the status
+                      page's fiscal block is written 5-20 minutes after payment,
+                      so it is what a revisit shows), which is why a failure
+                      belongs on the screen an owner already watches instead of
+                      only in the logs.
+
+                        a time   sent.
+                        "failed" tried and did not go out; the reason is in the
+                                 tooltip, which is the SAME owner-audience text
+                                 as `lastError` beside it — an env key name may
+                                 appear in it, a secret value never can.
+                        "—"      nobody to email. Not a failure: an online guest
+                                 who left the optional field blank, and every
+                                 POS sale, since the till captures no address
+                                 anywhere in its flow. */}
+                  <TableCell className="whitespace-nowrap text-xs">
+                    {row.customerEmailedAt ? (
+                      <span className="text-muted-foreground">{formatDayTime(row.customerEmailedAt, timezone)}</span>
+                    ) : row.customerEmailError ? (
+                      <span
+                        className="inline-flex items-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                        title={row.customerEmailError}
+                      >
+                        failed
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
                   <TableCell className="text-xs text-muted-foreground max-w-xs truncate" title={row.lastError ?? ""}>
                     {row.lastError ?? "—"}
                   </TableCell>

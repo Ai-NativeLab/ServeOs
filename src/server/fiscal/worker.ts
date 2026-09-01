@@ -11,7 +11,9 @@ import { resolveFiscalProvider } from "./index";
 import type { EtaConfig, FinalizedFiscalDocument, FiscalProvider, FiscalSubmitResult } from "./provider";
 import { FiscalDocumentError } from "./errors";
 import { EtaConfigError, EtaTransportError } from "./eta-transport-errors";
+import type { EmailProvider } from "@/server/email/provider";
 import { FISCAL_AUDIT_ACTIONS, recordFiscalAudit, notifyFiscalFailure } from "./effects";
+import { deliverFiscalDocumentEmail } from "./customer-email";
 import { finalizeSubmissionRow, reconcileMissingReceipts } from "./finalize";
 import { parseWire } from "./parse-wire";
 
@@ -154,6 +156,15 @@ export type DrainOptions = {
   /** Skips the reconciliation sweep. For tests that want to drive the claim
    *  loop alone; production always sweeps. */
   reconcile?: boolean;
+  /**
+   * The email provider the customer's fiscal-document copy is sent through.
+   * Injectable for exactly the reason `provider` above is: so a test drives the
+   * REAL worker and inspects what was composed, rather than asserting against
+   * `process.env.EMAIL_PROVIDER`. Defaults to `activeEmailProvider()`, resolved
+   * inside `deliverFiscalDocumentEmail` so a drain that emails nobody never
+   * constructs one.
+   */
+  emailProvider?: EmailProvider;
 };
 
 export type DrainResult = {
@@ -225,7 +236,7 @@ export async function drainEtaSubmissions(opts: DrainOptions = {}): Promise<Drai
     }
 
     for (const row of await claim(tenant.id, limit)) {
-      const outcome = await processRow(tenant.id, row, provider, now);
+      const outcome = await processRow(tenant.id, row, provider, now, opts.emailProvider);
       result.processed++;
       if (outcome === "submitted") result.submitted++;
       else if (outcome === "accepted") result.accepted++;
@@ -284,7 +295,7 @@ type RowOutcome = "submitted" | "accepted" | "rejected" | "failed" | "deferred";
  * sale-path finalization is best-effort), not an error.
  */
 async function processRow(
-  tenantId: string, row: ClaimedRow, provider: FiscalProvider, now: () => Date,
+  tenantId: string, row: ClaimedRow, provider: FiscalProvider, now: () => Date, emailProvider?: EmailProvider,
 ): Promise<RowOutcome> {
   try {
     // The tenant-level gate ran once for the whole tenant before this row was
@@ -323,8 +334,8 @@ async function processRow(
     // window is only ~10 minutes. Once ETA has given us a handle, we only ever
     // ask it what happened.
     return row.submissionUuid
-      ? await pollPhase(tenantId, row, provider, cfg, now)
-      : await submitPhase(tenantId, row, provider, cfg, now);
+      ? await pollPhase(tenantId, row, provider, cfg, now, emailProvider)
+      : await submitPhase(tenantId, row, provider, cfg, now, emailProvider);
   } catch (err) {
     return handleFailure(tenantId, row, err, now);
   }
@@ -370,6 +381,7 @@ async function loadFinalized(tenantId: string, submissionId: string): Promise<Fi
 
 async function submitPhase(
   tenantId: string, row: ClaimedRow, provider: FiscalProvider, cfg: EtaConfig, now: () => Date,
+  emailProvider?: EmailProvider,
 ): Promise<RowOutcome> {
   const finalized = await loadFinalized(tenantId, row.id);
   const result = await provider.submit(finalized, cfg);
@@ -381,7 +393,7 @@ async function submitPhase(
   // parse, and the retry is idempotent inside ETA's duplicate window; see
   // MAX_ATTEMPTS above and the long note on that throw in `eta-provider.ts`.
   if (result.status === "rejected") return persistRejected(tenantId, row, result, now);
-  if (result.status === "accepted") return persistAccepted(tenantId, row, result, now);
+  if (result.status === "accepted") return persistAccepted(tenantId, row, result, now, emailProvider);
   if (result.status !== "submitted") return "deferred"; // "skipped" — a no-op provider wrote nothing.
 
   await withTenant(tenantId, async (tx) => {
@@ -433,12 +445,13 @@ async function submitPhase(
  */
 async function pollPhase(
   tenantId: string, row: ClaimedRow, provider: FiscalProvider, cfg: EtaConfig, now: () => Date,
+  emailProvider?: EmailProvider,
 ): Promise<RowOutcome> {
   // `docType` decides which ETA API is polled — the two families have different
   // endpoints, response shapes and status vocabularies. See `FiscalProvider.poll`.
   const result = await provider.poll(row.submissionUuid!, cfg, row.docType);
 
-  if (result.status === "accepted") return persistAccepted(tenantId, row, result, now);
+  if (result.status === "accepted") return persistAccepted(tenantId, row, result, now, emailProvider);
   if (result.status === "rejected") return persistRejected(tenantId, row, result, now);
 
   if (result.status === "submitted") {
@@ -459,6 +472,7 @@ async function pollPhase(
 
 async function persistAccepted(
   tenantId: string, row: ClaimedRow, result: FiscalSubmitResult, now: () => Date,
+  emailProvider?: EmailProvider,
 ): Promise<RowOutcome> {
   await withTenant(tenantId, async (tx) => {
     await tx.update(etaSubmissions).set({
@@ -484,6 +498,39 @@ async function persistAccepted(
       actorType: "system",
     }, tx);
   });
+
+  // ------------------------------------------------------------------------
+  // THE CUSTOMER'S COPY — AFTER the transaction has COMMITTED, and the position
+  // is the whole design rather than an ordering detail.
+  //
+  // NOT INSIDE THE TX, for two independent reasons either of which would settle
+  // it. (1) It makes an HTTP call to a third party. Holding a database
+  // connection open across a network round trip to Resend puts a stranger's
+  // latency inside a transaction that has already declared a tax document, and
+  // this worker's per-row transactions exist precisely so one slow row cannot
+  // block its siblings. (2) A throw inside that tx would ROLL BACK THE
+  // ACCEPTANCE — the status, the `acceptedAt`, the `etaLongId` and the audit
+  // event — leaving a row that says "submitted" for a document ETA has
+  // accepted, which the next pass would poll again. A failed courtesy email
+  // would have unfiled a fiscal fact.
+  //
+  // THE SAME PLACE THE AUDIT AND NOTIFY CALLS ARE *NOT*, and the contrast is
+  // deliberate: `recordFiscalAudit` and `notifyFiscalFailure` run INSIDE the tx
+  // because they must be atomic with the status write (an accepted row with no
+  // audit event is a compliance gap). This is the opposite kind of effect —
+  // it must never be atomic with it, because it must never be able to undo it.
+  //
+  // IT CANNOT THROW. `deliverFiscalDocumentEmail` catches everything and
+  // resolves to a stamped column; the `await` is here only so the outcome is
+  // recorded before the drain moves on. Acceptance is returned regardless of
+  // what it says.
+  //
+  // BOTH FAMILIES. A receipt and an invoice both reach this line; the family
+  // split lives in the renderer, not in a branch here, so neither can be added
+  // to the pipeline and silently miss the email.
+  // ------------------------------------------------------------------------
+  await deliverFiscalDocumentEmail(tenantId, row.id, now, emailProvider);
+
   return "accepted";
 }
 

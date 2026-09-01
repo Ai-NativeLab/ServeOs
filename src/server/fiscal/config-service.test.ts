@@ -19,6 +19,7 @@ import {
   productTaxCodes,
   type EtaWireContextConfig,
 } from "./schema";
+import { renderFiscalDocumentEmail } from "./customer-email";
 import { enqueueCorrectedResubmission } from "./enqueue";
 import { resolveEtaConfig } from "./config";
 import {
@@ -501,6 +502,11 @@ describe("masking — no *Ref value ever leaves this service", () => {
         etaUuid: "a".repeat(64),
         qrPayload: `https://preprod.invoicing.eta.gov.eg/receipts/search/${"a".repeat(64)}`,
         lastError: realisticLastError,
+        // The SAME failure shape on the email column (round 2, Task 7). It
+        // joins the walk on `lastError`'s exact terms — owner audience, env KEY
+        // names acceptable, VALUES never — and it is seeded with realistic text
+        // rather than a placeholder so the walk has something real to walk.
+        customerEmailError: "Error: RESEND_API_KEY is not set",
       }).returning(),
     );
 
@@ -609,6 +615,12 @@ describe("masking — no *Ref value ever leaves this service", () => {
       // text and the one new string a B2B read can hand back.
       ["getSaleFiscalStatus (e_invoice)", { ...invoiceStatus, etaLongId: REFS.erp }],
       ["getSubmissionById", { ...one, lastError: SECRET_VALUES.ZZ_ETA_DEVICE_S1_SENTINEL }],
+      // The two columns round 2 Task 7 added to this surface. `customerEmailError`
+      // is worker-written free text exactly as `lastError` is, so it is exactly
+      // as capable of carrying a reference by accident — and a walk over a field
+      // proves nothing until a plant into that field is shown to fail.
+      ["listSubmissions (customerEmailError)", { ...submissions, rows: [{ ...submissions.rows[0], customerEmailError: REFS.signing }] }],
+      ["getSubmissionById (customerEmailError)", { ...one, customerEmailError: SECRET_VALUES.ZZ_ETA_SIGNING_SENTINEL }],
       ["listFiscalDevices", [{ ...fiscalDevices[0], label: REFS.psk }]],
     ];
     for (const [what, payload] of planted) {
@@ -637,6 +649,80 @@ describe("masking — no *Ref value ever leaves this service", () => {
     expect(
       () => expectNoRefValues(bareKeyLeak, "gated surface", FORBIDDEN),
       "FORBIDDEN caught a bare env key — the `lastError` stance below has been overturned",
+    ).not.toThrow();
+  });
+
+  /**
+   * THE WIDEST AUDIENCE IN THE SUBSYSTEM, and the reason it gets the STRICT set.
+   *
+   * `/order/[token]` answers to whoever holds a link. A forwarded EMAIL answers
+   * to that set plus everyone downstream of a forward, with no expiry and no
+   * revocation — so the customer's fiscal-document mail (round 2, Task 7) is
+   * held to `TOKEN_FORBIDDEN`, the same strict set as the token surface, which
+   * refuses even the bare env KEY names the owner-only dashboard reads may carry.
+   *
+   * PURE, so it needs no send and no provider: the renderer takes data and
+   * returns `{subject, html}`, which is the entire payload that leaves the
+   * building. Walked HERE rather than in `customer-email.test.ts` so the
+   * forbidden sets keep ONE home — the rule this file's header states.
+   */
+  it("walks the CUSTOMER EMAIL payload — the widest audience, so the strict set", async () => {
+    const t = await makeTenant();
+    const branch = await makeBranch(t.id);
+    const order = await makeOrder(t.id, branch.id);
+
+    const tenantView = { id: t.id, name: "Fiscal Co", currency: "EGP", contactEmail: "hi@fiscal.test" };
+    const orderView = {
+      id: order.id, orderNumber: order.orderNumber, total: order.total,
+      customerName: order.customerName, customerEmail: "buyer@example.test", customerId: null,
+    };
+
+    const receiptMail = renderFiscalDocumentEmail({
+      id: order.id, docType: "e_receipt", etaUuid: "a".repeat(64), etaLongId: "LONG-1",
+      qrPayload: `https://preprod.invoicing.eta.gov.eg/receipts/search/${"a".repeat(64)}`,
+    }, orderView, tenantView);
+    const invoiceMail = renderFiscalDocumentEmail({
+      id: order.id, docType: "e_invoice", etaUuid: null, etaLongId: "EG-LONG-1", qrPayload: null,
+    }, orderView, tenantView);
+
+    expectNoRefValues(receiptMail, "renderFiscalDocumentEmail (e_receipt)", TOKEN_FORBIDDEN);
+    expectNoRefValues(invoiceMail, "renderFiscalDocumentEmail (e_invoice)", TOKEN_FORBIDDEN);
+
+    // LIVENESS, on the three strings a leak could realistically ride in on: the
+    // portal link (worker-written), ETA's long id (server-assigned text) and the
+    // tenant's own name (operator-typed). Both halves of the payload are walked,
+    // so a leak in the SUBJECT is caught as surely as one in the body.
+    const plantedMail: [string, unknown][] = [
+      ["email via qrPayload", renderFiscalDocumentEmail(
+        { id: order.id, docType: "e_receipt", etaUuid: null, etaLongId: null, qrPayload: REFS.erp },
+        orderView, tenantView)],
+      ["email via etaLongId", renderFiscalDocumentEmail(
+        { id: order.id, docType: "e_invoice", etaUuid: null, etaLongId: SECRET_VALUES.ZZ_ETA_SIGNING_SENTINEL, qrPayload: null },
+        orderView, tenantView)],
+      ["email via subject", renderFiscalDocumentEmail(
+        { id: order.id, docType: "e_receipt", etaUuid: null, etaLongId: null, qrPayload: null },
+        orderView, { ...tenantView, name: REFS.psk })],
+    ];
+    for (const [what, payload] of plantedMail) {
+      expect(
+        () => expectNoRefValues(payload, what, TOKEN_FORBIDDEN),
+        `${what}'s walk did not catch a planted reference`,
+      ).toThrow();
+    }
+
+    // AND IT IS THE STRICT SET, shown rather than claimed: a BARE env key in the
+    // body fails this walk and PASSES the dashboard's. An email is forwarded; a
+    // deployment's variable names must not ride along with it.
+    const bareKeyMail = renderFiscalDocumentEmail(
+      { id: order.id, docType: "e_invoice", etaUuid: null, etaLongId: "ZZ_ETA_ERP_SECRET_SENTINEL", qrPayload: null },
+      orderView, tenantView);
+    expect(
+      () => expectNoRefValues(bareKeyMail, "customer email", TOKEN_FORBIDDEN),
+      "the email walk's stricter set did not catch a bare env key",
+    ).toThrow();
+    expect(
+      () => expectNoRefValues(bareKeyMail, "customer email", FORBIDDEN),
+      "FORBIDDEN caught a bare env key — the `lastError` stance has been overturned",
     ).not.toThrow();
   });
 

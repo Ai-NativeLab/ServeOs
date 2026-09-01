@@ -44,6 +44,17 @@ import type { SaleFiscalStatus } from "@/server/fiscal/read-model";
  * and the code is the one that was issued); a rejected invoice reads as pending,
  * which is true of its ETA number — it has none and the correction will carry a
  * new one.
+ *
+ * REVERSING THAT DECISION IS CHEAP, AND KNOWING THE PRICE IS THE POINT — it is
+ * a product call (does a customer want to be told?), so it should not be
+ * re-litigated as an architecture one. The cost is exactly TWO NEW KINDS on the
+ * union below — `receipt-rejected` and `invoice-rejected`, one per family,
+ * because the two rejections read differently — plus ONE BRANCH EACH in
+ * `page.tsx`, and nothing else: no new query (`SaleFiscalStatus.status` already
+ * carries `"rejected"`), no new column, no change to the token surface. The
+ * `else`-shaped fallback in that page means a kind added here and not yet given
+ * a branch degrades to the honest pending line rather than to an empty block,
+ * so the two halves can even land separately.
  */
 export type OrderFiscalView =
   /** The consumer case: a scannable QR, plus ETA's uuid once the row carries one. */

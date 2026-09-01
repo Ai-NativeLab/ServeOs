@@ -106,6 +106,30 @@ export type SubmissionRowView = {
   createdAt: Date;
   acceptedAt: Date | null;
   /**
+   * When the customer was sent their own copy of this document, and null in TWO
+   * different situations the table has to render differently — which is why
+   * `customerEmailError` travels beside it rather than being folded in.
+   *
+   *   both null            nobody to email. An em-dash: not a failure.
+   *   emailedAt set        sent, at that moment.
+   *   error set            it was tried and it did not go out.
+   *
+   * Collapsing those into one nullable field would make a broken EMAIL_FROM
+   * look exactly like a guest who declined to give an address, which is the
+   * failure mode this pair exists to prevent (see the columns' own JSDoc).
+   */
+  customerEmailedAt: Date | null;
+  /**
+   * Why the customer's copy did not go out. SAME AUDIENCE STANCE AS
+   * `lastError`, and it joins the masking walk on the same terms: this is an
+   * owner-only surface (`fiscal:manage`), an env KEY name in it is acceptable,
+   * a VALUE never is. `FORBIDDEN`, not `TOKEN_FORBIDDEN` — and the reason the
+   * distinction survives here is that neither of these two fields is selected
+   * by `getSaleFiscalStatus`, so the customer-facing token surface cannot reach
+   * them at all.
+   */
+  customerEmailError: string | null;
+  /**
    * Past ETA's 24-hour submission window with no acceptance to show for it.
    *
    * `createdAt` stands in for the document's `dateTimeIssued`, and the two are
@@ -136,6 +160,8 @@ const SUBMISSION_ROW_COLUMNS = {
   referenceOldUuid: etaSubmissions.referenceOldUuid,
   createdAt: etaSubmissions.createdAt,
   acceptedAt: etaSubmissions.acceptedAt,
+  customerEmailedAt: etaSubmissions.customerEmailedAt,
+  customerEmailError: etaSubmissions.customerEmailError,
 } as const;
 
 /**
@@ -294,12 +320,19 @@ export async function getSaleFiscalStatus(
  * exactly that reason.
  *
  * `getOrderByToken` IS IMPORTED DYNAMICALLY, mirroring `./finalize`'s dynamic
- * `./sign-invoice` import and for the same reason. `@/server/ordering/service`
- * pulls entitlements, inventory, catalog, payments, realtime and the WhatsApp
- * queue onto whatever imports it, and this module sits on the graph of every POS
- * fiscal read and every dashboard fiscal page — none of which will ever take
- * this branch. The split this file's header describes would be undone by a
- * static import here.
+ * `./sign-invoice` import. `@/server/ordering/service` pulls entitlements,
+ * inventory, catalog, payments, realtime and the WhatsApp queue onto whatever
+ * imports it, and this module sits on the graph of every POS fiscal read and
+ * every dashboard fiscal page — none of which will ever take this branch.
+ *
+ * HOW MUCH THAT ACTUALLY BUYS, stated honestly rather than overclaimed. It buys
+ * nothing for THIS function's own caller: `/order/[token]/page.tsx` already
+ * imports `@/server/ordering/service` statically for `getOrderByToken`, so on
+ * the one path that reaches here the graph is loaded either way. The benefit
+ * accrues entirely to the module's OTHER importers — the till's fiscal status
+ * read, the dashboard's submissions page — which would otherwise pay for a
+ * dependency they never call. That is still worth the dynamic import, but it is
+ * a benefit to bystanders rather than to the code the import sits in.
  */
 export async function getSaleFiscalStatusByToken(
   tenantId: string,
