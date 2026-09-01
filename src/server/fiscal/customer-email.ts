@@ -128,8 +128,19 @@ function escapeHtml(s: string): string {
  * How much of a failure reason `customer_email_error` keeps.
  *
  * Long enough for a provider's own message plus its class name, short enough
- * that a pathological error (a stack, an echoed request body) cannot turn a
- * dashboard cell into a wall of text or a fiscal row into a large one.
+ * that a pathological error cannot turn a dashboard cell into a wall of text or
+ * a fiscal row into a large one.
+ *
+ * A DIVERGENCE FROM `last_error`, WHICH IS UNCAPPED — deliberate, and the
+ * difference is WHOSE error text lands in the column. `last_error` is written
+ * from this codebase's own error classes (`FiscalDocumentError`,
+ * `EtaConfigError`, `EtaTransportError`), whose messages are bounded by
+ * construction, so a cap there would be arithmetic nobody needs. THIS column
+ * takes a THIRD PARTY's error, and an HTTP client's message can legitimately
+ * embed a page-sized HTML error document or an echoed request body. Truncating
+ * is what keeps both the column and the dashboard's email cell sane without
+ * depending on a vendor's discretion. See `failTransiently` in `./worker` for
+ * the other half of this note.
  */
 const EMAIL_ERROR_MAX = 500;
 

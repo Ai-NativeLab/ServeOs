@@ -164,7 +164,13 @@ export function FiscalSubmissionsTable({
                         "—"      nobody to email. Not a failure: an online guest
                                  who left the optional field blank, and every
                                  POS sale, since the till captures no address
-                                 anywhere in its flow. */}
+                                 anywhere in its flow.
+
+                      AMBER, NOT THE RED `overdue` USES: by the time this can
+                      fail the fiscal obligation is already discharged — ETA
+                      holds the document and the sale is declared — so an email
+                      failure is OPERATIONAL, not fiscal, and must not read on
+                      this table as though the filing itself went wrong. */}
                   <TableCell className="whitespace-nowrap text-xs">
                     {row.customerEmailedAt ? (
                       <span className="text-muted-foreground">{formatDayTime(row.customerEmailedAt, timezone)}</span>

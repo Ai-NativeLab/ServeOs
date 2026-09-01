@@ -663,6 +663,15 @@ async function failTransiently(tenantId: string, row: ClaimedRow, err: unknown, 
   const exhausted = attempts >= MAX_ATTEMPTS;
   const retryAfterMs = err instanceof EtaTransportError && err.retryAfterSeconds ? err.retryAfterSeconds * 1000 : 0;
   const backoffMs = Math.max(2 ** attempts * BACKOFF_BASE_MS, retryAfterMs);
+  // UNCAPPED, DELIBERATELY, and the reason is whose text this is. Everything
+  // that reaches here is one of this codebase's own error classes
+  // (`FiscalDocumentError`, `EtaConfigError`, `EtaTransportError`, or a bare
+  // `Error` thrown a few lines from where it is caught), so the message is
+  // bounded by construction and truncating it would be arithmetic nobody needs.
+  // IF A PROVIDER-SHAPED ERROR EVER LANDS IN THIS COLUMN — a raw HTTP client
+  // error, whose message can carry a page-sized HTML body or an echoed request
+  // — cap it the way `customer-email.ts`'s `EMAIL_ERROR_MAX` does, and for the
+  // same reason: that column takes a third party's text, this one does not.
   const lastError = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
 
   await withTenant(tenantId, async (tx) => {
