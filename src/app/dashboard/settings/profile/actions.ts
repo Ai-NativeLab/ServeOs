@@ -2,7 +2,9 @@
 import { revalidatePath } from "next/cache";
 import { requireTenantManagePermission } from "../profile-permission";
 import { updateTenantProfile } from "@/server/tenancy";
+import { setCatalogDisplaySettings } from "@/server/tenancy/settings";
 import { actionAudit } from "@/server/audit/action-context";
+import { parseCatalogDisplayFormData } from "./display-form";
 
 export async function updateTenantProfileAction(formData: FormData) {
   const ctx = await requireTenantManagePermission();
@@ -18,4 +20,13 @@ export async function updateTenantProfileAction(formData: FormData) {
   }, await actionAudit(ctx));
   revalidatePath("/dashboard/settings/profile");
   revalidatePath("/dashboard"); // sidebar restaurant name reads from the layout
+}
+
+export async function updateCatalogDisplayAction(formData: FormData) {
+  const ctx = await requireTenantManagePermission();
+  const { catalogDisplayMode, itemsPerPage } = parseCatalogDisplayFormData(formData);
+  await setCatalogDisplaySettings(ctx.tenantId, { catalogDisplayMode, itemsPerPage }, await actionAudit(ctx));
+  revalidatePath("/dashboard/settings/profile");
+  revalidatePath("/dashboard/menu");
+  revalidatePath("/");
 }
