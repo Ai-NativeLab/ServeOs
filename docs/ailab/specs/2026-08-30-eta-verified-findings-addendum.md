@@ -478,3 +478,19 @@ Sources: `/document-serialization-approach/`, `/documents/receipt-v1-2/`, `/docu
   POS sale resolves to "none" and is silently not emailed, by design. Asking a cashier to type a customer's address
   at the counter is the seven-field B2B form's problem again; if till-side delivery is ever wanted, the shape is the
   same directory-and-picker fix that form needs, not a sixth field.
+
+- **THE FISCAL AUDIT VOCABULARY IS FOUR ACTIONS, and the fourth is not a synonym for the third (round 2, Task 10b).**
+  `eta.submission.submitted` / `accepted` / `rejected` / **`failed`** (`fiscal/effects.ts`,
+  `FISCAL_AUDIT_ACTIONS`). The last was added when the widened audit-coverage scan reached the worker's private
+  terminal-failure writers and found them mutating the fiscal record without recording it.
+  **`failed` IS NOT `rejected`, AND CONFLATING THEM WOULD MAKE THE AUDIT TRAIL CLAIM SOMETHING THAT NEVER
+  HAPPENED.** `rejected` means ETA looked at the document and refused it — a verdict, with a correction path
+  (`referenceOldUUID`, C3) and a `responseJson` carrying ETA's own reason. `failed` means ETA never judged it at
+  all: the sale's data could not be built into a valid document, the tenant's ETA configuration is incomplete, or
+  transport gave out after `MAX_ATTEMPTS`. To a tax adviser asking why a sale is undeclared those are opposite
+  answers — one says the taxpayer filed and was refused, the other says nothing was ever filed — and only the
+  second leaves the obligation entirely unmet.
+  *Emitted ONCE per document*, on the write that makes the failure terminal (`failPermanently` always;
+  `failTransiently` only on the attempt that exhausts the cap), gated by the same compare-and-set that decides
+  which drain alerts — so two drains holding one row produce one event, and a six-attempt ladder produces one
+  event rather than six.

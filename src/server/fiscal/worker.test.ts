@@ -1219,10 +1219,47 @@ function makeEligible(tenantId: string, submissionId: string) {
     .where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, submissionId))));
 }
 
+/**
+ * Makes every one of the tenant's rows eligible again — with DISTINCT,
+ * strictly-increasing stamps in creation order, never one shared timestamp.
+ *
+ * IT USED TO STAMP THEM ALL IDENTICALLY, and that is a flake generator rather
+ * than a stylistic choice. `claim` orders by `next_attempt_at`; identical values
+ * make that ordering a TIE, and a tie is broken by whatever the planner finds
+ * cheapest — which changes when an index is added (Task 9's
+ * `(tenant_id, created_at)` did exactly that, on this file, and cost a day).
+ * Ordering by creation also matches what the claim is trying to express in
+ * production: oldest-eligible first, so a backlog drains in issuance order and
+ * a parent sale is offered before the return receipt that references it.
+ *
+ * WHAT THIS DOES AND DOES NOT GUARANTEE, because the difference is what the
+ * next flake will turn on. It guarantees WHICH rows are selected when more are
+ * eligible than `limit`, and it removes the tie. It does NOT guarantee the order
+ * the worker DRIVES them in: `claim` is an `UPDATE … WHERE id IN (SELECT …
+ * ORDER BY …) RETURNING`, and a subquery's ORDER BY does not order the outer
+ * RETURNING (see `claim`'s own note). So a test whose assertions depend on which
+ * of several CLAIMABLE rows is processed first must not rely on this helper —
+ * it must make only one of them eligible per pass, the way the return-deferral
+ * test does. Eligibility is a WHERE predicate and no planner can reorder it.
+ *
+ * Audited across all callers when this changed: none of them wants simultaneity,
+ * and none asserts anything about two rows sharing a pass. Most stamp a single
+ * CLAIMABLE row anyway — an `accepted` row falls outside the claim's status
+ * filter, so re-stamping it is a no-op regardless.
+ */
 function makeEligibleAll(tenantId: string) {
-  return withTenant(tenantId, (tx) => tx.update(etaSubmissions)
-    .set({ nextAttemptAt: new Date(Date.now() - 1000) })
-    .where(eq(etaSubmissions.tenantId, tenantId)));
+  return withTenant(tenantId, (tx) => tx.execute(sql`
+    UPDATE eta_submissions AS e
+       SET next_attempt_at = ordered.stamp
+      FROM (
+        SELECT id,
+               now() - make_interval(secs => 60)
+                 + make_interval(secs => row_number() OVER (ORDER BY created_at, id) * 0.001) AS stamp
+          FROM eta_submissions
+         WHERE tenant_id = ${tenantId}
+      ) AS ordered
+     WHERE e.id = ordered.id AND e.tenant_id = ${tenantId}
+  `));
 }
 
 /** The VAT `issueRefund` stored against a refund — the figure the return

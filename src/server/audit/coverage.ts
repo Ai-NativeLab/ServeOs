@@ -18,15 +18,22 @@ import { readFileSync } from "node:fs";
  * `const f = (…) =>` at column 0, exported or not. Listing a file now means its
  * module-level writers are covered, full stop.
  *
- * WHAT THAT COST, MEASURED. The symbol count went from ~40 exported to **124**,
- * and 12 previously-invisible writers surfaced needing a disposition: 4 fiscal
- * (2 given real `eta.submission.failed` emissions, 2 allowlisted) and 8 foreign
- * (inventory ×6, inventory/recipes, tenancy/settings), each investigated by
- * reading its call path. One of those eight turned out to be a GENUINE
- * UNAUDITED PATH rather than a justifiable one — see
- * `settings.applySettingsPatch` below, which is ticketed rather than papered
- * over. The 2026-08-31 estimate of "14 additional" was close: the difference is
- * two fiscal writers that have since gained emissions of their own.
+ * WHAT THAT COST, MEASURED — and the multiplier is modest, which is the honest
+ * headline. Mutating symbols went from **105 to 124**: +19, about +18%. (An
+ * earlier note said "~40 to 124"; 40 is the number of FILES in the list, not
+ * symbols. Corrected on measurement.) So the widening did not triple the scan's
+ * reach — it added a fifth again.
+ *
+ * THE VALUE IS IN WHICH 19, NOT HOW MANY. Twelve of them needed a disposition:
+ * 4 fiscal (2 given real `eta.submission.failed` emissions, 2 allowlisted) and 8
+ * foreign (inventory ×6, inventory/recipes, tenancy/settings), each investigated
+ * by reading its call path. Those 19 contain inventory's ENTIRE lot-level
+ * primitive family — every row-touching statement behind `deductForOrderLine`
+ * and `syncLinkedSellable`, invisible before because the exports delegate and
+ * the helpers were not exported — and the one genuine unaudited path this scan
+ * found: `settings.applySettingsPatch`, ticketed rather than papered over. A
+ * +18% count that surfaces an unaudited VAT-rate change is worth more than a
+ * larger number would have been.
  *
  * STILL OUT OF REACH, so that the next reader knows the shape of what remains:
  * class methods, and writers nested inside another function. Neither exists in

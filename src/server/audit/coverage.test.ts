@@ -107,8 +107,9 @@ describe("audit coverage guardrail", () => {
 
   it("finds the known mutating surface (guards against a silently empty scan)", () => {
     // Raised from 20 when round 2 Task 10b widened the scan to private top-level
-    // declarations: the real figure went from ~40 to 124, so a floor of 20 had
-    // stopped being able to notice the scan half-collapsing.
+    // declarations: the measured figure went from 105 to 124, so a floor of 20
+    // had long since stopped being able to notice the scan half-collapsing — it
+    // would have taken an 80% loss to trip.
     expect(enumerateMutatingSymbols().length).toBeGreaterThan(100);
   });
 

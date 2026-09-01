@@ -462,28 +462,27 @@ describe("issueRefund restock", () => {
    *          │                                             every statement in it
    *          │                                             runs on the passed tx,
    *          │                                             read line by line ✓
-   *          ├─ enqueueFiscalDocument(ctx, input, tx) .... fiscal/enqueue.ts —
-   *          │                                             `if (tx) { await
-   *          │                                             run(tx); return; }`
-   *          │                                             before the `withTenant`
-   *          │                                             fallback, so the
-   *          │                                             tx-passed path never
-   *          │                                             opens a connection ✓
-   *          └─ publishTenantEvent ....................... realtime/publish.ts —
-   *                                                        no database access at
-   *                                                        all; it is an HTTP
-   *                                                        POST (see the note
-   *                                                        below) ✓
+   *          └─ enqueueFiscalDocument(ctx, input, tx) .... fiscal/enqueue.ts —
+   *               `if (tx) { await run(tx); return; }` before the `withTenant`
+   *               fallback, so the tx-passed path never opens a connection ✓
+   *     ══ TX BOUNDARY CLOSES ══
+   *     └─ publishTenantEvent ×2 ....................... AFTER the commit, and
+   *          outside the transaction entirely — a sibling of `withTenant`, not a
+   *          child of it. Gated on `!result.idempotent`, so a replayed refund
+   *          announces nothing. No database access in any case: it is an HTTP
+   *          POST to Supabase (realtime/publish.ts) ✓
    *
-   * ONE THING THIS TRACE FOUND THAT IT DOES NOT FIX, recorded rather than
-   * silently passed over: `publishTenantEvent` makes an HTTP call to Supabase
-   * from INSIDE the transaction — twice. It takes no pool connection, so it is
-   * not the deadlock this task closed, but it does hold a database transaction
-   * open across a third party's latency, which is the same shape round 2 Task 7
-   * refused for the fiscal email. Out of scope here (it is a realtime-domain
-   * change with its own ordering question: a fire-and-forget publish before
-   * commit can announce a refund that then rolls back). Raised for its own
-   * ticket rather than folded into a hoist.
+   * A CORRECTION WORTH LEAVING VISIBLE. The first version of this trace put
+   * `publishTenantEvent` INSIDE the transaction and raised it as a finding —
+   * "an HTTP call holding a tx open across a third party's latency". That was
+   * WRONG: the calls sit after the closing `});`, which the first reading did
+   * not check, and the code comment beside them already says "Post-commit, and
+   * only for a refund that actually happened". The lesson is the one this whole
+   * comment is about — a call's position in a FILE is not its position in a
+   * CALL TREE, and reading a window of lines is not reading the structure. It is
+   * recorded rather than quietly deleted because the risk now runs the other
+   * way: a future reader who half-remembers "the publish is in the transaction"
+   * might "fix" correct code by moving it.
    */
   it("keeps the tenant read out of the refund transaction — the hoist, pinned structurally", async () => {
     const { readFileSync } = await import("node:fs");
