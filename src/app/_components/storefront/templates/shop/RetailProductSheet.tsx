@@ -82,9 +82,26 @@ export function RetailProductSheet({
         <div className="min-h-0 flex-1 overflow-y-auto">
           <SheetHeader>
             {product.brand && <span className="eyebrow text-muted-foreground">{product.brand}</span>}
-            <SheetTitle className="text-xl sm:text-2xl">{product.nameEn}</SheetTitle>
+            <div className="flex items-start justify-between gap-2">
+              <SheetTitle className="text-xl sm:text-2xl">{product.nameEn}</SheetTitle>
+              {product.hasDiscount && product.discountPercent && !needsVariant && (
+                <span className="sf-badge bg-destructive text-destructive-foreground font-bold shadow-sm shrink-0">
+                  {`-${product.discountPercent}%`}
+                </span>
+              )}
+            </div>
             {product.nameAr && (
               <span dir="rtl" className="block text-sm text-muted-foreground">{product.nameAr}</span>
+            )}
+            {!needsVariant && !isDimensional && (
+              <div className="flex items-baseline gap-2 pt-1">
+                <span className="font-display text-lg font-bold text-ink">{formatMoney(product.effectivePrice, currency)}</span>
+                {product.hasDiscount && (
+                  <span className="text-sm text-muted-foreground line-through font-sans">
+                    {formatMoney(product.originalPrice, currency)}
+                  </span>
+                )}
+              </div>
             )}
             {product.descriptionEn && <SheetDescription>{product.descriptionEn}</SheetDescription>}
             {arabicDescription(product.descriptionEn, product.descriptionAr) && (

@@ -2,6 +2,7 @@
 import { formatMoney } from "@/lib/money";
 import type { MenuProduct } from "@/app/_components/storefront/ProductCard";
 import { isProductConfigurable } from "@/app/_components/cart";
+import { Badge } from "@/app/_components/storefront/Badge";
 
 /** Dense retail card: brand eyebrow, image, name, price (or "From X" with variants), stock state. */
 export function ShopProductCard({
@@ -58,6 +59,11 @@ export function ShopProductCard({
         ) : (
           <div className="sf-img h-full w-full" />
         )}
+        {product.hasDiscount && product.discountPercent && !hasRange && (
+          <span className="absolute left-2 top-2">
+            <Badge kind="discount" label={`-${product.discountPercent}%`} />
+          </span>
+        )}
         {!inStock && (
           <span className="absolute left-2 top-2 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
             Out of stock
@@ -74,9 +80,16 @@ export function ShopProductCard({
         <h3 className="line-clamp-2 font-sans text-sm font-semibold leading-tight text-ink">{product.nameEn}</h3>
         <span dir="rtl" className="text-xs text-muted-foreground">{product.nameAr}</span>
         <div className="mt-auto flex items-center justify-between pt-2.5">
-          <span className="font-display font-bold text-ink">
-            {hasRange ? `From ${formatMoney(min, currency)}` : formatMoney(min, currency)}
-          </span>
+          <div className="flex items-baseline gap-1.5">
+            <span className="font-display font-bold text-ink">
+              {hasRange ? `From ${formatMoney(min, currency)}` : formatMoney(min, currency)}
+            </span>
+            {product.hasDiscount && !hasRange && (
+              <span className="text-xs text-muted-foreground line-through font-sans">
+                {formatMoney(product.originalPrice, currency)}
+              </span>
+            )}
+          </div>
           {interactive && inStock && (
             <div>
               {configurable || quantity === 0 ? (

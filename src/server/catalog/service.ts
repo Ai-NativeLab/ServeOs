@@ -28,6 +28,7 @@ import {
 import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { bumpCatalogVersion } from "./version";
+import { computeEffectivePrice } from "./pricing";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -109,7 +110,7 @@ export async function deleteCategory(tenantId: string, categoryId: string, audit
 
 // ── products ─────────────────────────────────────────────────────────────────
 
-export type CreateProductInput = Pick<NewProduct, "nameEn" | "nameAr" | "descriptionEn" | "descriptionAr" | "basePrice" | "imageUrl" | "sortOrder" | "categoryId" | "isFeatured" | "brand" | "sku" | "trackStock" | "stockQuantity">;
+export type CreateProductInput = Pick<NewProduct, "nameEn" | "nameAr" | "descriptionEn" | "descriptionAr" | "basePrice" | "salePrice" | "discountPercent" | "discountStartsAt" | "discountEndsAt" | "discountActive" | "imageUrl" | "sortOrder" | "categoryId" | "isFeatured" | "brand" | "sku" | "trackStock" | "stockQuantity">;
 export type UpdateProductInput = Partial<CreateProductInput & { isPublished: boolean }>;
 
 export async function listProducts(tenantId: string, categoryId?: string): Promise<Product[]> {
@@ -348,6 +349,11 @@ export async function getPublishedMenu(tenantId: string, branchId?: string): Pro
           descriptionEn: products.descriptionEn,
           descriptionAr: products.descriptionAr,
           basePrice: products.basePrice,
+          salePrice: products.salePrice,
+          discountPercent: products.discountPercent,
+          discountStartsAt: products.discountStartsAt,
+          discountEndsAt: products.discountEndsAt,
+          discountActive: products.discountActive,
           unitOfMeasure: products.unitOfMeasure,
           requiresPrescription: products.requiresPrescription,
           imageUrl: products.imageUrl,
@@ -387,6 +393,11 @@ export async function getPublishedMenu(tenantId: string, branchId?: string): Pro
         descriptionEn: r.descriptionEn,
         descriptionAr: r.descriptionAr,
         basePrice: r.bpaPriceOverride ?? r.basePrice,
+        salePrice: r.salePrice,
+        discountPercent: r.discountPercent,
+        discountStartsAt: r.discountStartsAt,
+        discountEndsAt: r.discountEndsAt,
+        discountActive: r.discountActive,
         unitOfMeasure: r.unitOfMeasure,
         requiresPrescription: r.requiresPrescription,
         imageUrl: r.imageUrl,
@@ -428,32 +439,46 @@ export async function getPublishedMenu(tenantId: string, branchId?: string): Pro
     const variantsByProduct = groupBy(variantRows, (v) => v.productId);
 
     const prodsByCat = groupBy(
-      prodRows.map((p) => ({
-        id: p.id,
-        nameEn: p.nameEn,
-        nameAr: p.nameAr,
-        descriptionEn: p.descriptionEn,
-        descriptionAr: p.descriptionAr,
-        effectivePrice: Number(p.basePrice),
-        unitOfMeasure: p.unitOfMeasure,
-        requiresPrescription: p.requiresPrescription,
-        imageUrl: p.imageUrl,
-        brand: p.brand,
-        variants: (variantsByProduct[p.id] ?? []).map((v) => ({
-          id: v.id, nameEn: v.nameEn, nameAr: v.nameAr,
-          price: Number(v.price),
-          inStock: v.stockQuantity === null || v.stockQuantity > 0,
-        })),
-        inStock: (variantsByProduct[p.id] ?? []).length > 0
-          ? (variantsByProduct[p.id] ?? []).some((v) => v.stockQuantity === null || v.stockQuantity > 0)
-          : p.trackStock
-            ? (p.stockQuantity ?? 0) > 0
-            : true,
-        isFeatured: p.isFeatured,
-        createdAt: p.createdAt.toISOString(),
-        modifierGroups: groupsByProduct[p.id] ?? [],
-        categoryId: p.categoryId,
-      })),
+      prodRows.map((p) => {
+        const pricing = computeEffectivePrice({
+          basePrice: p.basePrice,
+          salePrice: p.salePrice,
+          discountPercent: p.discountPercent,
+          discountStartsAt: p.discountStartsAt,
+          discountEndsAt: p.discountEndsAt,
+          discountActive: p.discountActive,
+        });
+
+        return {
+          id: p.id,
+          nameEn: p.nameEn,
+          nameAr: p.nameAr,
+          descriptionEn: p.descriptionEn,
+          descriptionAr: p.descriptionAr,
+          effectivePrice: pricing.effectivePrice,
+          originalPrice: pricing.originalPrice,
+          discountPercent: pricing.discountPercent,
+          hasDiscount: pricing.hasDiscount,
+          unitOfMeasure: p.unitOfMeasure,
+          requiresPrescription: p.requiresPrescription,
+          imageUrl: p.imageUrl,
+          brand: p.brand,
+          variants: (variantsByProduct[p.id] ?? []).map((v) => ({
+            id: v.id, nameEn: v.nameEn, nameAr: v.nameAr,
+            price: Number(v.price),
+            inStock: v.stockQuantity === null || v.stockQuantity > 0,
+          })),
+          inStock: (variantsByProduct[p.id] ?? []).length > 0
+            ? (variantsByProduct[p.id] ?? []).some((v) => v.stockQuantity === null || v.stockQuantity > 0)
+            : p.trackStock
+              ? (p.stockQuantity ?? 0) > 0
+              : true,
+          isFeatured: p.isFeatured,
+          createdAt: p.createdAt.toISOString(),
+          modifierGroups: groupsByProduct[p.id] ?? [],
+          categoryId: p.categoryId,
+        };
+      }),
       (p) => p.categoryId,
     );
 

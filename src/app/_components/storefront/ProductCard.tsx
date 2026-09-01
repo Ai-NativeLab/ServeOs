@@ -60,11 +60,15 @@ export function ProductCard({
         ) : (
           <div className="sf-img h-full w-full" />
         )}
-        {badge && (
+        {product.hasDiscount && product.discountPercent ? (
+          <span className="absolute left-2 top-2">
+            <Badge kind="discount" label={`-${product.discountPercent}%`} />
+          </span>
+        ) : badge ? (
           <span className="absolute left-2 top-2">
             <Badge kind={badge} />
           </span>
-        )}
+        ) : null}
         {!inStock && (
           <span className="absolute left-2 top-2 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
             Out of stock
@@ -81,7 +85,14 @@ export function ProductCard({
           </p>
         )}
         <div className="mt-auto flex items-center justify-between pt-2.5">
-          <span className="font-display font-bold text-ink">{formatMoney(product.effectivePrice, currency)}</span>
+          <div className="flex items-baseline gap-1.5">
+            <span className="font-display font-bold text-ink">{formatMoney(product.effectivePrice, currency)}</span>
+            {product.hasDiscount && (
+              <span className="text-xs text-muted-foreground line-through font-sans">
+                {formatMoney(product.originalPrice, currency)}
+              </span>
+            )}
+          </div>
           {interactive && inStock && (
             <div>
               {configurable || quantity === 0 ? (
