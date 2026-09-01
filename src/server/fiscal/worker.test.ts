@@ -289,6 +289,15 @@ const auditsFor = (tenantId: string) =>
     inArray(auditEvents.action, ["eta.submission.submitted", "eta.submission.accepted", "eta.submission.rejected"]),
   )));
 
+/** Just the terminal-failure audit events — `eta.submission.failed` is emitted
+ *  once per document by whichever of failPermanently / failTransiently makes the
+ *  failure terminal, and `auditsFor` above deliberately does not include it. */
+const failedAuditsFor = (tenantId: string) =>
+  withTenant(tenantId, (tx) => tx.select().from(auditEvents).where(and(
+    eq(auditEvents.tenantId, tenantId),
+    eq(auditEvents.action, "eta.submission.failed"),
+  )));
+
 const notificationsFor = (tenantId: string) =>
   withTenant(tenantId, (tx) => tx.select().from(notifications).where(eq(notifications.tenantId, tenantId)));
 
@@ -594,6 +603,11 @@ describe("drainEtaSubmissions — the failure taxonomy", () => {
     // MAX_ATTEMPTS submissions, then the row is out of reach — no more calls.
     expect(provider.submitted).toHaveLength(MAX_ATTEMPTS);
     expect(await notificationsFor(s.tenantId)).toHaveLength(1);
+    // ONE audit event, not six (round 2 Task 10b). This function runs on every
+    // attempt, and only the one that exhausts the cap is terminal — auditing
+    // each retry would file six compliance rows for one document and bury the
+    // one that says it stopped.
+    expect(await failedAuditsFor(s.tenantId)).toHaveLength(1);
   });
 
   it("fails permanently and alerts when the tenant has no wire context", async () => {
@@ -613,6 +627,11 @@ describe("drainEtaSubmissions — the failure taxonomy", () => {
     expect(row.lastError).toContain("wire-context-missing");
     expect(provider.submitted).toHaveLength(0); // never reached the network
     expect(await notificationsFor(s.tenantId)).toHaveLength(1);
+    // The compliance record of a document that was never filed (round 2 Task
+    // 10b). Distinct from `rejected`: ETA never judged this one, so the audit
+    // trail must not imply an interaction that did not happen.
+    const [failedAudit] = await failedAuditsFor(s.tenantId);
+    expect(failedAudit.summary).toContain("failed permanently");
   });
 
   it("passes over a tenant whose ETA config is inactive without claiming its rows", async () => {

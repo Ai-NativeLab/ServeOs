@@ -36,6 +36,29 @@ export const FISCAL_AUDIT_ACTIONS = {
   submitted: "eta.submission.submitted",
   accepted: "eta.submission.accepted",
   rejected: "eta.submission.rejected",
+  /**
+   * TERMINAL FAILURE — the document never reached a verdict and will not be
+   * retried. Added by round 2 Task 10b, when the widened audit scan showed the
+   * two writers that produce this state were mutating the fiscal record without
+   * recording it.
+   *
+   * IT IS NOT `rejected`, AND THE DIFFERENCE IS THE WHOLE POINT OF A SEPARATE
+   * ACTION. `rejected` means ETA looked at the document and refused it — a
+   * verdict, with a correction path (`referenceOldUUID`, addendum C3).
+   * `failed` means ETA never judged it at all: the data could not be built into
+   * a valid document, the tenant's configuration is incomplete, or transport
+   * gave out after `MAX_ATTEMPTS`. To an auditor asking why a sale is
+   * undeclared those are opposite answers — one says the taxpayer filed and was
+   * refused, the other says nothing was ever filed — and collapsing them into
+   * one action would make the audit trail claim an ETA interaction that never
+   * happened.
+   *
+   * EMITTED ONCE PER DOCUMENT, on the write that makes the failure terminal:
+   * `failPermanently` always, `failTransiently` only on the attempt that
+   * exhausts the cap. An event per retry would put six rows in the compliance
+   * log for one document and bury the one that matters.
+   */
+  failed: "eta.submission.failed",
 } as const;
 
 /**

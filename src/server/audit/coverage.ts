@@ -5,22 +5,32 @@ import { readFileSync } from "node:fs";
  * event (or be justified in AUDIT_ALLOWLIST). The coverage-guardrail test scans
  * exactly these. The audit module itself is not listed — it is the writer.
  *
- * WHAT LISTING A FILE DOES AND DOES NOT BUY. `enumerateMutatingSymbols` finds
- * EXPORTED functions only. A module that keeps its DB writes in private
- * top-level helpers and exposes one orchestrating entry point therefore
- * contributes ZERO symbols to the scan, and listing it is forward coverage —
- * the day someone exports a mutating function from it, the guardrail catches
- * that — rather than a statement about today. Three worker-shaped modules here
- * are in exactly that position: `notifications/worker.ts`,
- * `whatsapp/status-worker.ts` and `fiscal/worker.ts`, each of which drains a
- * queue through private per-row helpers.
+ * WHAT LISTING A FILE BUYS — and this changed in round 2 Task 10b, so the old
+ * caveat is rewritten rather than left to mislead. `enumerateMutatingSymbols`
+ * used to find EXPORTED functions only, which meant a module keeping its writes
+ * in private top-level helpers behind one orchestrating entry point contributed
+ * ZERO symbols: listing it was forward coverage, not a statement about today.
+ * Three worker-shaped modules were in exactly that position
+ * (`notifications/worker.ts`, `whatsapp/status-worker.ts`, `fiscal/worker.ts`),
+ * and so, less obviously, was inventory's whole lot-level layer.
  *
- * Widening the scan to private top-level functions was measured (2026-08-31):
- * 14 additional flagged writers repo-wide, 8 of them outside fiscal
- * (inventory ×6, inventory/recipes, tenancy/settings). That is a real
- * improvement and a real piece of work — other domains' justifications to
- * write — so it is deferred, not forgotten: see the post-review follow-up in
- * docs/ailab/plans/2026-07-24-eta-einvoicing-and-ereceipts.md (Task 5).
+ * THE SCAN NOW REACHES PRIVATE TOP-LEVEL DECLARATIONS — `function f` and
+ * `const f = (…) =>` at column 0, exported or not. Listing a file now means its
+ * module-level writers are covered, full stop.
+ *
+ * WHAT THAT COST, MEASURED. The symbol count went from ~40 exported to **124**,
+ * and 12 previously-invisible writers surfaced needing a disposition: 4 fiscal
+ * (2 given real `eta.submission.failed` emissions, 2 allowlisted) and 8 foreign
+ * (inventory ×6, inventory/recipes, tenancy/settings), each investigated by
+ * reading its call path. One of those eight turned out to be a GENUINE
+ * UNAUDITED PATH rather than a justifiable one — see
+ * `settings.applySettingsPatch` below, which is ticketed rather than papered
+ * over. The 2026-08-31 estimate of "14 additional" was close: the difference is
+ * two fiscal writers that have since gained emissions of their own.
+ *
+ * STILL OUT OF REACH, so that the next reader knows the shape of what remains:
+ * class methods, and writers nested inside another function. Neither exists in
+ * the listed files today.
  */
 export const AUDITED_SERVICE_FILES = [
   "src/server/whatsapp/linking.ts",
@@ -109,10 +119,28 @@ const RESERVE = /[.*+?^${}()|[\]\\]/g;
  */
 const BODY_BOUNDARY = /\n(?:export|async\s+function|function|const|let|var|class|abstract|type|interface|enum)\b/;
 
+/**
+ * The two spellings a top-level writer can have, as one pattern.
+ *
+ * `function foo(` and `const foo = (…) =>` are the same thing to this
+ * guardrail — code that writes to the database and must therefore emit or be
+ * justified — so they share a matcher rather than drifting apart in two places
+ * (the enumerator's and the body extractor's). `export` is OPTIONAL in both
+ * arms: that is the whole of round 2 Task 10b, which widened the scan from
+ * exported functions to every top-level declaration.
+ *
+ * THE ARROW ARM REQUIRES AN OPENING PAREN after the `=`, so `const LIMIT = 50`
+ * and `const REGISTRY = {…}` are not mistaken for functions. It accepts an
+ * intervening type annotation (`const f: Handler = (…) =>`) and `async`.
+ */
+function declarationPattern(nameFragment: string): string {
+  return `(?:export\\s+)?(?:(?:async\\s+)?function\\s+${nameFragment}\\b`
+    + `|const\\s+${nameFragment}\\s*(?::[^=\\n]*)?=\\s*(?:async\\s+)?(?:function\\b|\\())`;
+}
+
 export function extractFunctionBody(src: string, name: string): string {
   const clean = stripComments(src);
-  const re = new RegExp(`export\\s+(?:async\\s+)?function\\s+${name.replace(RESERVE, "\\$&")}\\b`);
-  const m = re.exec(clean);
+  const m = new RegExp(declarationPattern(name.replace(RESERVE, "\\$&"))).exec(clean);
   if (!m) return "";
   const rest = clean.slice(m.index + m[0].length);
   const next = rest.search(BODY_BOUNDARY);
@@ -124,16 +152,39 @@ export function extractFunctionBody(src: string, name: string): string {
 // false positives on in-memory Map/Set `.delete(`.
 const WRITE_RE = /\b(?:tx|db)\s*\.\s*(?:insert|update|delete)\s*\(|\.\s*execute\s*\(\s*sql`[^`]*\b(?:insert|update|delete)\b/i;
 
-/** Every exported function in the audited files whose body performs a DB write. */
+/**
+ * Every TOP-LEVEL function in the audited files whose body performs a DB write —
+ * exported or not.
+ *
+ * IT USED TO FIND EXPORTED FUNCTIONS ONLY, and that was the guardrail's largest
+ * blind spot rather than a detail of its implementation. The shape it missed is
+ * the commonest one in this codebase: a module exposing one orchestrating entry
+ * point whose actual writes live in private helpers below it. Three
+ * worker-shaped modules were in exactly that position — `notifications/worker`,
+ * `whatsapp/status-worker`, `fiscal/worker` — contributing ZERO symbols each
+ * while writing on every pass. A guardrail that can be silenced by not
+ * exporting something is a guardrail that rewards the wrong refactor.
+ *
+ * ANCHORED AT COLUMN 0 (`^` under the `m` flag), which is what keeps "private"
+ * from meaning "any nested closure". Only declarations flush with the left
+ * margin are module-level; a `const handler = (…) =>` inside another function is
+ * that function's business and is covered by its enclosing body. The anchoring
+ * is conservative in one known way: a declaration preceded on the SAME LINE by a
+ * block comment starts at column 1 after `stripComments` and is skipped. That
+ * direction is the safe one — an under-scan, never a false accusation — and no
+ * file in the list is written that way today.
+ */
 export function enumerateMutatingSymbols(): MutatingSymbol[] {
   const out: MutatingSymbol[] = [];
   for (const file of AUDITED_SERVICE_FILES) {
     const src = readFileSync(file, "utf8");
     const clean = stripComments(src);
-    const nameRe = /export\s+(?:async\s+)?function\s+([A-Za-z0-9_]+)\b/g;
+    // Two capture groups, one per arm of the pattern — whichever arm matched is
+    // the one that is defined.
+    const nameRe = new RegExp(`^${declarationPattern("([A-Za-z0-9_]+)")}`, "gm");
     let m: RegExpExecArray | null;
     while ((m = nameRe.exec(clean))) {
-      const name = m[1];
+      const name = m[1] ?? m[2];
       if (WRITE_RE.test(extractFunctionBody(src, name))) out.push({ file, name });
     }
   }
@@ -271,7 +322,95 @@ export const AUDIT_ALLOWLIST: Record<string, string> = {
   // timestamped fact on the row itself (queryable, and what the dashboard's
   // `late` state is derived from), and the owner notification is the delivery of
   // it. A third copy in `audit_events` would add no fact and no reader.
-  "pending-scan:worker.noteLateSubmission": "system observation of our own timing, not an ETA interaction; the owner notification + `late_notified_at` ARE the record, and an eta.submission.* action is deliberately not minted for a non-event",
+  // THE PREFIX IS GONE BECAUSE THE SCAN REACHED IT (round 2 Task 10b). This
+  // entry was written as `pending-scan:worker.noteLateSubmission` by the task
+  // that added the writer; widening the scan made the bare symbol enumerable,
+  // the stale-entry test failed by name with "drop the prefix", and this is that
+  // edit. The disposition below is unchanged from the day it was decided, which
+  // is the entire point of having decided it then.
+  "worker.noteLateSubmission": "system observation of our own timing, not an ETA interaction; the owner notification + `late_notified_at` ARE the record, and an eta.submission.* action is deliberately not minted for a non-event",
+  // pollPhase's own write is the NON-terminal branch: ETA answered "still
+  // processing", so the row's status is corrected back to `submitted` and the
+  // poll clock moves. Nothing happened to the document — that is precisely what
+  // ETA said — and the two branches that DO carry a verdict are delegated to
+  // `persistAccepted` / `persistRejected`, which emit eta.submission.accepted /
+  // rejected themselves and are therefore not flagged here.
+  "worker.pollPhase": "writes only the 'ETA is still processing' correction; the accepted/rejected verdicts it routes to emit eta.submission.* from persistAccepted/persistRejected",
+  // The invoice twin of finalizeSubmissionRow, allowlisted on identical terms:
+  // it builds and persists the document's bytes (wire JSON, and for a signed
+  // tenant the CAdES-BES signature), which is the document being PREPARED. An
+  // invoice has no self-computed uuid to assign — ETA names it in the 202 — so
+  // even less is decided here than on the receipt path. Nothing has been
+  // declared to ETA and nothing is user-visible until the worker submits it, and
+  // the worker audits that lifecycle on the same row.
+  "finalize.finalizeInvoiceRow": "prepares a queued invoice's bytes (wire JSON + signature); the submission lifecycle it feeds is audited as eta.submission.* by the worker on the same row",
+  // ==========================================================================
+  // FOREIGN DOMAINS, surfaced by round 2 Task 10b's widened scan.
+  //
+  // These are inventory's and tenancy's writers, not fiscal's. The fiscal task
+  // that widened the scan is permitted to add COMMENTS AND ALLOWLIST ENTRIES
+  // here and nothing else — no emissions, no signature changes, no behaviour —
+  // because a domain's audit vocabulary is that domain's decision. Each entry
+  // below was written only after reading the path it names; where a path turned
+  // out NOT to be audited, the entry says so instead of borrowing a nearby
+  // event's credibility.
+  //
+  // The inventory six are all LOT-LEVEL PRIMITIVES. They were invisible to the
+  // old scan for a structural reason worth naming: `deductForOrderLine` and
+  // `syncLinkedSellable` are exported, but every statement that touches a row
+  // lives in these private helpers, so neither the export nor the helper was
+  // ever flagged — the export because it contains no write, the helper because
+  // it was not exported. That is the exact blind spot the widening closes.
+  // ==========================================================================
+  // creditLot / debitLots are reached from FOUR exported paths and every one of
+  // them is accounted for: adjustStock (emits inventory.adjusted), transferStock
+  // (emits inventory.transferred), commitCount (emits inventory.count.commit) —
+  // all three verified by reading the recordAuditEvent call in each body — plus
+  // receiveStock, whose own allowlist entry above already says the caller owns
+  // the event (po.received). The remaining callers are the other private helpers
+  // in this block, which resolve to order.placed; see below.
+  "service.creditLot": "lot-level primitive; every caller is audited — adjustStock/transferStock/commitCount emit their own events, receiveStock is allowlisted to its caller, and the deduction helpers resolve to order.placed",
+  "service.debitLots": "lot-level primitive; same four audited callers as creditLot (adjustStock/transferStock/commitCount emit; deductFifo resolves to order.placed)",
+  // The deduction family has ONE entry point: `deductForOrderLine`, called from
+  // `placeOrder` (ordering/service.ts) inside placeOrder's own transaction, with
+  // `recordAuditEvent({action: "order.placed"})` on that same tx immediately
+  // after the deduction loop. Read and confirmed line by line — the deduction is
+  // atomic with the event that records it, so a deduction cannot exist without
+  // its audit row.
+  "service.deductFifo": "reached only from deductForOrderLine ← placeOrder, which emits order.placed on the same tx immediately after the deduction loop",
+  "service.deductCutToSize": "reached only from deductForOrderLine ← placeOrder, which emits order.placed on the same tx immediately after the deduction loop",
+  "service.adoptLegacyTrackedStock": "reached only from deductForOrderLine ← placeOrder (order.placed on the same tx); migrates a legacy integer balance into a lot as a side effect of the sale that needed it",
+  // mirrorLegacyStock has a second caller, and the honest note is that it has no
+  // production reach: `syncLinkedSellable` is exported but called from nowhere in
+  // `src` today (only a comment in purchasing/locking.ts references it). So the
+  // live path is the deduction one; if syncLinkedSellable ever acquires a caller,
+  // that caller owes an event and this entry stops being complete.
+  "service.mirrorLegacyStock": "live path is deductForOrderLine ← placeOrder (order.placed, same tx); its other caller syncLinkedSellable is exported but has no caller in src today — a future caller owes its own event",
+  // Both callers verified: createRecipe and setRecipeComponents each call
+  // writeComponents and then recordAuditEvent on the same tx, a few lines apart.
+  "recipes.writeComponents": "both callers — createRecipe and setRecipeComponents — emit their own recipe.* event on the same tx immediately after this returns",
+  /**
+   * PARTIALLY AUDITED, AND THIS ENTRY SAYS SO RATHER THAN ROUNDING UP.
+   *
+   * Three of `applySettingsPatch`'s four callers emit on the same transaction
+   * (the WhatsApp number change, the plan-upgrade request, and the settings
+   * update at :170). The fourth is `patchTenantSettings`, a private wrapper that
+   * emits NOTHING — and five exported setters route through it:
+   * `setVatRate`, `setVatEnabled`, `setPricesIncludeVat`, `setServiceChargeRate`
+   * and `setAllowNegativeStock`.
+   *
+   * FOUR OF THOSE FIVE ARE FISCALLY LOAD-BEARING. They decide how VAT is
+   * computed on every subsequent sale and therefore what is declared to ETA, so
+   * "who changed the VAT rate, and when" is exactly the question an audit log
+   * exists to answer — and today it cannot. This is a REAL GAP in the tenancy
+   * domain, found by this scan rather than reasoned away by it.
+   *
+   * IT IS NOT FIXED HERE, deliberately: emitting from tenancy is a behaviour
+   * change in a foreign domain, and this task's remit there is comments and
+   * allowlist entries only. Ticketed in the round-2 plan's future list. The
+   * entry is worded so nobody reads it as a clean bill of health.
+   */
+  "settings.applySettingsPatch": "PARTIAL: the three direct callers emit on the same tx, but the patchTenantSettings path (setVatRate/setVatEnabled/setPricesIncludeVat/setServiceChargeRate/setAllowNegativeStock) emits NOTHING — a real tenancy-domain gap, ticketed, not fixed under a fiscal task's foreign-touch rule",
   // Forward references — land with later specs; the guardrail enforces they emit then.
   "forward:refund.*": "Spec 3 refunds must emit refund.* via recordAuditEvent",
   // NOTE: `forward:eta.*` was retired here — Spec 11's worker emits

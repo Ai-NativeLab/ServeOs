@@ -783,6 +783,17 @@ async function failPermanently(
 
     if (terminalized.length === 0) return;
 
+    // The SAME predicate that decides who alerts also decides who audits, so the
+    // compliance log gets exactly one `failed` event per document even when two
+    // drains hold the row (round 2 Task 10b).
+    await recordFiscalAudit(auditActor(tenantId), {
+      action: FISCAL_AUDIT_ACTIONS.failed,
+      entityId: row.id,
+      summary: `Fiscal ${row.docType} failed permanently and will not be retried`,
+      metadata: { docType: row.docType, lastError },
+      actorType: "system",
+    }, tx);
+
     await notifyFiscalFailure({ tenantId }, {
       title: "A fiscal document could not be submitted",
       body: `${guidance} Last error: ${lastError}`,
@@ -832,6 +843,18 @@ async function failTransiently(tenantId: string, row: ClaimedRow, err: unknown, 
     )).returning({ id: etaSubmissions.id });
 
     if (exhausted && advanced.length > 0) {
+      // ONLY on the attempt that exhausts the cap — this function also runs on
+      // attempts 1..5, where the row is `failed` but still scheduled and nothing
+      // terminal has happened. Auditing each of those would file six compliance
+      // events for one document and bury the one that says it stopped.
+      await recordFiscalAudit(auditActor(tenantId), {
+        action: FISCAL_AUDIT_ACTIONS.failed,
+        entityId: row.id,
+        summary: `Fiscal ${row.docType} failed ${MAX_ATTEMPTS} times and will not be retried`,
+        metadata: { docType: row.docType, attempts, lastError },
+        actorType: "system",
+      }, tx);
+
       await notifyFiscalFailure({ tenantId }, {
         title: "A fiscal document could not be submitted",
         body: `Submission to ETA failed ${MAX_ATTEMPTS} times and will not be retried automatically. Last error: ${lastError}`,

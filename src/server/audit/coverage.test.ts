@@ -63,6 +63,16 @@ describe("audit coverage guardrail", () => {
     }
   });
 
+  /**
+   * ZERO ENTRIES TODAY, and that is the mechanism having worked rather than
+   * having been abandoned: its only user, `worker.noteLateSubmission`, graduated
+   * to a plain key the moment Task 10b's widening reached it. The prefix is kept
+   * for the NEXT reach-widening — class methods and nested writers are still out
+   * of scope — but it is decoration until something uses it. If it still has no
+   * users after that widening, delete it rather than keep an escape hatch nobody
+   * needs; an unused exemption on a guardrail is an invitation to park an
+   * undecided writer in it.
+   */
   it("keeps every pending-scan disposition pointed at a real private writer", () => {
     // THE ESCAPE HATCH NEEDS ITS OWN GUARD, or `pending-scan:` becomes a way to
     // keep dead entries forever: exempt from the stale test by construction, and
@@ -96,6 +106,34 @@ describe("audit coverage guardrail", () => {
   });
 
   it("finds the known mutating surface (guards against a silently empty scan)", () => {
-    expect(enumerateMutatingSymbols().length).toBeGreaterThan(20);
+    // Raised from 20 when round 2 Task 10b widened the scan to private top-level
+    // declarations: the real figure went from ~40 to 124, so a floor of 20 had
+    // stopped being able to notice the scan half-collapsing.
+    expect(enumerateMutatingSymbols().length).toBeGreaterThan(100);
+  });
+
+  it("has no two files contributing the same allowlist key", () => {
+    // ALLOWLIST KEYS ARE `<basename>.<symbol>`, so two files with the same
+    // basename and a same-named writer would share ONE key — and one
+    // justification would silently excuse both, including a writer nobody
+    // examined. There is no collision today (checked: 124 symbols, zero
+    // duplicates), and the risk went UP rather than down with Task 10b's
+    // widening: private helper names are shorter and more generic than exported
+    // ones, and three listed files are called `worker.ts` while eleven are
+    // called `service.ts`.
+    //
+    // A COLLISION IS NOT A FAILURE OF THIS SCHEME, it is a signal to re-key the
+    // allowlist to full paths. This test exists so that decision is made
+    // deliberately, the day it is forced, rather than being absorbed as a
+    // duplicate entry that appears to work.
+    const byKey = new Map<string, Set<string>>();
+    for (const sym of enumerateMutatingSymbols()) {
+      const key = `${basename(sym.file)}.${sym.name}`;
+      byKey.set(key, (byKey.get(key) ?? new Set()).add(sym.file));
+    }
+    const collisions = [...byKey.entries()]
+      .filter(([, files]) => files.size > 1)
+      .map(([key, files]) => `${key} ← ${[...files].join(", ")}`);
+    expect(collisions, `allowlist key collisions:\n${collisions.join("\n")}`).toEqual([]);
   });
 });
