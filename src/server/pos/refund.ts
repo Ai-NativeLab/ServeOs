@@ -3,7 +3,7 @@ import { withTenant } from "@/db/with-tenant";
 import { recordAuditEvent } from "@/server/audit/service";
 import { publishTenantEvent } from "@/server/realtime/publish";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
-import { money, restockRefundedLines } from "@/server/ordering/service";
+import { money, restockRefundedLines, resolveRestockCapabilities } from "@/server/ordering/service";
 import { orders, orderItems, type Order } from "@/server/ordering/schema";
 import { branches } from "@/server/branches/schema";
 import { orderPayments } from "./tender-schema";
@@ -131,6 +131,27 @@ export async function issueRefund(
   // so a pre-transaction read is not a staleness risk. DO NOT move this back
   // inside the transaction.
   const fiscalEnabled = await isFiscalEnabled(actor.tenantId);
+
+  // Restock capability (round 2 Task 10a): read BEFORE the transaction, for
+  // EXACTLY the reason above and not merely alongside it. `restockRefundedLines`
+  // used to resolve this itself, deep inside the tx — `getTenantById` through
+  // the global `db`, a second pool connection taken while this request's
+  // `withTenant` still holds its own — so the deadlock the fiscal hoist closed
+  // stayed open one call further down. It survived that sweep because it is
+  // TRANSITIVE and NARROWER: the read is two calls from this file and only
+  // happens on a refund carrying at least one restockable line, so nothing here
+  // looked like a database read and most refunds never reached it.
+  //
+  // Resolved UNCONDITIONALLY rather than behind the same "any restockable line?"
+  // gate. The gate still exists where it belongs — inside `restockRefundedLines`,
+  // which returns before touching `caps` when there is nothing to restock — and
+  // duplicating it here would buy one skipped tenant read on a cold path at the
+  // cost of a second copy of the condition that decides whether stock moves.
+  // `cancelOrderByToken` resolves its caps the same unconditional way.
+  //
+  // Vertical is a stable tenant attribute, so a pre-transaction read is not a
+  // staleness risk. DO NOT move this back inside the transaction.
+  const restockCaps = await resolveRestockCapabilities(actor.tenantId);
 
   const result = await withTenant(actor.tenantId, async (tx) => {
     // 1. SERIALIZE refunds per order. The net-paid ceiling is a read-then-write
@@ -335,7 +356,7 @@ export async function issueRefund(
     //    NOTE for merge coordination: feat/inventory-core-and-recipes reworks
     //    stock math — this restock path must be realigned to the new inventory
     //    core when that branch lands, or line restocks will double-count.
-    await restockRefundedLines(tx, actor.tenantId, lines);
+    await restockRefundedLines(tx, lines, restockCaps);
 
     // 8. payment_status is DERIVED from the math, never set by hand. If this
     //    refund clears net-paid, the order is fully refunded; else partially.

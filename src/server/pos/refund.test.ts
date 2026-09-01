@@ -416,6 +416,96 @@ describe("issueRefund restock", () => {
     expect(await readStock(s.tenantId, s.productId)).toBeNull();
   });
 
+  /**
+   * THE REFUND TRANSACTION TAKES EXACTLY ONE POOL CONNECTION (round 2 Task 10a),
+   * and this is the honest account of how that was verified — including what the
+   * verification cannot do.
+   *
+   * THE HAZARD. `withTenant` holds ONE pool connection for the whole transaction.
+   * Any read through the global `db` from inside it takes a SECOND. pg-pool is
+   * configured `max=10` with `connectionTimeoutMillis=0` (wait forever), so ten
+   * concurrent refunds each holding a tx connection while blocking on a second
+   * one deadlock the pool permanently — not slowly, and not recoverably. Round 1
+   * closed this for `isFiscalEnabled`; the same read survived one call deeper,
+   * where nothing in `refund.ts` looked like a database call.
+   *
+   * WHY GREP DID NOT FIND IT AND CANNOT PROVE IT GONE. `grep 'db\.'` over
+   * `refund.ts` was clean before this fix and is clean after — the read was two
+   * calls away, in another module, behind a function whose name says "restock".
+   * A textual search sees one frame; the hazard lives in the transitive closure.
+   * So the closure is enumerated BY HAND below, and each node says how it was
+   * checked. This list is the verification. It is only as good as its next
+   * reader's willingness to extend it when a call is added inside the tx.
+   *
+   *   issueRefund (pos/refund.ts)
+   *     ├─ resolveAuthorizer .............. BEFORE the tx (round 1 hoist)
+   *     ├─ isFiscalEnabled ................ BEFORE the tx (round 1 hoist)
+   *     ├─ resolveRestockCapabilities ..... BEFORE the tx (THIS task's hoist)
+   *     │     └─ getTenantById → db.select   ← the former in-tx read, now outside
+   *     └─ withTenant(tx) ═══ TX BOUNDARY: one connection from here down ═══
+   *          ├─ tx.select / tx.update / tx.insert ......... on the tx ✓
+   *          ├─ restockRefundedLines(tx, lines, caps) ..... ordering/service.ts
+   *          │     ├─ getCapabilities .................... REMOVED from this
+   *          │     │                                       frame; `caps` is now a
+   *          │     │                                       parameter. (Pure
+   *          │     │                                       in-memory registry
+   *          │     │                                       lookup either way —
+   *          │     │                                       verticals/registry.ts
+   *          │     │                                       indexes a const.)
+   *          │     ├─ getTenantById ...................... REMOVED — was the bug
+   *          │     └─ tx.select / tx.update .............. on the tx ✓
+   *          ├─ computeRefundVat ......................... pure arithmetic, read
+   *          │                                             (pos/refund-vat.ts)
+   *          ├─ recordAuditEvent(ctx, event, tx) ......... audit/service.ts —
+   *          │                                             imports `db` ONLY for
+   *          │                                             its `Tx` type alias;
+   *          │                                             every statement in it
+   *          │                                             runs on the passed tx,
+   *          │                                             read line by line ✓
+   *          ├─ enqueueFiscalDocument(ctx, input, tx) .... fiscal/enqueue.ts —
+   *          │                                             `if (tx) { await
+   *          │                                             run(tx); return; }`
+   *          │                                             before the `withTenant`
+   *          │                                             fallback, so the
+   *          │                                             tx-passed path never
+   *          │                                             opens a connection ✓
+   *          └─ publishTenantEvent ....................... realtime/publish.ts —
+   *                                                        no database access at
+   *                                                        all; it is an HTTP
+   *                                                        POST (see the note
+   *                                                        below) ✓
+   *
+   * ONE THING THIS TRACE FOUND THAT IT DOES NOT FIX, recorded rather than
+   * silently passed over: `publishTenantEvent` makes an HTTP call to Supabase
+   * from INSIDE the transaction — twice. It takes no pool connection, so it is
+   * not the deadlock this task closed, but it does hold a database transaction
+   * open across a third party's latency, which is the same shape round 2 Task 7
+   * refused for the fiscal email. Out of scope here (it is a realtime-domain
+   * change with its own ordering question: a fire-and-forget publish before
+   * commit can announce a refund that then rolls back). Raised for its own
+   * ticket rather than folded into a hoist.
+   */
+  it("keeps the tenant read out of the refund transaction — the hoist, pinned structurally", async () => {
+    const { readFileSync } = await import("node:fs");
+    const service = readFileSync("src/server/ordering/service.ts", "utf8");
+    const body = service.slice(service.indexOf("export async function restockRefundedLines"));
+    const fn = body.slice(0, body.indexOf("\n}\n") + 3);
+
+    // NARROW AND HONEST: this proves the ONE frame that carried the bug no
+    // longer reads the tenant, and nothing more. It is not a proof about the
+    // closure above — a helper called from here could reintroduce the read and
+    // this assertion would still pass. It is here because re-inlining the read
+    // into this exact function is the specific regression the fix invites: the
+    // `caps` parameter looks like ceremony until you know why it exists.
+    expect(fn).not.toContain("getTenantById");
+    expect(fn).toContain("caps.stockTracking");
+    // And the caller really does resolve it before opening the transaction —
+    // the assertion that would fail if someone "tidied" the hoist back inside.
+    const refundSrc = readFileSync("src/server/pos/refund.ts", "utf8");
+    expect(refundSrc.indexOf("resolveRestockCapabilities(actor.tenantId)"))
+      .toBeLessThan(refundSrc.indexOf("await withTenant(actor.tenantId"));
+  });
+
   // FORWARD DEP (Spec 8): when the stock_ledger exists, restockRefundedLines
   // stops doing the integer add-back asserted above and instead writes a
   // `refund_restock` stock_ledger row reversing the original sale_deduction on

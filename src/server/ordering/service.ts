@@ -666,6 +666,24 @@ async function restockOrderItems(
 }
 
 /**
+ * Whether this tenant's vertical tracks stock at all — the one input
+ * `restockRefundedLines` needs and the one it must NOT read for itself.
+ *
+ * IT EXISTS TO BE CALLED BEFORE A TRANSACTION OPENS. `getTenantById` goes
+ * through the global `db`, i.e. a pool connection of its own, so resolving this
+ * inside a `withTenant` block makes one request hold two connections at once —
+ * the deadlock shape documented at `issueRefund`'s hoists. Extracting it as a
+ * named function rather than leaving the caller to spell `getTenantById` +
+ * `getCapabilities` itself keeps the derivation in ONE place: a second caller
+ * deriving "does this vertical restock?" differently is how the restock path and
+ * the capability that gates it drift apart.
+ */
+export async function resolveRestockCapabilities(tenantId: string): Promise<{ stockTracking: boolean }> {
+  const tenant = await getTenantById(tenantId);
+  return getCapabilities((tenant?.vertical ?? "restaurant") as VerticalId);
+}
+
+/**
  * Returns specific order-item quantities to stock for a refund. Line- and
  * quantity-scoped (unlike restockOrderItems, which restocks a whole order).
  * FORWARD DEP (Spec 8): when the stock_ledger exists, replace the integer
@@ -673,16 +691,30 @@ async function restockOrderItems(
  * sale_deduction on the same lot (per the inventory spec's restock-on-refund
  * path). Until then this is the integer fallback; a no-op for verticals with
  * stockTracking off (e.g. restaurant).
+ *
+ * `caps` IS A PARAMETER BECAUSE THIS RUNS INSIDE SOMEONE ELSE'S TRANSACTION.
+ * It used to call `getTenantById` itself, which reads through the global `db` —
+ * a SECOND pool connection taken while the caller's `withTenant` still holds its
+ * own. That is the exact pool-deadlock class round 1 fixed for `isFiscalEnabled`
+ * (see `issueRefund`), and it was reachable here through a narrower gate: only a
+ * refund carrying at least one restockable line got that far, which is why it
+ * survived the first sweep. The caller resolves it with
+ * `resolveRestockCapabilities` BEFORE opening the transaction. DO NOT read the
+ * tenant in here again — the parameter is the fix, not a convenience, and
+ * `restockOrderItems` above takes its `caps` the same way for the same reason.
  */
+// `tenantId` is GONE from the signature rather than left unused: it was only
+// ever there to feed the `getTenantById` call this change removed. Row scoping
+// never depended on it — every statement below runs on the caller's `tx`, so
+// RLS scopes them, which is the same reason a stray tenant predicate here would
+// be restating a database guarantee.
 export async function restockRefundedLines(
   tx: Parameters<Parameters<typeof withTenant>[1]>[0],
-  tenantId: string,
   lines: { orderItemId: string; quantity: number; restock: boolean }[],
+  caps: { stockTracking: boolean },
 ): Promise<void> {
   const toRestock = lines.filter((l) => l.restock && l.quantity > 0);
   if (toRestock.length === 0) return;
-  const tenant = await getTenantById(tenantId);
-  const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalId);
   if (!caps.stockTracking) return;
   for (const l of toRestock) {
     const [item] = await tx.select().from(orderItems).where(eq(orderItems.id, l.orderItemId)).limit(1);
