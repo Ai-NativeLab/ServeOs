@@ -9,6 +9,7 @@ import { SubmitButton } from "@/components/dashboard/SubmitButton";
 import { ImageInput } from "@/components/dashboard/ImageInput";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { PromotionalPricingSection } from "../[id]/PromotionalPricingSection";
 import { Label } from "@/components/ui/label";
 
 const selectClass =
@@ -57,6 +58,7 @@ export default async function NewProductPage({ searchParams }: { searchParams: P
             <Label htmlFor="basePrice">Base price</Label>
             <Input id="basePrice" name="basePrice" type="number" step="0.01" min="0" required />
           </div>
+          <PromotionalPricingSection basePrice={0} />
           <div className="grid gap-1.5">
             <Label>Product image</Label>
             <ImageInput name="imageUrl" type="product" aspect="square" />

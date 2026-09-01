@@ -22,6 +22,7 @@ export default defineConfig({
       "src/app/subscribe/**/*.test.ts",
       "src/app/register/**/*.test.ts",
       "src/app/_components/**/*.test.ts",
+      "src/app/dashboard/**/*.test.ts",
       "src/server/catalog/pricing.test.ts",
     ],
     env: { NODE_ENV: "test" },

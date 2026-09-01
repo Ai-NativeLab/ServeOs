@@ -14,9 +14,12 @@ import {
 } from "@/server/catalog/service";
 import { upsertVariant, deleteVariant, setProductStock } from "@/server/catalog/variants";
 import { actionAudit } from "@/server/audit/action-context";
+import { parseDiscountFormData } from "./discount-form";
 
 export async function createProductAction(formData: FormData) {
   const ctx = await requireMenuPermission();
+  const basePrice = Number(formData.get("basePrice"));
+  const discount = parseDiscountFormData(formData, basePrice);
   await createProduct(ctx.tenantId, {
     categoryId: String(formData.get("categoryId")),
     nameEn: String(formData.get("nameEn")),
@@ -25,6 +28,7 @@ export async function createProductAction(formData: FormData) {
     descriptionEn: formData.get("descriptionEn") ? String(formData.get("descriptionEn")) : undefined,
     descriptionAr: formData.get("descriptionAr") ? String(formData.get("descriptionAr")) : undefined,
     imageUrl: formData.get("imageUrl") ? String(formData.get("imageUrl")) : undefined,
+    ...discount,
   }, await actionAudit(ctx));
   revalidatePath("/dashboard/menu");
   redirect("/dashboard/menu");
@@ -36,6 +40,9 @@ export async function updateProductAction(productId: string, formData: FormData)
   const isFeatured = formData.get("isFeatured") === "true";
   const hasRetailFields = formData.has("retailFields");
   const trackStock = formData.get("trackStock") === "true";
+  const basePrice = Number(formData.get("basePrice"));
+  const discount = parseDiscountFormData(formData, basePrice);
+
   await updateProduct(ctx.tenantId, productId, {
     nameEn: String(formData.get("nameEn")),
     nameAr: String(formData.get("nameAr")),
@@ -45,6 +52,7 @@ export async function updateProductAction(productId: string, formData: FormData)
     imageUrl: formData.get("imageUrl") ? String(formData.get("imageUrl")) : null,
     isPublished,
     isFeatured,
+    ...discount,
     ...(hasRetailFields
       ? {
           brand: formData.get("brand") ? String(formData.get("brand")) : null,
