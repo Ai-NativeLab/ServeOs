@@ -124,9 +124,35 @@ class FakeEta implements FiscalProvider {
   }
 }
 
-/** The nth scripted outcome, or the last one for every call past the script. */
+/**
+ * The nth scripted outcome. AN OVER-CALL IS AN ERROR, NOT A DEFAULT.
+ *
+ * IT USED TO CLAMP — `outcomes[Math.min(call, outcomes.length) - 1]`, i.e. every
+ * call past the script silently replayed the LAST outcome — and that clamp cost
+ * a day of root-cause work. A test scripted for two submits that made three got
+ * the second one's result again, so an unscripted extra interaction with ETA
+ * looked exactly like a scripted one, and the divergence surfaced two passes
+ * later as an unrelated transient failure. The clamp did not make tests pass
+ * that should fail; it made the FAILURE ARRIVE SOMEWHERE ELSE, which is worse.
+ *
+ * A SCRIPT IS A CLAIM ABOUT HOW MANY TIMES ETA IS TOUCHED, and that claim is
+ * load-bearing all over this file: "submits exactly once when two drains race
+ * it", "re-polls, never re-submits", "does not re-send". Under the clamp those
+ * assertions rested on a call log the fake would happily overrun. Now the count
+ * is checked at the point of the call, so an extra submit fails as an extra
+ * submit.
+ *
+ * IT SURFACES AS A `failed` ROW, NOT AS AN UNCAUGHT THROW, and that is worth
+ * knowing before debugging one: the worker catches every provider error by
+ * design (`handleFailure` treats an unrecognised one as retryable), so this
+ * message lands in the row's `lastError` rather than escaping the drain. Grep
+ * for "exceeds" there when a fiscal test fails for a reason that makes no sense.
+ */
 function unwrap(outcomes: SubmitOutcome[], call: number, what: string): FiscalSubmitResult {
-  const outcome = outcomes[Math.min(call, outcomes.length) - 1];
+  if (call > outcomes.length) {
+    throw new Error(`FakeEta: call ${call} exceeds ${outcomes.length} scripted outcomes for ${what}`);
+  }
+  const outcome = outcomes[call - 1];
   if (!outcome) throw new Error(`FakeEta: no scripted ${what} outcome for call ${call}`);
   if (outcome instanceof Error) throw outcome;
   return outcome;
@@ -872,15 +898,47 @@ describe("drainEtaSubmissions — return receipts", () => {
     expect(ret.etaUuid).toBeNull();
     expect(provider.submitted).toHaveLength(1); // the sale only
 
-    // Pass 2: the sale is accepted. Still deferred — the parent's acceptance
-    // and the return's submission cannot happen in the same pass.
-    await makeEligibleAll(s.tenantId);
+    // ------------------------------------------------------------------
+    // EACH PASS IS AIMED AT ONE ROW, BY STAMPING ONLY THAT ROW'S CLOCK — and
+    // the reason is a real flake this test used to carry rather than tidiness.
+    //
+    // `makeEligibleAll` stamped BOTH rows with the SAME `nextAttemptAt`, so the
+    // claim's `ORDER BY next_attempt_at` had a tie to break and both rows landed
+    // in one pass. Which one the worker then drove FIRST was unspecified (see
+    // `claim`'s own note: a subquery's ORDER BY does not order the outer
+    // RETURNING), and the two orders produce different — both CORRECT —
+    // outcomes. Sale first: it polls to accepted, and the return, driven later
+    // in the SAME pass, finds a genuinely accepted parent and submits. Return
+    // first: the parent is still `submitted`, so it defers and submits a pass
+    // later. Task 9's `(tenant_id, created_at)` index changed which one the
+    // planner preferred, and the pass-2 submit then over-ran a script written
+    // for one — surfacing two passes later as an unrelated transient failure.
+    //
+    // So the sequence below is guaranteed by DATA rather than by planner luck.
+    // The return keeps the future `nextAttemptAt` its pass-1 claim leased it,
+    // which makes it INELIGIBLE for pass 2 — a WHERE predicate, not an ordering,
+    // and therefore not something a planner can reorder. The deferral this test
+    // exists to pin is unaffected: it is pass 1 that claims the return against
+    // an unaccepted parent and defers it without spending an attempt, and pass 3
+    // that submits it. What is deliberately NOT asserted any more is that a
+    // return CANNOT submit in the same pass its parent is accepted — that was
+    // never true, and believing it was is what made the flake look like a bug.
+    // ------------------------------------------------------------------
+
+    // Pass 2: the sale alone is eligible, and it polls to accepted.
+    await makeEligible(s.tenantId, (await rowsFor(s.tenantId)).find((row) => row.orderId === s.receipt.orderId)!.id);
     await drainEtaSubmissions({ provider, reconcile: false });
     const sale = (await rowsFor(s.tenantId)).find((row) => row.orderId === s.receipt.orderId)!;
     expect(sale.status).toBe("accepted");
+    // The return was not claimed at all, so nothing was handed to ETA for it —
+    // the script is still exactly the one submit from pass 1.
+    expect(provider.submitted).toHaveLength(1);
+    ret = (await rowsFor(s.tenantId)).find((row) => row.refundId === refund.refundId)!;
+    expect(ret.status).toBe("pending");
+    expect(ret.attempts).toBe(0);
 
     // Pass 3: the return finalizes against the accepted parent and submits.
-    await makeEligibleAll(s.tenantId);
+    await makeEligible(s.tenantId, ret.id);
     const returnProvider = new FakeEta([accepted202("sub-return")]);
     await drainEtaSubmissions({ provider: returnProvider, reconcile: false });
 

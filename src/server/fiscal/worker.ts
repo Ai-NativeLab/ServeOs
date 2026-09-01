@@ -288,6 +288,26 @@ export async function drainEtaSubmissions(opts: DrainOptions = {}): Promise<Drai
  * `credit_note`, the B2B CORRECTION document, is still deferred and nothing
  * enqueues one. Filtering here means such a row (if one were ever hand-written)
  * sits inert instead of failing loudly on every pass.
+ *
+ * THE ORDER OF THE RETURNED ROWS IS UNSPECIFIED, AND NOTHING MAY RELY ON IT.
+ * The `ORDER BY next_attempt_at` belongs to the SUBQUERY — it decides WHICH rows
+ * are selected when more are eligible than `limit`, which is the property worth
+ * having (oldest-eligible first, so a backlog drains in issuance order). It does
+ * NOT order the outer `RETURNING`: SQL gives an UPDATE's returned rows no
+ * ordering guarantee, and the planner is free to emit them in whatever order the
+ * update touched them. Ties make it visible fastest — several rows sharing one
+ * `next_attempt_at` can come back in any order at all — and an index change
+ * elsewhere is enough to flip it (Task 9's `(tenant_id, created_at)` index did
+ * exactly that).
+ *
+ * SO THE DRIVE LOOP MUST BE ORDER-INDEPENDENT, and it is: every row is processed
+ * in its own transaction and decides for itself. A return receipt whose parent
+ * is not yet accepted defers and costs no attempt, whether the parent was driven
+ * a microsecond ago in this pass or has not been claimed yet — the check reads
+ * the parent's committed status, not this loop's position. If a future change
+ * ever needs a guaranteed order (a batch that must submit parents before
+ * children, say), it must sort the claimed rows in code or claim them in
+ * separate queries; adding an ORDER BY to this statement would not do it.
  */
 async function claim(tenantId: string, limit: number): Promise<ClaimedRow[]> {
   return withTenant(tenantId, async (tx) => {
