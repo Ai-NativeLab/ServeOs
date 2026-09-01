@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { submissionSideEffects, type SubmissionEmailState, type SubmissionLateState } from "./read-model";
 import type { EtaDocType, EtaSubmissionStatus } from "./schema";
 
@@ -157,5 +158,27 @@ describe("submissionSideEffects — the state space", () => {
       email: { kind: "failed", error: "Error: EMAIL_FROM is not set" },
       late: { kind: "late", notifiedAt: FLAGGED },
     });
+  });
+});
+
+/**
+ * MIGRATION 0055, READ AS TEXT RATHER THAN APPLIED — round 2 Task 9's own
+ * retirement note (`docs/ailab/plans/2026-08-31-eta-round-2.md`) says this
+ * task's index is ITS OWN migration, not folded into 0052/0053/0054, and that
+ * it carries nothing else. Both claims are cheap to pin without a database:
+ * the file this task generated either has exactly the one statement or it
+ * does not, and `db:migrate:test` (which the DB-backed suites already run
+ * against) is what proves the index actually applies — this test is the
+ * static half of "verify DDL is just the index".
+ */
+describe("migration 0055 — the tenant/createdAt index, and nothing else", () => {
+  it("is exactly one CREATE INDEX statement, on (tenant_id, created_at)", () => {
+    const sql = readFileSync("drizzle/0055_chunky_trish_tilby.sql", "utf8").trim();
+    const statements = sql.split("--> statement-breakpoint").map((s) => s.trim()).filter(Boolean);
+
+    expect(statements).toHaveLength(1);
+    expect(statements[0]).toBe(
+      `CREATE INDEX "eta_submissions_tenant_created" ON "eta_submissions" USING btree ("tenant_id","created_at");`,
+    );
   });
 });

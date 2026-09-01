@@ -263,6 +263,13 @@ export const etaSubmissions = pgTable("eta_submissions", {
   // its own unfiltered index.
   index("eta_submissions_order_lookup").on(t.tenantId, t.orderId),
   index("eta_submissions_refund_lookup").on(t.tenantId, t.refundId),
+  // The dashboard's date-range submissions filter (round 2, Task 9):
+  // `listSubmissions` always orders by createdAt desc and, once `from`/`to` are
+  // given, filters on it too — both against this same column, both tenant-scoped.
+  // A composite (tenantId, createdAt) index serves the plain "newest N" page as
+  // well as the filtered range scan, so one index covers both rather than one
+  // per shape of the query.
+  index("eta_submissions_tenant_created").on(t.tenantId, t.createdAt),
   // Fiscal-identity uniqueness: etaUuid is the document's identity (self-computed
   // for receipts, ETA-assigned for invoices) — unique per tenant once set.
   uniqueIndex("eta_submissions_eta_uuid").on(t.tenantId, t.etaUuid).where(sql`${t.etaUuid} is not null`),

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { requireFiscalPermission } from "../fiscal-permission";
 import { UnauthorizedError } from "@/server/rbac/authorize";
 import { getTenantById } from "@/server/tenancy";
@@ -13,7 +14,9 @@ import {
   etaCodeSourceEnum,
   etaEnvironmentEnum,
   etaPosCredentialStatusEnum,
+  etaSubmissionStatusEnum,
   type EtaFeeLineConfig,
+  type EtaSubmissionStatus,
 } from "@/server/fiscal/schema";
 import {
   saveFiscalConfigAction,
@@ -113,7 +116,34 @@ function FeeLineFields({ prefix, label, value }: { prefix: string; label: string
   );
 }
 
-export default async function FiscalPage() {
+/**
+ * A `?from=`/`?to=` query value into a `Date`, or `undefined` for absent or
+ * unparseable input — a malformed query string (hand-edited, or a stale
+ * bookmark from a changed format) drops that bound rather than 500ing the
+ * page. `type="date"` inputs round-trip as `YYYY-MM-DD`, which `Date` parses
+ * as UTC midnight — the same origin `createdAt` is stored in, so no timezone
+ * conversion happens here; see the "Filed" hint below the filter row for what
+ * that means for a tenant outside UTC.
+ */
+function parseFilterDate(value: string | undefined): Date | undefined {
+  if (!value) return undefined;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
+/** Only a real status is honoured — an unrecognised value (hand-edited query
+ *  string) is treated as no filter rather than passed through to the query. */
+function parseFilterStatus(value: string | undefined): EtaSubmissionStatus | undefined {
+  return etaSubmissionStatusEnum.enumValues.includes(value as EtaSubmissionStatus)
+    ? (value as EtaSubmissionStatus)
+    : undefined;
+}
+
+export default async function FiscalPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ status?: string; from?: string; to?: string }>;
+}) {
   let ctx;
   try {
     ctx = await requireFiscalPermission();
@@ -132,12 +162,18 @@ export default async function FiscalPage() {
     throw e; // requireDashboardUser redirects unauthenticated users
   }
 
+  const { status: statusParam, from: fromParam, to: toParam } = await searchParams;
+  const status = parseFilterStatus(statusParam);
+  const from = parseFilterDate(fromParam);
+  const to = parseFilterDate(toParam);
+  const filtered = Boolean(statusParam || fromParam || toParam);
+
   const [config, devices, credentials, taxCodes, submissions, statusCounts, tenant] = await Promise.all([
     getFiscalConfig(ctx.tenantId),
     listFiscalDevices(ctx.tenantId),
     listDeviceCredentials(ctx.tenantId),
     listProductTaxCodes(ctx.tenantId),
-    listSubmissions(ctx.tenantId, { limit: SUBMISSIONS_PAGE_SIZE }),
+    listSubmissions(ctx.tenantId, { limit: SUBMISSIONS_PAGE_SIZE, status, from, to }),
     getSubmissionStatusCounts(ctx.tenantId),
     getTenantById(ctx.tenantId),
   ]);
@@ -372,6 +408,66 @@ export default async function FiscalPage() {
 
       {/* ------------------------------------------------------------------ */}
       <h2 className="eyebrow text-muted-foreground mb-3">Submissions</h2>
+
+      {/*
+        GET FORM, NO CLIENT STATE — the same shape `/dashboard/audit` and
+        `/admin/tenants` already use for their own filters: submitting
+        navigates to a new URL, the server component re-renders against the
+        new `searchParams`, and the current filter survives a refresh or a
+        shared link with no JS of its own. A native <select> for status
+        (mirroring those two pages) rather than the styled `Select`, for the
+        same reason `eb28a73` switched `/admin/tenants` to one: a GET form
+        submits a plain HTML control without needing the client-side wiring
+        the styled version carries.
+      */}
+      <form method="GET" className="flex flex-wrap items-end gap-3 mb-2">
+        <div className="grid gap-1.5">
+          <Label htmlFor="status">Status</Label>
+          <select id="status" name="status" defaultValue={status ?? ""} className={selectCls}>
+            <option value="">All statuses</option>
+            {etaSubmissionStatusEnum.enumValues.map((v) => (
+              <option key={v} value={v}>{v}</option>
+            ))}
+          </select>
+        </div>
+        <div className="grid gap-1.5">
+          {/* LABELLED "Filed", NEVER "Issued" OR "Date" — this range filters
+              `createdAt`, the moment ServeOS's pipeline wrote the row, which
+              is not always the moment the document was issued. See the hint
+              below and `ListSubmissionsOptions.from`'s JSDoc. "Filed" /
+              "before" name the pinned [from, to) boundary in the labels
+              themselves: the second box is where the range STOPS, not the
+              last day included. */}
+          <Label htmlFor="from">Filed</Label>
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              id="from" name="from" type="date"
+              defaultValue={fromParam ?? ""} aria-label="Filed from"
+              className="h-9 w-auto"
+            />
+            <span className="text-xs text-muted-foreground">before</span>
+            <Input
+              id="to" name="to" type="date"
+              defaultValue={toParam ?? ""} aria-label="Filed before"
+              className="h-9 w-auto"
+            />
+          </div>
+        </div>
+        <button type="submit" className="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground">
+          Filter
+        </button>
+        {filtered && (
+          <Link href="/dashboard/fiscal" className="text-xs text-muted-foreground underline underline-offset-2">
+            Clear filters
+          </Link>
+        )}
+      </form>
+      <p className="text-xs text-muted-foreground mb-3 max-w-2xl">
+        &ldquo;Filed&rdquo; is when ServeOS recorded the document, not necessarily when the sale happened — an
+        online order the nightly sweep adopts from the backlog can file days after it was rung, so a 31 July
+        sale swept on 1 August files here under August.
+      </p>
+
       <FiscalSubmissionsTable
         rows={submissions.rows}
         hasMore={submissions.hasMore}

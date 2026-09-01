@@ -1,5 +1,5 @@
 import QRCode from "qrcode";
-import { and, count, desc, eq, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, lt, sql } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import {
   etaSubmissions,
@@ -477,6 +477,36 @@ export type ListSubmissionsOptions = {
   limit?: number;
   offset?: number;
   status?: EtaSubmissionStatus;
+  /**
+   * A FILED-DATE RANGE ON `createdAt` — PINNED BOUNDARY SEMANTICS: `from` is
+   * INCLUSIVE, `to` is EXCLUSIVE. `[from, to)`, the conventional half-open
+   * range, so a caller can ask for "July" as `{ from: 2026-07-01, to:
+   * 2026-08-01 }` without a day double-counted at the seam between two
+   * adjacent ranges or a day dropped at either open end. Either bound may be
+   * given alone (open-ended the other direction); giving neither is
+   * unfiltered. Combines with `status` by AND, same as every other option
+   * here. Tested at the exact boundary in `config-service.test.ts`
+   * (`listSubmissions` — a row stamped exactly at `from` is included, one
+   * stamped exactly at `to` is not).
+   *
+   * ---------------------------------------------------------------------------
+   * THIS IS "FILED", NOT "ISSUED" — READ `toRowView`'s CLOCK-ORIGIN CAVEAT
+   * BEFORE USING IT FOR RECONCILIATION. `createdAt` is the moment ServeOS's
+   * pipeline WROTE this row, not the moment the document says it was issued
+   * (`dateTimeIssued`). For a POS sale the two are seconds apart. For a SWEPT
+   * ONLINE ORDER — the online channel's normal path, since
+   * `reconcileMissingReceipts` adopts orders the enqueue never covered —
+   * `createdAt` trails `dateTimeIssued` by anything from ~5 minutes up to
+   * `RECONCILE_HORIZON_MS` (7 days). So a sale made on 31 July that the sweep
+   * only adopts on 1 August is FILED, and therefore returned, under an
+   * `{ from: 2026-08-01, to: 2026-09-01 }` range — an owner reconciling a VAT
+   * period against this filter must read the range as "documents ServeOS's
+   * pipeline wrote in this window", not "sales made in this window". THIS IS
+   * WHY THE DASHBOARD CONTROL IS LABELLED "Filed" AND NEVER "Issued" OR
+   * "Date" — see `src/app/dashboard/fiscal/page.tsx`.
+   */
+  from?: Date;
+  to?: Date;
 };
 
 const SUBMISSIONS_PAGE_LIMIT = 50;
@@ -486,6 +516,10 @@ const SUBMISSIONS_PAGE_LIMIT = 50;
  * table renders and nothing else. `requestJson`/`responseJson` are deliberately
  * NOT selected — they are the fiscal document and ETA's raw reply, several
  * kilobytes each, and the table shows neither.
+ *
+ * `status`, `from` and `to` combine by AND, so a caller can ask "rejected
+ * documents filed in August" in one call. See `ListSubmissionsOptions.from`
+ * for the pinned `[from, to)` boundary and the filed-vs-issued caveat.
  */
 export async function listSubmissions(
   tenantId: string,
@@ -495,15 +529,20 @@ export async function listSubmissions(
   const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 25), 1), SUBMISSIONS_PAGE_LIMIT);
   const offset = Math.max(Math.trunc(opts.offset ?? 0), 0);
 
+  // Built as a list rather than nested ternaries: three independent optional
+  // filters (status, from, to) would otherwise need one branch per
+  // combination to stay as one `and(...)`.
+  const conditions = [eq(etaSubmissions.tenantId, tenantId)];
+  if (opts.status) conditions.push(eq(etaSubmissions.status, opts.status));
+  // `from` inclusive, `to` exclusive — see `ListSubmissionsOptions.from`.
+  if (opts.from) conditions.push(gte(etaSubmissions.createdAt, opts.from));
+  if (opts.to) conditions.push(lt(etaSubmissions.createdAt, opts.to));
+
   const rows = await withTenant(tenantId, (tx) =>
     tx
       .select(SUBMISSION_ROW_COLUMNS)
       .from(etaSubmissions)
-      .where(
-        opts.status
-          ? and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.status, opts.status))
-          : eq(etaSubmissions.tenantId, tenantId),
-      )
+      .where(and(...conditions))
       .orderBy(desc(etaSubmissions.createdAt), desc(etaSubmissions.id))
       // One extra row decides `hasMore` without a second COUNT(*) over a table
       // that only grows.

@@ -1484,6 +1484,72 @@ describe("listSubmissions", () => {
     expect((await getSubmissionById(a.id, row.id))!.status).toBe("rejected");
     expect(await getSubmissionById(b.id, row.id)).toBeNull();
   });
+
+  /**
+   * THE PINNED BOUNDARY, EXACT — round 2 Task 9. `ListSubmissionsOptions.from`
+   * is INCLUSIVE, `to` is EXCLUSIVE: `[from, to)`. A row stamped at exactly
+   * `from` must come back; a row stamped at exactly `to` must not — anything
+   * looser than "exactly" would leave the seam between two adjacent calendar
+   * ranges (e.g. July's `to` and August's `from`, both midnight 1 August)
+   * either double-counting or dropping the instant between them.
+   */
+  it("filters by createdAt range at the exact boundary — from inclusive, to exclusive", async () => {
+    const t = await makeTenant();
+    const branch = await makeBranch(t.id);
+
+    const FROM = new Date("2026-07-01T00:00:00.000Z");
+    const TO = new Date("2026-08-01T00:00:00.000Z");
+    const BEFORE_FROM = new Date("2026-06-30T23:59:59.999Z");
+    const INSIDE = new Date("2026-07-15T12:00:00.000Z");
+    const AFTER_TO = new Date("2026-08-01T00:00:00.001Z");
+
+    async function seedAt(createdAt: Date, tag: string, status: "pending" | "rejected" = "pending") {
+      const order = await makeOrder(t.id, branch.id);
+      await withTenant(t.id, (tx) =>
+        tx.insert(etaSubmissions).values({
+          tenantId: t.id, docType: "e_receipt", orderId: order.id, status, etaUuid: tag, createdAt,
+        }),
+      );
+    }
+
+    await seedAt(BEFORE_FROM, "before-from");
+    await seedAt(FROM, "at-from"); // exact `from` boundary: included
+    await seedAt(INSIDE, "inside");
+    await seedAt(TO, "at-to"); // exact `to` boundary: excluded
+    await seedAt(AFTER_TO, "after-to");
+
+    // [from, to): the exact-`from` row is in, the exact-`to` row is not.
+    const ranged = await listSubmissions(t.id, { from: FROM, to: TO, limit: 10 });
+    expect(new Set(ranged.rows.map((r) => r.etaUuid))).toEqual(new Set(["at-from", "inside"]));
+
+    // THE CURRENT ROW SHAPE, not the columns Task 8 removed: `sideEffects` is
+    // the derived view, `customerEmailedAt`/`lateNotifiedAt` never come back —
+    // a regression here would silently reintroduce the raw nullable pair.
+    expect(ranged.rows[0]).toHaveProperty("sideEffects");
+    expect(ranged.rows[0].sideEffects).toEqual({ email: { kind: "not-attempted" }, late: { kind: "on-time" } });
+    expect(ranged.rows[0]).not.toHaveProperty("customerEmailedAt");
+    expect(ranged.rows[0]).not.toHaveProperty("customerEmailError");
+    expect(ranged.rows[0]).not.toHaveProperty("lateNotifiedAt");
+
+    // Open-ended forward: `from` alone includes its own boundary and everything after.
+    const fromOnly = await listSubmissions(t.id, { from: TO, limit: 10 });
+    expect(new Set(fromOnly.rows.map((r) => r.etaUuid))).toEqual(new Set(["at-to", "after-to"]));
+
+    // Open-ended backward: `to` alone excludes its own boundary.
+    const toOnly = await listSubmissions(t.id, { to: FROM, limit: 10 });
+    expect(new Set(toOnly.rows.map((r) => r.etaUuid))).toEqual(new Set(["before-from"]));
+
+    // Unfiltered: every seeded row.
+    const unfiltered = await listSubmissions(t.id, { limit: 10 });
+    expect(unfiltered.rows).toHaveLength(5);
+
+    // Combined with `status`, by AND: a rejected row inside the range is the
+    // only one either filter alone would not already exclude something else.
+    await seedAt(INSIDE, "rejected-inside", "rejected");
+    await seedAt(INSIDE, "pending-inside-2");
+    const combined = await listSubmissions(t.id, { from: FROM, to: TO, status: "rejected", limit: 10 });
+    expect(combined.rows.map((r) => r.etaUuid)).toEqual(["rejected-inside"]);
+  });
 });
 
 // ---------------------------------------------------------------------------

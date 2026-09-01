@@ -1,0 +1,1 @@
+CREATE INDEX "eta_submissions_tenant_created" ON "eta_submissions" USING btree ("tenant_id","created_at");
