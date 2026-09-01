@@ -44,8 +44,15 @@ export const AUDITED_SERVICE_FILES = [
   "src/server/fiscal/finalize.ts",
   // Contributes no symbols today: drainEtaSubmissions is its only export and it
   // writes nothing directly — every status write lives in a private per-row
-  // helper, and each of those calls recordFiscalAudit beside its write. Listed
-  // for the forward coverage described at the head of this list.
+  // helper. Listed for the forward coverage described at the head of this list.
+  //
+  // "…and each of those helpers emits beside its write" WAS TRUE AND IS NO
+  // LONGER, which is why the claim has been removed rather than left to age:
+  // round 2 Task 8 added `noteLateSubmission`, a private writer that
+  // deliberately emits nothing (see its `pending-scan:` entry below for the
+  // reasoning). The blanket statement would have been the only thing telling a
+  // reader of this list that fiscal's private writers are all clean, at exactly
+  // the moment one of them stopped being.
   "src/server/fiscal/worker.ts",
   // Real present coverage, unlike the three worker-shaped modules above: both
   // of its writers are exported, both are owner actions on a compliance
@@ -134,12 +141,37 @@ export function enumerateMutatingSymbols(): MutatingSymbol[] {
 }
 
 /**
- * `<basename>.<symbol>` → justification. Every non-`forward:` key MUST name a
+ * `<basename>.<symbol>` → justification. Every plain key MUST name a
  * currently-flagged mutating symbol (the guardrail's "no stale entries" test),
  * so this list is the *complete* set of DB writers that legitimately do not emit
  * a domain audit event. `forward:` keys document emissions that land with later
  * specs; the guardrail will fail those PRs if the mutation ships without one.
+ *
+ * `pending-scan:<basename>.<symbol>` IS A THIRD KIND, and it exists because the
+ * scanner's REACH is about to change. `enumerateMutatingSymbols` matches
+ * `export function` only, so a PRIVATE writer is invisible to it — that is the
+ * gap round 2 Task 10b widens the scan to close, and the widening will surface a
+ * batch of writers at once. A `pending-scan:` key is a disposition DECIDED IN
+ * ADVANCE for one of them, written by the task that added the writer, while it
+ * still remembers why. The coverage test HONOURS the prefix — so the day the
+ * scan widens, the entry is already in force and the symbol is not reported as a
+ * fresh gap needing adjudication by someone who did not write it.
+ *
+ * THE PREFIX EXPIRES ITSELF. The stale-entry test does not skip these keys; it
+ * INVERTS its usual assertion and requires the bare symbol to still be
+ * un-enumerable. So widening the scan does not quietly leave a stale prefix
+ * behind — it turns every one of them into a failing assertion naming the key
+ * and the fix ("drop the prefix"). A temporary marker whose cleanup depends on a
+ * later task remembering it exists is a permanent marker; this one is removed by
+ * the guardrail asking for it.
+ *
+ * IT IS NOT A PARKING SPACE. `pending-scan:` says "the answer is settled and
+ * here it is"; it never means "not looked at yet". When Task 10b widens the
+ * scan, every one of these becomes an ordinary key by deleting the prefix — and
+ * an entry whose justification cannot survive that edit was never a disposition
+ * in the first place.
  */
+export const PENDING_SCAN_PREFIX = "pending-scan:";
 export const AUDIT_ALLOWLIST: Record<string, string> = {
   // Conversation rows are the bot's internal cursor, not a domain mutation.
   // The domain event — the order — is audited inside the same turn:
@@ -218,6 +250,28 @@ export const AUDIT_ALLOWLIST: Record<string, string> = {
   // the cashier. `eta.submission.*` is the whole fiscal vocabulary
   // (fiscal/effects.ts) and none of it describes "hashed, not yet sent".
   "finalize.finalizeSubmissionRow": "prepares a queued document (uuid/QR/chain head); the submission lifecycle it feeds is audited as eta.submission.* by the worker on the same row",
+  // noteLateSubmission (round 2 Task 8) writes `late_notified_at` and sends the
+  // owner one alert when a claimed receipt is past ETA's 24-hour window. It is
+  // PRIVATE, so today's exported-only scan cannot see it — hence `pending-scan:`;
+  // Task 10b's widening will, and this is its decided disposition rather than a
+  // fifteenth gap for whoever runs that task to adjudicate cold.
+  //
+  // NO AUDIT ACTION IS MINTED, deliberately. The `eta.submission.*` vocabulary
+  // (fiscal/effects.ts) names things that HAPPENED TO THE DOCUMENT at ETA —
+  // submitted, accepted, rejected — and nothing happened to this one: the clock
+  // passed a threshold while the row sat where it was. It is a SYSTEM
+  // OBSERVATION about our own pipeline's timing, with no actor (a scheduled
+  // drain), no state change to the fiscal record, and no effect on what is filed
+  // — the worker submits the document either way, which is the whole design.
+  // Minting `eta.submission.late` would put a non-event in the audit trail that
+  // reads like one, and an auditor would reasonably ask which ETA interaction it
+  // records. None.
+  //
+  // AND IT IS ALREADY RECORDED TWICE, durably: `late_notified_at` is the
+  // timestamped fact on the row itself (queryable, and what the dashboard's
+  // `late` state is derived from), and the owner notification is the delivery of
+  // it. A third copy in `audit_events` would add no fact and no reader.
+  "pending-scan:worker.noteLateSubmission": "system observation of our own timing, not an ETA interaction; the owner notification + `late_notified_at` ARE the record, and an eta.submission.* action is deliberately not minted for a non-event",
   // Forward references — land with later specs; the guardrail enforces they emit then.
   "forward:refund.*": "Spec 3 refunds must emit refund.* via recordAuditEvent",
   // NOTE: `forward:eta.*` was retired here — Spec 11's worker emits

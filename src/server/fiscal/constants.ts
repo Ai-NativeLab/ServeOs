@@ -47,6 +47,16 @@ import type { EtaDocType } from "./schema";
  * path — they say how stale a document an LSR may rescue, not when the ordinary
  * clock runs out — so they are not a second deadline and nothing here reads them.
  *
+ * 24 HOURS IS A CURRENT VALUE, NOT A CONSTANT OF THE SPEC. The FAQ presents it
+ * as "the allowed duration (24 hours)" — the parenthesis is the reading of a
+ * SUBMISSION WORKFLOW PARAMETER that ETA configures on its side, in the same
+ * family as the Late Submission parameters quoted above, not a number written
+ * into the receipt specification. ETA can reconfigure it, and if it does, this
+ * literal is wrong everywhere it is used with no error anywhere: submissions
+ * would keep working and the dashboard would simply be flagging against the old
+ * duration. That is why it is ONE constant with two readers rather than a
+ * repeated literal, and it is the first thing to re-read on preprod.
+ *
  * NOT ENFORCED BY THE WORKER, and deliberately so — a worker that stopped
  * retrying at the deadline would turn a late document into no document, which is
  * strictly worse, and ETA's own answer to a stale document is an LSR rather than
@@ -76,10 +86,32 @@ export const SUBMISSION_WINDOW_MS = 24 * 60 * 60 * 1000;
  * pair and not the invoice.
  *
  * THE 24-HOUR RULE IS AN E-RECEIPT RULE. It appears on exactly one SDK page, the
- * Receipt Issuance FAQ, and it is spelled in receipt nouns throughout — "the
- * receipt is allowed to be submitted within the allowed duration (24 hours)…
- * added to the receipt/return receipt". `return_receipt` is inside the quote,
- * which is why both members of the family are here.
+ * Receipt Issuance FAQ, and that page is about receipts throughout.
+ *
+ * WHY `return_receipt` IS IN THIS SET IS AN INFERENCE, NOT A QUOTE, and saying
+ * so is the difference between a scope and a claim. The rule's grammatical
+ * subject is singular — "**The receipt** is allowed to be submitted within the
+ * allowed duration (24 hours)" — and the string "receipt/return receipt" occurs
+ * only in the trailing exception clause. So the sentence does not NAME the
+ * return receipt as bound by the window. Three signals put it inside anyway:
+ *
+ *   1. THE CARVE-OUT PRESUPPOSES IT. The exception is "unless this receipt is
+ *      being resubmitted and has the OLD UUID added to the receipt/return
+ *      receipt" — an exemption written for return receipts only means something
+ *      if return receipts are subject to the rule it exempts them from.
+ *   2. THE PAGE TREATS THE PAIR AS ONE BASE STRUCTURE. "receipt/return receipt"
+ *      is how that FAQ refers to the document throughout, matching the SDK's own
+ *      `receipt-v1-2` / `return-receipt-v1-2` split of a single family.
+ *   3. THE WORDING IS GENERIC NORMATIVE. "The receipt" is the family's generic
+ *      noun in a rule statement, not a discriminator drawn against returns —
+ *      which the page never draws.
+ *
+ * THE RISK IS DELIBERATELY POINTED THE SAFE WAY. If the inference is wrong, a
+ * return receipt past 24h gets an owner alert about a deadline that did not bind
+ * it: a false alarm on our own dashboard, with no effect on what is filed or
+ * when, since the worker submits either way. Excluding returns and being wrong
+ * would silently miss a real breach on a real document. Given one of those has
+ * to be risked, this is the one to risk.
  *
  * NO SUBMISSION DEADLINE IS PUBLISHED FOR AN INVOICE, and that was checked
  * before this constant was written rather than assumed (round 2 Task 8's

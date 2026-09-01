@@ -89,8 +89,16 @@ describe("submissionSideEffects — the late-window flag", () => {
     expect(submissionSideEffects(row({ lateNotifiedAt: FLAGGED })).late).toEqual({ kind: "late", notifiedAt: FLAGGED });
   });
 
-  it("covers the whole receipt family — a return receipt is inside ETA's 24-hour rule", () => {
-    // ETA's own sentence names both: "…added to the receipt/return receipt".
+  it("covers the whole receipt family — a return receipt is treated as inside the 24-hour rule", () => {
+    // AN INFERENCE, PINNED AS ONE. ETA's sentence does NOT name the return
+    // receipt as bound: its subject is "The receipt", and "receipt/return
+    // receipt" appears only in the trailing exception clause. Three signals put
+    // returns inside it anyway — the carve-out presupposes them, the page treats
+    // the pair as one base structure, and the wording is generic normative — and
+    // the risk is pointed the safe way (a false alarm on our own dashboard beats
+    // silently missing a real breach). See `isReceiptSubmissionWindowFamily`.
+    // This test is what fails if someone narrows the family without revisiting
+    // that reasoning.
     expect(submissionSideEffects(row({ docType: "return_receipt", lateNotifiedAt: FLAGGED })).late)
       .toEqual({ kind: "late", notifiedAt: FLAGGED });
   });
