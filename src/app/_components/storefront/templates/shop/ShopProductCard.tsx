@@ -41,6 +41,7 @@ export function ShopProductCard({
         }
       }}
       aria-label={product.nameEn}
+      aria-disabled={!interactive || !inStock ? true : undefined}
       className={`card-lift group relative flex flex-col overflow-hidden rounded-2xl bg-card text-left ${
         !interactive || !inStock ? "cursor-default" : "cursor-pointer"
       }`}
@@ -89,7 +90,7 @@ export function ShopProductCard({
                       onQuickAdd();
                     }
                   }}
-                  aria-label={configurable ? `Select options for ${product.nameEn}` : `Add ${product.nameEn} to cart`}
+                  aria-label={configurable ? "Select options" : "Quick add"}
                   className="grid size-8 place-items-center rounded-full bg-primary text-lg leading-none text-primary-foreground shadow-sm transition-transform active:scale-90"
                 >
                   +
@@ -105,7 +106,7 @@ export function ShopProductCard({
                       e.stopPropagation();
                       onDecrement?.();
                     }}
-                    aria-label={`Decrease quantity of ${product.nameEn}`}
+                    aria-label="Decrease quantity"
                     className="grid size-7 place-items-center rounded-full bg-primary text-sm font-bold text-primary-foreground shadow-sm transition-transform active:scale-90"
                   >
                     −
@@ -119,7 +120,7 @@ export function ShopProductCard({
                       e.stopPropagation();
                       onIncrement?.();
                     }}
-                    aria-label={`Increase quantity of ${product.nameEn}`}
+                    aria-label="Increase quantity"
                     className="grid size-7 place-items-center rounded-full bg-primary text-sm font-bold text-primary-foreground shadow-sm transition-transform active:scale-90"
                   >
                     +
