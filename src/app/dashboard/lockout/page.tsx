@@ -3,17 +3,20 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter }
 import { Button } from "@/components/ui/button";
 import { AlertCircle, Clock, XCircle, CreditCard, Mail, LogOut } from "lucide-react";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { signOutAction } from "@/app/dashboard/actions";
 
-type SearchParams = Promise<{ status?: string }>;
-
-export default async function LockoutPage({ searchParams }: { searchParams: SearchParams }) {
+// The `?status=` the gate appends is informational only: the reason shown is
+// always the tenant's LIVE status (#187 review), so a stale or hand-edited
+// link can't show the wrong lockout.
+export default async function LockoutPage(_props: { searchParams: Promise<{ status?: string }> }) {
   const { tenant } = await requireDashboardUser({
     allowStatus: ["onboarding", "suspended", "rejected"],
   });
 
-  const params = await searchParams;
-  const status = params.status || tenant.status;
+  // Reactivated (or never blocked): nothing to lock out — back to work.
+  if (tenant.status === "active" || tenant.status === "trial") redirect("/dashboard");
+  const status = tenant.status;
 
   const contentMap = {
     suspended: {
