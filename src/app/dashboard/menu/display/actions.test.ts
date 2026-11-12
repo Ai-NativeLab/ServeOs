@@ -5,15 +5,23 @@ import { withTenant } from "@/db/with-tenant";
 import { tenants, tenantSettings } from "@/server/tenancy/schema";
 import { users } from "@/server/auth/schema";
 import { auditEvents } from "@/server/audit/schema";
-import { UnauthorizedError } from "@/server/rbac/authorize";
 import { getCatalogDisplaySettings } from "@/server/tenancy/settings";
 import type { DashboardContext } from "@/server/auth/dashboard-context";
 
 const session = vi.hoisted(() => ({ ctx: null as unknown as DashboardContext }));
-vi.mock("@/server/auth/dashboard-context", () => ({ requireDashboardUser: async () => session.ctx }));
+// Only the session is stubbed: the real authorizeDashboardOrRedirect still
+// judges the role, and its redirect lands on the mocked next/navigation below.
+vi.mock("@/server/auth/dashboard-context", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/server/auth/dashboard-context")>()),
+  requireDashboardUser: async () => session.ctx,
+}));
 vi.mock("next/headers", () => ({ headers: async () => new Headers() }));
 const revalidatePath = vi.hoisted(() => vi.fn());
 vi.mock("next/cache", () => ({ revalidatePath }));
+class RedirectSignal extends Error {
+  constructor(public readonly url: string) { super(`redirect ${url}`); }
+}
+vi.mock("next/navigation", () => ({ redirect: (url: string) => { throw new RedirectSignal(url); } }));
 
 const { updateCatalogDisplayAction } = await import("./actions");
 
@@ -42,7 +50,7 @@ describe("updateCatalogDisplayAction (#195)", () => {
   it("refuses staff (no menu:manage) and writes nothing", async () => {
     const t = await signIn("cda-staff", "staff");
     await expect(updateCatalogDisplayAction(form({ catalogDisplayMode: "paginated", itemsPerPage: "24" })))
-      .rejects.toBeInstanceOf(UnauthorizedError);
+      .rejects.toSatisfy((e: unknown) => e instanceof RedirectSignal && e.url === "/dashboard/denied?permission=menu%3Amanage");
     expect(await getCatalogDisplaySettings(t.id)).toEqual({ catalogDisplayMode: "sections", itemsPerPage: 12 });
   });
 
