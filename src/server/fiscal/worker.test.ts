@@ -27,7 +27,7 @@ import { getSubmissionById, listSubmissions } from "./read-model";
 import { finalizeSubmissionRow, reconcileMissingReceipts } from "./finalize";
 import { enqueueCorrectedResubmission } from "./enqueue";
 import { BuyerIdRequiredError } from "./errors";
-import { TestCertSigner } from "./sign-invoice";
+import { TestCertSigner } from "./test-support/test-cert-signer";
 import { stringifyWire } from "./serialize";
 import { EtaTransportError, EtaConfigError } from "./eta-transport-errors";
 import type {

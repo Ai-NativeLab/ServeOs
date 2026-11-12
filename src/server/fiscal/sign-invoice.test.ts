@@ -4,9 +4,10 @@ import { createHash, verify as nodeVerify, generateKeyPairSync } from "node:cryp
 import * as asn1js from "asn1js";
 import * as pkijs from "pkijs";
 import {
-  invoiceDigest, signInvoice, resolveInvoiceSigner, TestCertSigner, PemBundleSigner,
+  invoiceDigest, signInvoice, resolveInvoiceSigner, PemBundleSigner,
   type InvoiceSigner,
 } from "./sign-invoice";
+import { TestCertSigner } from "./test-support/test-cert-signer";
 import { canonicalSerialize } from "./serialize";
 import { EtaConfigError } from "./eta-transport-errors";
 import { dec } from "./decimal";
@@ -376,7 +377,7 @@ describe("a PemBundleSigner-signed container is structurally identical to a Test
  */
 describe("TestCertSigner is unreachable from production code", () => {
   const ROOTS = ["src/server", "src/app"];
-  const DEFINING_MODULE = "src/server/fiscal/sign-invoice.ts";
+  const DEFINING_MODULE = "src/server/fiscal/test-support/test-cert-signer.ts";
   const isTestFile = (file: string) => /\.test\.[cm]?tsx?$/.test(file);
 
   function sourceFiles(dir: string, out: string[] = []): string[] {
@@ -399,6 +400,9 @@ describe("TestCertSigner is unreachable from production code", () => {
     // count is a floor rather than a pin so ordinary growth does not fail it.
     expect(scanned.length).toBeGreaterThan(200);
     expect(scanned).toContain("src/server/fiscal/finalize.ts");
+    // The production signing module is scanned too, now that the test signer
+    // no longer lives in it.
+    expect(scanned).toContain("src/server/fiscal/sign-invoice.ts");
 
     const offenders = scanned.filter((file) => referencesTestSigner(readFileSync(file, "utf8")));
     expect(
