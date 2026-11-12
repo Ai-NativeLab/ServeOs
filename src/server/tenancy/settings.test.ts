@@ -6,8 +6,9 @@ import {
   getVatRate, setVatRate, getTenantSettings, getWhatsappNumber, setWhatsappNumber,
   requestPlanUpgrade, getUpgradeRequest, getCheckoutPricing, setServiceChargeRate,
   getShiftPolicy, getAllowNegativeStock, setAllowNegativeStock,
+  getCatalogDisplaySettings, setCatalogDisplaySettings, catalogDisplayFrom,
 } from "./settings";
-import { InvalidWhatsappNumberError } from "./errors";
+import { InvalidWhatsappNumberError, InvalidCatalogDisplaySettingsError } from "./errors";
 import type { VerticalId } from "@/server/verticals";
 
 async function makeTenant(slug: string, country = "EG", vertical: VerticalId = "restaurant") {
@@ -174,5 +175,47 @@ describe("tenant plan upgrade requests", () => {
     const req = await getUpgradeRequest(t.id);
     expect(req?.planKey).toBe("pro");
     expect(typeof req?.requestedAt).toBe("string");
+  });
+});
+
+describe("catalog display settings (#194)", () => {
+  async function storeRaw(tenantId: string, data: Record<string, unknown>) {
+    await withTenant(tenantId, (tx) => tx.insert(tenantSettings).values({ tenantId, data }));
+  }
+
+  it("defaults to sections / 12 when nothing is stored", async () => {
+    const t = await makeTenant("cd1");
+    expect(await getCatalogDisplaySettings(t.id)).toEqual({ catalogDisplayMode: "sections", itemsPerPage: 12 });
+  });
+
+  it("reads back what was saved", async () => {
+    const t = await makeTenant("cd2");
+    await setCatalogDisplaySettings(t.id, { catalogDisplayMode: "paginated", itemsPerPage: 48 });
+    expect(await getCatalogDisplaySettings(t.id)).toEqual({ catalogDisplayMode: "paginated", itemsPerPage: 48 });
+  });
+
+  it.each([2.5, 1000, 0, -12, "24", null])("falls back to 12 for a stored itemsPerPage of %s", async (bad) => {
+    const t = await makeTenant(`cd3-${String(bad).replace(/\W/g, "_")}`);
+    await storeRaw(t.id, { catalogDisplayMode: "paginated", itemsPerPage: bad });
+    expect((await getCatalogDisplaySettings(t.id)).itemsPerPage).toBe(12);
+  });
+
+  it("falls back to sections for an unknown stored mode", async () => {
+    const t = await makeTenant("cd4");
+    await storeRaw(t.id, { catalogDisplayMode: "carousel" });
+    expect((await getCatalogDisplaySettings(t.id)).catalogDisplayMode).toBe("sections");
+  });
+
+  it("refuses to store an itemsPerPage or mode outside the allowed set", async () => {
+    const t = await makeTenant("cd5");
+    await expect(setCatalogDisplaySettings(t.id, { itemsPerPage: 2.5 })).rejects.toThrow(InvalidCatalogDisplaySettingsError);
+    await expect(setCatalogDisplaySettings(t.id, { itemsPerPage: 1000 })).rejects.toThrow(InvalidCatalogDisplaySettingsError);
+    await expect(setCatalogDisplaySettings(t.id, { catalogDisplayMode: "carousel" as never })).rejects.toThrow(InvalidCatalogDisplaySettingsError);
+    expect(await getCatalogDisplaySettings(t.id)).toEqual({ catalogDisplayMode: "sections", itemsPerPage: 12 });
+  });
+
+  it("derives the same values from an already-loaded settings bag", () => {
+    expect(catalogDisplayFrom({ catalogDisplayMode: "category_grid", itemsPerPage: 24 })).toEqual({ catalogDisplayMode: "category_grid", itemsPerPage: 24 });
+    expect(catalogDisplayFrom({})).toEqual({ catalogDisplayMode: "sections", itemsPerPage: 12 });
   });
 });

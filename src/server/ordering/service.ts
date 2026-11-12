@@ -23,7 +23,7 @@ import { orders, orderItems, orderStatusEvents, type SelectedModifier, type Orde
 import { canTransition } from "./state-machine";
 // OutOfStockError is no longer thrown here — the inventory service raises it
 // from the FIFO deduction, on this same transaction, so the order still rolls back.
-import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, TotalMismatchError } from "./errors";
+import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, TotalMismatchError, PriceChangedError, type ChangedLinePrice } from "./errors";
 import { recordAuditEvent, type AuditFingerprint } from "@/server/audit/service";
 import { publishTenantEvent } from "@/server/realtime/publish";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
@@ -41,6 +41,11 @@ export type PlaceOrderLine = {
   /** P4: required when the product is dimensional (unitOfMeasure set),
    *  rejected when it isn't — never silently ignored either way. */
   dimensions?: { lengthMm?: number; widthMm?: number; thicknessMm?: number };
+  /** The per-unit price the client's cart showed for this line. Compared,
+   *  never used for charging: a mismatch (e.g. a promotion ended after the
+   *  item was carted) rejects the order with PriceChangedError so the
+   *  customer confirms the new price instead of being charged it silently. */
+  expectedUnitPrice?: number;
 };
 /** One modifier selection as the till itself recorded it — ids AND names,
  *  because a replayed line may resolve against a catalog where the id no
@@ -349,6 +354,8 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       dimensions: null,
     });
 
+    const changedPrices: ChangedLinePrice[] = [];
+
     for (let i = 0; i < input.lines.length; i++) {
       const line = input.lines[i];
       if (!Number.isInteger(line.quantity) || line.quantity < 1) throw new OrderValidationError("bad quantity");
@@ -373,6 +380,13 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
         }
       }
 
+      if (
+        live && !input.replay && line.expectedUnitPrice !== undefined
+        && Math.abs(live.unit - line.expectedUnitPrice) > 0.001
+      ) {
+        changedPrices.push({ index: i, productId: line.productId, expectedUnitPrice: line.expectedUnitPrice, unitPrice: live.unit });
+      }
+
       const priceDrifted = live !== null && snap !== undefined && Math.abs(live.unit - snap.unitPrice) > 0.001;
       if (live && !priceDrifted) {
         itemsToInsert.push(live.row);
@@ -392,6 +406,10 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
         missingEntities.push({ lineIndex: i, productId: line.productId, variantId: line.variantId, reason: missingReason });
       }
     }
+
+    // Every stale line is reported at once so the client can reprice its
+    // whole cart in one go. Thrown before anything is written.
+    if (changedPrices.length > 0) throw new PriceChangedError(changedPrices);
 
     // 3. Fulfillment: delivery fee + area, or pickup.
     let deliveryFee = 0;

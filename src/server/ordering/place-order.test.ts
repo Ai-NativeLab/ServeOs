@@ -1,17 +1,18 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { db } from "@/db/client";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
-import { orders } from "./schema";
+import { orders, orderItems } from "./schema";
 import { tenants } from "@/server/tenancy/schema";
 import { users } from "@/server/auth/schema";
 import { plans, subscriptions } from "@/server/subscription/schema";
 import { seedDefaultPlans } from "@/server/subscription/plans.seed";
 import { startTrial } from "@/server/subscription/service";
 import { createBranch, updateBranchOrdering, createDeliveryArea, updateDeliveryArea } from "@/server/branches/service";
-import { createCategory, createProduct, updateProduct, upsertModifierGroup, upsertModifierOption } from "@/server/catalog/service";
-import { placeOrder } from "./service";
-import { TotalMismatchError } from "./errors";
+import { createCategory, createProduct, updateProduct, upsertModifierGroup, upsertModifierOption, setBranchAvailability, type UpdateProductInput } from "@/server/catalog/service";
+import { placeOrder, type PlaceOrderInput } from "./service";
+import { TotalMismatchError, PriceChangedError } from "./errors";
+import { auditEvents } from "@/server/audit/schema";
 
 async function setup(slug: string) {
   const [t] = await db.insert(tenants).values({ slug, name: "T", country: "EG" }).returning();
@@ -893,5 +894,93 @@ describe("placeOrder realtime propagation", () => {
       { event: "orders.changed", entityIds: [res.orderId], committed: true },
       { event: "orders.changed", entityIds: [res.orderId], committed: true },
     ]);
+  });
+});
+
+describe("placeOrder — promotional discounts (#192)", () => {
+  const windowStart = new Date("2026-03-01T00:00:00Z");
+  const windowEnd = new Date("2026-03-10T00:00:00Z");
+  const during = new Date("2026-03-05T12:00:00Z");
+  const after = new Date("2026-03-11T12:00:00Z");
+  const pickup = (branchId: string, lines: PlaceOrderInput["lines"], extra: Partial<PlaceOrderInput> = {}): PlaceOrderInput => ({
+    branchId, fulfillmentType: "pickup", customerName: "A", customerPhone: "1", lines, ...extra,
+  });
+  const itemsOf = (tenantId: string, orderId: string) =>
+    withTenant(tenantId, (tx) => tx.select().from(orderItems).where(eq(orderItems.orderId, orderId)));
+
+  async function discounted(slug: string, discount: Partial<UpdateProductInput>) {
+    const s = await setup(slug);
+    await updateProduct(s.t.id, s.pizza.id, {
+      discountActive: true, discountStartsAt: windowStart, discountEndsAt: windowEnd, ...discount,
+    });
+    return s;
+  }
+
+  it("charges the discounted price while the window is active", async () => {
+    const { t, branch, pizza } = await discounted("pod1", { discountPercent: 25 });
+    const res = await placeOrder(t.id, pickup(branch.id, [{ productId: pizza.id, quantity: 2, selectedOptionIds: [] }], { now: during }));
+    const [item] = await itemsOf(t.id, res.orderId);
+    expect(Number(item.unitBasePrice)).toBe(75);
+    expect(Number(item.lineTotal)).toBe(150);
+  });
+
+  it("charges full price once discountEndsAt has passed", async () => {
+    const { t, branch, pizza } = await discounted("pod2", { discountPercent: 25 });
+    const res = await placeOrder(t.id, pickup(branch.id, [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }], { now: after }));
+    const [item] = await itemsOf(t.id, res.orderId);
+    expect(Number(item.unitBasePrice)).toBe(100);
+  });
+
+  it("applies a percent discount on top of the branch price override", async () => {
+    const { t, branch, pizza } = await discounted("pod3", { discountPercent: 25 });
+    await setBranchAvailability(t.id, branch.id, pizza.id, true, 150);
+    const res = await placeOrder(t.id, pickup(branch.id, [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }], { now: during }));
+    const [item] = await itemsOf(t.id, res.orderId);
+    expect(Number(item.unitBasePrice)).toBe(112.5);
+  });
+
+  it("charges the full variant price on a variant line (variants are not discounted)", async () => {
+    const { t, branch, hinge, v35 } = await setupRetail("pod4");
+    await updateProduct(t.id, hinge.id, {
+      discountActive: true, discountPercent: 25, discountStartsAt: windowStart, discountEndsAt: windowEnd,
+    });
+    const res = await placeOrder(t.id, pickup(branch.id, [{ productId: hinge.id, variantId: v35.id, quantity: 1, selectedOptionIds: [] }], { now: during }));
+    const [item] = await itemsOf(t.id, res.orderId);
+    expect(Number(item.unitBasePrice)).toBe(55);
+  });
+
+  it("evaluates the discount at occurredAt on a till replay, not at ingest time", async () => {
+    const { t, branch, pizza } = await discounted("pod5", { discountPercent: 25 });
+    // Replayed long after the window closed; the till rang it up during it.
+    const res = await placeOrder(t.id, pickup(branch.id, [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }], {
+      channel: "pos",
+      replay: {
+        occurredAt: during,
+        lineSnapshots: [{ productId: pizza.id, productNameEn: "Margherita", productNameAr: "مارجريتا", unitPrice: 75, quantity: 1, lineTotal: 75 }],
+      },
+    }));
+    const [item] = await itemsOf(t.id, res.orderId);
+    expect(Number(item.unitBasePrice)).toBe(75);
+    // Live resolution agreed with the till, so no drift was recorded.
+    const drift = await withTenant(t.id, (tx) => tx.select().from(auditEvents)
+      .where(and(eq(auditEvents.action, "pos.replay.price_drift"), eq(auditEvents.entityId, res.orderId))));
+    expect(drift).toHaveLength(0);
+  });
+
+  it("rejects with PriceChangedError when the client's unit price is stale, and writes nothing", async () => {
+    const { t, branch, pizza } = await discounted("pod6", { discountPercent: 25 });
+    // The cart was filled at 75 during the sale; checkout happens after it ended.
+    const err = await placeOrder(t.id, pickup(branch.id, [{ productId: pizza.id, quantity: 1, selectedOptionIds: [], expectedUnitPrice: 75 }], { now: after }))
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PriceChangedError);
+    expect((err as PriceChangedError).lines).toEqual([{ index: 0, productId: pizza.id, expectedUnitPrice: 75, unitPrice: 100 }]);
+    const rows = await withTenant(t.id, (tx) => tx.select().from(orders).where(eq(orders.tenantId, t.id)));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("accepts a matching expected unit price", async () => {
+    const { t, branch, pizza, cheese } = await discounted("pod7", { discountPercent: 25 });
+    const res = await placeOrder(t.id, pickup(branch.id, [{ productId: pizza.id, quantity: 1, selectedOptionIds: [cheese.id], expectedUnitPrice: 90 }], { now: during }));
+    expect(res.total).toBeGreaterThan(0);
   });
 });

@@ -34,6 +34,8 @@ export type StorefrontTemplateProps = {
   minOrderLabel?: string | null;
   catalogDisplayMode?: CatalogDisplayMode;
   itemsPerPage?: number;
+  /** ?category=/?page= from the request, for the catalog views' server render. */
+  catalogSearch?: string;
   /** Shop verticals inject their catalog UI here; undefined = restaurant menu. */
   catalog?: React.ReactNode;
 };
@@ -42,7 +44,7 @@ export function StorefrontShell(props: StorefrontTemplateProps) {
   const {
     tenant, accent, config, banners, menu, branches, branchSummaries,
     activeBranch, openState, paused, orderingEnabled, slug, popularIds,
-    whatsappNumber, openLabel, etaLabel, minOrderLabel, catalogDisplayMode, itemsPerPage,
+    whatsappNumber, openLabel, etaLabel, minOrderLabel, catalogDisplayMode, itemsPerPage, catalogSearch,
   } = props;
 
   return (
@@ -109,6 +111,7 @@ export function StorefrontShell(props: StorefrontTemplateProps) {
               popularIds={[...popularIds]}
               catalogDisplayMode={catalogDisplayMode}
               itemsPerPage={itemsPerPage}
+              initialSearch={catalogSearch}
             />
           )
         )}

@@ -19,6 +19,7 @@ export function TimberStorefront(props: Omit<StorefrontTemplateProps, "accent" |
           currency={props.tenant.currency}
           catalogDisplayMode={props.catalogDisplayMode}
           itemsPerPage={props.itemsPerPage}
+          initialSearch={props.catalogSearch}
         />
       }
     />

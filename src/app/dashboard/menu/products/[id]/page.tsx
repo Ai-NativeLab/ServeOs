@@ -11,6 +11,7 @@ import {
   deleteModifierGroupAction, upsertModifierOptionAction, deleteModifierOptionAction,
 } from "../actions";
 import { PromotionalPricingSection } from "./PromotionalPricingSection";
+import { ProductForm } from "../ProductForm";
 import { VariantsEditor } from "./VariantsEditor";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { SubmitButton } from "@/components/dashboard/SubmitButton";
@@ -38,7 +39,7 @@ export default async function EditProductPage({ params }: { params: Promise<{ id
       <PageHeader eyebrow="Catalog" title={product.nameEn} />
 
       <Card className="p-5 max-w-2xl mb-6">
-        <form action={updateProductAction.bind(null, id)} className="grid gap-4">
+        <ProductForm action={updateProductAction.bind(null, id)} className="grid gap-4">
           <div className="grid md:grid-cols-2 gap-4">
             <div className="grid gap-1.5">
               <Label htmlFor="nameEn">Name (EN)</Label>
@@ -108,7 +109,7 @@ export default async function EditProductPage({ params }: { params: Promise<{ id
             Featured — highlighted on your storefront
           </label>
           <div><SubmitButton>Save changes</SubmitButton></div>
-        </form>
+        </ProductForm>
       </Card>
 
       {caps.modifiers && (
