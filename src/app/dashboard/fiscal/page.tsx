@@ -9,6 +9,7 @@ import {
   listProductTaxCodes,
 } from "@/server/fiscal/config-service";
 import { listSubmissions, getSubmissionStatusCounts } from "@/server/fiscal/read-model";
+import { etaSecretRefPrefix } from "@/server/fiscal/config";
 import {
   etaActivationStatusEnum,
   etaCodeSourceEnum,
@@ -67,8 +68,20 @@ function Field({
  * and it is OMITTED where the page cannot honestly answer the question (the
  * device form's till is chosen client-side, so a server-rendered chip there
  * would be a guess; the credentials table above says which till holds what).
+ *
+ * `refPrefix` is THIS tenant's namespace (`etaSecretRefPrefix(slug)`): the
+ * config service refuses to save a ref outside it, so the placeholder and hint
+ * show the prefix the owner must actually type, with `exampleName` after it.
  */
-function RefField({ name, label, configured }: { name: string; label: string; configured?: boolean }) {
+function RefField({
+  name, label, configured, refPrefix, exampleName,
+}: {
+  name: string;
+  label: string;
+  configured?: boolean;
+  refPrefix: string;
+  exampleName: string;
+}) {
   return (
     <div className="grid gap-1.5">
       <Label htmlFor={name}>
@@ -79,10 +92,11 @@ function RefField({ name, label, configured }: { name: string; label: string; co
           </span>
         )}
       </Label>
-      <Input id={name} name={name} placeholder="env://ETA_CLIENT_SECRET_ACME" autoComplete="off" className="font-mono" />
+      <Input id={name} name={name} placeholder={`${refPrefix}${exampleName}`} autoComplete="off" className="font-mono" />
       <p className="text-xs text-muted-foreground">
         An <code>env://</code> reference naming the environment key that holds the credential — never the credential
-        itself. Leave blank to keep the stored one.
+        itself. It must start with <code>{refPrefix}</code> followed by upper-case words joined by single underscores.
+        Leave blank to keep the stored one.
       </p>
     </div>
   );
@@ -178,6 +192,7 @@ export default async function FiscalPage({
     getTenantById(ctx.tenantId),
   ]);
   const tz = tenant?.timezone ?? "UTC";
+  const refPrefix = tenant ? etaSecretRefPrefix(tenant.slug) : "env://ETA_<TENANT>__";
   const wire = config?.wireContext ?? null;
   const address = wire?.branchAddress;
   const credentialFor = new Map(credentials.map((c) => [c.deviceId, c]));
@@ -215,9 +230,15 @@ export default async function FiscalPage({
               hint="Exactly 9 digits, as registered with ETA."
             />
             <Field name="clientId" label="ERP client id" required defaultValue={config?.clientId} />
-            <RefField name="clientSecretRef" label="ERP client secret reference" configured={config?.hasSecret ?? false} />
+            <RefField
+              name="clientSecretRef" label="ERP client secret reference" configured={config?.hasSecret ?? false}
+              refPrefix={refPrefix} exampleName="CLIENT_SECRET"
+            />
             <div className="grid gap-3">
-              <RefField name="signingKeyRef" label="E-seal signing key reference" configured={config?.hasSigningKey ?? false} />
+              <RefField
+                name="signingKeyRef" label="E-seal signing key reference" configured={config?.hasSigningKey ?? false}
+                refPrefix={refPrefix} exampleName="SIGNING_KEY"
+              />
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" name="clearSigningKey" value="true" className="size-4 accent-(--color-primary)" />
                 Clear the e-seal reference (receipt-only tenants need none)
@@ -340,9 +361,9 @@ export default async function FiscalPage({
                   till.
                 </p>
               </div>
-              <RefField name="clientSecret1Ref" label="Client secret 1 reference" />
-              <RefField name="clientSecret2Ref" label="Client secret 2 reference" />
-              <RefField name="presharedKeyRef" label="Pre-shared key reference" />
+              <RefField name="clientSecret1Ref" label="Client secret 1 reference" refPrefix={refPrefix} exampleName="POS1_SECRET_1" />
+              <RefField name="clientSecret2Ref" label="Client secret 2 reference" refPrefix={refPrefix} exampleName="POS1_SECRET_2" />
+              <RefField name="presharedKeyRef" label="Pre-shared key reference" refPrefix={refPrefix} exampleName="POS1_PRESHARED_KEY" />
               <Field name="posOsVersion" label="POS OS version" placeholder="IOS" />
               <Field name="posModelFramework" label="POS model framework" placeholder="1" />
             </div>
