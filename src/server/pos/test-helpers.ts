@@ -45,6 +45,9 @@ export async function seedPosContext(
   productId: string;
   managerId: string;
   total: number;
+  /** The raw bearer pair, for tests that drive a route handler over the wire. */
+  deviceToken: string;
+  cashierToken: string;
 }> {
   const i = n++;
   const vertical = opts.vertical ?? "restaurant";
@@ -107,5 +110,7 @@ export async function seedPosContext(
     productId: prod.id,
     managerId: managerUser.id,
     total,
+    deviceToken,
+    cashierToken: session.cashierToken,
   };
 }
