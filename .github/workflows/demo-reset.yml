@@ -115,6 +115,9 @@ jobs:
         if: steps.gate.outputs.run == 'true' && matrix.migrate
         env:
           DATABASE_URL: ${{ secrets[matrix.url_secret] }}
+          # migrate.ts loads ENV_FILE (default .env.local) with override: true;
+          # point it at nothing so the secret above is always the target.
+          ENV_FILE: /dev/null
         run: npx tsx scripts/migrate.ts
 
       - name: Rebuild the demo tenants
@@ -123,6 +126,8 @@ jobs:
           # The seed reads DATABASE_URL directly; no .env file is written to
           # the runner, so the credential never touches disk.
           DATABASE_URL: ${{ secrets[matrix.url_secret] }}
+          # Same override: true dotenv load as migrate.ts — keep it inert.
+          ENV_FILE: /dev/null
           ROOT_DOMAIN: ${{ matrix.root_domain }}
           RESET: ${{ github.event_name == 'workflow_dispatch' && inputs.reset || 'true' }}
         run: |
