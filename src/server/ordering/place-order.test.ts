@@ -960,6 +960,28 @@ describe("placeOrder — the optional fiscal email", () => {
     })).rejects.toThrow(OrderValidationError);
   });
 
+  it("a NON-EG tenant neither stores nor validates it — the order is exactly as before the field existed", async () => {
+    const { t, branch, pizza } = await setup("po-email-6");
+    await db.update(tenants).set({ country: "SA" }).where(eq(tenants.id, t.id));
+    // Even a malformed address is not a 422 here: the field is not this
+    // tenant's at all, so it is dropped before any rule about it applies.
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup",
+      customerName: "Ahmed", customerPhone: "0100", customerEmail: "ahmed@@example",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const [row] = await withTenant(t.id, (tx) => tx.select().from(orders).where(eq(orders.id, res.orderId)));
+    expect(row.customerEmail).toBeNull();
+
+    const ok = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup",
+      customerName: "Ahmed", customerPhone: "0100", customerEmail: "ahmed@example.test",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const [row2] = await withTenant(t.id, (tx) => tx.select().from(orders).where(eq(orders.id, ok.orderId)));
+    expect(row2.customerEmail).toBeNull();
+  });
+
   it("does NOT block an order over a missing email — a receipt is the seller's obligation to file", async () => {
     const { t, branch, pizza } = await setup("po-email-5");
     // Stated as a test because it is the decision most likely to be "fixed" by

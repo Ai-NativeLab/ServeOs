@@ -165,13 +165,6 @@ function isEmailShaped(email: string): boolean {
 export async function placeOrder(tenantId: string, input: PlaceOrderInput): Promise<PlaceOrderResult> {
   if (!input.lines || input.lines.length === 0) throw new OrderValidationError("empty cart");
   if (!input.customerName.trim() || !input.customerPhone.trim()) throw new OrderValidationError("missing customer details");
-  // SHAPE ONLY, and only when one was given — an absent email is the normal
-  // case, not an error (a tax receipt is the seller's obligation to FILE, not
-  // the buyer's to receive). The check exists so a typo becomes a 422 the
-  // customer can still fix at checkout rather than a provider rejection
-  // recorded on a fiscal row hours later, where nobody can act on it.
-  const customerEmail = input.customerEmail?.trim() || null;
-  if (customerEmail && !isEmailShaped(customerEmail)) throw new OrderValidationError("invalid email");
 
   const paymentMethod = input.paymentMethod ?? "cash";
   let paymentStatus: "unpaid" | "pending_verification" = "unpaid";
@@ -193,6 +186,20 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
 
   const tenant = await getTenantById(tenantId);
   if (!tenant) throw new OrderValidationError("unknown tenant");
+  // EG ONLY. The address exists for one purpose — the customer's own ETA
+  // document (see `orders.customerEmail`) — so any other tenant neither stores
+  // nor validates it: a stray field from an old form or a hand-written client
+  // is dropped, and the order behaves exactly as it did before the field
+  // existed. (Country, not activation: an EG tenant mid-onboarding still files
+  // these orders once active — the sweep adopts them — and the copy goes here.)
+  //
+  // SHAPE ONLY, and only when one was given — an absent email is the normal
+  // case, not an error (a tax receipt is the seller's obligation to FILE, not
+  // the buyer's to receive). The check exists so a typo becomes a 422 the
+  // customer can still fix at checkout rather than a provider rejection
+  // recorded on a fiscal row hours later, where nobody can act on it.
+  const customerEmail = tenant.country === "EG" ? input.customerEmail?.trim() || null : null;
+  if (customerEmail && !isEmailShaped(customerEmail)) throw new OrderValidationError("invalid email");
   const tz = tenant.timezone;
   const caps = getCapabilities(tenant.vertical as VerticalId);
   // Resolved outside the transaction: it is a tenant policy, not per-line state.
