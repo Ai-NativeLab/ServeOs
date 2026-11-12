@@ -460,6 +460,16 @@ describe("POST /api/dashboard/fiscal/submissions/[id]/resubmit", () => {
     });
   });
 
+  it("404s a malformed submission id instead of a uuid-cast 500", async () => {
+    const { tenantId, userId } = await seedRejected();
+    signIn(tenantId, ["owner"], userId);
+    for (const id of ["x", "not-a-uuid"]) {
+      const res = await postResubmit(post(), params(id));
+      expect(res.status, id).toBe(404);
+      expect(await res.json()).toEqual({ error: "Submission not found" });
+    }
+  });
+
   it("refuses a non-owner with 403 and queues nothing", async () => {
     const { tenantId, userId, submission } = await seedRejected();
     signIn(tenantId, ["manager"], userId);

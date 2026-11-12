@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requirePosCashier, assertPermission } from "@/server/pos/require-cashier";
 import { PosAuthError, PosCashierError, PosForbiddenError } from "@/server/pos/errors";
 import { getSaleFiscalStatus } from "@/server/fiscal/read-model";
+import { isUuid } from "@/lib/uuid";
 
 /**
  * The fiscal state of one sale, for the receipt (Task 7).
@@ -47,6 +48,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     if (e instanceof PosForbiddenError) return NextResponse.json({ error: e.message }, { status: 403 });
     throw e;
   }
+
+  // A malformed id names no order. Answered BEFORE the read, which would
+  // otherwise reach a uuid column and come back as a 500.
+  if (!isUuid(id)) return NextResponse.json({ error: "Invalid sale id" }, { status: 400 });
 
   // Tenant-scoped by ctx.tenantId — a device token from another tenant reads
   // nothing, whatever order id it names.

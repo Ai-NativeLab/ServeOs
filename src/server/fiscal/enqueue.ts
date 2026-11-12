@@ -218,13 +218,17 @@ export async function enqueueFiscalDocument(ctx: { tenantId: string }, input: En
  * 6) owns the trigger. Auto-correcting on rejection would resubmit the same
  * bad data on a loop.
  *
+ * `tx` is optional, like `enqueueFiscalDocument`'s: the dashboard passes its
+ * own so the who-asked-for-it audit event commits atomically with the row.
+ *
  * @returns the new row's id, or `null` when a live document already exists.
  */
 export async function enqueueCorrectedResubmission(
   ctx: { tenantId: string },
   originalSubmissionId: string,
+  outerTx?: Tx,
 ): Promise<string | null> {
-  return withTenant(ctx.tenantId, async (tx) => {
+  const run = async (tx: Tx): Promise<string | null> => {
     const [original] = await tx.select().from(etaSubmissions)
       .where(and(eq(etaSubmissions.tenantId, ctx.tenantId), eq(etaSubmissions.id, originalSubmissionId)))
       .limit(1);
@@ -270,5 +274,6 @@ export async function enqueueCorrectedResubmission(
         }).returning({ id: etaSubmissions.id });
 
     return inserted[0]?.id ?? null;
-  });
+  };
+  return outerTx ? run(outerTx) : withTenant(ctx.tenantId, run);
 }

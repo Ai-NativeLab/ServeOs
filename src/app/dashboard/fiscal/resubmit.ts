@@ -4,6 +4,7 @@ import { actionAudit } from "@/server/audit/action-context";
 import { recordAuditEvent } from "@/server/audit/service";
 import { enqueueCorrectedResubmission } from "@/server/fiscal/enqueue";
 import { getSubmissionById } from "@/server/fiscal/read-model";
+import { isUuid } from "@/lib/uuid";
 
 export type ResubmitOutcome =
   | { ok: true; submissionId: string }
@@ -23,12 +24,9 @@ export type ResubmitOutcome =
  * attributed to the system would be a lie about who made it. Duplicating the
  * emission across two callers is how one of them silently loses it.
  *
- * ORDERING, and its one honest cost: `enqueueCorrectedResubmission` opens its
- * own transaction, so the event cannot be atomic with the insert. The insert
- * goes FIRST — if the audit write then fails, an unattributed correction exists
- * and the worker will still record its lifecycle
- * (`eta.submission.submitted|accepted|rejected`), which is strictly better than
- * an audit row claiming a correction that was never queued.
+ * ATOMIC: the insert and the event share ONE transaction (the enqueue takes
+ * this function's `tx`), so a correction can never exist unattributed and an
+ * event can never claim a correction that was not queued.
  *
  * PRECONDITIONS are read before the call so the caller can answer with a real
  * status. `enqueueCorrectedResubmission` re-checks both inside its transaction
@@ -38,6 +36,9 @@ export async function requestResubmission(
   ctx: DashboardContext,
   submissionId: string,
 ): Promise<ResubmitOutcome> {
+  // A non-uuid id cannot be any submission, and Postgres would answer it with
+  // `invalid input syntax for type uuid` — a 500 — rather than "not found".
+  if (!isUuid(submissionId)) return { ok: false, status: 404, error: "Submission not found" };
   const original = await getSubmissionById(ctx.tenantId, submissionId);
   if (!original) {
     return { ok: false, status: 404, error: "Submission not found" };
@@ -58,17 +59,13 @@ export async function requestResubmission(
     };
   }
 
-  const newSubmissionId = await enqueueCorrectedResubmission({ tenantId: ctx.tenantId }, submissionId);
-  if (newSubmissionId === null) {
-    // The live partial index refused the insert: a correction for this sale is
-    // already queued. Two live corrections would be two documents ETA could
-    // both accept, declaring one sale twice.
-    return { ok: false, status: 409, error: "A correction for this document is already queued" };
-  }
-
   const audit = await actionAudit(ctx);
-  await withTenant(ctx.tenantId, (tx) =>
-    recordAuditEvent(
+  const newSubmissionId = await withTenant(ctx.tenantId, async (tx) => {
+    const inserted = await enqueueCorrectedResubmission({ tenantId: ctx.tenantId }, submissionId, tx);
+    // The live partial index refused the insert: a correction for this sale is
+    // already queued. Nothing was written, so there is nothing to attribute.
+    if (inserted === null) return null;
+    await recordAuditEvent(
       { tenantId: ctx.tenantId, actorUserId: audit.actorUserId ?? null, fingerprint: audit.fingerprint },
       {
         action: "eta.submission.resubmission_requested",
@@ -76,7 +73,7 @@ export async function requestResubmission(
         // The NEW row: the event records a document coming into existence, and
         // the rejected original is named in metadata rather than the other way
         // round, so the correction's own history starts with who asked for it.
-        entityId: newSubmissionId,
+        entityId: inserted,
         summary: `Corrected resubmission queued for ${original.docType} ${original.etaUuid}`,
         metadata: {
           originalSubmissionId: submissionId,
@@ -87,8 +84,14 @@ export async function requestResubmission(
         actorType: audit.actorType ?? "user",
       },
       tx,
-    ),
-  );
+    );
+    return inserted;
+  });
+  if (newSubmissionId === null) {
+    // Two live corrections would be two documents ETA could both accept,
+    // declaring one sale twice.
+    return { ok: false, status: 409, error: "A correction for this document is already queued" };
+  }
 
   return { ok: true, submissionId: newSubmissionId };
 }
