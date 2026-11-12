@@ -151,6 +151,14 @@ export function FiscalSubmissionsTable({
                   </TableCell>
                   <TableCell className="text-xs">
                     {row.docType}
+                    {/* A refund of a B2B-invoiced sale (issueRefund step 10):
+                        the row records that a credit note is OWED — ServeOS
+                        does not build or submit one yet, so it stays pending. */}
+                    {row.docType === "credit_note" && (
+                      <span className="block font-medium text-amber-700 dark:text-amber-400">
+                        credit note required — not filed automatically
+                      </span>
+                    )}
                     {row.referenceOldUuid && (
                       <span className="block text-muted-foreground">
                         correction of {row.referenceOldUuid.slice(0, 12)}…
