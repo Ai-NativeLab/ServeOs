@@ -108,6 +108,20 @@ describe("listSales", () => {
     expect(await listSales(s.tenantId, { amount: s.total + 1 })).toHaveLength(0);
   });
 
+  // #187 review: placeOrder persists the normalised phone, so the search must
+  // normalise what the cashier typed the same way — and still find a row
+  // written before normalisation, whose raw (trimmed) form is what it holds.
+  it("matches a phone typed with separators against the normalised stored form", async () => {
+    const s = await seedPaidSale("owner");
+    await withTenant(s.tenantId, (tx) =>
+      tx.update(orders).set({ customerPhone: "01012345678" }).where(eq(orders.id, s.receipt.orderId)));
+    expect((await listSales(s.tenantId, { customerPhone: "010 1234-5678" })).map((o) => o.id)).toEqual([s.receipt.orderId]);
+
+    await withTenant(s.tenantId, (tx) =>
+      tx.update(orders).set({ customerPhone: "010 1234 5678" }).where(eq(orders.id, s.receipt.orderId)));
+    expect((await listSales(s.tenantId, { customerPhone: " 010 1234 5678 " })).map((o) => o.id)).toEqual([s.receipt.orderId]);
+  });
+
   it("filters by branchId and paginates", async () => {
     const s = await seedPaidSale("owner");
     await ringSale(s.ctx, s.productId, 1, "sale-2");

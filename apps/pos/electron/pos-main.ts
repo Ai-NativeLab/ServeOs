@@ -45,11 +45,35 @@ const authCacheCipher: AtRestCipher = {
   decryptString: (b) => safeStorage.decryptString(b),
 };
 
-// In dev (vite serving), default to the local backend; otherwise the live
-// dashboard host on serveos.tech (serveos.com only 302-redirects there, which
-// a packaged build cannot follow for POSTs with an Authorization header).
-// POS_API_URL always wins.
-const DEFAULT_BASE_URL = process.env.VITE_DEV_SERVER_URL ? "http://localhost:3000" : "https://app.serveos.tech";
+/** The live dashboard host. serveos.com only 302-redirects here, which a
+ *  packaged build cannot follow for POSTs with an Authorization header. */
+const PRODUCTION_BASE_URL = "https://app.serveos.tech";
+
+// #163: which backend the till talks to.
+//   1. POS_API_URL always wins.
+//   2. An UNPACKAGED run (`npm run pos:dev`, or electron launched by hand) or a
+//      Vite dev server → the local backend on localhost:3000.
+//   3. Only a packaged build defaults to production.
+//
+// Root cause of #163: evaluation time was never the problem —
+// vite-plugin-electron sets VITE_DEV_SERVER_URL before it spawns Electron, so
+// the env var is already there at module load. The dev run reached
+// production because "am I a dev build?" was inferred from that one env var
+// alone; `app.isPackaged` is the authoritative answer, so it decides here.
+function resolveDefaultBaseUrl(): string {
+  if (process.env.POS_API_URL) return process.env.POS_API_URL;
+  if (process.env.VITE_DEV_SERVER_URL || !app.isPackaged) return "http://localhost:3000";
+  return PRODUCTION_BASE_URL;
+}
+
+/** True when `baseUrl` points at the production host (any path/trailing slash). */
+function isProductionHost(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).host === new URL(PRODUCTION_BASE_URL).host;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * The body a POS route returns when the *device* token is missing, unknown or
@@ -353,6 +377,13 @@ export type DayZReport = DayReport & {
  * properties do not survive the boundary. So the drawer calls return an outcome
  * the renderer can branch on structurally, rather than matching error strings.
  */
+/** What advancing a web order tells the renderer. A refusal carries the
+ *  server's own words (e.g. payment_not_verified: "resolve it in the payments
+ *  queue") so the queue can show them instead of silently doing nothing. */
+export type AdvanceOrderResult =
+  | { ok: true; status: string }
+  | { ok: false; code: string; message: string };
+
 export type DrawerResult<T> =
   | { ok: true; data: T }
   | { ok: false; code: "conflict" | "needs_manager" | "bad_count" | "error"; message: string };
@@ -386,7 +417,7 @@ const CONFIRM_WAIT_MAX_QUEUE = 20;
  * disables their entry points from the sync state instead.
  */
 export class PosMain {
-  private baseUrl = process.env.POS_API_URL || DEFAULT_BASE_URL;
+  private baseUrl = resolveDefaultBaseUrl();
   private device: Device | null = null;
   /** In memory only: closing the app signs the cashier out but leaves the device paired. */
   private cashier: Cashier | null = null;
@@ -425,6 +456,29 @@ export class PosMain {
     onSyncState?: (status: SyncStatus) => void,
     onRealtime?: (message: PosRealtimeMessage) => void,
   ) {
+    // #163 AC5: a wrong base URL must be OBVIOUS. stdout vanishes in packaged
+    // Windows builds, so the same line lands in userData/pos-boot.log where it
+    // survives; logging must never crash boot, hence the swallow.
+    const bootLines = [`[POS] API Base URL: ${this.getBaseUrl()}`];
+    console.log(bootLines[0]);
+    // AC6: a dev build must never SILENTLY authenticate against production.
+    // Only an explicit POS_API_URL can get an unpackaged run there — allowed
+    // (e.g. reproducing a live issue), but impossible to miss.
+    if (!app.isPackaged && isProductionHost(this.getBaseUrl())) {
+      const warning = "[POS] WARNING: this unpackaged dev build is pointed at PRODUCTION (POS_API_URL). " +
+        "Sign-ins, sales and pairings will hit live tenant data.";
+      console.warn(warning);
+      bootLines.push(warning);
+    }
+    try {
+      const stamp = new Date().toISOString();
+      fs.appendFileSync(
+        path.join(app.getPath("userData"), "pos-boot.log"),
+        bootLines.map((l) => `${stamp} ${l}\n`).join(""),
+      );
+    } catch {
+      // No userData write access — the console lines are still emitted above.
+    }
     this.load();
     // Retention (Task 14): synced rows older than the window are dead weight
     // on every pendingEvents/unsyncedEvents scan — pending and failed rows are
@@ -573,6 +627,10 @@ export class PosMain {
     return h;
   }
 
+  getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
   isPaired(): boolean {
     return this.device !== null;
   }
@@ -641,6 +699,10 @@ export class PosMain {
     } catch (e) {
       // A revoked device token only surfaces here, on the one call that still
       // blocks — the engine treats every refusal as "try again later".
+      // NOT an unpair trigger: a suspended TENANT answers 403
+      // {code:"tenant_blocked"} (#164) — suspension must be reversible, and
+      // deleting the pairing would force a manager re-pair after reactivation.
+      // Only the literal 401 sentinel means the token itself is dead.
       if (e instanceof Error && e.message.includes("401")) {
         this.unpair();
         throw new Error("Device unpaired — please pair again");
@@ -861,15 +923,24 @@ export class PosMain {
     }
   }
 
-  async advanceOrder(orderId: string, toStatus: string): Promise<void> {
-    if (!this.device) return;
+  async advanceOrder(orderId: string, toStatus: string): Promise<AdvanceOrderResult> {
+    if (!this.device) return { ok: false, code: "error", message: "Not paired" };
+    let res: Response;
     try {
-      await fetch(`${this.baseUrl}/api/pos/v1/orders/status`, {
+      res = await fetch(`${this.baseUrl}/api/pos/v1/orders/status`, {
         method: "POST",
         headers: this.authHeaders(),
         body: JSON.stringify({ orderId, toStatus }),
       });
-    } catch { /* the queue is server-owned; the next poll shows the truth */ }
+    } catch {
+      // The queue is server-owned, so nothing changed; the next poll shows the truth.
+      return { ok: false, code: "offline", message: "Could not reach the server — try again" };
+    }
+    const body = (await res.json().catch(() => ({}))) as { status?: string; error?: string; code?: string };
+    if (!res.ok) {
+      return { ok: false, code: body.code ?? "error", message: body.error ?? `Could not update the order (${res.status})` };
+    }
+    return { ok: true, status: body.status ?? toStatus };
   }
 
   /** Finalized-sale search. Only pos:sell is needed to LOOK a sale up — the
@@ -921,9 +992,12 @@ export class PosMain {
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      const err = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
       const e = new Error(err.error ?? `Refund failed (${res.status})`) as Error & { code?: string };
-      if (res.status === 403) e.code = "NEEDS_MANAGER";
+      // A 403 usually means "missing pos:refund" — but a suspended tenant also
+      // answers 403 (code:"tenant_blocked", #164), and no manager override can
+      // fix a suspension, so that one must not open ManagerAuthModal.
+      if (res.status === 403 && err.code !== "tenant_blocked") e.code = "NEEDS_MANAGER";
       throw e;
     }
     return (await res.json()) as RefundSaleResult;

@@ -4,6 +4,7 @@ import { requireOrdersPermission } from "../../orders-permission";
 import { getOrder } from "@/server/ordering/service";
 import { getSale } from "@/server/pos/sales-history";
 import { nextStatuses } from "@/server/ordering/state-machine";
+import type { OrderStatus } from "@/server/ordering/schema";
 import { transitionOrderAction, markPaidAction } from "./actions";
 import { RefundForm } from "./RefundForm";
 import { can } from "@/server/rbac/authorize";
@@ -35,7 +36,14 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
   await recordCustomerPiiView(tenantId, id, await actionAudit(ctx));
   const sale = await getSale(tenantId, id);
   const tenant = await getTenantById(tenantId);
-  const actions = nextStatuses(order.status, order.fulfillmentType);
+  // #165: an offline payment awaiting verification blocks HAND-OVER. Hide the
+  // release targets and say why; cancel/reject stay available so a blocked
+  // order is never stuck.
+  const releaseBlocked = order.paymentStatus === "pending_verification";
+  const RELEASE_TARGETS: OrderStatus[] = ["ready", "out_for_delivery", "completed"];
+  const actions = releaseBlocked
+    ? nextStatuses(order.status, order.fulfillmentType).filter((to) => !RELEASE_TARGETS.includes(to))
+    : nextStatuses(order.status, order.fulfillmentType);
   const advance = actions.filter((to) => to !== "cancelled" && to !== "rejected");
   const danger = actions.filter((to) => to === "cancelled" || to === "rejected");
   const netPaidRemaining = Math.round(
@@ -80,6 +88,11 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
               <span className={cn("font-medium", order.paymentStatus === "paid" ? "text-status-ready-fg" : "text-status-danger-fg")}>
                 {order.paymentStatus}
               </span>
+              {releaseBlocked && (
+                <span className="ml-2 inline-flex items-center rounded-full border border-status-danger-fg/30 bg-status-danger-fg/10 px-2 py-0.5 text-xs font-semibold text-status-danger-fg">
+                  ⚠ Payment unverified — hand-over blocked
+                </span>
+              )}
             </div>
             {order.notes && (
               <div className="flex items-start gap-1.5 text-muted-foreground">
@@ -125,6 +138,11 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
             <SubmitButton variant={i === 0 ? "default" : "outline"}>{STATUS_LABEL[to] ?? to.replace(/_/g, " ")}</SubmitButton>
           </ToastForm>
         ))}
+        {releaseBlocked && (
+          <span className="self-center rounded-md border border-status-danger-fg/30 bg-status-danger-fg/10 px-3 py-1.5 text-xs font-medium text-status-danger-fg">
+            Resolve the payment in the <Link href="/dashboard/payments" className="underline">payments queue</Link> before handing over.
+          </span>
+        )}
         {order.paymentStatus === "unpaid" && (
           <ToastForm action={markPaidAction.bind(null, id)} successMessage="Order marked paid">
             <SubmitButton variant="outline">Mark paid</SubmitButton>

@@ -28,8 +28,8 @@ describe("getPopularProductIds", () => {
     const { t, branch, mk } = await setup("pop1");
     const a = await mk("A"); const b = await mk("B"); const c = await mk("C");
     // A ordered qty 5, B qty 2, C never ordered
-    await placeOrder(t.id, { branchId: branch.id, fulfillmentType: "pickup", customerName: "x", customerPhone: "1", lines: [{ productId: a.id, quantity: 5, selectedOptionIds: [] }] });
-    await placeOrder(t.id, { branchId: branch.id, fulfillmentType: "pickup", customerName: "y", customerPhone: "2", lines: [{ productId: b.id, quantity: 2, selectedOptionIds: [] }] });
+    await placeOrder(t.id, { branchId: branch.id, fulfillmentType: "pickup", customerName: "x", customerPhone: "01012345678", lines: [{ productId: a.id, quantity: 5, selectedOptionIds: [] }] });
+    await placeOrder(t.id, { branchId: branch.id, fulfillmentType: "pickup", customerName: "y", customerPhone: "01012345679", lines: [{ productId: b.id, quantity: 2, selectedOptionIds: [] }] });
     const ids = await getPopularProductIds(t.id);
     expect(ids.has(a.id)).toBe(true);
     expect(ids.has(b.id)).toBe(true);

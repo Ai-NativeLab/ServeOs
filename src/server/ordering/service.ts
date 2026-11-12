@@ -21,13 +21,17 @@ import { sanitizeHttpUrl } from "@/lib/safe-url";
 import { assertFinite } from "@/shared/errors";
 import { orders, orderItems, orderStatusEvents, type SelectedModifier, type Order, type OrderWithItems, type OrderDetail, type OrderStatus } from "./schema";
 import { canTransition } from "./state-machine";
-// OutOfStockError is no longer thrown here — the inventory service raises it
-// from the FIFO deduction, on this same transaction, so the order still rolls back.
-import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, TotalMismatchError } from "./errors";
+// OutOfStockError is raised in TWO deliberate layers: the early per-line check
+// below refuses before totals/inserts (better errors, no wasted work), and the
+// inventory FIFO deduction re-checks inside this same transaction as a backstop
+// against stock changing between menu render and checkout.
+import { isValidCustomerPhone, normalizePhone } from "@/lib/phone";
+import { OrderValidationError, PrescriptionRequiredError, InvalidPhoneError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, TotalMismatchError, PaymentNotVerifiedError, OutOfStockError } from "./errors";
 import { recordAuditEvent, type AuditFingerprint } from "@/server/audit/service";
 import { publishTenantEvent } from "@/server/realtime/publish";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { enqueueStatusUpdate } from "@/server/whatsapp/status-updates";
+import { PRESCRIPTION_CLAIM_MAX_AGE_MS } from "@/server/prescriptions/service";
 import type { AuditActorType } from "@/server/audit/canonical";
 
 export type PlaceOrderLine = {
@@ -98,6 +102,14 @@ export type PlaceOrderInput = {
   cashierUserId?: string;
   /** Server-resolved from the customer session — NEVER accepted from a client body. */
   customerId?: string;
+  /**
+   * The prescription uploaded for THIS basket (#187 review). When set, exactly
+   * this script is claimed; validated against the customer + pending +
+   * unattached, so a client cannot attach someone else's or an already-used
+   * script. The newest-fresh inference below becomes a fallback for callers
+   * that don't send the id.
+   */
+  prescriptionId?: string;
   orderDiscountAmount?: number;
   orderDiscountReason?: string;
   /** What the client displayed. Compared, never trusted. */
@@ -165,6 +177,20 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
   if (!input.lines || input.lines.length === 0) throw new OrderValidationError("empty cart");
   if (!input.customerName.trim() || !input.customerPhone.trim()) throw new OrderValidationError("missing customer details");
 
+  const tenant = await getTenantById(tenantId);
+  const country = tenant?.country ?? "EG";
+  // #173: country mobile rule. Two deliberate exemptions (#187 review):
+  //   • POS walk-in sentinel — the till sells to anonymous customers.
+  //   • WhatsApp — customerPhone IS the Meta-verified wa_id the merchant is
+  //     chatting with; reachability is guaranteed by the channel, and a
+  //     refusal here dead-letters a CONFIRMED order (recordInbound already
+  //     committed, so retries dedupe into silence).
+  const allowWalkInSentinel = input.channel === "pos";
+  const whatsappVerifiedNumber = input.channel === "whatsapp";
+  if (!whatsappVerifiedNumber && !isValidCustomerPhone(input.customerPhone, country, { allowWalkInSentinel })) {
+    throw new InvalidPhoneError(country);
+  }
+
   const paymentMethod = input.paymentMethod ?? "cash";
   let paymentStatus: "unpaid" | "pending_verification" = "unpaid";
   let paymentReference: string | null = null;
@@ -183,7 +209,6 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
   // not whenever the reconnect happens to land.
   const now = input.replay?.occurredAt ?? input.now ?? new Date();
 
-  const tenant = await getTenantById(tenantId);
   if (!tenant) throw new OrderValidationError("unknown tenant");
   const tz = tenant.timezone;
   const caps = getCapabilities(tenant.vertical as VerticalId);
@@ -197,6 +222,16 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
   // shortfall still goes through the existing negative-on-hand + notification
   // path — it is reported, just not used to reject the sale.
   const allowNegative = caps.inventory && (Boolean(input.replay) || await getAllowNegativeStock(tenantId));
+  // #167 early out-of-stock refusal (#187 review) — channel-dependent, because
+  // allowNegativeStock exists so a KITCHEN is never blocked at the till, not so
+  // a customer can order what the storefront itself shows as sold out:
+  //   • web / WhatsApp — always refuse a tracked line at zero stock;
+  //   • live POS       — honour the tenant's allowNegative policy;
+  //   • POS replay     — never refuse: the sale physically happened.
+  // The inventory FIFO deduction below still applies `allowNegative` on every
+  // channel as the transactional backstop.
+  const channel = input.channel ?? "web";
+  const refuseOutOfStock = input.replay ? false : channel === "pos" ? !allowNegative : true;
 
   let scheduledFor: Date | null = null;
   if (input.scheduledFor !== undefined) {
@@ -243,6 +278,11 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
     const resolveLiveLine = async (line: PlaceOrderLine) => {
       const [product] = await tx.select().from(products).where(and(eq(products.id, line.productId), eq(products.isPublished, true))).limit(1);
       if (!product) throw new OrderValidationError("product unavailable");
+      // #167 early refusal (policy: `refuseOutOfStock`, above). Variant lines
+      // are judged by the variant's own stock check below.
+      if (refuseOutOfStock && !line.variantId && product.trackStock && (product.stockQuantity ?? 0) <= 0) {
+        throw new OutOfStockError(product.nameEn, product.nameAr);
+      }
 
       const [avail] = await tx.select().from(branchProductAvailability)
         .where(and(eq(branchProductAvailability.branchId, input.branchId), eq(branchProductAvailability.productId, product.id))).limit(1);
@@ -280,6 +320,12 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
           .where(and(eq(productVariants.id, line.variantId), eq(productVariants.productId, product.id), eq(productVariants.isActive, true)))
           .limit(1);
         if (!variant) throw new InvalidVariantError();
+        // Same policy as the product-level gate; a variant tracks stock when its
+        // stockQuantity is set (null = untracked), the rule the storefront's
+        // inStock flag uses.
+        if (refuseOutOfStock && variant.stockQuantity !== null && variant.stockQuantity <= 0) {
+          throw new OutOfStockError(variant.nameEn, variant.nameAr);
+        }
         unit = Number(variant.price);
         variantId = variant.id;
         variantNameEn = variant.nameEn;
@@ -379,6 +425,11 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
           missingReason = err.detail;
         } else if (input.replay && snap && err instanceof InvalidVariantError) {
           missingReason = err.code;
+        } else if (input.replay && snap && err instanceof OutOfStockError) {
+          // Belt-and-braces: replay never takes the early stock refusal
+          // (refuseOutOfStock is false), but should any stock refusal reach
+          // here it must fall back to the snapshot rather than veto the sale.
+          missingReason = err.code;
         } else {
           throw err;
         }
@@ -471,19 +522,39 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
     let pendingRxId: string | null = null;
     if (hasRxLine) {
       if (!input.customerId) {
-        throw new OrderValidationError("prescription items require a signed-in customer account");
+        throw new PrescriptionRequiredError("sign_in");
       }
-      const [pendingRx] = await tx.select({ id: prescriptions.id }).from(prescriptions)
-        .where(and(
-          eq(prescriptions.tenantId, tenantId),
-          eq(prescriptions.customerId, input.customerId),
-          eq(prescriptions.status, "pending"),
-          isNull(prescriptions.orderId),
-        ))
-        .orderBy(desc(prescriptions.createdAt))
-        .limit(1);
-      if (!pendingRx) throw new OrderValidationError("a prescription must be uploaded before ordering these items");
-      pendingRxId = pendingRx.id;
+
+      // #187 review: an explicit prescriptionId (the upload this checkout just
+      // performed) is authoritative — claim exactly it, no age window needed.
+      if (input.prescriptionId) {
+        const [explicit] = await tx.select({ id: prescriptions.id }).from(prescriptions)
+          .where(and(
+            eq(prescriptions.id, input.prescriptionId),
+            eq(prescriptions.tenantId, tenantId),
+            eq(prescriptions.customerId, input.customerId),
+            eq(prescriptions.status, "pending"),
+            isNull(prescriptions.orderId),
+          ))
+          .limit(1);
+        if (!explicit) throw new PrescriptionRequiredError("reupload");
+        pendingRxId = explicit.id;
+      } else {
+        const [pendingRx] = await tx.select({ id: prescriptions.id }).from(prescriptions)
+          .where(and(
+            eq(prescriptions.tenantId, tenantId),
+            eq(prescriptions.customerId, input.customerId),
+            eq(prescriptions.status, "pending"),
+            isNull(prescriptions.orderId),
+            // #185: only claim a FRESH upload. A script from a failed attempt
+            // hours ago must not silently attach to today's unrelated basket.
+            gte(prescriptions.createdAt, new Date(Date.now() - PRESCRIPTION_CLAIM_MAX_AGE_MS)),
+          ))
+          .orderBy(desc(prescriptions.createdAt))
+          .limit(1);
+        if (!pendingRx) throw new PrescriptionRequiredError("upload");
+        pendingRxId = pendingRx.id;
+      }
     }
 
     const [order] = await tx.insert(orders).values({
@@ -497,7 +568,10 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       channel: input.channel ?? "web",
       cashierUserId: input.cashierUserId ?? null,
       customerId: input.customerId ?? null,
-      customerName: input.customerName.trim(), customerPhone: input.customerPhone.trim(), notes: input.notes?.trim() || null,
+      customerName: input.customerName.trim(),
+      // The canonical form the validator above checked (#187 review) — spacing,
+      // bidi marks and Arabic-Indic digits are presentation, not the number.
+      customerPhone: normalizePhone(input.customerPhone), notes: input.notes?.trim() || null,
       deliveryAreaId, deliveryAreaNameSnapshot: deliveryAreaName, deliveryAddressText: deliveryAddress,
       subtotal: money(totals.subtotal),
       vatRateSnapshot: money(totals.vatRate),
@@ -804,6 +878,16 @@ export async function transitionStatus(tenantId: string, orderId: string, to: Or
     // must never be stuck.
     if (order.rxReviewStatus === "pending" && to !== "cancelled" && to !== "rejected") {
       throw new InvalidTransitionError(order.status, to);
+    }
+    // #165: an offline payment still awaiting verification must not hand over
+    // goods. The order may enter the kitchen (preparing), but every target
+    // that hands goods to a customer is refused until the payment is resolved
+    // in the payments queue. Cancelling/rejecting stays exempt so a blocked
+    // order is never stuck; COD (`unpaid`) is unaffected — unpaid by design,
+    // not unverified.
+    const RELEASE_TARGETS: readonly OrderStatus[] = ["ready", "out_for_delivery", "completed"];
+    if (order.paymentStatus === "pending_verification" && RELEASE_TARGETS.includes(to)) {
+      throw new PaymentNotVerifiedError(to);
     }
     const setCancel = (to === "cancelled" || to === "rejected") && reason ? { cancelReason: reason } : {};
     // Guarded UPDATE serializes against concurrent writers (see cancelOrderByToken).

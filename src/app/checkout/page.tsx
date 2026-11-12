@@ -5,6 +5,10 @@ import { listBranches } from "@/server/branches/service";
 import { getBranchOpenState, listSlots, localDateKey } from "@/server/branches/slots";
 import { formatSlotLabel } from "@/lib/datetime";
 import { listEnabledOfflineMethods } from "@/server/payments/offline/methods";
+import { listRxProductIds } from "@/server/catalog/service";
+import { getCapabilities, type VerticalId } from "@/server/verticals";
+import { validatePayToDetail } from "@/server/payments/offline/validation";
+import type { OfflineMethodType } from "@/server/payments/offline/types";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { CheckoutForm, type SlotOption } from "./CheckoutForm";
 
@@ -34,13 +38,22 @@ export default async function CheckoutPage({
     );
   }
 
-  const [branches, pricing, offlineMethods, me] = await Promise.all([
+  const caps = getCapabilities(tenant.vertical as VerticalId);
+  const [branches, pricing, offlineMethods, me, rxProductIds] = await Promise.all([
     listBranches(tenant.id),
     getCheckoutPricing(tenant.id),
-    listEnabledOfflineMethods(tenant.id),
+    // #174 last AC: a stored row that fails validation is warned about in
+    // settings — it must not also be SERVED to customers here.
+    listEnabledOfflineMethods(tenant.id).then((ms) =>
+      ms.filter((m) => validatePayToDetail(m.type as OfflineMethodType, m.payToDetail, tenant.country)),
+    ),
     // Signed-in customers get their contact details prefilled (P2, C3) —
     // checkout itself stays guest-shaped either way.
     currentCustomer(tenant.id),
+    // Server-authoritative Rx set (#185): a cart line saved before the
+    // requiresPrescription flag existed must still get the upload field.
+    // Capability-gated to mirror placeOrder's requiresRxReview.
+    caps.pharmacistReview ? listRxProductIds(tenant.id) : Promise.resolve([]),
   ]);
   // No silent fallback: resolve only an explicit ?branch= or the single branch.
   const branch =
@@ -92,6 +105,9 @@ export default async function CheckoutPage({
           openNow={openState.open && branch.isActive && branch.acceptingOrders}
           slots={slots}
           methods={offlineMethods.map((m) => ({ type: m.type, label: m.label, payToDetail: m.payToDetail }))}
+          customer={me ? { id: me.id, name: me.name, email: me.email } : null}
+          country={tenant.country}
+          rxProductIds={rxProductIds}
         />
       </div>
     </main>

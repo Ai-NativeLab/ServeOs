@@ -1,8 +1,7 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { notFound } from "next/navigation";
-import { requireDashboardUser } from "@/server/auth/dashboard-context";
-import { authorize } from "@/server/rbac/authorize";
+import { requireMenuPermission } from "../../../menu-permission";
 import { listCategories } from "@/server/catalog/service";
 import { updateCategoryAction } from "../actions";
 import { PageHeader } from "@/components/dashboard/PageHeader";
@@ -14,8 +13,7 @@ import { Label } from "@/components/ui/label";
 
 export default async function EditCategoryPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const ctx = await requireDashboardUser();
-  authorize(ctx.roleKeys, "menu:manage");
+  const ctx = await requireMenuPermission();
   const cats = await listCategories(ctx.tenantId);
   const cat = cats.find((c) => c.id === id);
   if (!cat) notFound();

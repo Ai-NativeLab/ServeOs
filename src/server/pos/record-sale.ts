@@ -11,7 +11,7 @@ import { posShifts, type PosShift } from "./shift-schema";
 import { findOpenShift } from "./shifts";
 import { resolveAuthorizer } from "./grants";
 import type { SyncReceipt } from "./sync-receipt";
-import { NoOpenShiftError, PosForbiddenError, PosSaleError } from "./errors";
+import { NoOpenShiftError, PaymentNeedsVerificationError, PosForbiddenError, PosSaleError } from "./errors";
 import type { PosCashierContext } from "./require-cashier";
 import { recordAuditEvent } from "@/server/audit/service";
 
@@ -74,6 +74,8 @@ export type SaleReceipt = {
   total: number;
   paidAmount: number;
   changeAmount: number;
+  /** A till sale or tender only ever lands on an order whose money the till
+   *  owns; an offline-unverified order is refused (PaymentNeedsVerificationError). */
   paymentStatus: "paid" | "partially_paid";
   idempotent: boolean;
 };
@@ -233,7 +235,7 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
     paidAmount >= total - 0.001 ? "paid" : "partially_paid";
 
   let committedReceipt: SaleReceipt | null = null;
-  const placed = await placeOrder(ctx.tenantId, {
+  await placeOrder(ctx.tenantId, {
     branchId: ctx.branchId,
     fulfillmentType: "pickup",
     customerName: "Walk-in",
@@ -292,6 +294,11 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
       }
       if (events.length > 0) await tx.insert(posAdjustmentEvents).values(events);
 
+      // No pending_verification case to preserve here (#187 review): recordSale
+      // always places a NEW order with placeOrder's default cash method, which
+      // starts `unpaid`, so a sale can never settle an offline-unverified order.
+      // Tendering against an EXISTING order goes through addTender, which
+      // refuses pending_verification outright.
       const paymentStatus = paymentStatusFor(placed.total);
       await tx.update(orders).set({ paymentStatus, updatedAt: new Date() }).where(eq(orders.id, placed.orderId));
 
@@ -408,6 +415,11 @@ export async function addTender(
   return withTenant(ctx.tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
     if (!order) throw new PosSaleError("Unknown order");
+    // #165: an offline payment awaiting verification is settled in the
+    // payments queue (payments:confirm), never at the till. Any tender here —
+    // partial or full — would rewrite paymentStatus and disarm the fulfilment
+    // gate without that authorization or its audit row (#187 review).
+    if (order.paymentStatus === "pending_verification") throw new PaymentNeedsVerificationError();
 
     const existingTenders = await tx.select().from(orderPayments).where(eq(orderPayments.orderId, orderId));
     const already = existingTenders.find((t) => t.clientPaymentId === tender.clientPaymentId);
@@ -447,8 +459,7 @@ export async function addTender(
 
     const after = await tx.select().from(orderPayments).where(eq(orderPayments.orderId, orderId));
     const paidAmount = round2(after.reduce((s, t) => s + Number(t.amount), 0));
-    const paymentStatus: "paid" | "partially_paid" =
-      paidAmount >= total - 0.001 ? "paid" : "partially_paid";
+    const paymentStatus: "paid" | "partially_paid" = paidAmount >= total - 0.001 ? "paid" : "partially_paid";
 
     await tx.update(orders).set({ paymentStatus, updatedAt: new Date() }).where(eq(orders.id, orderId));
 

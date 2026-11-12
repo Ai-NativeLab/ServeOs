@@ -49,6 +49,28 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+      # The POS Electron app is excluded from the root tsconfig (`apps`), so it
+      # needs its own gate — its typecheck caught a real break this wave (#187).
+      - name: POS typecheck
+        run: npm run pos:typecheck
+
+  pos-test:
+    name: pos-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: POS unit tests
+        run: npm run pos:test
+
   test:
     name: test
     runs-on: ubuntu-latest

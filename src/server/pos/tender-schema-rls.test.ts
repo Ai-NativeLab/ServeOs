@@ -19,7 +19,7 @@ async function makeTenantOrder(slug: string) {
       orderNumber: 1,
       fulfillmentType: "pickup",
       customerName: "C",
-      customerPhone: "1",
+      customerPhone: "01012345678",
       subtotal: "100",
       vatRateSnapshot: "0.14",
       vatAmount: "14",
