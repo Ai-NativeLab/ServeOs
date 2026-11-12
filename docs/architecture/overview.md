@@ -1,200 +1,149 @@
-# ServeOS Architecture Overview
+# Architecture Overview
 
-This document provides a comprehensive overview of the ServeOS architecture, designed for both technical stakeholders and business leaders. ServeOS is a multi-tenant SaaS commerce and operations platform built to serve multiple business verticals from a single, unified codebase.
+ServeOS is one Next.js 16 application (all web surfaces) plus an Electron POS, backed by a single PostgreSQL database with Row-Level Security.
 
-## 1. System Context (C4 Level 1)
-
-The system context diagram illustrates ServeOS in its environment, showing the users who interact with it and the external systems it depends on.
+## 1. System context
 
 ```mermaid
 C4Context
-    title System Context Diagram for ServeOS
+    title System context
 
-    Person(customer, "Customer", "Places orders via storefront or WhatsApp")
-    Person(merchant, "Merchant", "Owner, Manager, or Staff managing business operations")
-    Person(cashier, "Cashier", "Processes counter sales via POS")
-    Person(admin, "Platform Admin", "Manages tenants and platform health")
+    Person(customer, "Customer", "Orders on the storefront or over WhatsApp")
+    Person(merchant, "Tenant staff", "Owner, manager, staff, pharmacist")
+    Person(admin, "Platform admin", "super_admin")
 
-    System(serveos, "ServeOS Platform", "Multi-tenant SaaS commerce & operations platform")
+    System(serveos, "ServeOS", "Next.js app + Electron POS")
 
-    System_Ext(postgres, "PostgreSQL", "Primary relational database")
-    System_Ext(supabase, "Supabase", "Production database hosting")
-    System_Ext(vercel, "Vercel", "Application deployment & hosting")
-    System_Ext(r2, "Cloudflare R2", "Backups & media storage")
-    System_Ext(resend, "Resend", "Transactional email delivery")
-    System_Ext(paymob, "Paymob", "Payment gateway (Future)")
-    System_Ext(whatsapp, "WhatsApp Business API", "Conversational commerce")
-    System_Ext(eta, "Egyptian Tax Authority (ETA)", "E-invoicing integration")
-    System_Ext(zatca, "ZATCA", "Saudi e-invoicing integration")
+    System_Ext(supabase, "Supabase", "Postgres, Storage (media + prescriptions buckets), Realtime")
+    System_Ext(vercel, "Vercel", "Hosting, builds, cron")
+    System_Ext(r2, "Cloudflare R2", "Nightly database backups")
+    System_Ext(resend, "Resend", "Transactional email + delivery webhooks")
+    System_Ext(meta, "WhatsApp Cloud API (Meta)", "Conversational ordering")
 
-    Rel(customer, serveos, "Browses and orders")
-    Rel(merchant, serveos, "Manages business")
-    Rel(cashier, serveos, "Processes sales")
-    Rel(admin, serveos, "Administrates platform")
-
-    Rel(serveos, postgres, "Reads/Writes data")
-    Rel(serveos, supabase, "Hosted on")
-    Rel(serveos, vercel, "Deployed on")
-    Rel(serveos, r2, "Stores backups/media")
-    Rel(serveos, resend, "Sends emails via")
-    Rel(serveos, paymob, "Processes payments via")
-    Rel(serveos, whatsapp, "Sends/Receives messages via")
-    Rel(serveos, eta, "Reports invoices to")
-    Rel(serveos, zatca, "Reports invoices to")
+    Rel(customer, serveos, "Browses, orders")
+    Rel(merchant, serveos, "Dashboard, POS")
+    Rel(admin, serveos, "Admin console")
+    Rel(serveos, supabase, "SQL, file upload, realtime publish")
+    Rel(serveos, resend, "Sends email")
+    Rel(serveos, meta, "Sends/receives messages")
+    Rel(vercel, serveos, "Runs")
 ```
 
-## 2. Container Diagram (C4 Level 2)
+Not integrated today: a card payment gateway (Paymob is the chosen first provider but Specs 6–7 are parked) and fiscal e-invoicing (ETA — Spec 11, ZATCA — PRD only). See [non-functional.md §5](../requirements/non-functional.md#5-compliance).
 
-This diagram shows the major deployable units that make up the ServeOS platform.
+## 2. Containers
 
 ```mermaid
 C4Container
-    title Container Diagram for ServeOS
+    title Containers
 
-    Person(customer, "Customer", "Places orders via storefront")
-    Person(merchant, "Merchant", "Manages business operations")
-    Person(cashier, "Cashier", "Processes counter sales")
+    Person(customer, "Customer")
+    Person(staff, "Tenant staff")
 
-    System_Boundary(serveos_boundary, "ServeOS Platform") {
-        Container(nextjs, "Next.js 16 Application", "React, Node.js", "Monolithic application serving all web surfaces via subdomain routing. Contains core business logic.")
-        ContainerDb(database, "PostgreSQL Database", "PostgreSQL", "Stores tenant data with strict Row-Level Security (RLS) isolation.")
-        
-        Container_Boundary(pos_boundary, "Electron POS Device") {
-            Container(electron_app, "Electron POS App", "Electron, React", "Desktop application for fast, counter-based operations.")
-            ContainerDb(sqlite, "Better-SQLite3", "SQLite", "Local event log for offline queuing and parked workflows.")
+    System_Boundary(b, "ServeOS") {
+        Container(web, "Next.js 16 app", "React 19, App Router", "Storefront, dashboard, admin, marketing, /api/*; business logic in src/server/*")
+        ContainerDb(pg, "PostgreSQL", "Supabase", "Tenant data under FORCE RLS")
+        Container_Boundary(pos, "POS terminal") {
+            Container(electron, "Electron POS", "Electron, Vite, React", "apps/pos")
+            ContainerDb(sqlite, "Local store", "better-sqlite3", "Offline event log + cached catalog/roster")
         }
     }
 
-    Rel(customer, nextjs, "HTTPS / Web")
-    Rel(merchant, nextjs, "HTTPS / Web")
-    Rel(cashier, electron_app, "Uses locally")
-    
-    Rel(electron_app, nextjs, "API Calls (/api/pos/v1/*)", "HTTPS")
-    Rel(electron_app, sqlite, "Reads/Writes local state")
-    
-    Rel(nextjs, database, "Reads/Writes data", "TCP/IP")
+    Rel(customer, web, "HTTPS")
+    Rel(staff, web, "HTTPS")
+    Rel(staff, electron, "Uses")
+    Rel(electron, web, "/api/pos/v1/*", "HTTPS, device + cashier tokens")
+    Rel(electron, sqlite, "Reads/writes")
+    Rel(web, pg, "SQL", "pg pool")
 ```
 
-## 3. Multi-Surface Routing
+## 3. Host-based routing
 
-ServeOS utilizes a single Next.js 16 application to serve multiple distinct web surfaces. The routing logic is handled by `src/proxy.ts` and Next.js middleware, which direct traffic based on the requested subdomain.
+`src/proxy.ts` — the Next.js 16 **Proxy** (the convention that replaced `middleware.ts`) — classifies the request host with `classifyHost` (`src/middleware-routing.ts`) and sets request headers the app reads:
 
-| Subdomain Pattern | Surface | Purpose |
+| Host | `x-surface` | Surface |
 |---|---|---|
-| `{slug}.serveos.tech` | Storefront PWA | Customer ordering and catalog browsing |
-| `app.serveos.tech` | Merchant Dashboard | Business management, analytics, and settings |
-| `admin.serveos.tech` | Admin Console | Platform administration and tenant onboarding |
-| `www.serveos.tech` | Marketing Site | Public landing page and pricing |
-| Desktop (not web) | POS Electron App | Counter operations communicating via `/api/pos/v1/*` |
+| `app.<root>` | `dashboard` | Merchant dashboard (`/login`, `/register`, `/dashboard`) |
+| `admin.<root>` | `admin` | Platform admin console (`/admin`) |
+| `<root>`, `www.<root>` | `marketing` | Marketing site (bilingual; also sets `x-locale`) |
+| `<slug>.<root>` | `storefront` | Tenant storefront (installable PWA); also sets `x-tenant-slug` |
+| anything else | `marketing` | |
 
-> [!NOTE]
-> During local development, the platform uses `.serveos.localhost` on port 3000 to simulate the multi-subdomain environment.
+`<root>` is `ROOT_DOMAIN`: `serveos.tech` in production, `qa.serveos.tech` on QA, `serveos.localhost` locally (port 3000). The proxy strips any client-supplied `x-tenant-slug` / `x-locale`. The root `src/app/page.tsx` serves only storefronts (`x-surface = storefront`); the marketing site lives under `src/app/(marketing)/[lang]`, and the proxy rewrites the marketing host's `/` to `/ar`.
 
-## 4. Domain Module Architecture
+The fifth surface is the desktop POS (`apps/pos`), which talks only to `/api/pos/v1/*`.
 
-Business logic is organized into **27 decoupled domain modules** located under `src/server/`. 
+## 4. Domain modules
+
+Business logic lives in **27** modules under `src/server/`:
 
 ```mermaid
 graph TD
-    subgraph Core Modules
-        Tenancy[tenancy]
-        Auth[auth]
-        RBAC[rbac]
-        Subscription[subscription]
-        Entitlements[entitlements]
-        Billing[billing]
-        Onboarding[onboarding]
+    subgraph Platform
+        tenancy; auth; rbac; subscription; entitlements; billing; onboarding; platform; enquiries; demo; verticals
     end
-
-    subgraph Operations Modules
-        Catalog[catalog]
-        Branches[branches]
-        Ordering[ordering]
-        POS[pos]
-        Inventory[inventory]
-        Purchasing[purchasing]
-        Analytics[analytics]
+    subgraph Commerce
+        catalog; branches; ordering; payments; customers; prescriptions; banners
     end
-
-    subgraph Infrastructure Modules
-        Audit[audit]
-        Notifications[notifications]
-        WhatsApp[whatsapp]
-        Customers[customers]
-        Prescriptions[prescriptions]
-        Payments[payments]
-        Platform[platform]
-        Banners[banners]
-        Enquiries[enquiries]
+    subgraph Operations
+        pos; inventory; purchasing; analytics
+    end
+    subgraph Infrastructure
+        audit; notifications; email; realtime; whatsapp
     end
 ```
 
-> [!IMPORTANT]
-> **Module Encapsulation:** Each module exposes its public interface strictly via an `index.ts` barrel file. No module is permitted to directly import another module's internal files.
+Fourteen modules expose an `index.ts` barrel (auth, banners, billing, branches, catalog, email, entitlements, onboarding, ordering, platform, rbac, subscription, tenancy, verticals); the other thirteen do not, and code across the repo imports module files directly (e.g. `@/server/pos/require-cashier`, `@/server/audit/service`). There is no enforced import boundary between modules.
 
-## 5. Multi-Tenancy Architecture
+Route handlers and Server Actions are thin: they authenticate, validate the body and call a service in `src/server/<module>/`.
 
-ServeOS implements a robust data isolation strategy using PostgreSQL Row-Level Security (RLS). 
+## 5. Multi-tenancy
 
-- Every tenant-scoped table features a `tenant_id` column and uses `FORCE ROW LEVEL SECURITY`.
-- The application uses a `withTenant(tenantId, tx => ...)` wrapper which sets a PostgreSQL session variable (`app.tenant_id`).
-- RLS policies automatically filter all queries within the transaction to ensure they only affect the active tenant.
-- **Control-plane tables** (e.g., users, pos_devices, platform audit_logs) intentionally lack RLS as they govern cross-tenant or platform-level concerns.
-- The database connection uses the `serveos_app` role, which is `NOSUPERUSER NOBYPASSRLS`. (A superuser would silently bypass RLS).
-- Continuous Integration (CI) tests explicitly run as this non-superuser role to verify RLS policies are actively enforced.
-
-### RLS Request Flow
+- 52 tenant tables carry `tenant_id` and have `ENABLE` + `FORCE ROW LEVEL SECURITY` with a policy on `app.tenant_id`.
+- `withTenant(tenantId, tx => …)` (`src/db/with-tenant.ts`) opens a transaction and runs `SELECT set_config('app.tenant_id', $1, true)`; every query inside is filtered by RLS. Outside it, RLS tables return nothing.
+- 20 control-plane tables (e.g. `tenants`, `users`, `sessions`, `plans`, `pos_devices`, `whatsapp_accounts`, `audit_logs`) have no RLS; server code reads them directly.
+- RLS only binds a non-superuser role without `BYPASSRLS` — a superuser sees every tenant's rows. Production uses the `app` role (`NOBYPASSRLS`), CI's tests run as `serveos_ci` and local dev uses `serveos_app` (both `NOSUPERUSER NOBYPASSRLS`).
 
 ```mermaid
 sequenceDiagram
-    participant Middleware
-    participant Service
-    participant Database
+    participant H as Route / Server Action
+    participant S as Service
+    participant DB as Postgres
 
-    Middleware->>Service: Extract tenant ID from session/token
-    Service->>Service: Call withTenant(tenantId, async (tx) => { ... })
-    Service->>Database: BEGIN Transaction
-    Service->>Database: SET LOCAL app.tenant_id = $1
-    Service->>Database: Execute Domain Queries
-    Note over Database: RLS policies automatically filter by app.tenant_id
-    Database-->>Service: Query Results
-    Service->>Database: COMMIT (or ROLLBACK)
+    H->>H: authenticate → tenantId (session, device token or storefront slug)
+    H->>S: call service(tenantId, …)
+    S->>DB: BEGIN
+    S->>DB: SELECT set_config('app.tenant_id', tenantId, true)
+    S->>DB: queries (RLS filters by app.tenant_id)
+    S->>DB: COMMIT / ROLLBACK
 ```
 
-## 6. Multi-Vertical Engine
+## 6. Verticals
 
-A core differentiator of ServeOS is its ability to serve multiple distinct business verticals from a unified codebase: `restaurant`, `retail`, `pharmacy`, and `timber`.
+`tenants.vertical` (`restaurant` | `retail` | `pharmacy` | `timber`) selects a descriptor in `src/server/verticals/registry.ts`: capability flags (`modifiers`, `variants`, `inventory`, `recipes`, `serviceCharge`, `dimensionalProducts`, `unitsOfMeasure`, `tradeAccounts`, `prescriptionUpload`, `pharmacistReview`, …), terminology (EN/AR), the storefront template (`menu` or `shop`) and checkout adjustments. Services call `requireCapability` / `getCapabilities` to gate behaviour. The full matrix is in [functional.md §2](../requirements/functional.md#2-verticals).
 
-The tenant's `vertical` field determines which **capabilities** are active in the system:
-- **Capabilities:** Features like `modifiers` (restaurant), `variants` (retail), `prescriptions` (pharmacy), `cutLists` (timber), `stockTracking`, and `recipes` are toggled based on the vertical.
-- **Adaptive Modules:** Core modules like catalog, ordering, and inventory dynamically adjust their validation and behavior based on the active capabilities.
-- **Dynamic UI:** The customer storefront and merchant dashboard render different interfaces and terminology tailored to the specific vertical.
+## 7. POS
 
-## 7. POS Architecture
+- **Main process holds the secrets.** `apps/pos/electron/pos-main.ts` keeps the device and cashier tokens and makes every `/api/pos/v1/*` call; the React renderer reaches it through the `window.pos` context bridge (`preload.ts`).
+- **Auth:** `Authorization: Bearer <deviceToken>` identifies the terminal; `X-POS-Cashier` identifies the signed-in human.
+- **Offline-first:** a `better-sqlite3` store (`apps/pos/electron/_offline/`) records every action as an event and caches the catalog, pricing, shift policy and sign-in roster, so the till keeps selling without a network and replays events to `POST /api/pos/v1/sync/events` when it reconnects (shipped in #138).
+- **Shared code:** money math (`src/lib/order-totals.ts`) is imported by both the server and the POS renderer (`@shared/order-totals`); drawer arithmetic lives in `src/server/pos/shift-math.ts`.
 
-The Electron-based POS application is designed for speed and reliability at the counter.
+## 8. Data integrity
 
-- **Thin Client:** The POS retains minimal business logic. The Electron main process holds device and cashier credentials, proxying strongly-typed API calls to the server at `/api/pos/v1/*`.
-- **IPC Communication:** The React renderer communicates with the main process securely via a context-bridge (`window.pos`).
-- **Authentication:** Requests are authenticated using a device Bearer token combined with an `X-POS-Cashier` header to identify the active operator.
-- **Offline Resilience:** A local `Better-SQLite3` database acts as an offline event log, allowing caching of parked orders and work-in-progress during connectivity drops.
-- **Shared Logic:** Critical calculations, such as money math (`src/lib/order-totals.ts`) and shift math (`src/server/pos/shift-math.ts`), are shared between the server and the POS client to guarantee consistency.
+- **Hash-chained audit log:** `audit_events` rows carry `prev_hash` / `entry_hash` (SHA-256) per tenant; a trigger blocks UPDATE/DELETE.
+- **Stock ledger:** `stock_ledger` is append-only by convention; lots (`inventory_lots.qty_remaining`) are a FIFO cache over it.
+- **Idempotency:** `pos_order_receipts` (device + client order id), `pos_sync_event_receipts` (offline events) and `whatsapp_order_receipts` (conversation + confirm message) make retries and replays safe.
+- **Advisory locks:** `pg_advisory_xact_lock(hashtext(tenant_id))` serializes order-number allocation and audit-chain appends per tenant (one key, one lock order).
 
-## 8. Data Integrity
+## 9. Deployment
 
-Ensuring accurate and tamper-evident data is paramount for financial and operational records.
+| Env | URL | Vercel project | Deploys on | Database |
+|---|---|---|---|---|
+| Production | `serveos.tech` / `www.serveos.tech` | `serve-os` | push to `main` | Supabase prod (aws-1 pooler) |
+| QA | `qa.serveos.tech` | `serve-os-qa` | push to `qa` | Supabase `ServeOs-qa` (aws-0 pooler) |
 
-- **Hash-Chained Audit Log:** Every significant mutation is recorded in `audit_events`. Entries include a SHA-256 hash of their contents and the `prev_hash`, creating a tamper-evident chain per tenant.
-- **Append-Only Ledger:** Stock movements are recorded in `stock_ledger`. These records are never updated or deleted, only appended, ensuring a complete and auditable history.
-- **Idempotency:** The system uses distinct tables like `pos_order_receipts` and `whatsapp_order_receipts` to idempotently process incoming requests and prevent duplicate sales.
-- **Advisory Locks:** Critical sequential operations, such as generating gapless order numbers or advancing the audit chain, utilize PostgreSQL advisory locks (`pg_advisory_xact_lock`) to prevent race conditions.
-
-## 9. Deployment Architecture
-
-The infrastructure relies on modern managed services to ensure scalability and reliability.
-
-- **Production Environment:** Deployed on Vercel with automatic deployments from the `main` branch. The production database is hosted on Supabase.
-- **QA Environment:** Deployed on Vercel from the `qa` branch, connected to a dedicated, separate Supabase instance.
-- **Database Migrations:** Migrations execute during the Vercel build phase via `scripts/release-migrate.ts`. A failed migration results in a failed build, preventing broken deployments.
-- **Preview Deployments:** Pull request preview deployments skip database migrations, as they share the production database (running migrations on previews would be dangerous).
-- **Data Backups:** Automated, nightly `pg_dump` processes back up the database to Cloudflare R2 at 03:00 UTC.
+- **Migrations run in the build:** `vercel-build` = `tsx scripts/release-migrate.ts && next build`. It migrates only when `VERCEL_ENV=production`, so a production deploy of either project **is** a migration of its database; a failed migration fails the build. Preview deployments skip it because they typically share the production database.
+- **Promote main to QA:** `git push origin main:qa`.
+- **Deploy watch:** `.github/workflows/deploy-watch.yml` turns a push that never deploys, never reaches READY or never serves its SHA into a red run.
+- **Backups:** nightly `pg_dump` of prod and QA to Cloudflare R2 at 03:00 UTC (`db-backup.yml`), quarterly restore drill (`db-restore-drill.yml`). Runbook: [backup-restore.md](../references/backup-restore.md). Full infrastructure map: [environments.md](../references/environments.md).
