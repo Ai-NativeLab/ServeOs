@@ -167,6 +167,6 @@ sequenceDiagram
 | QA | `qa.serveos.tech` | `serve-os-qa` | push to `qa` | Supabase `ServeOs-qa` (aws-0 pooler) |
 
 - **Migrations run in the build:** `vercel-build` = `tsx scripts/release-migrate.ts && next build`. It migrates only when `VERCEL_ENV=production`, so a production deploy of either project **is** a migration of its database; a failed migration fails the build. Preview deployments skip it because they typically share the production database.
-- **Promote main to QA:** `git push origin main:qa`.
+- **Promote main to QA:** `git push origin main:qa`. A push to `main` also creates a Preview deployment on `serve-os-qa` that does not serve `qa.serveos.tech` and does not migrate, so QA's schema lags main until `qa` is promoted; the nightly `demo-reset` workflow migrates QA (from `main`) before re-seeding the demo tenants.
 - **Deploy watch:** `.github/workflows/deploy-watch.yml` turns a push that never deploys, never reaches READY or never serves its SHA into a red run.
 - **Backups:** nightly `pg_dump` of prod and QA to Cloudflare R2 at 03:00 UTC (`db-backup.yml`), quarterly restore drill (`db-restore-drill.yml`). Runbook: [backup-restore.md](../references/backup-restore.md). Full infrastructure map: [environments.md](../references/environments.md).

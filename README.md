@@ -96,7 +96,11 @@ pitfalls that have actually bitten us):
 
 Both Vercel projects run migrations during the production build
 (`vercel-build` → `scripts/release-migrate.ts`), so a deploy IS a migration.
-Promote main to QA with `git push origin main:qa`. QA bring-up checklist:
+Promote main to QA with `git push origin main:qa`. A push to `main` also
+creates a **Preview** deployment on `serve-os-qa`, which neither serves
+`qa.serveos.tech` nor migrates; until `qa` is promoted, QA's schema lags main
+(the nightly `demo-reset` workflow migrates QA from `main` before seeding).
+QA bring-up checklist:
 [docs/references/qa-environment-setup.md](docs/references/qa-environment-setup.md).
 
 Nightly `pg_dump` backups of both databases go to Cloudflare R2 at 03:00 UTC
