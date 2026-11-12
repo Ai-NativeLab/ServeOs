@@ -11,6 +11,17 @@ const auditCtx = (tenantId: string, audit?: AuditActorInput) => ({
   fingerprint: audit?.fingerprint ?? emptyFingerprint(),
 });
 
+/**
+ * How long an uploaded-but-unclaimed prescription stays eligible to be
+ * auto-attached to a new order by `placeOrder` (#185). Without this floor, a
+ * script uploaded before a FAILED order attempt lingers for days and silently
+ * attaches to a later, unrelated order — the pharmacist would review a script
+ * that doesn't match the medicines in front of them. One hour comfortably
+ * covers a "fix your phone number and resubmit" flow; genuinely abandoned
+ * scripts simply stay pending for manual review.
+ */
+export const PRESCRIPTION_CLAIM_MAX_AGE_MS = 60 * 60 * 1000;
+
 /** A customer's script lands here pending review. imagePath is a private
  *  storage path (decision R4) — never a public URL. */
 export async function submitPrescription(

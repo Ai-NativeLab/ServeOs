@@ -1,0 +1,50 @@
+import type {
+  FiscalProvider,
+  FiscalSaleInput,
+  FiscalRefundInput,
+  FiscalInvoiceInput,
+  FiscalDocument,
+  FinalizedFiscalDocument,
+  FiscalSubmitResult,
+  EtaConfig,
+} from "./provider";
+import type { EtaDocType } from "./schema";
+
+/**
+ * The fiscal provider for every non-EG tenant. ETA e-receipts/e-invoices are
+ * an Egypt-specific obligation — `resolveFiscalProvider` only ever routes an
+ * EG tenant to `EtaFiscalProvider`, so `buildReceipt`/`buildReturnReceipt`
+ * here should never actually be called. They throw rather than silently
+ * fabricate a fiscal document nobody asked for, so a caller that mistakenly
+ * reaches this provider fails loudly instead of shipping a bogus document.
+ *
+ * `submit`/`poll` are different: they're safe to call unconditionally (e.g.
+ * a worker that doesn't branch on provider identity first) and just report
+ * "skipped", writing nothing.
+ */
+export class NoopFiscalProvider implements FiscalProvider {
+  readonly name = "noop";
+
+  buildReceipt(_input: FiscalSaleInput): FiscalDocument {
+    throw new Error("NoopFiscalProvider.buildReceipt: non-EG tenants never build fiscal documents");
+  }
+
+  buildReturnReceipt(_input: FiscalRefundInput): FiscalDocument {
+    throw new Error("NoopFiscalProvider.buildReturnReceipt: non-EG tenants never build fiscal documents");
+  }
+
+  buildInvoice(_input: FiscalInvoiceInput): FiscalDocument {
+    throw new Error("NoopFiscalProvider.buildInvoice: non-EG tenants never build fiscal documents");
+  }
+
+  async submit(_finalized: FinalizedFiscalDocument, _cfg: EtaConfig): Promise<FiscalSubmitResult> {
+    return { status: "skipped", responseJson: {} };
+  }
+
+  // `_docType` is REQUIRED, matching the interface exactly. This class is what a
+  // future provider gets copied from, so an optional parameter here would
+  // propagate a laxer contract than `FiscalProvider` actually declares.
+  async poll(_submissionUuid: string, _cfg: EtaConfig, _docType: EtaDocType): Promise<FiscalSubmitResult> {
+    return { status: "skipped", responseJson: {} };
+  }
+}

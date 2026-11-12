@@ -1,4 +1,102 @@
+import type { SaleFiscalStatus } from "../../electron/preload";
 import type { CartLine } from "../order/cart";
+
+/** What the footer renders of a sale's ETA document — the server's payload minus
+ *  `qrPayload`, which is the QR's INPUT and never printed itself. */
+export type ReceiptFiscal = Pick<
+  SaleFiscalStatus, "docType" | "status" | "etaUuid" | "etaLongId" | "qrImageDataUrl"
+>;
+
+/**
+ * The ETA block at the foot of a receipt. Renders nothing at all without a
+ * `fiscal` value — the ordinary case for every non-EG tenant, and the country
+ * gate's no-behavioural-change guarantee: their receipt is byte-identical to
+ * the one this screen printed before ETA existed.
+ *
+ * ---------------------------------------------------------------------------
+ * TWO FAMILIES, TWO FOOTERS, AND THE CONSUMER ONE IS UNTOUCHED.
+ *
+ * `e_receipt` — everything below the `docType` branch is exactly what it was.
+ * THE QR PRINTS AS SOON AS IT EXISTS, at `pending` and not only at `accepted`:
+ * ETA e-receipts are post-clearance, so the uuid is self-computed and the QR
+ * payload written at sale time while the verdict lands minutes to hours later.
+ * The copy handed to the customer must already carry the code, so gating the
+ * image on `accepted` would print blank receipts all day and only ever show the
+ * QR on a reprint. `rejected` keeps the code visible too and adds a note beside
+ * it: the sale stands, and the correction is a dashboard action, not something
+ * the cashier can act on with the customer at the counter.
+ *
+ * `e_invoice` — NEVER A QR, in any state. A tax invoice has no QR to print: ETA
+ * assigns the document's identity when it is submitted, so there is nothing to
+ * encode at issuance and nothing to encode later either. What the buyer needs is
+ * ETA's own document number, which arrives with the 202 — so the footer says
+ * "pending" until it holds one and prints it once it does. Rendering a QR here
+ * would be inventing a code that does not exist for this document type.
+ *
+ * The split is on `docType` and not on "is there a QR", because an `e_receipt`
+ * in the seconds before its finalization lands has no QR either — reading the
+ * family off that absence would print tax-invoice text on a consumer sale.
+ *
+ * `fetching` — the till's FIRST read of the fiscal record is still in flight
+ * (EG tenants only; the caller decides). Without it, a receipt printed in that
+ * second would carry no footer at all and look like a non-fiscal sale; with it,
+ * the copy says the code is on its way. Ignored once `fiscal` is known.
+ */
+export function ReceiptFiscalFooter({ fiscal, fetching = false }: { fiscal?: ReceiptFiscal | null; fetching?: boolean }) {
+  if (!fiscal) {
+    if (!fetching) return null;
+    return (
+      <div className="mt-4 border-t border-dashed border-border pt-3 text-center">
+        <p className="text-[10px] text-muted-foreground">Fetching fiscal code…</p>
+      </div>
+    );
+  }
+
+  if (fiscal.docType === "e_invoice") {
+    return (
+      <div className="mt-4 border-t border-dashed border-border pt-3 text-center">
+        {fiscal.status === "accepted" && fiscal.etaLongId ? (
+          <p className="mt-1 text-[10px] break-all text-muted-foreground">
+            Tax invoice — ETA number: {fiscal.etaLongId}
+          </p>
+        ) : (
+          // Every non-accepted state, and an acceptance ETA has not yet named a
+          // number for. The invoice is filed either way; the number is what is
+          // still in flight, and saying so is the honest thing to hand over.
+          <p className="text-[10px] text-muted-foreground">Tax invoice — pending ETA number</p>
+        )}
+        {fiscal.status === "rejected" && (
+          <p className="mt-1 text-[10px] text-status-danger-fg">Tax invoice rejected — correction pending</p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-4 border-t border-dashed border-border pt-3 text-center">
+      {isPngDataUrl(fiscal.qrImageDataUrl) ? (
+        <img src={fiscal.qrImageDataUrl} alt="ETA receipt QR" className="mx-auto h-28 w-28" />
+      ) : (
+        // The row exists but has not been finalized yet — rare, and it resolves
+        // on its own; the customer copy simply says so rather than lying.
+        <p className="text-[10px] text-muted-foreground">Fiscal receipt pending</p>
+      )}
+      {fiscal.etaUuid && (
+        <p className="mt-1 text-[10px] break-all text-muted-foreground">ETA UUID: {fiscal.etaUuid}</p>
+      )}
+      {fiscal.status === "rejected" && (
+        <p className="mt-1 text-[10px] text-status-danger-fg">Fiscal receipt rejected — correction pending</p>
+      )}
+    </div>
+  );
+}
+
+/** The endpoint only ever sends a server-rendered PNG data URL. Anything else
+ *  (a remote URL, an SVG, `javascript:`) is not rendered as an image source —
+ *  the footer falls back to its pending line instead. */
+export function isPngDataUrl(src: string | null | undefined): src is string {
+  return typeof src === "string" && src.startsWith("data:image/png;base64,");
+}
 
 export type ReceiptTender = { method: string; amount: number };
 export type ReceiptData = {
@@ -19,7 +117,27 @@ export type ReceiptData = {
   synced: boolean;
 };
 
-export function Receipt({ data, onPrint, onNewOrder }: { data: ReceiptData; onPrint: () => void; onNewOrder: () => void }) {
+/**
+ * `fiscal` is a prop rather than a field of `ReceiptData` on purpose: the
+ * receipt data is a snapshot of the sale, settled the moment it was rung, while
+ * the fiscal block arrives afterwards and changes under it. Keeping it separate
+ * also keeps this render a pure function of its inputs — the poll lives in the
+ * screen that owns the receipt (see `../fiscal/sale-fiscal`), never here.
+ */
+export function Receipt({
+  data,
+  fiscal,
+  fiscalFetching = false,
+  onPrint,
+  onNewOrder,
+}: {
+  data: ReceiptData;
+  fiscal?: ReceiptFiscal | null;
+  /** EG + the first fiscal read still in flight — see `ReceiptFiscalFooter`. */
+  fiscalFetching?: boolean;
+  onPrint: () => void;
+  onNewOrder: () => void;
+}) {
   return (
     <div className="min-h-screen grid place-items-center bg-background px-4 py-6">
       <div className="w-full max-w-sm">
@@ -95,6 +213,9 @@ export function Receipt({ data, onPrint, onNewOrder }: { data: ReceiptData; onPr
           </div>
           <div className="mt-4 text-center text-xs text-muted-foreground">Cashier: {data.cashierName}</div>
           <div className="mt-1 text-center text-xs text-muted-foreground">Thank you!</div>
+          {/* Inside #receipt so the print stylesheet's `#receipt *` rule keeps
+              the QR visible on the customer copy. */}
+          <ReceiptFiscalFooter fiscal={fiscal} fetching={fiscalFetching} />
         </div>
 
         <div className="no-print mt-4 flex gap-2">

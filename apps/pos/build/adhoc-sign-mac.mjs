@@ -36,6 +36,22 @@ const run = promisify(execFile);
 export default async function adhocSignMac(context) {
   if (context.electronPlatformName !== "darwin") return;
 
+  // afterPack runs *before* electron-builder's own signing step, so on a build
+  // with a real certificate the Developer ID signature is applied over this
+  // ad-hoc one and nothing is lost either way. Standing down then only skips a
+  // redundant sign-and-verify pass. It is gated on `identity` as well as on
+  // credentials because `mac.identity: null` makes electron-builder skip
+  // signing whatever the environment holds: secrets added before that line is
+  // removed (docs/pos-code-signing.md step 5) must not leave the bundle with
+  // the broken linker signature this hook exists to replace.
+  const willSign =
+    context.packager.platformSpecificBuildOptions.identity !== null &&
+    Boolean(process.env.CSC_LINK || process.env.CSC_NAME);
+  if (willSign) {
+    console.log("  • ad-hoc signing skipped  reason=electron-builder signs with a real identity next");
+    return;
+  }
+
   const appPath = path.join(
     context.appOutDir,
     `${context.packager.appInfo.productFilename}.app`,

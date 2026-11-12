@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { openDb } from "./db";
 import { Store, type AuthUser } from "./store";
-import { SyncEngine, type PosApiClient, type SyncEvent, type SyncResult, type SyncStatus } from "./sync";
+import { FISCAL_ENABLED_KEY, SyncEngine, type PosApiClient, type SyncEvent, type SyncResult, type SyncStatus } from "./sync";
 
 function makeStore(): Store {
   return new Store(openDb(":memory:"));
@@ -36,6 +36,8 @@ class FakeApi implements PosApiClient {
   catalogPulls = 0;
   rosterPulls = 0;
   reachable = true;
+  /** What the catalog says about ETA; `undefined` = an older server that never sends it. */
+  fiscalEnabled: boolean | undefined = true;
   respond: (events: SyncEvent[]) => Promise<SyncResult[]> = async (events) => events.map(applied);
 
   async ping(): Promise<void> {
@@ -50,6 +52,7 @@ class FakeApi implements PosApiClient {
       menu: { categories: [] },
       pricing: { vatEnabled: true, vatRate: 14 },
       shiftPolicy: { blindClose: false, payoutThreshold: 500, varianceThreshold: 0 },
+      ...(this.fiscalEnabled === undefined ? {} : { fiscalEnabled: this.fiscalEnabled }),
       catalogVersion: 7,
       syncedAt: "2026-08-14T00:00:00.000Z",
     };
@@ -284,6 +287,26 @@ describe("SyncEngine.flush", () => {
   });
 });
 
+describe("SyncEngine.pull — the ETA gate", () => {
+  it("caches fiscalEnabled=false for a non-EG / not-activated tenant", async () => {
+    const store = makeStore();
+    const api = new FakeApi();
+    api.fiscalEnabled = false;
+    await new SyncEngine(store, api).pull();
+    expect(store.getState(FISCAL_ENABLED_KEY)).toBe(false);
+  });
+
+  it("reads an older server that omits the field as OFF, and a later pull overwrites a stale ON", async () => {
+    const store = makeStore();
+    const api = new FakeApi();
+    await new SyncEngine(store, api).pull();
+    expect(store.getState(FISCAL_ENABLED_KEY)).toBe(true);
+    api.fiscalEnabled = undefined;
+    await new SyncEngine(store, api).pull();
+    expect(store.getState(FISCAL_ENABLED_KEY)).toBe(false);
+  });
+});
+
 describe("SyncEngine.tick", () => {
   it("ping failure flips state to offline; success flips back and triggers flush + pull", async () => {
     const store = makeStore();
@@ -312,6 +335,8 @@ describe("SyncEngine.tick", () => {
     // Part B fold-in: shiftPolicy rides the same pull, so a reconnect is what
     // teaches the till its payout threshold.
     expect(JSON.parse(store.getCatalog()!.shiftPolicyJson!)).toMatchObject({ payoutThreshold: 500 });
+    // ...and so does the ETA gate, which is what shows the B2B buyer section.
+    expect(store.getState(FISCAL_ENABLED_KEY)).toBe(true);
     expect(store.findAuthUser("c@x.com")).toMatchObject({ userId: "u1" });
     expect(api.batches).toHaveLength(1);
     expect(engine.status().state).toBe("online");

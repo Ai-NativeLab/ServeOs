@@ -50,20 +50,27 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm i -g vercel@latest
+      - run: npm i -g vercel@65.5.0
 
       # Pulls the project's Preview env vars so the build sees the same
       # configuration Vercel's own builder would have used.
       - name: Pull Vercel environment
-        run: vercel pull --yes --environment=preview --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: vercel pull --yes --environment=preview --token="$VERCEL_TOKEN"
 
       - name: Build
-        run: vercel build --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: vercel build --token="$VERCEL_TOKEN"
 
       - name: Deploy prebuilt
         id: deploy
+        timeout-minutes: 10
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
-          url=$(vercel deploy --prebuilt --token=${{ secrets.VERCEL_TOKEN }})
+          url=$(vercel deploy --prebuilt --yes --archive=tgz --token="$VERCEL_TOKEN")
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "Preview: $url" >> "$GITHUB_STEP_SUMMARY"
 
@@ -96,7 +103,9 @@ jobs:
     name: production
     if: ${{ vars.VERCEL_DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Room for the deploy step's own 10-minute limit to fire first, so the
+    # "migrated but not activated" step below still gets to run.
+    timeout-minutes: 30
     environment: production
     env:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_PROD }}
@@ -107,21 +116,59 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm i -g vercel@latest
+      - run: npm i -g vercel@65.5.0
 
       # The production build applies database migrations before the deploy goes
-      # live (see next.config.ts / package.json build script), so it needs the
-      # real production env — which is what `vercel pull` fetches.
+      # live (scripts/release-migrate.ts, run by package.json's vercel-build),
+      # so it needs the real production env — which is what `vercel pull`
+      # fetches, apart from DATABASE_URL (next step).
       - name: Pull Vercel environment
-        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      # Migrations get DATABASE_URL from a GitHub secret instead of the pulled
+      # file, after checking it is on the same host as the Vercel project's
+      # value (which the deployed app uses). Why, and what is still unproven:
+      # the comment in the script and PR #162.
+      - name: Swap in the DATABASE_URL secret (checked against Vercel's)
+        env:
+          DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+        run: bash .github/scripts/use-secret-database-url.sh .vercel/.env.production.local PROD_DATABASE_URL
 
       - name: Build
-        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+        id: build
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+        run: vercel build --prod --token="$VERCEL_TOKEN"
 
       - name: Deploy prebuilt to production
+        id: deploy
+        # Uploads take seconds; a deploy stuck in Vercel's queue should fail
+        # loudly here rather than run out the job clock.
+        timeout-minutes: 10
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
-          url=$(vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }})
+          url=$(vercel deploy --prebuilt --prod --yes --archive=tgz --token="$VERCEL_TOKEN")
           echo "Production: $url" >> "$GITHUB_STEP_SUMMARY"
+
+      # The build ran release-migrate, so the schema is already migrated; if
+      # the deploy then failed, timed out or was cancelled, the old code is
+      # still live on the new schema. See the runbook's "Migrated but not
+      # activated" section.
+      - name: Flag a migrated but not activated deploy
+        if: ${{ always() && steps.build.outcome == 'success' && steps.deploy.outcome != 'success' }}
+        run: |
+          echo "::error::Production schema migrated, deploy not activated (deploy step: ${{ steps.deploy.outcome }})."
+          {
+            echo "### Production: schema migrated, deploy not activated"
+            echo ""
+            echo "The build applied migrations, then the deploy step ended with \`${{ steps.deploy.outcome }}\`."
+            echo "The previous deployment is still serving traffic against the new schema."
+            echo "See docs/references/vercel-cli-deploy.md, \"Migrated but not activated\"."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ── QA: qa branch → qa.serveos.tech ──────────────────────────────────────
   # The QA Vercel project tracks the `qa` branch as ITS production environment,
@@ -130,7 +177,9 @@ jobs:
     name: qa
     if: ${{ vars.VERCEL_DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/qa' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Room for the deploy step's own 10-minute limit to fire first, so the
+    # "migrated but not activated" step below still gets to run.
+    timeout-minutes: 30
     environment: qa
     env:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_QA }}
@@ -141,15 +190,49 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm i -g vercel@latest
+      - run: npm i -g vercel@65.5.0
 
       - name: Pull Vercel environment
-        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      # Same swap and check as the production job.
+      - name: Swap in the DATABASE_URL secret (checked against Vercel's)
+        env:
+          DATABASE_URL: ${{ secrets.QA_DATABASE_URL }}
+        run: bash .github/scripts/use-secret-database-url.sh .vercel/.env.production.local QA_DATABASE_URL
 
       - name: Build
-        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+        id: build
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          DATABASE_URL: ${{ secrets.QA_DATABASE_URL }}
+        run: vercel build --prod --token="$VERCEL_TOKEN"
 
       - name: Deploy prebuilt to QA
+        id: deploy
+        # Uploads take seconds; a deploy stuck in Vercel's queue should fail
+        # loudly here rather than run out the job clock.
+        timeout-minutes: 10
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
-          url=$(vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }})
+          url=$(vercel deploy --prebuilt --prod --yes --archive=tgz --token="$VERCEL_TOKEN")
           echo "QA: $url" >> "$GITHUB_STEP_SUMMARY"
+
+      # The build ran release-migrate, so the schema is already migrated; if
+      # the deploy then failed, timed out or was cancelled, the old code is
+      # still live on the new schema. See the runbook's "Migrated but not
+      # activated" section.
+      - name: Flag a migrated but not activated deploy
+        if: ${{ always() && steps.build.outcome == 'success' && steps.deploy.outcome != 'success' }}
+        run: |
+          echo "::error::QA schema migrated, deploy not activated (deploy step: ${{ steps.deploy.outcome }})."
+          {
+            echo "### QA: schema migrated, deploy not activated"
+            echo ""
+            echo "The build applied migrations, then the deploy step ended with \`${{ steps.deploy.outcome }}\`."
+            echo "The previous deployment is still serving traffic against the new schema."
+            echo "See docs/references/vercel-cli-deploy.md, \"Migrated but not activated\"."
+          } >> "$GITHUB_STEP_SUMMARY"

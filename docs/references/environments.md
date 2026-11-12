@@ -34,6 +34,12 @@ deploy applies pending Drizzle migrations to its environment's database.
 
 To promote main to QA: `git push origin main:qa` (fast-forward).
 
+A push to `main` also produces a deployment on `serve-os-qa`, but only a
+**Preview** one ("Preview – serve-os-qa" in GitHub deployments): it does not
+serve `qa.serveos.tech` and does not run release-migrate. Until `qa` is
+promoted, QA's schema lags main's migrations. The nightly `demo-reset`
+workflow therefore migrates QA itself before seeding (from `main` only).
+
 **Hobby-plan limits that have bitten us** are in Pitfalls below.
 
 ## Supabase (Frankfurt, eu-central-1)

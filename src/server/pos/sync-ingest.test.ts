@@ -4,10 +4,11 @@ import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { auditEvents } from "@/server/audit/schema";
 import { deactivateStaff } from "@/server/auth/staff";
-import { ingestEvents, type SyncEvent, type SyncEventType, type SyncResult } from "./sync-ingest";
+import { ingestEvents, toErrorShape, type SyncEvent, type SyncEventType, type SyncResult } from "./sync-ingest";
 import { posSyncEventReceipts } from "./schema";
 import { cashMovements, posShifts } from "./shift-schema";
 import { orders } from "@/server/ordering/schema";
+import { NonFiniteAmountError } from "@/shared/errors";
 import { seedPosContext, openShiftForCtx } from "./test-helpers";
 import { createPairingCode, redeemPairingCode, resolveDevice } from "./service";
 import { closeShift } from "./shifts";
@@ -429,5 +430,66 @@ describe("ingestEvents — drawer addressing", () => {
     expect(results[0].status).toBe("applied");
     const movements = await withTenant(ctx.tenantId, (tx) => tx.select().from(cashMovements));
     expect(movements).toHaveLength(1);
+  });
+});
+
+describe("ingestEvents — non-finite amounts", () => {
+  // JSON has no Infinity literal, but `1e999` parses to it — so an ordinary
+  // event body can carry one, and `typeof x === "number"` lets it through.
+  const inf = JSON.parse("1e999") as number;
+
+  it.each([
+    ["shift.opened", () => ({ openingFloat: inf })],
+    ["shift.closed", (shiftId: string) => ({ shiftId, countedTotal: inf })],
+    ["count.recorded", (shiftId: string) => ({ shiftId, countedTotal: inf })],
+    ["cash.movement", () => ({ type: "pay_in", amount: inf, reasonCode: "float_top_up" })],
+  ] as const)("refuses a %s carrying Infinity as invalid_event and writes nothing", async (type, payload) => {
+    const { ctx } = await seedPosContext("owner");
+    // A real, open drawer for the events that address one — so the refusal
+    // is about the amount, not about an unresolvable shift id.
+    const shift = type === "shift.opened" ? null : await openShiftForCtx(ctx);
+    const results = await ingestEvents(toDevice(ctx), [
+      event(ctx.cashierUserId, 1, type, payload(shift?.id ?? "")),
+    ]);
+
+    assertFailed(results[0]);
+    expect(results[0].error.code).toBe("invalid_event");
+    expect(await db.select().from(posSyncEventReceipts)
+      .where(eq(posSyncEventReceipts.deviceId, ctx.deviceId))).toHaveLength(0);
+    expect(await withTenant(ctx.tenantId, (tx) => tx.select().from(cashMovements))).toHaveLength(0);
+    const shifts = await withTenant(ctx.tenantId, (tx) => tx.select().from(posShifts));
+    expect(shifts.every((s) => s.status === "open")).toBe(true);
+    expect(shifts).toHaveLength(shift ? 1 : 0);
+  });
+
+  it("refuses a sale.recorded whose expectedTotal is Infinity as invalid_event", async () => {
+    const { ctx, productId } = await seedPosContext("owner");
+    const shift = await openShiftForCtx(ctx);
+    const results = await ingestEvents(toDevice(ctx), [
+      event(ctx.cashierUserId, 1, "sale.recorded", {
+        clientOrderId: "inf-sale",
+        shiftId: shift.id,
+        lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+        lineSnapshots: [{
+          productId, productNameEn: "M", productNameAr: "م", unitPrice: 100, quantity: 1, lineTotal: 100,
+        }],
+        expectedTotal: inf,
+        payments: [],
+      }),
+    ]);
+
+    assertFailed(results[0]);
+    expect(results[0].error.code).toBe("invalid_event");
+    expect(await withTenant(ctx.tenantId, (tx) => tx.select().from(orders))).toHaveLength(0);
+  });
+});
+
+describe("toErrorShape", () => {
+  it("names a NonFiniteAmountError invalid_event, not internal_error", () => {
+    // Inside the sync dispatcher a non-finite amount that slipped past the
+    // payload validators came from the event, so it is reported as a data
+    // problem with the event — not as a server fault that a retry could fix.
+    expect(toErrorShape(new NonFiniteAmountError("money", Number.NaN)))
+      .toEqual({ code: "invalid_event", message: "money must be a finite number, got NaN" });
   });
 });

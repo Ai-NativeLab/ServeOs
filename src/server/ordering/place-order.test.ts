@@ -31,11 +31,24 @@ async function setup(slug: string) {
 }
 
 describe("placeOrder", () => {
+  // #187 review: the validator normalises before it checks, so the row must
+  // hold that same canonical form — not whatever spacing/digits were typed.
+  it("persists the normalised customer phone", async () => {
+    const { t, branch, pizza } = await setup("po-phone");
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup",
+      customerName: "Ahmed", customerPhone: " \u200f٠١٠ 1234-5678 ",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const { getOrder } = await import("./service");
+    expect((await getOrder(t.id, res.orderId)).customerPhone).toBe("01012345678");
+  });
+
   it("creates a delivery order and returns number + token", async () => {
     const { t, branch, pizza, cheese, area } = await setup("po1");
     const res = await placeOrder(t.id, {
       branchId: branch.id, fulfillmentType: "delivery",
-      customerName: "Ahmed", customerPhone: "0100",
+      customerName: "Ahmed", customerPhone: "01000000000",
       areaId: area.id, addressText: "12 St",
       lines: [{ productId: pizza.id, quantity: 2, selectedOptionIds: [cheese.id] }],
     });
@@ -48,7 +61,7 @@ describe("placeOrder", () => {
     const { MinimumOrderNotMetError } = await import("./errors");
     await updateDeliveryArea(t.id, area.id, { minOrderAmount: "500" });
     await expect(placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "delivery", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "delivery", customerName: "A", customerPhone: "01000000001",
       areaId: area.id, addressText: "x", lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(MinimumOrderNotMetError);
   });
@@ -58,7 +71,7 @@ describe("placeOrder", () => {
     const { OrderValidationError } = await import("./errors");
     await updateProduct(t.id, pizza.id, { isPublished: false });
     await expect(placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(OrderValidationError);
   });
@@ -68,7 +81,7 @@ describe("placeOrder", () => {
     const { BranchNotAcceptingOrdersError } = await import("./errors");
     await updateBranchOrdering(t.id, branch.id, { acceptingOrders: false });
     await expect(placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(BranchNotAcceptingOrdersError);
   });
@@ -80,15 +93,15 @@ describe("placeOrder", () => {
     const [plan] = await db.select().from(plans).where(eq(plans.id, sub.planId)).limit(1);
     await db.update(plans).set({ features: { ...plan.features, online_ordering: false } }).where(eq(plans.id, plan.id));
     await expect(placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(FeatureNotAvailableError);
   });
 
   it("increments per-tenant order_number", async () => {
     const { t, branch, pizza } = await setup("po6");
-    const a = await placeOrder(t.id, { branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1", lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }] });
-    const b = await placeOrder(t.id, { branchId: branch.id, fulfillmentType: "pickup", customerName: "B", customerPhone: "2", lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }] });
+    const a = await placeOrder(t.id, { branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001", lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }] });
+    const b = await placeOrder(t.id, { branchId: branch.id, fulfillmentType: "pickup", customerName: "B", customerPhone: "01000000002", lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }] });
     expect(a.orderNumber).toBe(1);
     expect(b.orderNumber).toBe(2);
   });
@@ -102,7 +115,7 @@ describe("placeOrder", () => {
     const g2 = await upsertModifierGroup(t.id, cola.id, { nameEn: "Size", nameAr: "حجم", required: false, minSelections: 0, maxSelections: 1 });
     const large = await upsertModifierOption(t.id, g2.id, { nameEn: "Large", nameAr: "كبير", priceDelta: "5" });
     await expect(placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [large.id] }],
     })).rejects.toThrow(OrderValidationError);
   });
@@ -113,7 +126,7 @@ describe("placeOrder", () => {
     const branch2 = await createBranch(t.id, { name: "Second" });
     const foreignArea = await createDeliveryArea(t.id, branch2.id, { nameEn: "Other", nameAr: "أخرى", deliveryFee: "10", minOrderAmount: "0" });
     await expect(placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "delivery", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "delivery", customerName: "A", customerPhone: "01000000001",
       areaId: foreignArea.id, addressText: "x", lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(AreaNotDeliverableError);
   });
@@ -124,7 +137,7 @@ describe("placeOrder", () => {
     const { deleteBranch } = await import("@/server/branches/service");
     await deleteBranch(t.id, branch.id);
     await expect(placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(BranchNotAcceptingOrdersError);
   });
@@ -133,7 +146,7 @@ describe("placeOrder", () => {
     const { t, branch, pizza } = await setup("po-sched1");
     const scheduled = new Date(Date.now() + 2 * 60 * 60 * 1000); // +2h
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       scheduledFor: scheduled.toISOString(),
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
@@ -147,7 +160,7 @@ describe("placeOrder", () => {
     const { t, branch, pizza } = await setup("po-sched2");
     const { InvalidScheduleError } = await import("./errors");
     await expect(placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       scheduledFor: new Date(Date.now() + 10 * 60 * 1000).toISOString(), // +10min < 30min lead
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(InvalidScheduleError);
@@ -157,7 +170,7 @@ describe("placeOrder", () => {
     const { t, branch, pizza } = await setup("po-sched3");
     const { InvalidScheduleError } = await import("./errors");
     await expect(placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       scheduledFor: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(), // +3 days
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(InvalidScheduleError);
@@ -167,7 +180,7 @@ describe("placeOrder", () => {
     const { t, branch, pizza } = await setup("po-sched4");
     const { InvalidScheduleError } = await import("./errors");
     await expect(placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       scheduledFor: "not-a-date",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(InvalidScheduleError);
@@ -188,7 +201,7 @@ describe("placeOrder", () => {
     // A valid slot exists regardless of current wall-clock (today or tomorrow):
     expect(slots.length).toBeGreaterThan(0);
     const ok = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       scheduledFor: slots[0].toISOString(),
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
@@ -199,7 +212,7 @@ describe("placeOrder", () => {
     closedAt.setUTCDate(closedAt.getUTCDate() + 1);
     closedAt.setUTCHours(1, 0, 0, 0);
     await expect(placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       scheduledFor: closedAt.toISOString(),
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(InvalidScheduleError);
@@ -208,7 +221,7 @@ describe("placeOrder", () => {
   it("keeps default totals identical to the legacy computation (VAT exclusive, no service charge)", async () => {
     const { t, branch, pizza } = await setup("po-tot1");
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
     const { getOrder } = await import("./service");
@@ -224,7 +237,7 @@ describe("placeOrder", () => {
     const { setServiceChargeRate } = await import("@/server/tenancy");
     await setServiceChargeRate(t.id, 10);
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
     const { getOrder } = await import("./service");
@@ -237,9 +250,9 @@ describe("placeOrder", () => {
   it("places an offline (vodafone_cash) order as pending_verification with the proof", async () => {
     const { t, branch, pizza } = await setup("pay-vc");
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
-    await upsertOfflineMethod(t.id, { type: "vodafone_cash", label: "Vodafone Cash", payToDetail: "0100" });
+    await upsertOfflineMethod(t.id, { type: "vodafone_cash", label: "Vodafone Cash", payToDetail: "01000000000" });
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       paymentMethod: "vodafone_cash", paymentReference: "VC-99887",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
@@ -254,7 +267,7 @@ describe("placeOrder", () => {
     const { t, branch, pizza } = await setup("pay-vc2");
     const { PaymentMethodNotEnabledError } = await import("@/server/payments/offline");
     await expect(placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       paymentMethod: "instapay", paymentReference: "X",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(PaymentMethodNotEnabledError);
@@ -266,7 +279,7 @@ describe("placeOrder", () => {
     const { InvalidProofError } = await import("@/server/payments/offline");
     await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
     await expect(placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       paymentMethod: "instapay",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(InvalidProofError);
@@ -275,7 +288,7 @@ describe("placeOrder", () => {
   it("keeps cash orders unpaid exactly as before", async () => {
     const { t, branch, pizza } = await setup("pay-cash");
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
     const { getOrder } = await import("./service");
@@ -303,7 +316,7 @@ describe("placeOrder retail variants + stock", () => {
   it("prices a variant line from the DB and snapshots the variant name", async () => {
     const { t, branch, hinge, v35 } = await setupRetail("rv1");
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: hinge.id, variantId: v35.id, quantity: 2, selectedOptionIds: [] }],
     });
     const { getOrder } = await import("./service");
@@ -325,13 +338,13 @@ describe("placeOrder retail variants + stock", () => {
     });
 
     await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: hinge.id, variantId: v35.id, quantity: 2, selectedOptionIds: [] }],
     });
     expect(await onHand(t.id, itemId, locationId)).toBe(0);
 
     await expect(placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "B", customerPhone: "2",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "B", customerPhone: "01000000002",
       lines: [{ productId: hinge.id, variantId: v35.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(OutOfStockError);
 
@@ -350,7 +363,7 @@ describe("placeOrder retail variants + stock", () => {
     });
 
     const attempt = (name: string) => placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: name, customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: name, customerPhone: "01000000001",
       lines: [{ productId: hinge.id, variantId: last.id, quantity: 1, selectedOptionIds: [] }],
     });
     const results = await Promise.allSettled([attempt("A"), attempt("B")]);
@@ -366,7 +379,7 @@ describe("placeOrder retail variants + stock", () => {
     const { t, branch, hinge } = await setupRetail("rv4");
     const { InvalidVariantError } = await import("@/server/catalog/errors");
     await expect(placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: hinge.id, variantId: "00000000-0000-0000-0000-000000000000", quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(InvalidVariantError);
   });
@@ -380,7 +393,7 @@ describe("placeOrder retail variants + stock", () => {
     });
 
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: hinge.id, variantId: v35.id, quantity: 2, selectedOptionIds: [] }],
     });
     expect(await onHand(t.id, itemId, locationId)).toBe(0);
@@ -417,12 +430,12 @@ describe("placeOrder — legacy stock adoption + storefront mirror", () => {
     await setProductStock(t.id, hinge.id, 3);
 
     await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: hinge.id, quantity: 3, selectedOptionIds: [] }],
     });
 
     await expect(placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "B", customerPhone: "2",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "B", customerPhone: "01000000002",
       lines: [{ productId: hinge.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(OutOfStockError);
   });
@@ -448,11 +461,51 @@ describe("placeOrder — legacy stock adoption + storefront mirror", () => {
     expect((await findProduct())?.inStock).toBe(true);
 
     await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: screw.id, quantity: 2, selectedOptionIds: [] }],
     });
 
     expect((await findProduct())?.inStock).toBe(false);
+  });
+
+  it("rejects an order for a tracked product that is out of stock at submission time (#167)", async () => {
+    const { t, branch } = await setupRetail("oos1");
+    const { setProductStock } = await import("@/server/catalog/variants");
+    const { createCategory, createProduct, updateProduct } = await import("@/server/catalog/service");
+
+    const cat = await createCategory(t.id, { nameEn: "Screws", nameAr: "براغي" });
+    const screw = await createProduct(t.id, { nameEn: "Screw", nameAr: "برغي", basePrice: "10", categoryId: cat.id });
+    await updateProduct(t.id, screw.id, { isPublished: true, trackStock: true });
+    await setProductStock(t.id, screw.id, 0);
+
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01012345678",
+      lines: [{ productId: screw.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(/out of stock/i);
+  });
+
+  // #187 review test-gap: with no inventory link, the oos1 state is ALSO
+  // refused by the pre-existing ledger backstop, so oos1 alone cannot tell
+  // whether the early #167 guard exists. Here the two layers disagree — the
+  // ledger holds 5 on hand while the storefront counter says 0 — and only the
+  // early guard refuses. Deleting it turns this into a placed order.
+  it("the early #167 refusal fires even when the ledger has stock (guard isolation)", async () => {
+    const { t, branch } = await setupRetail("oos2");
+    const { OutOfStockError } = await import("./errors");
+    const { setProductStock } = await import("@/server/catalog/variants");
+    const { createCategory, createProduct, updateProduct } = await import("@/server/catalog/service");
+    const { seedFinishedGood } = await import("@/server/inventory/test-helpers");
+
+    const cat = await createCategory(t.id, { nameEn: "Screws", nameAr: "براغي" });
+    const screw = await createProduct(t.id, { nameEn: "Screw", nameAr: "برغي", basePrice: "10", categoryId: cat.id });
+    await updateProduct(t.id, screw.id, { isPublished: true, trackStock: true });
+    await setProductStock(t.id, screw.id, 0);
+    await seedFinishedGood(t.id, { branchId: branch.id, productId: screw.id, onHand: 5 });
+
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01012345678",
+      lines: [{ productId: screw.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(OutOfStockError);
   });
 });
 
@@ -470,7 +523,7 @@ describe("placeOrder — restaurant recipes (BOM)", () => {
     });
 
     await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: pizza.id, quantity: 2, selectedOptionIds: [] }],
     });
 
@@ -490,7 +543,7 @@ describe("placeOrder — restaurant recipes (BOM)", () => {
 
     // Restaurant default allowNegativeStock=true, so this must NOT throw.
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: pizza.id, quantity: 2, selectedOptionIds: [] }],
     });
     expect(res.orderId).toBeTruthy();
@@ -499,10 +552,103 @@ describe("placeOrder — restaurant recipes (BOM)", () => {
     expect(await onHand(t.id, itemIds[0], locationId)).toBe(-300);
   });
 
+  // #167 vs allowNegativeStock (#187 review). The tenant setting exists so a
+  // KITCHEN is never blocked at the till — it is not a licence to take web
+  // orders for a dish the storefront itself shows as sold out. So the early
+  // refusal is channel-dependent: web/WhatsApp always refuse, a live POS sale
+  // honours allowNegative, and a POS replay never refuses.
+  async function zeroStockDish(slug: string) {
+    const ctx = await setup(slug);
+    const { setProductStock } = await import("@/server/catalog/variants");
+    const { createCategory, createProduct, updateProduct } = await import("@/server/catalog/service");
+    const cat = await createCategory(ctx.t.id, { nameEn: "Grill", nameAr: "مشويات" });
+    const dish = await createProduct(ctx.t.id, { nameEn: "Kofta", nameAr: "كفتة", basePrice: "80", categoryId: cat.id });
+    await updateProduct(ctx.t.id, dish.id, { isPublished: true, trackStock: true });
+    await setProductStock(ctx.t.id, dish.id, 0);
+    return { ...ctx, dish };
+  }
+
+  it("the till may still sell a tracked dish at zero stock (restaurant default allowNegative)", async () => {
+    const { t, branch, dish } = await zeroStockDish("oos2");
+
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "Walk-in", customerPhone: "000000000",
+      channel: "pos",
+      lines: [{ productId: dish.id, quantity: 1, selectedOptionIds: [] }],
+    })).resolves.toBeDefined();
+  });
+
+  it("a web order for a sold-out dish is refused even though the kitchen allows negative stock (#167)", async () => {
+    const { t, branch, dish } = await zeroStockDish("oos3");
+    const { OutOfStockError } = await import("./errors");
+
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01012345678",
+      lines: [{ productId: dish.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(OutOfStockError);
+  });
+
+  it("a WhatsApp order for a sold-out dish is refused the same way", async () => {
+    const { t, branch, dish } = await zeroStockDish("oos4");
+    const { OutOfStockError } = await import("./errors");
+
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "+201012345678",
+      channel: "whatsapp",
+      lines: [{ productId: dish.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(OutOfStockError);
+  });
+
+  it("a live till sale honours an explicit allowNegativeStock=false", async () => {
+    const { t, branch, dish } = await zeroStockDish("oos5");
+    const { OutOfStockError } = await import("./errors");
+    const { setAllowNegativeStock } = await import("@/server/tenancy/settings");
+    await setAllowNegativeStock(t.id, false);
+
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "Walk-in", customerPhone: "000000000",
+      channel: "pos",
+      lines: [{ productId: dish.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(OutOfStockError);
+  });
+
+  // The variant guard follows the same policy. A variant's stock is tracked
+  // when its stockQuantity is set (null = untracked) — the same rule the
+  // storefront's inStock flag uses. Variants are a retail capability, so this
+  // is a retail tenant that has opted into negative stock.
+  async function zeroStockVariant(slug: string) {
+    const ctx = await setupRetail(slug);
+    const { upsertVariant } = await import("@/server/catalog/variants");
+    const { setAllowNegativeStock } = await import("@/server/tenancy/settings");
+    await setAllowNegativeStock(ctx.t.id, true);
+    const v = await upsertVariant(ctx.t.id, ctx.hinge.id, { id: ctx.v35.id, nameEn: "35mm", nameAr: "٣٥مم", price: "55", stockQuantity: 0 });
+    return { ...ctx, v };
+  }
+
+  it("the till may sell a zero-stock variant when the tenant allows negative stock", async () => {
+    const { t, branch, hinge, v } = await zeroStockVariant("oosv1");
+
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "Walk-in", customerPhone: "000000000",
+      channel: "pos",
+      lines: [{ productId: hinge.id, variantId: v.id, quantity: 1, selectedOptionIds: [] }],
+    })).resolves.toBeDefined();
+  });
+
+  it("a web order for a zero-stock variant is refused even when the tenant allows negative stock", async () => {
+    const { t, branch, hinge, v } = await zeroStockVariant("oosv2");
+    const { OutOfStockError } = await import("./errors");
+
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01012345678",
+      lines: [{ productId: hinge.id, variantId: v.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(OutOfStockError);
+  });
+
   it("a dish with no recipe link still sells — a restaurant can enable inventory before building recipes", async () => {
     const { t, branch, pizza } = await setup("bom3");
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: pizza.id, quantity: 3, selectedOptionIds: [] }],
     });
     expect(res.orderId).toBeTruthy();
@@ -576,6 +722,7 @@ describe("placeOrder — POS extensions", () => {
     const { t, branch, pizza } = await setup("pos-ext5");
     const res = await placeOrder(t.id, {
       branchId: branch.id, fulfillmentType: "pickup", customerName: "Walk-in", customerPhone: "000000000",
+      channel: "pos",
       lines: [
         { productId: pizza.id, quantity: 1, selectedOptionIds: [] },
         { productId: pizza.id, quantity: 3, selectedOptionIds: [] },
@@ -597,7 +744,7 @@ describe("confirmOrderPayment / rejectOrderPayment", () => {
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
     await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       paymentMethod: "instapay", paymentReference: "IP-1",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
@@ -614,7 +761,7 @@ describe("confirmOrderPayment / rejectOrderPayment", () => {
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
     await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       paymentMethod: "instapay", paymentReference: "IP-2",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
@@ -628,7 +775,7 @@ describe("confirmOrderPayment / rejectOrderPayment", () => {
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
     await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       paymentMethod: "instapay", paymentReference: "IP-3",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
@@ -647,7 +794,7 @@ describe("confirmOrderPayment / rejectOrderPayment", () => {
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
     await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       paymentMethod: "instapay", paymentReference: "IP-4",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
@@ -670,24 +817,24 @@ describe("listAwaitingPaymentOrders", () => {
 
     // Cash order stays "unpaid" — must be excluded from the confirmation queue.
     await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "Cash", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "Cash", customerPhone: "01000000001",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
 
     const older = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "Older", customerPhone: "2",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "Older", customerPhone: "01000000002",
       paymentMethod: "instapay", paymentReference: "IP-OLD",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
     const newer = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "Newer", customerPhone: "3",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "Newer", customerPhone: "01000000003",
       paymentMethod: "instapay", paymentReference: "IP-NEW",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
 
     // A confirmed order was pending_verification too — must be excluded once resolved.
     const confirmed = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "Confirmed", customerPhone: "4",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "Confirmed", customerPhone: "01000000004",
       paymentMethod: "instapay", paymentReference: "IP-CONF",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
@@ -712,7 +859,7 @@ describe("placeOrder paymentProofUrl sanitization", () => {
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
     await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       paymentMethod: "instapay", paymentReference: "IP-XSS",
       paymentProofUrl: "javascript:alert(1)",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
@@ -729,7 +876,7 @@ describe("markPaid vs offline payment authorization gate", () => {
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
     await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       paymentMethod: "instapay", paymentReference: "IP-MP1",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
@@ -747,32 +894,36 @@ describe("rejectOrderPayment atomicity", () => {
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
     await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       paymentMethod: "instapay", paymentReference: "IP-RP1",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
-    const { transitionStatus, rejectOrderPayment, getOrder } = await import("./service");
+    const { transitionStatus, rejectOrderPayment, getOrder, confirmOrderPayment } = await import("./service");
     const { InvalidTransitionError } = await import("./errors");
     const userId = user.id;
-    // Advance the fulfillment status all the way to "completed" — a reachable
+    // Advance the fulfillment status all the way to "completed" - a reachable
     // terminal status per the real state machine (pending → confirmed →
-    // preparing → ready → completed for pickup) — WITHOUT resolving the
-    // payment, so paymentStatus stays pending_verification throughout.
+    // preparing → ready → completed for pickup). #165: the payment is now
+    // confirmed first — an unverified payment can no longer reach completed at
+    // all — so this exercises "terminal + already resolved", which is the case
+    // the queue's Reject button actually hits on a completed order.
     await transitionStatus(t.id, res.orderId, "confirmed", userId);
+    await confirmOrderPayment(t.id, res.orderId, userId);
     await transitionStatus(t.id, res.orderId, "preparing", userId);
     await transitionStatus(t.id, res.orderId, "ready", userId);
     await transitionStatus(t.id, res.orderId, "completed", userId);
 
     const before = await getOrder(t.id, res.orderId);
     expect(before.status).toBe("completed");
-    expect(before.paymentStatus).toBe("pending_verification");
+    expect(before.paymentStatus).toBe("paid");
 
     await expect(rejectOrderPayment(t.id, res.orderId, userId, "no funds received")).rejects.toThrow(InvalidTransitionError);
 
     const after = await getOrder(t.id, res.orderId);
     expect(after.status).toBe("completed");
-    // The claim must never have run: paymentStatus is untouched, not flipped to "unpaid".
-    expect(after.paymentStatus).toBe("pending_verification");
+    // The claim must never have run: paymentStatus is untouched ("paid" — the
+    // order was resolved before completing), not flipped to "unpaid".
+    expect(after.paymentStatus).toBe("paid");
   });
 
   it("exactly one of concurrent confirm/reject wins, and the order never ends up cancelled+paid", async () => {
@@ -780,7 +931,7 @@ describe("rejectOrderPayment atomicity", () => {
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
     await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       paymentMethod: "instapay", paymentReference: "IP-RP2",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
@@ -836,7 +987,7 @@ describe("placeOrder realtime propagation", () => {
     const seen = captureBroadcasts(t.id);
 
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
 
@@ -852,7 +1003,7 @@ describe("placeOrder realtime propagation", () => {
     }));
 
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
 
@@ -864,7 +1015,7 @@ describe("placeOrder realtime propagation", () => {
   it("broadcasts a customer's own cancel — staff must not wait out the relaxed poll for it", async () => {
     const { t, branch, pizza } = await setup("rt4");
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
 
@@ -880,7 +1031,7 @@ describe("placeOrder realtime propagation", () => {
     const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
     await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
     const res = await placeOrder(t.id, {
-      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001",
       paymentMethod: "instapay", paymentReference: "IP-RT3",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
@@ -903,7 +1054,7 @@ describe("placeOrder — promotional discounts (#192)", () => {
   const during = new Date("2026-03-05T12:00:00Z");
   const after = new Date("2026-03-11T12:00:00Z");
   const pickup = (branchId: string, lines: PlaceOrderInput["lines"], extra: Partial<PlaceOrderInput> = {}): PlaceOrderInput => ({
-    branchId, fulfillmentType: "pickup", customerName: "A", customerPhone: "1", lines, ...extra,
+    branchId, fulfillmentType: "pickup", customerName: "A", customerPhone: "01000000001", lines, ...extra,
   });
   const itemsOf = (tenantId: string, orderId: string) =>
     withTenant(tenantId, (tx) => tx.select().from(orderItems).where(eq(orderItems.orderId, orderId)));
@@ -982,5 +1133,105 @@ describe("placeOrder — promotional discounts (#192)", () => {
     const { t, branch, pizza, cheese } = await discounted("pod7", { discountPercent: 25 });
     const res = await placeOrder(t.id, pickup(branch.id, [{ productId: pizza.id, quantity: 1, selectedOptionIds: [cheese.id], expectedUnitPrice: 90 }], { now: during }));
     expect(res.total).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * THE CHECKOUT CAPTURE (round 2, Task 7) — `orders.customerEmail`, the online
+ * customer's route to their own ETA fiscal document.
+ *
+ * WHY IT IS TESTED AT THE ORDERING LAYER and not only at the fiscal one: the
+ * field crosses four hops (form -> POST body -> API allowlist -> placeOrder) and
+ * NONE of them would break if a hop dropped it — every reconstruction on that
+ * path is a hand-built object literal, so an unnamed field is a silent null
+ * rather than a type error. That is the exact failure the round-2 plan's
+ * OPTIONAL-FIELD SILENT-DEGRADE RULE names, and this is its round trip.
+ */
+describe("placeOrder — the optional fiscal email", () => {
+  it("lands the captured address on the order", async () => {
+    const { t, branch, pizza } = await setup("po-email-1");
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup",
+      customerName: "Ahmed", customerPhone: "01000000001", customerEmail: "  ahmed@example.test  ",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+
+    const [row] = await withTenant(t.id, (tx) => tx.select().from(orders).where(eq(orders.id, res.orderId)));
+    // Trimmed, exactly as `customerName`/`customerPhone` beside it are.
+    expect(row.customerEmail).toBe("ahmed@example.test");
+  });
+
+  it("stores NULL when the customer left it blank — which is the common case", async () => {
+    const { t, branch, pizza } = await setup("po-email-2");
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup",
+      customerName: "Ahmed", customerPhone: "01000000001",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+
+    const [row] = await withTenant(t.id, (tx) => tx.select().from(orders).where(eq(orders.id, res.orderId)));
+    // Null, never "" — the recipient ladder treats empty and absent alike, but
+    // the column should not carry two spellings of "nobody".
+    expect(row.customerEmail).toBeNull();
+  });
+
+  it("treats a whitespace-only address as blank rather than as a recipient", async () => {
+    const { t, branch, pizza } = await setup("po-email-3");
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup",
+      customerName: "Ahmed", customerPhone: "01000000001", customerEmail: "   ",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+
+    const [row] = await withTenant(t.id, (tx) => tx.select().from(orders).where(eq(orders.id, res.orderId)));
+    expect(row.customerEmail).toBeNull();
+  });
+
+  it("refuses a malformed address at the boundary, so the typo is fixable at checkout", async () => {
+    const { t, branch, pizza } = await setup("po-email-4");
+    const { OrderValidationError } = await import("./errors");
+    // A shape error caught HERE is a 422 the customer can still correct. The
+    // same typo caught later is a provider rejection recorded on a fiscal row
+    // hours after they closed the page, which nobody can act on.
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup",
+      customerName: "Ahmed", customerPhone: "01000000001", customerEmail: "ahmed@@example",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(OrderValidationError);
+  });
+
+  it("a NON-EG tenant neither stores nor validates it — the order is exactly as before the field existed", async () => {
+    const { t, branch, pizza } = await setup("po-email-6");
+    await db.update(tenants).set({ country: "SA" }).where(eq(tenants.id, t.id));
+    // Even a malformed address is not a 422 here: the field is not this
+    // tenant's at all, so it is dropped before any rule about it applies.
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup",
+      customerName: "Ahmed", customerPhone: "0512345678", customerEmail: "ahmed@@example",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const [row] = await withTenant(t.id, (tx) => tx.select().from(orders).where(eq(orders.id, res.orderId)));
+    expect(row.customerEmail).toBeNull();
+
+    const ok = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup",
+      customerName: "Ahmed", customerPhone: "0512345678", customerEmail: "ahmed@example.test",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const [row2] = await withTenant(t.id, (tx) => tx.select().from(orders).where(eq(orders.id, ok.orderId)));
+    expect(row2.customerEmail).toBeNull();
+  });
+
+  it("does NOT block an order over a missing email — a receipt is the seller's obligation to file", async () => {
+    const { t, branch, pizza } = await setup("po-email-5");
+    // Stated as a test because it is the decision most likely to be "fixed" by
+    // someone making the field required: the customer's copy is a courtesy, the
+    // FILING is the compliance act, and no order may be refused for want of one.
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup",
+      customerName: "Ahmed", customerPhone: "01000000001",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    expect(res.orderNumber).toBeGreaterThan(0);
   });
 });
