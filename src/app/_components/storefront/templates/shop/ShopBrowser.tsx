@@ -29,7 +29,7 @@ import type { CatalogDisplayMode } from "@/server/tenancy/settings";
 
 export function ShopBrowser({
   menu, branchId, slug, orderingEnabled, branches, currency, preorderOnly,
-  catalogDisplayMode = "sections", itemsPerPage = 12,
+  catalogDisplayMode = "sections", itemsPerPage = 12, initialSearch = "",
 }: {
   menu: PublishedMenu;
   branchId: string | null;
@@ -40,6 +40,8 @@ export function ShopBrowser({
   currency: string;
   catalogDisplayMode?: CatalogDisplayMode;
   itemsPerPage?: number;
+  /** The request's ?category=/?page=, so the server render matches the URL. */
+  initialSearch?: string;
 }) {
   const [cart, setCart] = useState<Cart>({ branchId: null, lines: [] });
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -111,9 +113,9 @@ export function ShopBrowser({
   return (
     <>
       {catalogDisplayMode === "category_grid" ? (
-        <CategoryGridView menu={menu} renderProductCard={renderProductCard} />
+        <CategoryGridView menu={menu} initialSearch={initialSearch} renderProductCard={renderProductCard} />
       ) : catalogDisplayMode === "paginated" ? (
-        <PaginatedCatalogView menu={menu} itemsPerPage={itemsPerPage} renderProductCard={renderProductCard} />
+        <PaginatedCatalogView menu={menu} itemsPerPage={itemsPerPage} initialSearch={initialSearch} renderProductCard={renderProductCard} />
       ) : (
         <>
           <div className="sticky top-0 z-20 -mx-4 bg-background/90 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">

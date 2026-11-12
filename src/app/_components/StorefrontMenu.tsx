@@ -27,7 +27,7 @@ import type { CatalogDisplayMode } from "@/server/tenancy/settings";
 
 export function StorefrontMenu({
   menu, branchId, slug, orderingEnabled, branches, currency, preorderOnly, popularIds,
-  catalogDisplayMode = "sections", itemsPerPage = 12,
+  catalogDisplayMode = "sections", itemsPerPage = 12, initialSearch = "",
 }: {
   menu: PublishedMenu;
   branchId: string | null;
@@ -39,6 +39,8 @@ export function StorefrontMenu({
   popularIds: string[];
   catalogDisplayMode?: CatalogDisplayMode;
   itemsPerPage?: number;
+  /** The request's ?category=/?page=, so the server render matches the URL. */
+  initialSearch?: string;
 }) {
   const [cart, setCart] = useState<Cart>({ branchId: null, lines: [] });
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -119,11 +121,12 @@ export function StorefrontMenu({
       {catalogDisplayMode === "category_grid" ? (
         <CategoryGridView
           menu={menu}
+          initialSearch={initialSearch}
           renderProductCard={renderProductCard}
           renderFeaturedCard={renderFeaturedCard}
         />
       ) : catalogDisplayMode === "paginated" ? (
-        <PaginatedCatalogView menu={menu} itemsPerPage={itemsPerPage} renderProductCard={renderProductCard} />
+        <PaginatedCatalogView menu={menu} itemsPerPage={itemsPerPage} initialSearch={initialSearch} renderProductCard={renderProductCard} />
       ) : (
         <>
           <CategoryNav categories={menu.categories.map((c) => ({ id: c.id, nameEn: c.nameEn }))} />

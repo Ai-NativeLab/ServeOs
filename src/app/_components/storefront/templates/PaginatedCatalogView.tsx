@@ -1,85 +1,86 @@
 "use client";
-import { useState, useEffect, useMemo } from "react";
+import { Suspense, useEffect, useState, type ReactNode } from "react";
+import { useSearchParams } from "next/navigation";
 import { Search, ChevronLeft, ChevronRight } from "lucide-react";
 import type { PublishedMenu } from "@/server/catalog/schema";
 import type { MenuProduct } from "@/app/_components/storefront/ProductCard";
+import { filterCatalog } from "./shop/shop-search";
+import {
+  ALL_CATEGORIES, catalogSearch, clampPage, pageSlice, paginationWindow, parseCatalogParams, totalPagesFor,
+  type ParamSource,
+} from "./catalog-pagination";
 
-export function PaginatedCatalogView({
-  menu,
-  itemsPerPage = 12,
-  renderProductCard,
-}: {
+type Props = {
   menu: PublishedMenu;
-  itemsPerPage?: number;
-  renderProductCard: (product: MenuProduct) => React.ReactNode;
-}) {
-  const [selectedCategory, setSelectedCategory] = useState<string>("all");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [currentPage, setCurrentPage] = useState<number>(1);
+  itemsPerPage: number;
+  /** The request's query string from page.tsx, so the server render (and the
+   *  Suspense fallback) already shows the deep-linked category/page. */
+  initialSearch: string;
+  renderProductCard: (product: MenuProduct) => ReactNode;
+};
 
-  // Sync with URL ?page= and ?category=
+/** ?category= and ?page= are the source of truth: the view derives its state
+ *  from them on every render, so Back/Forward and deep links just work. */
+export function PaginatedCatalogView(props: Props) {
+  return (
+    <Suspense fallback={<PaginatedCatalog {...props} params={new URLSearchParams(props.initialSearch)} />}>
+      <PaginatedCatalogFromUrl {...props} />
+    </Suspense>
+  );
+}
+
+function PaginatedCatalogFromUrl(props: Props) {
+  const params = useSearchParams();
+  return <PaginatedCatalog {...props} params={params} />;
+}
+
+function go(search: string, mode: "push" | "replace") {
+  const url = search || window.location.pathname;
+  if (mode === "push") window.history.pushState(null, "", url);
+  else window.history.replaceState(null, "", url);
+}
+
+function PaginatedCatalog({ menu, itemsPerPage, renderProductCard, params }: Props & { params: ParamSource }) {
+  const [searchQuery, setSearchQuery] = useState("");
+  const categoryIds = menu.categories.map((c) => c.id);
+  const { category, page: requestedPage, pageWasInvalid } = parseCatalogParams(params, categoryIds);
+
+  const scoped = category === ALL_CATEGORIES ? menu.categories : menu.categories.filter((c) => c.id === category);
+  const filteredProducts = filterCatalog(scoped, searchQuery).flatMap((c) => c.products);
+
+  const totalItems = filteredProducts.length;
+  const totalPages = totalPagesFor(totalItems, itemsPerPage);
+  const page = clampPage(requestedPage, totalPages);
+  const pagedProducts = pageSlice(filteredProducts, page, itemsPerPage);
+  const isSearching = searchQuery.trim() !== "";
+
+  // ?page=2.5 / ?page=99: show the clamped page AND put the canonical value
+  // back in the address bar (replace, so Back doesn't return to the bad URL).
+  // Skipped while searching: a search shrinks the list without touching the URL.
   useEffect(() => {
-    const updateFromUrl = () => {
-      const p = Number(new URLSearchParams(window.location.search).get("page"));
-      const cat = new URLSearchParams(window.location.search).get("category");
-      if (!Number.isNaN(p) && p >= 1) setCurrentPage(p);
-      if (cat && (cat === "all" || menu.categories.some((c) => c.id === cat))) {
-        setSelectedCategory(cat);
-      }
-    };
-    updateFromUrl();
-    window.addEventListener("popstate", updateFromUrl);
-    return () => window.removeEventListener("popstate", updateFromUrl);
-  }, [menu]);
+    if (isSearching) return;
+    if (pageWasInvalid || page !== requestedPage) {
+      go(catalogSearch(window.location.search, { page }), "replace");
+    }
+  }, [isSearching, pageWasInvalid, page, requestedPage]);
 
   const setPage = (pageNumber: number) => {
-    setCurrentPage(pageNumber);
-    const params = new URLSearchParams(window.location.search);
-    params.set("page", String(pageNumber));
-    window.history.pushState(null, "", `?${params.toString()}`);
+    go(catalogSearch(window.location.search, { page: pageNumber }), "push");
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const setCategoryFilter = (catId: string) => {
-    setSelectedCategory(catId);
-    setCurrentPage(1);
-    const params = new URLSearchParams(window.location.search);
-    if (catId === "all") params.delete("category");
-    else params.set("category", catId);
-    params.set("page", "1");
-    window.history.pushState(null, "", `?${params.toString()}`);
+    go(catalogSearch(window.location.search, { category: catId, page: 1 }), "push");
   };
 
-  // Filter products by category and search
-  const filteredProducts = useMemo(() => {
-    let pool =
-      selectedCategory === "all"
-        ? menu.categories.flatMap((c) => c.products)
-        : (menu.categories.find((c) => c.id === selectedCategory)?.products ?? []);
-
-    if (searchQuery.trim().length > 0) {
-      const q = searchQuery.toLowerCase();
-      pool = pool.filter(
-        (p) =>
-          p.nameEn.toLowerCase().includes(q) ||
-          p.nameAr.includes(searchQuery) ||
-          p.descriptionEn?.toLowerCase().includes(q) ||
-          p.brand?.toLowerCase().includes(q),
-      );
-    }
-    return pool;
-  }, [menu, selectedCategory, searchQuery]);
-
-  const totalItems = filteredProducts.length;
-  const totalPages = Math.max(1, Math.ceil(totalItems / itemsPerPage));
-  const safePage = Math.min(Math.max(1, currentPage), totalPages);
-
-  const pagedProducts = useMemo(() => {
-    const start = (safePage - 1) * itemsPerPage;
-    return filteredProducts.slice(start, start + itemsPerPage);
-  }, [filteredProducts, safePage, itemsPerPage]);
-
   const totalAllProducts = menu.categories.reduce((s, c) => s + c.products.length, 0);
+
+  const pillClass = (selected: boolean) =>
+    `shrink-0 rounded-full px-4 py-1.5 text-xs font-semibold transition-all cursor-pointer ${
+      selected
+        ? "bg-primary text-primary-foreground shadow-xs"
+        : "border border-border bg-card text-muted-foreground hover:bg-muted/50"
+    }`;
 
   return (
     <div className="py-4 space-y-6">
@@ -90,25 +91,23 @@ export function PaginatedCatalogView({
           value={searchQuery}
           onChange={(e) => {
             setSearchQuery(e.target.value);
-            setCurrentPage(1);
+            // A new search starts from the first page of its results.
+            if (requestedPage !== 1) go(catalogSearch(window.location.search, { page: 1 }), "replace");
           }}
           placeholder="Search products or brands / ابحث عن المنتجات…"
           aria-label="Search catalog"
-          className="w-full rounded-full border border-border bg-card px-4 py-2.5 pl-10 text-base text-ink outline-none transition-colors focus:border-primary/60 sm:text-sm"
+          className="w-full rounded-full border border-border bg-card px-4 py-2.5 ps-10 text-base text-ink outline-none transition-colors focus:border-primary/60 sm:text-sm"
         />
-        <Search className="absolute left-3.5 top-3 size-4 text-muted-foreground pointer-events-none" />
+        <Search aria-hidden="true" className="absolute start-3.5 top-3 size-4 text-muted-foreground pointer-events-none" />
       </div>
 
       {/* Category Filter Pills (Horizontal Scrollable) */}
-      <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
+      <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none" role="group" aria-label="Filter by category">
         <button
           type="button"
-          onClick={() => setCategoryFilter("all")}
-          className={`shrink-0 rounded-full px-4 py-1.5 text-xs font-semibold transition-all cursor-pointer ${
-            selectedCategory === "all"
-              ? "bg-primary text-primary-foreground shadow-xs"
-              : "border border-border bg-card text-muted-foreground hover:bg-muted/50"
-          }`}
+          aria-pressed={category === ALL_CATEGORIES}
+          onClick={() => setCategoryFilter(ALL_CATEGORIES)}
+          className={pillClass(category === ALL_CATEGORIES)}
         >
           All Items ({totalAllProducts})
         </button>
@@ -116,12 +115,9 @@ export function PaginatedCatalogView({
           <button
             key={cat.id}
             type="button"
+            aria-pressed={category === cat.id}
             onClick={() => setCategoryFilter(cat.id)}
-            className={`shrink-0 rounded-full px-4 py-1.5 text-xs font-semibold transition-all cursor-pointer ${
-              selectedCategory === cat.id
-                ? "bg-primary text-primary-foreground shadow-xs"
-                : "border border-border bg-card text-muted-foreground hover:bg-muted/50"
-            }`}
+            className={pillClass(category === cat.id)}
           >
             {cat.nameEn} ({cat.products.length})
           </button>
@@ -135,55 +131,64 @@ export function PaginatedCatalogView({
         </p>
       ) : (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-          {pagedProducts.map((p) =>
-            renderProductCard(p),
-          )}
+          {pagedProducts.map((p) => renderProductCard(p))}
         </div>
       )}
 
       {/* Pagination Controls */}
       {totalPages > 1 && (
-        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-border pt-6 mt-8">
+        <nav
+          aria-label="Catalog pages"
+          className="flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-border pt-6 mt-8"
+        >
           <span className="text-xs text-muted-foreground">
-            Showing {(safePage - 1) * itemsPerPage + 1}–
-            {Math.min(safePage * itemsPerPage, totalItems)} of {totalItems} items
+            Showing {(page - 1) * itemsPerPage + 1}–
+            {Math.min(page * itemsPerPage, totalItems)} of {totalItems} items
           </span>
 
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center justify-center gap-1.5">
             <button
               type="button"
-              disabled={safePage <= 1}
-              onClick={() => setPage(safePage - 1)}
+              disabled={page <= 1}
+              onClick={() => setPage(page - 1)}
               className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-ink disabled:opacity-40 disabled:cursor-not-allowed hover:bg-muted/50 transition-colors"
             >
-              <ChevronLeft className="size-3.5" /> Previous
+              <ChevronLeft aria-hidden="true" className="size-3.5 rtl:rotate-180" /> Previous
             </button>
 
-            {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNum) => (
-              <button
-                key={pageNum}
-                type="button"
-                onClick={() => setPage(pageNum)}
-                className={`size-8 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                  pageNum === safePage
-                    ? "bg-primary text-primary-foreground shadow-xs"
-                    : "border border-border bg-card text-ink hover:bg-muted/50"
-                }`}
-              >
-                {pageNum}
-              </button>
-            ))}
+            {paginationWindow(page, totalPages).map((token) =>
+              typeof token === "number" ? (
+                <button
+                  key={token}
+                  type="button"
+                  onClick={() => setPage(token)}
+                  aria-current={token === page ? "page" : undefined}
+                  aria-label={`Page ${token}`}
+                  className={`size-8 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                    token === page
+                      ? "bg-primary text-primary-foreground shadow-xs"
+                      : "border border-border bg-card text-ink hover:bg-muted/50"
+                  }`}
+                >
+                  {token}
+                </button>
+              ) : (
+                <span key={token} aria-hidden="true" className="px-1 text-xs text-muted-foreground">
+                  …
+                </span>
+              ),
+            )}
 
             <button
               type="button"
-              disabled={safePage >= totalPages}
-              onClick={() => setPage(safePage + 1)}
+              disabled={page >= totalPages}
+              onClick={() => setPage(page + 1)}
               className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-ink disabled:opacity-40 disabled:cursor-not-allowed hover:bg-muted/50 transition-colors"
             >
-              Next <ChevronRight className="size-3.5" />
+              Next <ChevronRight aria-hidden="true" className="size-3.5 rtl:rotate-180" />
             </button>
           </div>
-        </div>
+        </nav>
       )}
     </div>
   );

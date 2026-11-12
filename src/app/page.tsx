@@ -6,7 +6,7 @@ import { getActiveBanners } from "@/server/banners/service";
 import { listBranches, listDeliveryAreas } from "@/server/branches/service";
 import { hasFeature } from "@/server/entitlements/service";
 import { getBranchOpenState, isBranchOrderableAt } from "@/server/branches/slots";
-import { getWhatsappNumber, getCatalogDisplaySettings } from "@/server/tenancy/settings";
+import { getTenantSettings, catalogDisplayFrom } from "@/server/tenancy/settings";
 import { getPopularProductIds } from "@/server/catalog/popular";
 import { formatMoney } from "@/lib/money";
 import { selectStorefrontTemplate, getVerticalTerms, type VerticalId } from "@/server/verticals";
@@ -23,7 +23,7 @@ import { EmptyState } from "@/components/dashboard/EmptyState";
 export default async function Home({
   searchParams,
 }: {
-  searchParams: Promise<{ branch?: string; handoff?: string }>;
+  searchParams: Promise<{ branch?: string; handoff?: string; category?: string; page?: string }>;
 }) {
   const h = await headers();
   const surface = h.get("x-surface");
@@ -47,7 +47,13 @@ export default async function Home({
       );
     }
 
-    const { branch: branchId, handoff } = await searchParams;
+    const { branch: branchId, handoff, category, page } = await searchParams;
+    // The catalog views read ?category=/?page= from the URL on the client;
+    // handing them the same values here makes the server render match, so a
+    // deep link doesn't flash the default view first.
+    const catalogSearch = new URLSearchParams(
+      Object.entries({ category, page }).filter((e): e is [string, string] => typeof e[1] === "string"),
+    ).toString();
 
     // A WhatsApp cart handed to the storefront. Redeemed server-side,
     // single-use, and scoped by RLS to THIS host's tenant — a token minted for
@@ -55,15 +61,16 @@ export default async function Home({
     // our brand. The tenant comes from the host header, never from the token.
     const handoffToken = handoff ? await redeemHandoff(tenant.id, handoff) : null;
 
-    const [banners, menu, branches, orderingEnabled, whatsappNumber, popularSet, displaySettings] = await Promise.all([
+    const [banners, menu, branches, orderingEnabled, settings, popularSet] = await Promise.all([
       getActiveBanners(tenant.id),
       getPublishedMenu(tenant.id, branchId),
       listBranches(tenant.id),
       hasFeature(tenant.id, "online_ordering"),
-      getWhatsappNumber(tenant.id),
+      getTenantSettings(tenant.id), // read once; whatsapp + display come from it
       getPopularProductIds(tenant.id),
-      getCatalogDisplaySettings(tenant.id),
     ]);
+    const whatsappNumber = settings.whatsappNumber ?? null;
+    const displaySettings = catalogDisplayFrom(settings);
 
     const activeBranch =
       branches.length === 1 ? branches[0] : (branches.find((b) => b.id === branchId) ?? null);
@@ -148,6 +155,7 @@ export default async function Home({
         minOrderLabel={minOrderLabel}
         catalogDisplayMode={displaySettings.catalogDisplayMode}
         itemsPerPage={displaySettings.itemsPerPage}
+        catalogSearch={catalogSearch}
       />
       </>
     );
