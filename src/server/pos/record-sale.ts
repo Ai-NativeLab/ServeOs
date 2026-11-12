@@ -15,6 +15,7 @@ import { NoOpenShiftError, PosForbiddenError, PosSaleError } from "./errors";
 import type { PosCashierContext } from "./require-cashier";
 import { recordAuditEvent } from "@/server/audit/service";
 import { isFiscalEnabled } from "@/server/fiscal/enqueue";
+import { redactedCause } from "@/lib/redacted-cause";
 import { enqueueAndFinalizeInvoice, enqueueAndFinalizeReceipt } from "@/server/fiscal/finalize";
 // TYPE-ONLY, so nothing from the fiscal schema module is added to the sale
 // path's runtime graph — the buyer is carried verbatim and never parsed here.
@@ -451,7 +452,15 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
     // The docType is part of the identifiers, not decoration: a B2B sale and a
     // consumer sale fail here for different reasons and are fixed differently,
     // and this line is the only place that distinction is recorded.
-    console.error(`[fiscal] enqueue failed for tenant ${ctx.tenantId} order ${placed.orderId} docType ${fiscalDocType} (sale unaffected)`, err);
+    //
+    // REDACTED, not the raw error: Drizzle puts a failed query's PARAMETERS in
+    // `error.message`, and on the B2B branch those are the buyer's registration
+    // number, name and address (`buyer_json`) — customer data that must not land
+    // in the deployment's log stream. Same rule as the fiscal routes.
+    console.error(
+      `[fiscal] enqueue failed for tenant ${ctx.tenantId} order ${placed.orderId} docType ${fiscalDocType} (sale unaffected)`,
+      redactedCause(err),
+    );
   }
 
   // onPlaced always runs to completion before placeOrder resolves — see its
