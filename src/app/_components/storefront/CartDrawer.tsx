@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { formatMoney } from "@/lib/money";
 import { cartSubtotal, type Cart } from "../cart";
+import { Trash2 } from "lucide-react";
 
 export function CartDrawer({
   cart, slug, currency, preorderOnly, open, onOpenChange, onSetQuantity, onClear,
@@ -29,7 +30,7 @@ export function CartDrawer({
     >
       <SheetContent className="flex flex-col gap-0">
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <SheetHeader className="flex flex-row items-center justify-between">
+          <SheetHeader className="flex flex-row items-center justify-between pr-6">
             <SheetTitle>Your cart</SheetTitle>
             {cart.lines.length > 1 && !confirmingClear && (
               <button
@@ -71,29 +72,31 @@ export function CartDrawer({
           <div className="mt-2 flex flex-col divide-y divide-border">
             {cart.lines.map((l, i) => (
               <div key={`${l.productId}-${l.selectedOptionIds.join(".")}`} className="flex items-center justify-between gap-3 py-4">
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <div className="truncate font-sans font-semibold text-ink">{l.nameEn}</div>
                   {l.modifierSummaryEn && (
                     <div className="truncate text-xs text-muted-foreground">{l.modifierSummaryEn}</div>
                   )}
-                  <div className="mt-2 flex items-center gap-2">
-                    <div className="inline-flex items-center gap-1 rounded-full border border-border">
-                      <button type="button" onClick={() => onSetQuantity(i, l.quantity - 1)} className="grid size-11 place-items-center rounded-full text-base leading-none text-ink transition-colors hover:text-primary" aria-label={`Decrease ${l.nameEn}`}>−</button>
-                      <span className="w-4 text-center text-sm font-medium text-ink">{l.quantity}</span>
-                      <button type="button" onClick={() => onSetQuantity(i, l.quantity + 1)} className="grid size-11 place-items-center rounded-full text-base leading-none text-ink transition-colors hover:text-primary" aria-label={`Increase ${l.nameEn}`}>+</button>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => onSetQuantity(i, 0)}
-                      className="px-2 py-1 text-xs text-muted-foreground transition-colors hover:text-destructive"
-                      aria-label={`Remove ${l.nameEn} from cart`}
-                    >
-                      Remove
-                    </button>
+                  <div className="mt-2 inline-flex items-center gap-1 rounded-full border border-border">
+                    {/* size-11 (44px) hit area — was a bare glyph with no padding, well under the 44px tap-target minimum */}
+                    <button type="button" onClick={() => onSetQuantity(i, l.quantity - 1)} className="grid size-11 place-items-center rounded-full text-base leading-none text-ink transition-colors hover:text-primary" aria-label={`Decrease ${l.nameEn}`}>−</button>
+                    <span className="w-4 text-center text-sm font-medium text-ink">{l.quantity}</span>
+                    <button type="button" onClick={() => onSetQuantity(i, l.quantity + 1)} className="grid size-11 place-items-center rounded-full text-base leading-none text-ink transition-colors hover:text-primary" aria-label={`Increase ${l.nameEn}`}>+</button>
                   </div>
                 </div>
-                <div className="shrink-0 text-right font-display font-bold text-ink">
-                  {formatMoney(l.unitPrice * l.quantity, currency)}
+                <div className="flex shrink-0 flex-col items-end gap-2">
+                  <div className="font-display font-bold text-ink">
+                    {formatMoney(l.unitPrice * l.quantity, currency)}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onSetQuantity(i, 0)}
+                    className="grid size-11 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive active:scale-95"
+                    aria-label={`Remove ${l.nameEn}`}
+                    title={`Remove ${l.nameEn}`}
+                  >
+                    <Trash2 className="size-4" />
+                  </button>
                 </div>
               </div>
             ))}

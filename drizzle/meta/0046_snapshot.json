@@ -1,5 +1,5 @@
 {
-  "id": "6b3d7c7a-6a2a-4296-ba82-1591f325518e",
+  "id": "a534a289-685e-424e-8151-84707d777ea8",
   "prevId": "e2c75e28-4c46-4ab8-8ba8-5efb2701a6f8",
   "version": "7",
   "dialect": "postgresql",
@@ -1967,37 +1967,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "sale_price": {
-          "name": "sale_price",
-          "type": "numeric",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "discount_percent": {
-          "name": "discount_percent",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "discount_starts_at": {
-          "name": "discount_starts_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "discount_ends_at": {
-          "name": "discount_ends_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "discount_active": {
-          "name": "discount_active",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
         "image_url": {
           "name": "image_url",
           "type": "text",
@@ -2097,20 +2066,7 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "products_discount_percent_range": {
-          "name": "products_discount_percent_range",
-          "value": "\"products\".\"discount_percent\" IS NULL OR (\"products\".\"discount_percent\" > 0 AND \"products\".\"discount_percent\" < 100)"
-        },
-        "products_sale_price_positive": {
-          "name": "products_sale_price_positive",
-          "value": "\"products\".\"sale_price\" IS NULL OR \"products\".\"sale_price\" > 0"
-        },
-        "products_discount_window_order": {
-          "name": "products_discount_window_order",
-          "value": "\"products\".\"discount_starts_at\" IS NULL OR \"products\".\"discount_ends_at\" IS NULL OR \"products\".\"discount_ends_at\" > \"products\".\"discount_starts_at\""
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.banners": {
@@ -3937,6 +3893,736 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.eta_device_chains": {
+      "name": "eta_device_chains",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "device_id": {
+          "name": "device_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_uuid": {
+          "name": "last_uuid",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_issued_at": {
+          "name": "last_issued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "eta_device_chains_device": {
+          "name": "eta_device_chains_device",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "device_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "eta_device_chains_tenant_id_tenants_id_fk": {
+          "name": "eta_device_chains_tenant_id_tenants_id_fk",
+          "tableFrom": "eta_device_chains",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "eta_device_chains_device_id_pos_devices_id_fk": {
+          "name": "eta_device_chains_device_id_pos_devices_id_fk",
+          "tableFrom": "eta_device_chains",
+          "tableTo": "pos_devices",
+          "columnsFrom": [
+            "device_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.eta_pos_credentials": {
+      "name": "eta_pos_credentials",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "device_id": {
+          "name": "device_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "eta_serial": {
+          "name": "eta_serial",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "client_id": {
+          "name": "client_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "client_secret_1_ref": {
+          "name": "client_secret_1_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "client_secret_2_ref": {
+          "name": "client_secret_2_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "preshared_key_ref": {
+          "name": "preshared_key_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pos_os_version": {
+          "name": "pos_os_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pos_model_framework": {
+          "name": "pos_model_framework",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "eta_pos_credential_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'registered'"
+        },
+        "activated_at": {
+          "name": "activated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "eta_pos_credentials_device": {
+          "name": "eta_pos_credentials_device",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "device_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "eta_pos_credentials_tenant_id_tenants_id_fk": {
+          "name": "eta_pos_credentials_tenant_id_tenants_id_fk",
+          "tableFrom": "eta_pos_credentials",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "eta_pos_credentials_device_id_pos_devices_id_fk": {
+          "name": "eta_pos_credentials_device_id_pos_devices_id_fk",
+          "tableFrom": "eta_pos_credentials",
+          "tableTo": "pos_devices",
+          "columnsFrom": [
+            "device_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.eta_submissions": {
+      "name": "eta_submissions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "doc_type": {
+          "name": "doc_type",
+          "type": "eta_doc_type",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "order_id": {
+          "name": "order_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "refund_id": {
+          "name": "refund_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "eta_submission_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "eta_uuid": {
+          "name": "eta_uuid",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "eta_long_id": {
+          "name": "eta_long_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "submission_uuid": {
+          "name": "submission_uuid",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reference_old_uuid": {
+          "name": "reference_old_uuid",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "qr_payload": {
+          "name": "qr_payload",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "hash_or_signature": {
+          "name": "hash_or_signature",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "request_json": {
+          "name": "request_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "response_json": {
+          "name": "response_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "submitted_at": {
+          "name": "submitted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "accepted_at": {
+          "name": "accepted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "eta_submissions_claim": {
+          "name": "eta_submissions_claim",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "eta_submissions_order": {
+          "name": "eta_submissions_order",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "doc_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "order_id is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "eta_submissions_refund": {
+          "name": "eta_submissions_refund",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "doc_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "refund_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "refund_id is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "eta_submissions_tenant_id_tenants_id_fk": {
+          "name": "eta_submissions_tenant_id_tenants_id_fk",
+          "tableFrom": "eta_submissions",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "eta_submissions_order_id_orders_id_fk": {
+          "name": "eta_submissions_order_id_orders_id_fk",
+          "tableFrom": "eta_submissions",
+          "tableTo": "orders",
+          "columnsFrom": [
+            "order_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "eta_submissions_refund_id_refunds_id_fk": {
+          "name": "eta_submissions_refund_id_refunds_id_fk",
+          "tableFrom": "eta_submissions",
+          "tableTo": "refunds",
+          "columnsFrom": [
+            "refund_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.eta_tenant_config": {
+      "name": "eta_tenant_config",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "registration_number": {
+          "name": "registration_number",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "client_id": {
+          "name": "client_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "client_secret_ref": {
+          "name": "client_secret_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "signing_key_ref": {
+          "name": "signing_key_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "environment": {
+          "name": "environment",
+          "type": "eta_environment",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'preprod'"
+        },
+        "activation_status": {
+          "name": "activation_status",
+          "type": "eta_activation_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'not_configured'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "eta_tenant_config_tenant": {
+          "name": "eta_tenant_config_tenant",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "eta_tenant_config_tenant_id_tenants_id_fk": {
+          "name": "eta_tenant_config_tenant_id_tenants_id_fk",
+          "tableFrom": "eta_tenant_config",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.product_tax_codes": {
+      "name": "product_tax_codes",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "product_id": {
+          "name": "product_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "code_source": {
+          "name": "code_source",
+          "type": "eta_code_source",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "item_code": {
+          "name": "item_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "egs_approval_status": {
+          "name": "egs_approval_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tax_type": {
+          "name": "tax_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tax_sub_type": {
+          "name": "tax_sub_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "unit_type": {
+          "name": "unit_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "product_tax_codes_product": {
+          "name": "product_tax_codes_product",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "product_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "product_tax_codes_tenant_id_tenants_id_fk": {
+          "name": "product_tax_codes_tenant_id_tenants_id_fk",
+          "tableFrom": "product_tax_codes",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "product_tax_codes_product_id_products_id_fk": {
+          "name": "product_tax_codes_product_id_products_id_fk",
+          "tableFrom": "product_tax_codes",
+          "tableTo": "products",
+          "columnsFrom": [
+            "product_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -9336,6 +10022,63 @@
         "cash",
         "card",
         "other"
+      ]
+    },
+    "public.eta_activation_status": {
+      "name": "eta_activation_status",
+      "schema": "public",
+      "values": [
+        "not_configured",
+        "pending",
+        "active",
+        "suspended"
+      ]
+    },
+    "public.eta_code_source": {
+      "name": "eta_code_source",
+      "schema": "public",
+      "values": [
+        "gs1",
+        "egs"
+      ]
+    },
+    "public.eta_doc_type": {
+      "name": "eta_doc_type",
+      "schema": "public",
+      "values": [
+        "e_receipt",
+        "e_invoice",
+        "credit_note",
+        "return_receipt"
+      ]
+    },
+    "public.eta_environment": {
+      "name": "eta_environment",
+      "schema": "public",
+      "values": [
+        "preprod",
+        "prod"
+      ]
+    },
+    "public.eta_pos_credential_status": {
+      "name": "eta_pos_credential_status",
+      "schema": "public",
+      "values": [
+        "registered",
+        "active",
+        "expired",
+        "retired"
+      ]
+    },
+    "public.eta_submission_status": {
+      "name": "eta_submission_status",
+      "schema": "public",
+      "values": [
+        "pending",
+        "submitted",
+        "accepted",
+        "rejected",
+        "failed"
       ]
     },
     "public.cash_count_kind": {

@@ -31,6 +31,41 @@ export const orders = pgTable("orders", {
   paymentProviderRef: text("payment_provider_ref"),
   customerName: text("customer_name").notNull(),
   customerPhone: text("customer_phone").notNull(),
+  /**
+   * FISCAL DOCUMENT DELIVERY ONLY — NEVER MARKETING. This sentence is the
+   * contract, not a preference, and it is written here because there is nowhere
+   * else it could live: ServeOS has no marketing-consent flag on any table, so
+   * NOTHING IN THE SCHEMA CAN REFUSE A MARKETING SEND EXCEPT THIS JSDOC. A
+   * column of customer addresses with no stated purpose is a column that gets
+   * repurposed, and the repurposing does not look like a decision when it
+   * happens — it looks like `select customer_email from orders` in a campaign
+   * script two quarters from now, written by someone who never saw this comment
+   * because they never opened this file.
+   *
+   * So, in as many words: this address may be used to send the customer THEIR
+   * OWN tax document for THIS order (round 2, Task 7 —
+   * `@/server/fiscal/customer-email`) and for nothing else. Not a newsletter,
+   * not an abandoned-cart nudge, not a loyalty invitation, not "we're open on
+   * Eid". Adding any such use means adding a consent flag and a withdrawal
+   * path FIRST; until one exists, this contract IS the refusal.
+   *
+   * WHY IT IS CAPTURED AT ALL, and why it is optional. An online order's ETA
+   * receipt is written by the reconciliation sweep 5-20 minutes after payment
+   * (addendum §6), long after the customer has closed the status page — so the
+   * storefront's fiscal block is what a REVISIT shows, and the email is the
+   * customer's only reliable copy of the QR. Optional because a tax receipt is
+   * the seller's obligation to FILE, not the buyer's obligation to receive: no
+   * address simply means no send (`resolveFiscalEmailRecipient`), never a
+   * blocked checkout and never a blocked acceptance.
+   *
+   * NULLABLE FOREVER, and not backfillable. Every order placed before this
+   * column existed has null here, and so does every POS sale — the till
+   * captures no email at any point in its flow (recorded as scope in Task 7,
+   * not as an oversight). A signed-in customer's `customers.email` is the
+   * second rung of the resolution ladder and covers some of that gap; a guest
+   * who leaves this blank is simply not emailed.
+   */
+  customerEmail: text("customer_email"),
   notes: text("notes"),
   cashierUserId: uuid("cashier_user_id"),
   rxReviewStatus: rxReviewStatusEnum("rx_review_status").notNull().default("not_required"),

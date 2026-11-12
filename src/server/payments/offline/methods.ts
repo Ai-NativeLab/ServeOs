@@ -1,7 +1,10 @@
 import { and, eq } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
+import { getTenantById } from "@/server/tenancy";
 import { tenantOfflineMethods, type TenantOfflineMethod } from "./methods.schema";
 import type { OfflineMethodType } from "./types";
+import { validatePayToDetail } from "./validation";
+import { InvalidPayToDetailError } from "./errors";
 
 export type OfflineMethodInput = {
   id?: string;
@@ -32,6 +35,12 @@ export async function isMethodEnabled(tenantId: string, type: OfflineMethodType)
 }
 
 export async function upsertOfflineMethod(tenantId: string, input: OfflineMethodInput): Promise<TenantOfflineMethod> {
+  const tenant = await getTenantById(tenantId);
+  const country = tenant?.country ?? "EG";
+  if (!validatePayToDetail(input.type, input.payToDetail, country)) {
+    throw new InvalidPayToDetailError(input.type);
+  }
+
   if (input.id) {
     const [row] = await withTenant(tenantId, (tx) =>
       tx.update(tenantOfflineMethods)

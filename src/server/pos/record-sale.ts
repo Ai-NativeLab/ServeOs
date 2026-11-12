@@ -11,9 +11,15 @@ import { posShifts, type PosShift } from "./shift-schema";
 import { findOpenShift } from "./shifts";
 import { resolveAuthorizer } from "./grants";
 import type { SyncReceipt } from "./sync-receipt";
-import { NoOpenShiftError, PosForbiddenError, PosSaleError } from "./errors";
+import { NoOpenShiftError, PaymentNeedsVerificationError, PosForbiddenError, PosSaleError } from "./errors";
 import type { PosCashierContext } from "./require-cashier";
 import { recordAuditEvent } from "@/server/audit/service";
+import { isFiscalEnabled } from "@/server/fiscal/enqueue";
+import { redactedCause } from "@/lib/redacted-cause";
+import { enqueueAndFinalizeInvoice, enqueueAndFinalizeReceipt } from "@/server/fiscal/finalize";
+// TYPE-ONLY, so nothing from the fiscal schema module is added to the sale
+// path's runtime graph — the buyer is carried verbatim and never parsed here.
+import type { EtaSubmissionBuyer } from "@/server/fiscal/schema";
 
 export const REASON_CODES = [
   "staff_meal", "comp_service", "promo", "manager_discretion",
@@ -66,6 +72,33 @@ export type RecordSaleInput = {
    *  pos_order_receipts_device_client, and (b) lastReceiptSeq's ordering-gap
    *  watermark advances for sale events the same as every other synced type. */
   syncReceipt?: SyncReceipt;
+  /**
+   * THE BUSINESS BUYER, CAPTURED AT THE TILL — and the field that decides which
+   * FAMILY of fiscal document this sale is declared as.
+   *
+   * Present ⇒ the sale is filed with ETA as an `e_invoice` (a tax invoice naming
+   * this receiver) INSTEAD of an `e_receipt`. Absent ⇒ nothing whatsoever
+   * changes: the receipt path is byte-identical to what it was before this field
+   * existed, which is the regression pin this task carries.
+   *
+   * ONE SALE, ONE DOCUMENT FAMILY. "Instead of", never "as well as" — two
+   * accepted documents for one sale is that sale declared twice in the
+   * taxpayer's ETA filings. Task 4's ladder enforces the rule at the dashboard,
+   * where a receipt already exists; this field is the SOURCE-SIDE guarantee, and
+   * the reconciliation sweep is the third leg (see `reconcileMissingReceipts`).
+   *
+   * NOT VALIDATED HERE — see `enqueueAndFinalizeInvoice`'s JSDoc for why zod
+   * stays off the sale path, where the shape IS checked, and what a malformed
+   * buyer costs (a visible `failed` invoice row; never a silent B2C receipt).
+   * The field is carried verbatim into `eta_submissions.buyer_json`.
+   *
+   * REPLAY-SAFE BY CONSTRUCTION: an offline sale carries this inside its own
+   * `sale.recorded` payload, so a B2B sale rung during an outage is still a B2B
+   * sale when it syncs (`sync-ingest.handleSaleRecorded`). It is NOT a
+   * replay-only field and needs no stripping at the live route — a caller
+   * naming a buyer is asking for a tax invoice, which is what the till asks for.
+   */
+  buyer?: EtaSubmissionBuyer;
 };
 
 export type SaleReceipt = {
@@ -74,6 +107,8 @@ export type SaleReceipt = {
   total: number;
   paidAmount: number;
   changeAmount: number;
+  /** A till sale or tender only ever lands on an order whose money the till
+   *  owns; an offline-unverified order is refused (PaymentNeedsVerificationError). */
   paymentStatus: "paid" | "partially_paid";
   idempotent: boolean;
 };
@@ -201,12 +236,7 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
   }
 
   // Validate tenders before touching the DB.
-  for (const p of input.payments) {
-    if (!(p.amount > 0)) throw new PosSaleError("A tender must be a positive amount");
-    if (p.method !== "cash" && p.tenderedAmount !== undefined && p.tenderedAmount !== p.amount) {
-      throw new PosSaleError("Only a cash tender can give change");
-    }
-  }
+  for (const p of input.payments) validateTender(p);
 
   // Paid/change math is a pure function of the tenders — no dependency on the
   // placed order — so it can run before placeOrder. Whether that paid amount
@@ -297,6 +327,11 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
       }
       if (events.length > 0) await tx.insert(posAdjustmentEvents).values(events);
 
+      // No pending_verification case to preserve here (#187 review): recordSale
+      // always places a NEW order with placeOrder's default cash method, which
+      // starts `unpaid`, so a sale can never settle an offline-unverified order.
+      // Tendering against an EXISTING order goes through addTender, which
+      // refuses pending_verification outright.
       const paymentStatus = paymentStatusFor(placed.total);
       await tx.update(orders).set({ paymentStatus, updatedAt: new Date() }).where(eq(orders.id, placed.orderId));
 
@@ -373,9 +408,90 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
     },
   });
 
+  // Fiscal (Spec 11): the sale is committed and returned regardless — the
+  // sale is authoritative and must never be blocked or rolled back by fiscal
+  // logic. This runs strictly AFTER placeOrder's own transaction has
+  // committed (never from inside onPlaced, which is still mid-transaction),
+  // so enqueueAndFinalizeReceipt opens its OWN withTenant here rather than
+  // reusing one. `!existing` is always true on this path (an idempotent
+  // replay returns early above, well before placeOrder is even called) —
+  // kept explicit anyway so the guard reads as an invariant rather than an
+  // assumption. EG tenants enqueue a pending e_receipt AND finalize it in
+  // place — a local chain read, serialize and hash, no network — so the
+  // printed customer copy carries its ETA uuid and QR at issuance, which the
+  // post-clearance model requires; the worker submits it asynchronously and a
+  // finalization that fails here is retried there (see
+  // enqueueAndFinalizeReceipt). A non-EG tenant enqueues nothing (country
+  // gate, F2) — no behavioural change. Caught and logged, never rethrown:
+  // unlike the refund path below (whose enqueue runs INSIDE the refund's own
+  // transaction for atomicity — see enqueueFiscalDocument's doc comment), a
+  // fiscal failure here must not undo money already taken and a receipt
+  // already printed.
+  //
+  // THE B2B BRANCH (round 2, Task 5) IS INSIDE THIS SAME try/catch, which is
+  // the iron rule doing its job unchanged: a business buyer must not be able to
+  // fail a sale the cashier has already taken money for. `input.buyer` is the
+  // only thing that selects it, and its absence leaves every byte of the
+  // consumer path exactly as it was — INSTEAD of an e_receipt, never as well as
+  // one (see RecordSaleInput.buyer).
+  const fiscalDocType = input.buyer ? "e_invoice" : "e_receipt";
+  try {
+    if (!existing && (await isFiscalEnabled(ctx.tenantId))) {
+      if (input.buyer) {
+        await enqueueAndFinalizeInvoice({ tenantId: ctx.tenantId }, placed.orderId, input.buyer);
+      } else {
+        await enqueueAndFinalizeReceipt({ tenantId: ctx.tenantId }, placed.orderId);
+      }
+    }
+  } catch (err) {
+    // Identifiers, not a bare message: this is the ONLY trace a failure here
+    // leaves (no row, no audit event — see the plan's Task 5 Step 0
+    // reconciliation-sweep note), so tenant/order must be readable straight
+    // off the log line. Plain console.error, not notify(): notify writes to
+    // the DB, which is exactly the failure mode already in play here, and an
+    // awaited call inside this catch would itself risk the iron rule (the
+    // sale must never be blocked by fiscal logic).
+    // The docType is part of the identifiers, not decoration: a B2B sale and a
+    // consumer sale fail here for different reasons and are fixed differently,
+    // and this line is the only place that distinction is recorded.
+    //
+    // REDACTED, not the raw error: Drizzle puts a failed query's PARAMETERS in
+    // `error.message`, and on the B2B branch those are the buyer's registration
+    // number, name and address (`buyer_json`) — customer data that must not land
+    // in the deployment's log stream. Same rule as the fiscal routes.
+    console.error(
+      `[fiscal] enqueue failed for tenant ${ctx.tenantId} order ${placed.orderId} docType ${fiscalDocType} (sale unaffected)`,
+      redactedCause(err),
+    );
+  }
+
   // onPlaced always runs to completion before placeOrder resolves — see its
   // doc comment — so committedReceipt is set whenever we reach here.
   return committedReceipt!;
+}
+
+/**
+ * The per-tender checks both recordSale and addTender run before any write.
+ *
+ * Every amount must be finite, not just positive: `!(amount > 0)` rejects NaN
+ * but ADMITS Infinity (`Infinity > 0`), JSON's `1e999` parses to Infinity, and
+ * tip/tendered had no check at all. Refused here as a PosSaleError (the
+ * routes' 400) rather than left to money()'s floor, which would surface it as
+ * a 500 three frames down.
+ */
+function validateTender(t: TenderInput): void {
+  if (!Number.isFinite(t.amount) || !(t.amount > 0)) {
+    throw new PosSaleError("A tender must be a positive finite amount");
+  }
+  if (t.tipAmount !== undefined && !Number.isFinite(t.tipAmount)) {
+    throw new PosSaleError("A tip must be a finite amount");
+  }
+  if (t.tenderedAmount !== undefined && !Number.isFinite(t.tenderedAmount)) {
+    throw new PosSaleError("A tendered amount must be finite");
+  }
+  if (t.method !== "cash" && t.tenderedAmount !== undefined && t.tenderedAmount !== t.amount) {
+    throw new PosSaleError("Only a cash tender can give change");
+  }
 }
 
 /** Adds a tender to an existing (typically partially_paid) sale. Idempotent on clientPaymentId. */
@@ -384,14 +500,16 @@ export async function addTender(
   orderId: string,
   tender: TenderInput,
 ): Promise<SaleReceipt> {
-  if (!(tender.amount > 0)) throw new PosSaleError("A tender must be a positive amount");
-  if (tender.method !== "cash" && tender.tenderedAmount !== undefined && tender.tenderedAmount !== tender.amount) {
-    throw new PosSaleError("Only a cash tender can give change");
-  }
+  validateTender(tender);
 
   return withTenant(ctx.tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
     if (!order) throw new PosSaleError("Unknown order");
+    // #165: an offline payment awaiting verification is settled in the
+    // payments queue (payments:confirm), never at the till. Any tender here —
+    // partial or full — would rewrite paymentStatus and disarm the fulfilment
+    // gate without that authorization or its audit row (#187 review).
+    if (order.paymentStatus === "pending_verification") throw new PaymentNeedsVerificationError();
 
     const existingTenders = await tx.select().from(orderPayments).where(eq(orderPayments.orderId, orderId));
     const already = existingTenders.find((t) => t.clientPaymentId === tender.clientPaymentId);
@@ -431,8 +549,7 @@ export async function addTender(
 
     const after = await tx.select().from(orderPayments).where(eq(orderPayments.orderId, orderId));
     const paidAmount = round2(after.reduce((s, t) => s + Number(t.amount), 0));
-    const paymentStatus: "paid" | "partially_paid" =
-      paidAmount >= total - 0.001 ? "paid" : "partially_paid";
+    const paymentStatus: "paid" | "partially_paid" = paidAmount >= total - 0.001 ? "paid" : "partially_paid";
 
     await tx.update(orders).set({ paymentStatus, updatedAt: new Date() }).where(eq(orders.id, orderId));
 

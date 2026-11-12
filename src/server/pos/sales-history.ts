@@ -2,6 +2,7 @@ import { and, desc, eq, gte, inArray, lte, notInArray, sql } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
 import { money } from "@/server/ordering/service";
 import { OrderNotFoundError } from "@/server/ordering/errors";
+import { normalizePhone } from "@/lib/phone";
 import { orders, orderItems, type Order, type OrderItem } from "@/server/ordering/schema";
 import { orderPayments, posAdjustmentEvents, type OrderPayment, type PosAdjustmentEvent } from "./tender-schema";
 import {
@@ -46,7 +47,12 @@ export async function listSales(tenantId: string, filters: SalesFilters): Promis
     if (filters.dateTo) conds.push(lte(orders.placedAt, filters.dateTo));
     if (filters.cashierUserId) conds.push(eq(orders.cashierUserId, filters.cashierUserId));
     if (filters.orderNumber !== undefined) conds.push(eq(orders.orderNumber, filters.orderNumber));
-    if (filters.customerPhone) conds.push(eq(orders.customerPhone, filters.customerPhone));
+    if (filters.customerPhone?.trim()) {
+      // placeOrder stores normalizePhone(...) (#187 review); rows written
+      // before that hold the trimmed raw string, so match either form.
+      const raw = filters.customerPhone.trim();
+      conds.push(inArray(orders.customerPhone, [...new Set([normalizePhone(raw), raw])]));
+    }
     if (filters.amount !== undefined) conds.push(eq(orders.total, money(filters.amount)));
     const page = filters.page ?? 1;
     return tx.select().from(orders).where(and(...conds))

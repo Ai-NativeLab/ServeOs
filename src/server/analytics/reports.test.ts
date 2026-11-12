@@ -66,7 +66,7 @@ async function seedMixed() {
   const webOrder = (n: string, quantity: number) =>
     placeOrder(tenantId, {
       branchId, fulfillmentType: "pickup",
-      customerName: n, customerPhone: n,
+      customerName: n, customerPhone: "01012345678",
       lines: [{ productId, quantity, selectedOptionIds: [] }],
     });
   await webOrder("W1", 1);

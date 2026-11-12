@@ -10,9 +10,10 @@ import { GET as catalogRoute } from "@/app/api/pos/v1/catalog/route";
 import { GET as authRosterRoute } from "@/app/api/pos/v1/sync/auth/route";
 import { POST as syncEventsRoute } from "@/app/api/pos/v1/sync/events/route";
 import { posSyncEventReceipts } from "./schema";
+import { etaSubmissions } from "@/server/fiscal/schema";
 import { cashCounts, cashMovements, posShifts } from "./shift-schema";
 import { createPairingCode, redeemPairingCode, resolveDevice } from "./service";
-import { seedPosContext } from "./test-helpers";
+import { seedPosContext, activateFiscal } from "./test-helpers";
 import { openDb } from "../../../apps/pos/electron/_offline/db";
 import { Store, type EventRow } from "../../../apps/pos/electron/_offline/store";
 import { createApiClient } from "../../../apps/pos/electron/_offline/api";
@@ -298,6 +299,89 @@ describe("POS sync over the wire", () => {
     expect(mid.countedTotal).toBe(money(566));
     expect(mid.expectedTotal).toBe(money(300));
     expect(mid.variance).toBe(money(266));
+  });
+
+  it("carries a B2B buyer through the offline log so an outage cannot demote the sale to a receipt", async () => {
+    // ---------------------------------------------------------------------
+    // THE OFFLINE DECISION THIS TASK MADE, PROVEN END TO END RATHER THAN
+    // ASSERTED IN A COMMENT.
+    //
+    // Every POS sale is appended to the till's own event log before it is
+    // flushed — there is no separate "online" path — so this replay IS the sale
+    // path, and a B2B sale rung during an outage takes exactly this route hours
+    // later. The buyer therefore has to survive four hops: `JSON.stringify` into
+    // SQLite, the wire body, `asSaleRecordedPayload`'s cast, and
+    // `handleSaleRecorded`'s field-by-field rebuild of `RecordSaleInput` (the
+    // one that DROPS anything not named, which is why this is a real risk and
+    // not a formality).
+    //
+    // The failure being ruled out is silent and unrecoverable: a buyer lost
+    // anywhere along here comes back as an ordinary consumer `e_receipt`, filed
+    // with ETA, with the details already discarded — and Task 4's ladder then
+    // refuses to issue the invoice the customer asked for, because the sale is
+    // already declared (VERIFY-12).
+    // ---------------------------------------------------------------------
+    const { ctx, tenantId, branchId, productId, total, managerId } = await seedPosContext("owner");
+    // ETA-active: an EG tenant still onboarding files nothing (isFiscalEnabled).
+    await activateFiscal(tenantId);
+    const { deviceToken } = await pairTill(tenantId, branchId, managerId);
+    installWire();
+    const till = makeTill(() => deviceToken);
+    const actorUserId = ctx.cashierUserId;
+    const clientShiftId = crypto.randomUUID();
+
+    const buyer = {
+      rin: "313717919",
+      name: "Receiver Company LLC",
+      address: {
+        country: "EG", governate: "Cairo", regionCity: "Nasr City",
+        street: "580 Clementina Key", buildingNumber: "Bldg. 0",
+      },
+    };
+
+    till.store.appendEvent("shift.opened", { actorUserId, clientShiftId, openingFloat: 300, denominations: OPENING_DENOMS });
+    till.store.appendEvent("sale.recorded", {
+      ...salePayload(actorUserId, clientShiftId, productId, total, "wire-b2b-1"),
+      buyer,
+    });
+
+    await till.engine.flush();
+    expect(till.engine.status()).toMatchObject({ state: "online", pending: 0 });
+
+    const rows = await withTenant(tenantId, (tx) =>
+      tx.select().from(etaSubmissions).where(eq(etaSubmissions.tenantId, tenantId)));
+
+    // ONE document, of the invoice family, carrying the buyer the till captured.
+    expect(rows).toHaveLength(1);
+    expect(rows[0].docType).toBe("e_invoice");
+    expect(rows[0].buyerJson).toEqual(buyer);
+    // And no receipt, ever — the assertion that makes the sale declared ONCE.
+    expect(rows.some((r) => r.docType === "e_receipt")).toBe(false);
+  });
+
+  it("replays an ordinary sale as an e_receipt — the buyer-less path is unchanged", async () => {
+    // Non-vacuity for the case above: the same harness, the same payload builder,
+    // no buyer, and the family flips back. Without this the assertion there
+    // could be satisfied by a bug that made every synced sale an invoice.
+    const { ctx, tenantId, branchId, productId, total, managerId } = await seedPosContext("owner");
+    // ETA-active: an EG tenant still onboarding files nothing (isFiscalEnabled).
+    await activateFiscal(tenantId);
+    const { deviceToken } = await pairTill(tenantId, branchId, managerId);
+    installWire();
+    const till = makeTill(() => deviceToken);
+    const actorUserId = ctx.cashierUserId;
+    const clientShiftId = crypto.randomUUID();
+
+    till.store.appendEvent("shift.opened", { actorUserId, clientShiftId, openingFloat: 300, denominations: OPENING_DENOMS });
+    till.store.appendEvent("sale.recorded", salePayload(actorUserId, clientShiftId, productId, total, "wire-b2c-1"));
+
+    await till.engine.flush();
+
+    const rows = await withTenant(tenantId, (tx) =>
+      tx.select().from(etaSubmissions).where(eq(etaSubmissions.tenantId, tenantId)));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].docType).toBe("e_receipt");
+    expect(rows[0].buyerJson).toBeNull();
   });
 
   it("accepts the paired device's token and refuses anything else, marking nothing on a refusal", async () => {

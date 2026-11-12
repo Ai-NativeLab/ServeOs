@@ -19,15 +19,20 @@ import { getCapabilities, type VerticalId } from "@/server/verticals";
 import { isMethodEnabled } from "@/server/payments/offline/methods";
 import { PaymentMethodNotEnabledError, InvalidProofError, PaymentAlreadyResolvedError } from "@/server/payments/offline";
 import { sanitizeHttpUrl } from "@/lib/safe-url";
+import { assertFinite } from "@/shared/errors";
 import { orders, orderItems, orderStatusEvents, type SelectedModifier, type Order, type OrderWithItems, type OrderDetail, type OrderStatus } from "./schema";
 import { canTransition } from "./state-machine";
-// OutOfStockError is no longer thrown here — the inventory service raises it
-// from the FIFO deduction, on this same transaction, so the order still rolls back.
-import { OrderValidationError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, TotalMismatchError, PriceChangedError, type ChangedLinePrice } from "./errors";
+// OutOfStockError is raised in TWO deliberate layers: the early per-line check
+// below refuses before totals/inserts (better errors, no wasted work), and the
+// inventory FIFO deduction re-checks inside this same transaction as a backstop
+// against stock changing between menu render and checkout.
+import { isValidCustomerPhone, normalizePhone } from "@/lib/phone";
+import { OrderValidationError, PrescriptionRequiredError, InvalidPhoneError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, TotalMismatchError, PaymentNotVerifiedError, OutOfStockError, PriceChangedError, type ChangedLinePrice } from "./errors";
 import { recordAuditEvent, type AuditFingerprint } from "@/server/audit/service";
 import { publishTenantEvent } from "@/server/realtime/publish";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { enqueueStatusUpdate } from "@/server/whatsapp/status-updates";
+import { PRESCRIPTION_CLAIM_MAX_AGE_MS } from "@/server/prescriptions/service";
 import type { AuditActorType } from "@/server/audit/canonical";
 
 export type PlaceOrderLine = {
@@ -89,6 +94,14 @@ export type PlaceOrderInput = {
   fulfillmentType: "pickup" | "delivery";
   customerName: string;
   customerPhone: string;
+  /**
+   * OPTIONAL, and for ONE purpose: sending the customer their own ETA fiscal
+   * document for this order (`@/server/fiscal/customer-email`). The column it
+   * lands in carries the full contract — `orders.customerEmail` — and that
+   * contract forbids every other use, because no consent flag exists to refuse
+   * one on its behalf. Read it before adding a second caller.
+   */
+  customerEmail?: string;
   notes?: string;
   areaId?: string;
   addressText?: string;
@@ -103,6 +116,14 @@ export type PlaceOrderInput = {
   cashierUserId?: string;
   /** Server-resolved from the customer session — NEVER accepted from a client body. */
   customerId?: string;
+  /**
+   * The prescription uploaded for THIS basket (#187 review). When set, exactly
+   * this script is claimed; validated against the customer + pending +
+   * unattached, so a client cannot attach someone else's or an already-used
+   * script. The newest-fresh inference below becomes a fallback for callers
+   * that don't send the id.
+   */
+  prescriptionId?: string;
   orderDiscountAmount?: number;
   orderDiscountReason?: string;
   /** What the client displayed. Compared, never trusted. */
@@ -134,8 +155,28 @@ export type PlaceOrderResult = {
   itemIds: string[];
 };
 
-/** Round to 2 decimals and format as a numeric string for Postgres. */
+/**
+ * Round to 2 decimals and format as a numeric string for Postgres.
+ *
+ * Throws on a non-finite input. `(Math.round(NaN * 100) / 100).toFixed(2)` is
+ * the string "NaN", and Postgres `numeric` accepts that literal — as it does
+ * "Infinity" — so the bad value persists into a currency column, poisons every
+ * SUM it joins, and has no repair path in any screen.
+ *
+ * This is the LAST line of defence, not the first. Every caller validates its
+ * own numbers and keeps doing so, because a guard at the service boundary can
+ * say `qtyOrdered must be a positive finite number (got NaN)` while this can
+ * only say that something upstream was wrong. The point is that a MISSED guard
+ * now fails loudly instead of writing permanent poison: review found two such
+ * misses in purchasing alone after the last round of per-caller fixes, which is
+ * why the invariant moved to the one function they all pass through.
+ *
+ * Takes a `number` only: a numeric STRING (a column read straight from the
+ * DB) is rejected too, since `Number.isFinite` does not coerce. Convert with
+ * `Number()` first. `-0` formats as "0.00".
+ */
 export function money(n: number): string {
+  assertFinite(n, "money");
   return (Math.round(n * 100) / 100).toFixed(2);
 }
 
@@ -146,9 +187,37 @@ export function money(n: number): string {
  * per the manual-payments spec, never authoritative. */
 const sanitizeProofUrl = sanitizeHttpUrl;
 
+/**
+ * The same deliberately-loose test `@/app/subscribe/enquiry-input` uses, and
+ * loose for the same stated reason: it validates just enough to keep the mail
+ * provider from rejecting the send, not enough to adjudicate RFC 5322. Copied
+ * rather than imported — that module is a public marketing form's input parser
+ * and this is the ordering domain; a shared "email rules" module is worth
+ * having the moment a third caller appears, and not before.
+ *
+ * 254 is the addressable maximum, matching that module's `FIELD_LIMITS.email`.
+ */
+function isEmailShaped(email: string): boolean {
+  return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email);
+}
+
 export async function placeOrder(tenantId: string, input: PlaceOrderInput): Promise<PlaceOrderResult> {
   if (!input.lines || input.lines.length === 0) throw new OrderValidationError("empty cart");
   if (!input.customerName.trim() || !input.customerPhone.trim()) throw new OrderValidationError("missing customer details");
+
+  const tenant = await getTenantById(tenantId);
+  const country = tenant?.country ?? "EG";
+  // #173: country mobile rule. Two deliberate exemptions (#187 review):
+  //   • POS walk-in sentinel — the till sells to anonymous customers.
+  //   • WhatsApp — customerPhone IS the Meta-verified wa_id the merchant is
+  //     chatting with; reachability is guaranteed by the channel, and a
+  //     refusal here dead-letters a CONFIRMED order (recordInbound already
+  //     committed, so retries dedupe into silence).
+  const allowWalkInSentinel = input.channel === "pos";
+  const whatsappVerifiedNumber = input.channel === "whatsapp";
+  if (!whatsappVerifiedNumber && !isValidCustomerPhone(input.customerPhone, country, { allowWalkInSentinel })) {
+    throw new InvalidPhoneError(country);
+  }
 
   const paymentMethod = input.paymentMethod ?? "cash";
   let paymentStatus: "unpaid" | "pending_verification" = "unpaid";
@@ -168,8 +237,21 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
   // not whenever the reconnect happens to land.
   const now = input.replay?.occurredAt ?? input.now ?? new Date();
 
-  const tenant = await getTenantById(tenantId);
   if (!tenant) throw new OrderValidationError("unknown tenant");
+  // EG ONLY. The address exists for one purpose — the customer's own ETA
+  // document (see `orders.customerEmail`) — so any other tenant neither stores
+  // nor validates it: a stray field from an old form or a hand-written client
+  // is dropped, and the order behaves exactly as it did before the field
+  // existed. (Country, not activation: an EG tenant mid-onboarding still files
+  // these orders once active — the sweep adopts them — and the copy goes here.)
+  //
+  // SHAPE ONLY, and only when one was given — an absent email is the normal
+  // case, not an error (a tax receipt is the seller's obligation to FILE, not
+  // the buyer's to receive). The check exists so a typo becomes a 422 the
+  // customer can still fix at checkout rather than a provider rejection
+  // recorded on a fiscal row hours later, where nobody can act on it.
+  const customerEmail = tenant.country === "EG" ? input.customerEmail?.trim() || null : null;
+  if (customerEmail && !isEmailShaped(customerEmail)) throw new OrderValidationError("invalid email");
   const tz = tenant.timezone;
   const caps = getCapabilities(tenant.vertical as VerticalId);
   // Resolved outside the transaction: it is a tenant policy, not per-line state.
@@ -182,6 +264,16 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
   // shortfall still goes through the existing negative-on-hand + notification
   // path — it is reported, just not used to reject the sale.
   const allowNegative = caps.inventory && (Boolean(input.replay) || await getAllowNegativeStock(tenantId));
+  // #167 early out-of-stock refusal (#187 review) — channel-dependent, because
+  // allowNegativeStock exists so a KITCHEN is never blocked at the till, not so
+  // a customer can order what the storefront itself shows as sold out:
+  //   • web / WhatsApp — always refuse a tracked line at zero stock;
+  //   • live POS       — honour the tenant's allowNegative policy;
+  //   • POS replay     — never refuse: the sale physically happened.
+  // The inventory FIFO deduction below still applies `allowNegative` on every
+  // channel as the transactional backstop.
+  const channel = input.channel ?? "web";
+  const refuseOutOfStock = input.replay ? false : channel === "pos" ? !allowNegative : true;
 
   let scheduledFor: Date | null = null;
   if (input.scheduledFor !== undefined) {
@@ -228,6 +320,11 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
     const resolveLiveLine = async (line: PlaceOrderLine) => {
       const [product] = await tx.select().from(products).where(and(eq(products.id, line.productId), eq(products.isPublished, true))).limit(1);
       if (!product) throw new OrderValidationError("product unavailable");
+      // #167 early refusal (policy: `refuseOutOfStock`, above). Variant lines
+      // are judged by the variant's own stock check below.
+      if (refuseOutOfStock && !line.variantId && product.trackStock && (product.stockQuantity ?? 0) <= 0) {
+        throw new OutOfStockError(product.nameEn, product.nameAr);
+      }
 
       const [avail] = await tx.select().from(branchProductAvailability)
         .where(and(eq(branchProductAvailability.branchId, input.branchId), eq(branchProductAvailability.productId, product.id))).limit(1);
@@ -274,6 +371,12 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
           .where(and(eq(productVariants.id, line.variantId), eq(productVariants.productId, product.id), eq(productVariants.isActive, true)))
           .limit(1);
         if (!variant) throw new InvalidVariantError();
+        // Same policy as the product-level gate; a variant tracks stock when its
+        // stockQuantity is set (null = untracked), the rule the storefront's
+        // inStock flag uses.
+        if (refuseOutOfStock && variant.stockQuantity !== null && variant.stockQuantity <= 0) {
+          throw new OutOfStockError(variant.nameEn, variant.nameAr);
+        }
         unit = Number(variant.price);
         variantId = variant.id;
         variantNameEn = variant.nameEn;
@@ -374,6 +477,11 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
         if (input.replay && snap && err instanceof OrderValidationError) {
           missingReason = err.detail;
         } else if (input.replay && snap && err instanceof InvalidVariantError) {
+          missingReason = err.code;
+        } else if (input.replay && snap && err instanceof OutOfStockError) {
+          // Belt-and-braces: replay never takes the early stock refusal
+          // (refuseOutOfStock is false), but should any stock refusal reach
+          // here it must fall back to the snapshot rather than veto the sale.
           missingReason = err.code;
         } else {
           throw err;
@@ -478,19 +586,39 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
     let pendingRxId: string | null = null;
     if (hasRxLine) {
       if (!input.customerId) {
-        throw new OrderValidationError("prescription items require a signed-in customer account");
+        throw new PrescriptionRequiredError("sign_in");
       }
-      const [pendingRx] = await tx.select({ id: prescriptions.id }).from(prescriptions)
-        .where(and(
-          eq(prescriptions.tenantId, tenantId),
-          eq(prescriptions.customerId, input.customerId),
-          eq(prescriptions.status, "pending"),
-          isNull(prescriptions.orderId),
-        ))
-        .orderBy(desc(prescriptions.createdAt))
-        .limit(1);
-      if (!pendingRx) throw new OrderValidationError("a prescription must be uploaded before ordering these items");
-      pendingRxId = pendingRx.id;
+
+      // #187 review: an explicit prescriptionId (the upload this checkout just
+      // performed) is authoritative — claim exactly it, no age window needed.
+      if (input.prescriptionId) {
+        const [explicit] = await tx.select({ id: prescriptions.id }).from(prescriptions)
+          .where(and(
+            eq(prescriptions.id, input.prescriptionId),
+            eq(prescriptions.tenantId, tenantId),
+            eq(prescriptions.customerId, input.customerId),
+            eq(prescriptions.status, "pending"),
+            isNull(prescriptions.orderId),
+          ))
+          .limit(1);
+        if (!explicit) throw new PrescriptionRequiredError("reupload");
+        pendingRxId = explicit.id;
+      } else {
+        const [pendingRx] = await tx.select({ id: prescriptions.id }).from(prescriptions)
+          .where(and(
+            eq(prescriptions.tenantId, tenantId),
+            eq(prescriptions.customerId, input.customerId),
+            eq(prescriptions.status, "pending"),
+            isNull(prescriptions.orderId),
+            // #185: only claim a FRESH upload. A script from a failed attempt
+            // hours ago must not silently attach to today's unrelated basket.
+            gte(prescriptions.createdAt, new Date(Date.now() - PRESCRIPTION_CLAIM_MAX_AGE_MS)),
+          ))
+          .orderBy(desc(prescriptions.createdAt))
+          .limit(1);
+        if (!pendingRx) throw new PrescriptionRequiredError("upload");
+        pendingRxId = pendingRx.id;
+      }
     }
 
     const [order] = await tx.insert(orders).values({
@@ -504,7 +632,10 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       channel: input.channel ?? "web",
       cashierUserId: input.cashierUserId ?? null,
       customerId: input.customerId ?? null,
-      customerName: input.customerName.trim(), customerPhone: input.customerPhone.trim(), notes: input.notes?.trim() || null,
+      customerName: input.customerName.trim(),
+      // The canonical form the validator above checked (#187 review) — spacing,
+      // bidi marks and Arabic-Indic digits are presentation, not the number.
+      customerPhone: normalizePhone(input.customerPhone), customerEmail, notes: input.notes?.trim() || null,
       deliveryAreaId, deliveryAreaNameSnapshot: deliveryAreaName, deliveryAddressText: deliveryAddress,
       subtotal: money(totals.subtotal),
       vatRateSnapshot: money(totals.vatRate),
@@ -665,6 +796,24 @@ async function restockOrderItems(
 }
 
 /**
+ * Whether this tenant's vertical tracks stock at all — the one input
+ * `restockRefundedLines` needs and the one it must NOT read for itself.
+ *
+ * IT EXISTS TO BE CALLED BEFORE A TRANSACTION OPENS. `getTenantById` goes
+ * through the global `db`, i.e. a pool connection of its own, so resolving this
+ * inside a `withTenant` block makes one request hold two connections at once —
+ * the deadlock shape documented at `issueRefund`'s hoists. Extracting it as a
+ * named function rather than leaving the caller to spell `getTenantById` +
+ * `getCapabilities` itself keeps the derivation in ONE place: a second caller
+ * deriving "does this vertical restock?" differently is how the restock path and
+ * the capability that gates it drift apart.
+ */
+export async function resolveRestockCapabilities(tenantId: string): Promise<{ stockTracking: boolean }> {
+  const tenant = await getTenantById(tenantId);
+  return getCapabilities((tenant?.vertical ?? "restaurant") as VerticalId);
+}
+
+/**
  * Returns specific order-item quantities to stock for a refund. Line- and
  * quantity-scoped (unlike restockOrderItems, which restocks a whole order).
  * FORWARD DEP (Spec 8): when the stock_ledger exists, replace the integer
@@ -672,16 +821,30 @@ async function restockOrderItems(
  * sale_deduction on the same lot (per the inventory spec's restock-on-refund
  * path). Until then this is the integer fallback; a no-op for verticals with
  * stockTracking off (e.g. restaurant).
+ *
+ * `caps` IS A PARAMETER BECAUSE THIS RUNS INSIDE SOMEONE ELSE'S TRANSACTION.
+ * It used to call `getTenantById` itself, which reads through the global `db` —
+ * a SECOND pool connection taken while the caller's `withTenant` still holds its
+ * own. That is the exact pool-deadlock class round 1 fixed for `isFiscalEnabled`
+ * (see `issueRefund`), and it was reachable here through a narrower gate: only a
+ * refund carrying at least one restockable line got that far, which is why it
+ * survived the first sweep. The caller resolves it with
+ * `resolveRestockCapabilities` BEFORE opening the transaction. DO NOT read the
+ * tenant in here again — the parameter is the fix, not a convenience, and
+ * `restockOrderItems` above takes its `caps` the same way for the same reason.
  */
+// `tenantId` is GONE from the signature rather than left unused: it was only
+// ever there to feed the `getTenantById` call this change removed. Row scoping
+// never depended on it — every statement below runs on the caller's `tx`, so
+// RLS scopes them, which is the same reason a stray tenant predicate here would
+// be restating a database guarantee.
 export async function restockRefundedLines(
   tx: Parameters<Parameters<typeof withTenant>[1]>[0],
-  tenantId: string,
   lines: { orderItemId: string; quantity: number; restock: boolean }[],
+  caps: { stockTracking: boolean },
 ): Promise<void> {
   const toRestock = lines.filter((l) => l.restock && l.quantity > 0);
   if (toRestock.length === 0) return;
-  const tenant = await getTenantById(tenantId);
-  const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalId);
   if (!caps.stockTracking) return;
   for (const l of toRestock) {
     const [item] = await tx.select().from(orderItems).where(eq(orderItems.id, l.orderItemId)).limit(1);
@@ -811,6 +974,16 @@ export async function transitionStatus(tenantId: string, orderId: string, to: Or
     // must never be stuck.
     if (order.rxReviewStatus === "pending" && to !== "cancelled" && to !== "rejected") {
       throw new InvalidTransitionError(order.status, to);
+    }
+    // #165: an offline payment still awaiting verification must not hand over
+    // goods. The order may enter the kitchen (preparing), but every target
+    // that hands goods to a customer is refused until the payment is resolved
+    // in the payments queue. Cancelling/rejecting stays exempt so a blocked
+    // order is never stuck; COD (`unpaid`) is unaffected — unpaid by design,
+    // not unverified.
+    const RELEASE_TARGETS: readonly OrderStatus[] = ["ready", "out_for_delivery", "completed"];
+    if (order.paymentStatus === "pending_verification" && RELEASE_TARGETS.includes(to)) {
+      throw new PaymentNotVerifiedError(to);
     }
     const setCancel = (to === "cancelled" || to === "rejected") && reason ? { cancelReason: reason } : {};
     // Guarded UPDATE serializes against concurrent writers (see cancelOrderByToken).

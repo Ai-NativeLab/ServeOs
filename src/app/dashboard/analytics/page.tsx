@@ -18,12 +18,28 @@ import { parseRange } from "./range";
 
 const DOW_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
+import { PermissionDenied } from "@/components/dashboard/PermissionDenied";
+import { UnauthorizedError } from "@/server/rbac/authorize";
+
 export default async function AnalyticsPage({
   searchParams,
 }: {
   searchParams: Promise<{ range?: string }>;
 }) {
-  const ctx = await requireReportsPermission();
+  let ctx;
+  try {
+    ctx = await requireReportsPermission();
+  } catch (e) {
+    if (e instanceof UnauthorizedError) {
+      return (
+        <>
+          <PageHeader eyebrow="Analytics" title="Performance overview" />
+          <PermissionDenied permission="reports:view" />
+        </>
+      );
+    }
+    throw e;
+  }
   const tenantId = ctx.tenantId;
   const { range } = await searchParams;
   const days = parseRange(range);

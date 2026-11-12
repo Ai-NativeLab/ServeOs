@@ -899,22 +899,20 @@ async function seedOneTenant(cfg: TenantSeedConfig, adminId: string) {
  * products, place orders, close shifts. Reconciliation cannot undo all of
  * that — the catalogue rebuild only fires when the SEED's own fields drift,
  * and it would leave a visitor's orders, shifts and stock movements behind
- * forever. Deleting the tenant row does undo it: every table that references
- * tenants does so with onDelete: cascade.
+ * forever. Deleting the tenant row does undo it: almost every table that
+ * references tenants does so with onDelete: cascade. The exception is the ETA
+ * fiscal tables, which RESTRICT the deletion of any order, refund or device a
+ * fiscal record names (statutory retention) — so `dropDemoTenant` deletes an
+ * EG demo tenant's fiscal rows first, explicitly, then the tenant.
  *
- * Only ever applied to slugs this file owns, all of which are `demo-<trade>`.
+ * Only ever applied to slugs this file owns, all of which are `demo-<trade>`
+ * (`dropDemoTenant` refuses anything else).
  */
 async function resetTenants(): Promise<void> {
-  const { db } = await import("../src/db/client");
-  const { tenants } = await import("../src/server/tenancy/schema");
-  const { eq: equals } = await import("drizzle-orm");
+  const { dropDemoTenant } = await import("../src/server/demo/reset");
 
   for (const cfg of TENANTS) {
-    if (!cfg.slug.startsWith("demo-")) {
-      throw new Error(`refusing to reset "${cfg.slug}" — only demo- tenants may be dropped`);
-    }
-    const deleted = await db.delete(tenants).where(equals(tenants.slug, cfg.slug)).returning({ id: tenants.id });
-    if (deleted.length > 0) console.log(`  reset: dropped ${cfg.slug}`);
+    if (await dropDemoTenant(cfg.slug)) console.log(`  reset: dropped ${cfg.slug}`);
   }
 }
 
