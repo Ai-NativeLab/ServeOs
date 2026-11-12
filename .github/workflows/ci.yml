@@ -49,6 +49,25 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Warnings fail too: a warning nobody is forced to read is how the 10
+      # errors this job was added for (#207) piled up on main unseen.
+      - name: Lint
+        run: npm run lint -- --max-warnings=0
+
   test:
     name: test
     runs-on: ubuntu-latest

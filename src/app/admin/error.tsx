@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { LogoMark } from "@/components/brand/LogoMark";
@@ -38,7 +39,7 @@ export default function AdminError({
         <div className="flex items-center justify-center gap-2 pt-1">
           <Button onClick={() => unstable_retry()}>Retry</Button>
           <Button variant="outline" asChild>
-            <a href="/admin/login">Back to sign in</a>
+            <Link href="/admin/login">Back to sign in</Link>
           </Button>
         </div>
       </div>
