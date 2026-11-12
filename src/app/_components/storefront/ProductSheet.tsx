@@ -5,6 +5,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "
 import { Button } from "@/components/ui/button";
 import { formatMoney } from "@/lib/money";
 import type { MenuProduct } from "./ProductCard";
+import { discountLabel } from "./Badge";
 
 export function ProductSheet({
   product, open, onOpenChange, onAdd, currency,
@@ -71,11 +72,11 @@ export function ProductSheet({
           <SheetHeader>
             <div className="flex items-start justify-between gap-2">
               <SheetTitle className="text-xl sm:text-2xl">{product.nameEn}</SheetTitle>
-              {product.hasDiscount && product.discountPercent && (
+              {discountLabel(product) ? (
                 <span className="sf-badge bg-destructive text-destructive-foreground font-bold shadow-sm shrink-0">
-                  {`-${product.discountPercent}%`}
+                  {discountLabel(product)}
                 </span>
-              )}
+              ) : null}
             </div>
             {/* The Arabic name comes along too. The grid card already shows both
                 names, so a detail sheet that drops to English-only — and then

@@ -2,7 +2,7 @@
 import type { PublishedMenu } from "@/server/catalog/schema";
 import { arabicDescription } from "./bilingual";
 import { formatMoney } from "@/lib/money";
-import { Badge } from "./Badge";
+import { Badge, discountLabel } from "./Badge";
 import { isProductConfigurable } from "../cart";
 import { QuickAddControl } from "./QuickAddControl";
 
@@ -33,6 +33,7 @@ export function ProductCard({
   const inStock = product.inStock !== false;
 
   const clickable = interactive && inStock;
+  const discount = discountLabel(product);
 
   // The card body is a real <button> and the add/stepper controls sit beside
   // it (not inside it), so their Enter/Space never bubble into "open sheet".
@@ -59,10 +60,10 @@ export function ProductCard({
           ) : (
             <div className="sf-img h-full w-full" />
           )}
-          {(badge || product.hasDiscount || !inStock) && (
+          {(badge || discount || !inStock) && (
             <span className="absolute start-2 top-2 flex flex-wrap gap-1">
-              {product.hasDiscount && product.discountPercent ? (
-                <Badge kind="discount" label={`-${product.discountPercent}%`} />
+              {discount ? (
+                <Badge kind="discount" label={discount} />
               ) : badge ? (
                 <Badge kind={badge} />
               ) : null}
