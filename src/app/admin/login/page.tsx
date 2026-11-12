@@ -48,9 +48,9 @@ export default async function AdminLoginPage({
 
         <p className="mt-5 text-center text-[13px] text-muted-foreground">
           Restaurant owner?{" "}
-          <a href="/login" className="text-primary">
+          <Link href="/login" className="text-primary">
             Sign in here →
-          </a>
+          </Link>
         </p>
       </div>
     </main>

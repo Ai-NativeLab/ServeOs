@@ -61,9 +61,9 @@ export default async function LoginPage({
 
         <p className="mt-5 text-center text-[13px] text-muted-foreground">
           Don{"'"}t have an account?{" "}
-          <a href="/register" className="text-primary">
+          <Link href="/register" className="text-primary">
             Get started →
-          </a>
+          </Link>
         </p>
       </div>
     </main>

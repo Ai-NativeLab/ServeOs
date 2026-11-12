@@ -238,7 +238,7 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
     paidAmount >= total - 0.001 ? "paid" : "partially_paid";
 
   let committedReceipt: SaleReceipt | null = null;
-  const placed = await placeOrder(ctx.tenantId, {
+  await placeOrder(ctx.tenantId, {
     branchId: ctx.branchId,
     fulfillmentType: "pickup",
     customerName: "Walk-in",

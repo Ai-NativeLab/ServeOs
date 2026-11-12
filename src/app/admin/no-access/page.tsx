@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 /**
  * Shown when someone is signed in but is not a platform super admin — most
  * often a tenant user whose dashboard session is sent here because the session
@@ -18,15 +20,15 @@ export default function AdminNoAccessPage() {
         </p>
         <p className="mt-5 text-[13px] text-muted-foreground">
           Running your restaurant?{" "}
-          <a href="/dashboard" className="text-primary">
+          <Link href="/dashboard" className="text-primary">
             Go to your dashboard →
-          </a>
+          </Link>
         </p>
         <p className="mt-2 text-[13px] text-muted-foreground">
           Platform staff?{" "}
-          <a href="/admin/login" className="text-primary">
+          <Link href="/admin/login" className="text-primary">
             Sign in with an admin account →
-          </a>
+          </Link>
         </p>
       </div>
     </main>
