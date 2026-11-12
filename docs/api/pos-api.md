@@ -19,7 +19,7 @@ Consumed by the Electron till (`apps/pos`). The Electron main process (`apps/pos
 ## Device & sign-in
 
 ### POST /api/pos/v1/pair
-Redeems a pairing code minted in the dashboard (**Settings → POS devices**, `generatePairingCodeAction`). Codes are **8 uppercase alphanumeric characters** and expire **10 minutes** after minting (`src/server/pos/service.ts`). Single use.
+Redeems a pairing code minted in the dashboard (**Settings → POS devices**, `generatePairingCodeAction`). Codes are **8 uppercase alphanumeric characters** and expire **10 minutes** after minting (`src/server/pos/service.ts`). Single use. (The local-dev script `npm run pos:demo:code` writes its own 8-character code valid for 24 hours, for convenience; that is not the product behaviour.)
 
 - **Auth:** public
 - **Body:** `{ code: string }` (trimmed and upper-cased server-side)

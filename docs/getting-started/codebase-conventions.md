@@ -1,160 +1,115 @@
 # Codebase Structure & Conventions
 
-This document provides a comprehensive overview of the ServeOS codebase, establishing conventions to answer the fundamental question: "where does X go?" for every developer. 
+Where things live, and the patterns the existing code follows.
 
-## 1. Directory Structure Overview
-
-The repository is organized as a monorepo with the following top-level structure:
+## 1. Top-level layout
 
 ```text
 ServeOs/
-├── .agents/                    # AI agent skills & workflows
-├── .github/workflows/          # CI/CD (ci.yml, db-backup.yml)
-├── apps/
-│   └── pos/                    # Electron POS desktop app (Vite + React)
-├── docs/                       # Project documentation
-│   ├── architecture/           # System architecture docs
-│   ├── getting-started/        # Onboarding & conventions
-│   ├── database/               # ERD & schema docs
-│   ├── api/                    # API reference
-│   ├── prds/                   # Product Requirements Documents
-│   └── references/             # Operational references
-├── drizzle/                    # SQL migration files (46 migrations)
-├── public/                     # Static assets, logos, fonts
-├── scripts/                    # DB migration, seeds, demo datasets
+├── .github/workflows/   # ci, deploy-watch, vercel-deploy, db-backup, db-restore-drill,
+│                        # demo-reset, inventory-backfill, reorder-check, pos-release
+├── apps/pos/            # Electron POS (Vite + React renderer, electron/ main process, electron/_offline/ SQLite store)
+├── docs/                # this documentation, ROADMAP.md, PRDs, references/, per-agent specs
+├── drizzle/             # 46 SQL migrations + meta/ (journal and snapshots)
+├── public/              # static assets
+├── scripts/             # migrate, release-migrate, seeds, db-check/repair, pos demo, reorder-check, backfill
 ├── src/
-│   ├── app/                    # Next.js App Router
-│   ├── components/             # Shared React components
-│   ├── db/                     # Database client, RLS, schema barrel
-│   ├── lib/                    # Pure utility functions
-│   ├── server/                 # Domain service modules (27 modules)
-│   └── shared/                 # Cross-cutting types & constants
-├── tests/
-│   └── e2e/                    # Playwright E2E tests
-└── CONTEXT.md                  # Domain glossary
+│   ├── app/             # Next.js App Router (pages, Server Actions, /api route handlers)
+│   ├── components/      # ui/ (shadcn + Radix), dashboard/, admin/, brand/
+│   ├── db/              # pg client, withTenant, schema barrel, migration runner, test harness
+│   ├── lib/             # client-safe helpers: order-totals, money, datetime, order-status, realtime client…
+│   ├── server/          # 27 domain modules (below)
+│   ├── shared/          # errors (DomainError), plans
+│   ├── proxy.ts         # Next 16 Proxy: host → surface routing
+│   ├── middleware-routing.ts, marketing-locale.ts
+├── tests/e2e/           # Playwright specs
+├── CONTEXT.md           # domain glossary
+└── AGENTS.md / CLAUDE.md
 ```
 
-## 2. Domain Module Anatomy
+## 2. Domain modules (`src/server/`)
 
-Business logic in ServeOS is encapsulated within domain modules located in `src/server/<domain>/`. Every module strictly follows this internal structure:
+| Module | What's in it |
+|---|---|
+| `analytics` | dashboard metrics, cross-channel reports, POS X/Z reports, platform signups/MRR |
+| `audit` | hash-chained `audit_events`, chain verification, fingerprints, coverage list |
+| `auth` | users, sessions, password hashing (scrypt), dashboard/admin context, staff management, roles |
+| `banners` | storefront banners |
+| `billing` | subscription invoices behind the `BillingProvider` interface (manual provider) |
+| `branches` | branches, delivery areas, opening hours, orderability, scheduling slots |
+| `catalog` | categories, products, variants, modifiers, units of measure, dimensional pricing, catalog version |
+| `customers` | storefront customer accounts and sessions, trade accounts |
+| `demo` | demo-tenant sessions for the marketing page |
+| `email` | `EmailProvider` (Resend, fake), sender, webhook parsing |
+| `enquiries` | marketing plan enquiries |
+| `entitlements` | plan quota/feature checks and usage counters |
+| `inventory` | items, locations, lots, ledger, recipes, counts, product links, UoM |
+| `notifications` | in-app notifications, email outbox, worker, email events |
+| `onboarding` | tenant registration and applications |
+| `ordering` | `placeOrder`, order state machine, payments confirmation, cancellation |
+| `payments` | offline payment methods (InstaPay, Vodafone Cash, mobile wallet) |
+| `platform` | super-admin operations: approvals, suspensions, subscriptions, platform `audit_logs` |
+| `pos` | devices, pairing, cashier sessions, grants, sales, tenders, refunds, shifts, held tickets, offline sync ingest |
+| `prescriptions` | prescription upload (private bucket) and review |
+| `purchasing` | suppliers, purchase orders, receiving, variance, reorder |
+| `rbac` | permission list, role → permission map, `authorize` |
+| `realtime` | Supabase Realtime publish + tokens |
+| `subscription` | plans (seed), subscriptions |
+| `tenancy` | tenants, tenant settings, host resolution, PWA manifest |
+| `verticals` | vertical descriptors and capabilities |
+| `whatsapp` | Cloud API provider, webhook ingest, conversation reducer/runner, handoff, status updates |
 
-```text
-src/server/<domain>/
-├── schema.ts          # Drizzle table definitions
-├── service.ts         # Business logic functions
-├── errors.ts          # Domain-specific error classes
-├── index.ts           # Public barrel export
-├── *.test.ts          # Vitest test files
-└── [optional files]   # e.g. types.ts, helpers, sub-services
-```
+### Module anatomy
 
-> [!WARNING]  
-> **Key Rule:** No module may directly import another module's internal files. Always import from the target module's barrel file `index.ts`.
+Most modules have some of `schema.ts`, `service.ts`, `errors.ts`, `index.ts` and co-located `*.test.ts`, but there is no fixed template: larger modules split into several files (e.g. `pos/record-sale.ts`, `pos/shifts.ts`, `pos/refund-schema.ts`, `purchasing/reorder-schema.ts`, `payments/offline/methods.schema.ts`). Fourteen modules have an `index.ts` barrel; importing a module's files directly (`@/server/pos/require-cashier`) is common and not enforced against.
 
-### The 27 Domain Modules
+## 3. App Router (`src/app/`)
 
-| Module | Responsibility | Module | Responsibility |
-|---|---|---|---|
-| `auth` | User authentication & sessions | `catalog` | Products, variants, categories |
-| `inventory` | Stock levels, locations, transfers | `orders` | Order processing & lifecycle |
-| `pos` | Point of sale, shifts, registers | `billing` | SaaS billing, subscriptions, invoices |
-| `crm` | Customers, segments, profiles | `staff` | Employee management, roles, permissions |
-| `tenants` | Multi-tenant core, settings | `payments` | Payment processing, gateways |
-| `shipments` | Fulfillment, shipping rates | `returns` | RMAs, refunds, restocking |
-| `loyalty` | Reward points, tiers, referrals | `discounts` | Coupons, promotions, rules |
-| `reporting` | Analytics, dashboards, exports | `settings` | Store preferences, localization |
-| `webhooks` | Event dispatch, integrations | `checkout` | Cart, checkout flows |
-| `marketing` | Campaigns, SEO, banners | `notifications` | Email, SMS, in-app alerts |
-| `taxes` | Tax rates, calculations, rules | `suppliers` | Vendor management |
-| `purchase-orders`| POs, receiving, supply chain | `audit-logs` | Activity tracking, compliance |
-| `files` | Media uploads, assets, S3 | `search` | Global search, indexing |
-| `api-keys` | Developer API access | | |
+- `(marketing)/[lang]/` — marketing site (Arabic at `/`, English at `/en`)
+- `page.tsx` — tenant storefront (when `x-surface = storefront`); `checkout/`, `order/`, `account/` — storefront flows
+- `dashboard/` — merchant dashboard; `login/`, `register/` — staff sign-in and tenant sign-up; `subscribe/` — plan enquiry form
+- `admin/` — platform admin console (`admin/login`, `admin/(console)/…`)
+- `api/` — route handlers (see [API index](../api/README.md))
 
-## 3. App Router Structure
+## 4. Naming
 
-Our Next.js App Router structure supports multiple surfaces from a single deployment:
+- Components: `PascalCase.tsx`.
+- Server Actions: `<verb>…Action` (e.g. `approveAction`, `createStaffAction`), in `actions.ts` next to the page (one exception: `dashboard/orders/[id]/refund-actions.ts`).
+- Route folders: kebab-case (`purchase-orders/[id]`).
+- Service functions: camelCase verbs (`placeOrder`, `recordSale`, `listTenants`).
+- Tests: co-located `*.test.ts`.
 
-- `src/app/(marketing)/` — Marketing site with bilingual `[lang]/` routes
-- `src/app/admin/` — Platform admin console (super-admins only)
-- `src/app/dashboard/` — Merchant dashboard (the largest surface area)
-- `src/app/checkout/`, `src/app/order/` — Customer-facing shopping flows
-- `src/app/api/` — REST API routes and webhooks
-- Root `page.tsx` dispatches to the correct storefront based on the `x-surface` header
+## 5. Patterns
 
-## 4. Component Organization
-
-Shared UI components are organized by domain and surface:
-
-```text
-src/components/
-├── ui/           # shadcn/ui + Radix primitives (Button, Card, Dialog, etc.)
-├── dashboard/    # Merchant shell (Sidebar, Topbar, PageHeader, StatusBadge)
-├── admin/        # Admin console specific components (AdminNav, Pagination)
-└── brand/        # Logos, wordmarks, feature icons
-```
-
-## 5. Naming Conventions
-
-- **Components:** `PascalCase.tsx` (e.g. `AdminNav.tsx`, `PageHeader.tsx`)
-- **Server Actions:** `<verb>Action` (e.g. `approveAction`, `createStaffAction`)
-- **Route Folders:** lowercase `kebab-case` (e.g. `purchase-orders/[id]`)
-- **Service Functions:** camelCase verbs (e.g. `listTenants`, `recordSale`, `placeOrder`)
-- **Schema Files:** Always named `schema.ts` within each domain module
-- **Test Files:** Co-located with source as `*.test.ts` (e.g. `service.test.ts`)
-
-## 6. Key Patterns & Conventions
-
-### Next.js 16 Breaking Changes
-> [!IMPORTANT]
-> In Next.js 16, `searchParams`, `headers()`, and `cookies()` are **Promises** and MUST be `await`ed before access.
-> Server Components are the default. Only use `"use client"` directives for interactive islands.
+### Next.js 16
+Read `node_modules/next/dist/docs/` before using a Next API (see `AGENTS.md`). In this version `params`, `searchParams`, `headers()` and `cookies()` are async and must be awaited, and `middleware.ts` is now `proxy.ts`.
 
 ### Server Actions
-- Co-locate actions in `actions.ts` files alongside the pages they serve, marked with `"use server"`.
-- **Defense-in-Depth:** MUST re-verify authorization and permissions before executing mutations.
-- MUST call `revalidatePath()` after mutations to update cached data.
+- Re-check auth inside every action with the module's `require*Permission` helper (or `requireSuperAdmin` in the admin console) — never rely on the page having checked.
+- Call `revalidatePath()` after a mutation.
 
-### URL-Driven State
-Do not use React client state (`useState`) for filters, search queries, or pagination. Store these in URL query parameters.
-- Server-side parsing: Await `searchParams` in the Server Component and pass values down.
+### Admin console pages
+From `docs/ailab/specs/admin-frontend-conventions.md`: pages call `requireSuperAdminOrRedirect()` first, read filters from the awaited `searchParams` (filters live in the query string via GET forms), and their actions use bare `requireSuperAdmin()`.
 
-### Page Recipes
+### Dashboard pages
+Pages call `requireDashboardUser()` or a `require*Permission()` helper (`src/app/dashboard/*-permission.ts`), then call services that wrap their queries in `withTenant()`.
 
-**Admin Page Recipe:**
-1. Server Component page with `await requireSuperAdminOrRedirect()` at the top.
-2. Await `searchParams` for filters/pagination.
-3. Call platform service functions.
-4. Server actions in `actions.ts` use a bare `requireSuperAdmin()` (throws instead of redirecting).
+### Route handlers
+Thin: authenticate (`resolveInventoryContext`, `resolvePurchasingContext`, `requirePosCashier`, …), validate the body, call a service, map domain errors to status codes.
 
-**Dashboard Page Recipe:**
-1. Server Component with `await requireDashboardUser()` or a specific permission check.
-2. Await `searchParams`.
-3. Call domain service functions wrapped via `withTenant()`.
-4. Server actions in `actions.ts` re-verify auth/permissions and call `revalidatePath()`.
+## 6. Path aliases
+- `@/*` → `./src/*` (root `tsconfig.json`).
+- In `apps/pos`, `@shared/*` → `../../src/lib/*` (e.g. `@shared/order-totals`).
 
-## 7. Path Aliases
+## 7. Testing
+- `npm test` — Vitest against the migrated `serveos_test` database, files run serially (`fileParallelism: false`), tables truncated before each test (`src/db/test-setup.ts`).
+- `npm run test:unit` — the no-DB subset (`vitest.unit.config.ts`).
+- POS server tests: start from `seedPosContext()` / `openShiftForCtx()` in `src/server/pos/test-helpers.ts`.
+- `npm run pos:test` / `npm run pos:typecheck` — the Electron app's own suite.
+- `npm run test:e2e` — Playwright.
 
-We use path aliases to avoid fragile relative imports (`../../../`).
-- `@/*` maps to `./src/*` (configured in `tsconfig.json`).
-- Examples: 
-  - `import { db } from "@/db/client"`
-  - `import { withTenant } from "@/db/with-tenant"`
-
-## 8. Testing Conventions
-
-- **Integration Tests:** Use real PostgreSQL (`serveos_test` DB), execute serially, and truncate tables between tests.
-- **Unit Tests:** Pure logic only, no DB setup required (`vitest.unit.config.ts`).
-- **E2E Tests:** Playwright tests run against a seeded dev instance.
-- **POS Tests:** Use specific fixtures like `seedPosContext` and `openShiftForCtx` from `src/server/pos/test-helpers.ts`.
-
-## 9. Database Conventions
-
-- **ORM:** Drizzle ORM with PostgreSQL.
-- **Master Schema:** Re-exported through the barrel `src/db/schema.ts`.
-- **Multi-Tenancy:** Row-Level Security (RLS) is enforced via `withTenant(tenantId, tx => ...)`, which internally executes `SET LOCAL app.tenant_id`.
-- **Connection:** Lazy connection pooling in `src/db/client.ts` via an ES Proxy for build-time safety.
-- **Data Types:**
-  - *Monetary Values:* Stored as `numeric` strings via the `money(n)` convention.
-  - *Timestamps:* Always use `timestamp with time zone`.
-  - *Primary Keys:* UUIDs using `defaultRandom()`.
-  - *Bilingual Text:* Use the `name_en` and `name_ar` pattern for localized columns.
+## 8. Database
+- Drizzle ORM; schemas re-exported through `src/db/schema.ts`.
+- `src/db/client.ts` creates the `pg` pool lazily (behind a `Proxy`) so importing it at build time does not need a database.
+- Tenant data only through `withTenant(tenantId, tx => …)`, which sets `app.tenant_id` with `set_config(…, true)`.
+- Money: `numeric` columns, passed around as strings via `money(n)`. Timestamps: `timestamp with time zone`. Bilingual text: `*_en` / `*_ar` columns. Details in [erd.md](../database/erd.md).
