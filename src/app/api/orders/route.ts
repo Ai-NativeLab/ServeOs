@@ -6,6 +6,7 @@ import { cookies } from "next/headers";
 import { CUSTOMER_COOKIE } from "@/server/customers/require-customer";
 import { validateCustomerSession } from "@/server/customers/service";
 import { DomainError } from "@/shared/errors";
+import { isUuid } from "@/lib/uuid";
 
 /** P4: an explicit allowlist, not a spread — a numeric field only, never a
  *  string that could smuggle something into a jsonb column. */
@@ -27,6 +28,11 @@ export async function POST(req: NextRequest) {
   const slug = typeof body.slug === "string" ? body.slug : undefined;
   const locale: "en" | "ar" = body.locale === "ar" ? "ar" : "en";
   if (!slug) return NextResponse.json({ error: "slug is required" }, { status: 400 });
+  // Checked here, not in placeOrder: a malformed id would otherwise reach the
+  // prescriptions.id uuid column and come back as a 500.
+  if (body.prescriptionId !== undefined && body.prescriptionId !== null && !isUuid(body.prescriptionId)) {
+    return NextResponse.json({ error: "Invalid prescriptionId" }, { status: 400 });
+  }
 
   const tenant = await getTenantBySlug(slug);
   if (!tenant || !isTenantServable(tenant)) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -43,7 +49,7 @@ export async function POST(req: NextRequest) {
     branchId: String(body.branchId ?? ""),
     customerId: customerSession?.customer.id,
     // The id returned by the just-completed prescription upload (#187 review).
-    prescriptionId: typeof body.prescriptionId === "string" ? body.prescriptionId : undefined,
+    prescriptionId: isUuid(body.prescriptionId) ? body.prescriptionId : undefined,
     fulfillmentType: body.fulfillmentType === "delivery" ? "delivery" : "pickup",
     customerName: String(body.customerName ?? ""),
     customerPhone: String(body.customerPhone ?? ""),

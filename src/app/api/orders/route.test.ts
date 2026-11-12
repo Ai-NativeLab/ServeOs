@@ -64,3 +64,18 @@ describe("/api/orders channel hardening (#187 review)", () => {
     expect(sent.channel).toBeUndefined();
   });
 });
+
+describe("/api/orders prescriptionId (#187 review)", () => {
+  it("answers 400 for a prescriptionId that is not a UUID, before it reaches a uuid column", async () => {
+    placeOrderMock.mockClear();
+    const res = await POST(req({ prescriptionId: "not-a-uuid" }));
+    expect(res.status).toBe(400);
+    expect(placeOrderMock).not.toHaveBeenCalled();
+  });
+
+  it("forwards a well-formed prescriptionId", async () => {
+    const id = "6f1c2e0a-3b4d-4c5e-8f90-123456789abc";
+    await POST(req({ prescriptionId: id }));
+    expect((placeOrderMock.mock.lastCall?.[1] ?? {}).prescriptionId).toBe(id);
+  });
+});
