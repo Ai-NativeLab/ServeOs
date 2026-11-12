@@ -45,6 +45,9 @@ export async function seedPosContext(
   productId: string;
   managerId: string;
   total: number;
+  /** Raw tokens, for tests that drive a real route handler end to end. */
+  deviceToken: string;
+  cashierToken: string;
 }> {
   const i = n++;
   const vertical = opts.vertical ?? "restaurant";
@@ -109,5 +112,7 @@ export async function seedPosContext(
     productId: prod.id,
     managerId: managerUser.id,
     total,
+    deviceToken,
+    cashierToken: session.cashierToken,
   };
 }

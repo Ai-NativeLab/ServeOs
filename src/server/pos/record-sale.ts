@@ -11,7 +11,7 @@ import { posShifts, type PosShift } from "./shift-schema";
 import { findOpenShift } from "./shifts";
 import { resolveAuthorizer } from "./grants";
 import type { SyncReceipt } from "./sync-receipt";
-import { NoOpenShiftError, PosForbiddenError, PosSaleError } from "./errors";
+import { NoOpenShiftError, PaymentNeedsVerificationError, PosForbiddenError, PosSaleError } from "./errors";
 import type { PosCashierContext } from "./require-cashier";
 import { recordAuditEvent } from "@/server/audit/service";
 
@@ -74,10 +74,9 @@ export type SaleReceipt = {
   total: number;
   paidAmount: number;
   changeAmount: number;
-  /** `pending_verification` surfaces when a tender lands on an offline order
-   *  whose payment is still unconfirmed — the receipt tells the till to show
-   *  the queue, not a paid badge (#187 C4). */
-  paymentStatus: "paid" | "partially_paid" | "pending_verification";
+  /** A till sale or tender only ever lands on an order whose money the till
+   *  owns; an offline-unverified order is refused (PaymentNeedsVerificationError). */
+  paymentStatus: "paid" | "partially_paid";
   idempotent: boolean;
 };
 
@@ -300,18 +299,12 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
       }
       if (events.length > 0) await tx.insert(posAdjustmentEvents).values(events);
 
-      // #187 C4 (sibling guard of markPaid): tender math must not silently
-      // flip an OFFLINE-unverified order's paymentStatus — partially_paid is
-      // not pending_verification, and the #165 fulfilment gate would stop
-      // firing with money still outstanding and no payments:confirm audit.
-      // Unreachable through today's walk-in flow (recordSale always creates a
-      // cash/card order), but this write path is exactly where a future
-      // "till takes a deposit on an offline order" feature would surface it.
-      const [currentRow] = await tx.select({ ps: orders.paymentStatus }).from(orders).where(eq(orders.id, placed.orderId));
-      let paymentStatus: "paid" | "partially_paid" | "pending_verification" = paymentStatusFor(placed.total);
-      if (currentRow?.ps === "pending_verification") {
-        paymentStatus = "pending_verification";
-      }
+      // No pending_verification case to preserve here (#187 review): recordSale
+      // always places a NEW order with placeOrder's default cash method, which
+      // starts `unpaid`, so a sale can never settle an offline-unverified order.
+      // Tendering against an EXISTING order goes through addTender, which
+      // refuses pending_verification outright.
+      const paymentStatus = paymentStatusFor(placed.total);
       await tx.update(orders).set({ paymentStatus, updatedAt: new Date() }).where(eq(orders.id, placed.orderId));
 
       // Emit the audit chain for this sale on the SAME tx. order.placed was already
@@ -406,6 +399,11 @@ export async function addTender(
   return withTenant(ctx.tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
     if (!order) throw new PosSaleError("Unknown order");
+    // #165: an offline payment awaiting verification is settled in the
+    // payments queue (payments:confirm), never at the till. Any tender here —
+    // partial or full — would rewrite paymentStatus and disarm the fulfilment
+    // gate without that authorization or its audit row (#187 review).
+    if (order.paymentStatus === "pending_verification") throw new PaymentNeedsVerificationError();
 
     const existingTenders = await tx.select().from(orderPayments).where(eq(orderPayments.orderId, orderId));
     const already = existingTenders.find((t) => t.clientPaymentId === tender.clientPaymentId);
@@ -445,11 +443,7 @@ export async function addTender(
 
     const after = await tx.select().from(orderPayments).where(eq(orderPayments.orderId, orderId));
     const paidAmount = round2(after.reduce((s, t) => s + Number(t.amount), 0));
-    let paymentStatus: "paid" | "partially_paid" | "pending_verification" =
-      paidAmount >= total - 0.001 ? "paid" : "partially_paid";
-    if (order.paymentStatus === "pending_verification" && paymentStatus === "partially_paid") {
-      paymentStatus = "pending_verification";
-    }
+    const paymentStatus: "paid" | "partially_paid" = paidAmount >= total - 0.001 ? "paid" : "partially_paid";
 
     await tx.update(orders).set({ paymentStatus, updatedAt: new Date() }).where(eq(orders.id, orderId));
 

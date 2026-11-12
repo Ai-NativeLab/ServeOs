@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { DomainError, type Locale } from "@/shared/errors";
 
 /** Thrown when a pairing code cannot be redeemed (missing, expired, or already used). */
 export class PosPairingError extends Error {
@@ -130,5 +131,26 @@ export class CashCountMismatchError extends Error {
   constructor(message = "Denominations do not sum to the counted total") {
     super(message);
     this.name = "CashCountMismatchError";
+  }
+}
+
+/**
+ * The order's offline payment (InstaPay / wallet) is still awaiting
+ * verification. Settling it is a `payments:confirm` decision taken in the
+ * dashboard's payments queue — a cashier with `pos:sell` must not be able to
+ * side-step that by ringing a tender against it (#165 / #187 review). A
+ * DomainError so routes can answer `{ error, code }` and the till can say
+ * where the order has to be resolved instead of a generic failure.
+ */
+export class PaymentNeedsVerificationError extends DomainError {
+  readonly code = "payment_needs_verification";
+  constructor() {
+    super("This order's payment is awaiting verification — resolve it in the payments queue");
+    this.name = "PaymentNeedsVerificationError";
+  }
+  messageFor(locale: Locale): string {
+    return locale === "ar"
+      ? "الدفع لهذا الطلب بانتظار التأكيد — راجعه من قائمة المدفوعات في لوحة التحكم"
+      : "This order's payment is awaiting verification — resolve it in the payments queue on the dashboard";
   }
 }

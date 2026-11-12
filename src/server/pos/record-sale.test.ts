@@ -7,7 +7,8 @@ import { getCheckoutPricing } from "@/server/tenancy/settings";
 import { computeCartTotals } from "@/lib/order-totals";
 import { orderPayments, posAdjustmentEvents } from "./tender-schema";
 import { posOrderReceipts } from "./schema";
-import { NoOpenShiftError, PosForbiddenError, PosSaleError } from "./errors";
+import { NextRequest } from "next/server";
+import { NoOpenShiftError, PaymentNeedsVerificationError, PosForbiddenError, PosSaleError } from "./errors";
 import { TotalMismatchError } from "@/server/ordering/errors";
 import { issueGrant } from "./grants";
 import { recordSale, addTender } from "./record-sale";
@@ -303,26 +304,69 @@ describe("addTender", () => {
     expect(tenders).toHaveLength(1); // only the original card tender
   });
 
-  it("does not disarm pending_verification to partially_paid on partial tender (#187 C4)", async () => {
-    const { ctx, productId, total } = await seedPosContext("owner");
-    const sale = await recordSale(ctx, {
-      clientOrderId: "top-6",
-      lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
-      expectedTotal: total,
+  // #165 x POS tender (#187 review): an order whose offline payment is still
+  // unverified is resolved in the payments queue (payments:confirm), never by
+  // the till. A cashier holding only pos:sell must not be able to settle it —
+  // neither a partial tender (which used to flip it to partially_paid) nor a
+  // full one (which flipped it to paid and disarmed the fulfilment gate).
+  async function pendingVerificationSale(clientOrderId: string) {
+    const seeded = await seedPosContext("owner");
+    await openShiftForCtx(seeded.ctx);
+    const sale = await recordSale(seeded.ctx, {
+      clientOrderId,
+      lines: [{ productId: seeded.productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: seeded.total,
       payments: [{ clientPaymentId: "p-1", method: "card", amount: 1 }],
     });
-
-    // Manually mark pending_verification to simulate an offline order awaiting verification
-    await withTenant(ctx.tenantId, (tx) =>
+    // Stands in for an offline (InstaPay / wallet) order awaiting verification.
+    await withTenant(seeded.ctx.tenantId, (tx) =>
       tx.update(orders).set({ paymentStatus: "pending_verification" }).where(eq(orders.id, sale.orderId)));
+    return { ...seeded, sale };
+  }
 
-    const res = await addTender(ctx, sale.orderId, {
+  it("refuses a partial tender on a pending_verification order and records nothing", async () => {
+    const { ctx, sale } = await pendingVerificationSale("top-6");
+
+    await expect(addTender(ctx, sale.orderId, {
       clientPaymentId: "p-2", method: "card", amount: 1,
-    });
+    })).rejects.toMatchObject({ code: "payment_needs_verification" });
 
-    expect(res.paymentStatus).toBe("pending_verification");
     const [orderRow] = await withTenant(ctx.tenantId, (tx) =>
       tx.select().from(orders).where(eq(orders.id, sale.orderId)).limit(1));
     expect(orderRow.paymentStatus).toBe("pending_verification");
+    const tenders = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(orderPayments).where(eq(orderPayments.orderId, sale.orderId)));
+    expect(tenders).toHaveLength(1);
+  });
+
+  it("refuses a full tender that would settle a pending_verification order", async () => {
+    const { ctx, sale, total } = await pendingVerificationSale("top-7");
+
+    await expect(addTender(ctx, sale.orderId, {
+      clientPaymentId: "p-2", method: "cash", amount: total - 1, tenderedAmount: total - 1,
+    })).rejects.toBeInstanceOf(PaymentNeedsVerificationError);
+
+    const [orderRow] = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(orders).where(eq(orders.id, sale.orderId)).limit(1));
+    expect(orderRow.paymentStatus).toBe("pending_verification");
+  });
+
+  it("the tender route answers 422 payment_needs_verification, telling the cashier where to resolve it", async () => {
+    const { sale, deviceToken, cashierToken } = await pendingVerificationSale("top-8");
+    const { POST } = await import("@/app/api/pos/v1/sales/[id]/payments/route");
+
+    const res = await POST(
+      new NextRequest(`http://localhost/api/pos/v1/sales/${sale.orderId}/payments`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${deviceToken}`, "x-pos-cashier": cashierToken, "content-type": "application/json" },
+        body: JSON.stringify({ clientPaymentId: "p-2", method: "card", amount: 1 }),
+      }),
+      { params: Promise.resolve({ id: sale.orderId }) },
+    );
+
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.code).toBe("payment_needs_verification");
+    expect(body.error).toMatch(/payments queue/i);
   });
 });
