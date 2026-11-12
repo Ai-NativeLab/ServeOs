@@ -201,6 +201,16 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
   // shortfall still goes through the existing negative-on-hand + notification
   // path — it is reported, just not used to reject the sale.
   const allowNegative = caps.inventory && (Boolean(input.replay) || await getAllowNegativeStock(tenantId));
+  // #167 early out-of-stock refusal (#187 review) — channel-dependent, because
+  // allowNegativeStock exists so a KITCHEN is never blocked at the till, not so
+  // a customer can order what the storefront itself shows as sold out:
+  //   • web / WhatsApp — always refuse a tracked line at zero stock;
+  //   • live POS       — honour the tenant's allowNegative policy;
+  //   • POS replay     — never refuse: the sale physically happened.
+  // The inventory FIFO deduction below still applies `allowNegative` on every
+  // channel as the transactional backstop.
+  const channel = input.channel ?? "web";
+  const refuseOutOfStock = input.replay ? false : channel === "pos" ? !allowNegative : true;
 
   let scheduledFor: Date | null = null;
   if (input.scheduledFor !== undefined) {
@@ -247,15 +257,9 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
     const resolveLiveLine = async (line: PlaceOrderLine) => {
       const [product] = await tx.select().from(products).where(and(eq(products.id, line.productId), eq(products.isPublished, true))).limit(1);
       if (!product) throw new OrderValidationError("product unavailable");
-      // #167 early refusal — but ONLY where selling into zero stock is not
-      // permitted and this line is not governed by its own variant's stock:
-      //   • `allowNegative` honours the tenant setting (restaurant kitchens
-      //     default true — a marked-86 dish must never block the till) and is
-      //     forced on for POS replay (the sale physically happened; refusing
-      //     would veto a fact — see the comment above).
-      //   • Variant lines are judged by the variant's own stock check below.
-      // The inventory FIFO deduction later remains the transactional backstop.
-      if (!allowNegative && !line.variantId && product.trackStock && (product.stockQuantity ?? 0) <= 0) {
+      // #167 early refusal (policy: `refuseOutOfStock`, above). Variant lines
+      // are judged by the variant's own stock check below.
+      if (refuseOutOfStock && !line.variantId && product.trackStock && (product.stockQuantity ?? 0) <= 0) {
         throw new OutOfStockError(product.nameEn, product.nameAr);
       }
 
@@ -295,7 +299,10 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
           .where(and(eq(productVariants.id, line.variantId), eq(productVariants.productId, product.id), eq(productVariants.isActive, true)))
           .limit(1);
         if (!variant) throw new InvalidVariantError();
-        if (variant.stockQuantity !== null && variant.stockQuantity <= 0) {
+        // Same policy as the product-level gate; a variant tracks stock when its
+        // stockQuantity is set (null = untracked), the rule the storefront's
+        // inStock flag uses.
+        if (refuseOutOfStock && variant.stockQuantity !== null && variant.stockQuantity <= 0) {
           throw new OutOfStockError(variant.nameEn, variant.nameAr);
         }
         unit = Number(variant.price);
@@ -398,9 +405,9 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
         } else if (input.replay && snap && err instanceof InvalidVariantError) {
           missingReason = err.code;
         } else if (input.replay && snap && err instanceof OutOfStockError) {
-          // Belt-and-braces: with allowNegative forced on for replay the gate
-          // above no longer fires, but a variant-level stock refusal must
-          // still fall back to the snapshot rather than vetoing the sale.
+          // Belt-and-braces: replay never takes the early stock refusal
+          // (refuseOutOfStock is false), but should any stock refusal reach
+          // here it must fall back to the snapshot rather than veto the sale.
           missingReason = err.code;
         } else {
           throw err;

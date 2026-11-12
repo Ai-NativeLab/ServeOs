@@ -538,23 +538,97 @@ describe("placeOrder — restaurant recipes (BOM)", () => {
     expect(await onHand(t.id, itemIds[0], locationId)).toBe(-300);
   });
 
-  // C2 (PR #187 review): restaurant kitchens default allowNegativeStock=true —
-  // #167's refusal must not extend into tenants/channels where selling into
-  // negative stock is the merchant's explicit choice.
-  it("a restaurant may still order a tracked dish at zero stock (default allowNegative)", async () => {
-    const { t, branch } = await setup("oos2");
+  // #167 vs allowNegativeStock (#187 review). The tenant setting exists so a
+  // KITCHEN is never blocked at the till — it is not a licence to take web
+  // orders for a dish the storefront itself shows as sold out. So the early
+  // refusal is channel-dependent: web/WhatsApp always refuse, a live POS sale
+  // honours allowNegative, and a POS replay never refuses.
+  async function zeroStockDish(slug: string) {
+    const ctx = await setup(slug);
     const { setProductStock } = await import("@/server/catalog/variants");
     const { createCategory, createProduct, updateProduct } = await import("@/server/catalog/service");
+    const cat = await createCategory(ctx.t.id, { nameEn: "Grill", nameAr: "مشويات" });
+    const dish = await createProduct(ctx.t.id, { nameEn: "Kofta", nameAr: "كفتة", basePrice: "80", categoryId: cat.id });
+    await updateProduct(ctx.t.id, dish.id, { isPublished: true, trackStock: true });
+    await setProductStock(ctx.t.id, dish.id, 0);
+    return { ...ctx, dish };
+  }
 
-    const cat = await createCategory(t.id, { nameEn: "Grill", nameAr: "مشويات" });
-    const dish = await createProduct(t.id, { nameEn: "Kofta", nameAr: "كفتة", basePrice: "80", categoryId: cat.id });
-    await updateProduct(t.id, dish.id, { isPublished: true, trackStock: true });
-    await setProductStock(t.id, dish.id, 0);
+  it("the till may still sell a tracked dish at zero stock (restaurant default allowNegative)", async () => {
+    const { t, branch, dish } = await zeroStockDish("oos2");
+
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "Walk-in", customerPhone: "000000000",
+      channel: "pos",
+      lines: [{ productId: dish.id, quantity: 1, selectedOptionIds: [] }],
+    })).resolves.toBeDefined();
+  });
+
+  it("a web order for a sold-out dish is refused even though the kitchen allows negative stock (#167)", async () => {
+    const { t, branch, dish } = await zeroStockDish("oos3");
+    const { OutOfStockError } = await import("./errors");
 
     await expect(placeOrder(t.id, {
       branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01012345678",
       lines: [{ productId: dish.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(OutOfStockError);
+  });
+
+  it("a WhatsApp order for a sold-out dish is refused the same way", async () => {
+    const { t, branch, dish } = await zeroStockDish("oos4");
+    const { OutOfStockError } = await import("./errors");
+
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "+201012345678",
+      channel: "whatsapp",
+      lines: [{ productId: dish.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(OutOfStockError);
+  });
+
+  it("a live till sale honours an explicit allowNegativeStock=false", async () => {
+    const { t, branch, dish } = await zeroStockDish("oos5");
+    const { OutOfStockError } = await import("./errors");
+    const { setAllowNegativeStock } = await import("@/server/tenancy/settings");
+    await setAllowNegativeStock(t.id, false);
+
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "Walk-in", customerPhone: "000000000",
+      channel: "pos",
+      lines: [{ productId: dish.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(OutOfStockError);
+  });
+
+  // The variant guard follows the same policy. A variant's stock is tracked
+  // when its stockQuantity is set (null = untracked) — the same rule the
+  // storefront's inStock flag uses. Variants are a retail capability, so this
+  // is a retail tenant that has opted into negative stock.
+  async function zeroStockVariant(slug: string) {
+    const ctx = await setupRetail(slug);
+    const { upsertVariant } = await import("@/server/catalog/variants");
+    const { setAllowNegativeStock } = await import("@/server/tenancy/settings");
+    await setAllowNegativeStock(ctx.t.id, true);
+    const v = await upsertVariant(ctx.t.id, ctx.hinge.id, { id: ctx.v35.id, nameEn: "35mm", nameAr: "٣٥مم", price: "55", stockQuantity: 0 });
+    return { ...ctx, v };
+  }
+
+  it("the till may sell a zero-stock variant when the tenant allows negative stock", async () => {
+    const { t, branch, hinge, v } = await zeroStockVariant("oosv1");
+
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "Walk-in", customerPhone: "000000000",
+      channel: "pos",
+      lines: [{ productId: hinge.id, variantId: v.id, quantity: 1, selectedOptionIds: [] }],
     })).resolves.toBeDefined();
+  });
+
+  it("a web order for a zero-stock variant is refused even when the tenant allows negative stock", async () => {
+    const { t, branch, hinge, v } = await zeroStockVariant("oosv2");
+    const { OutOfStockError } = await import("./errors");
+
+    await expect(placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "01012345678",
+      lines: [{ productId: hinge.id, variantId: v.id, quantity: 1, selectedOptionIds: [] }],
+    })).rejects.toThrow(OutOfStockError);
   });
 
   it("a dish with no recipe link still sells — a restaurant can enable inventory before building recipes", async () => {
