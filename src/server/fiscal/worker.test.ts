@@ -407,6 +407,33 @@ describe("finalization at enqueue time", () => {
   });
 });
 
+describe("finalization — the SAME row raced (double-finalize guard)", () => {
+  it("stamps one identity when the sale path and a worker claim finalize one row at once", async () => {
+    // Configured after the sale so the row is unfinalized, then finalized by
+    // several callers AT ONCE — the sale path's inline call and a cron claim can
+    // land together, because `next_attempt_at` defaults to now(). Before the
+    // locked re-check, each loser re-hashed against the head the winner had just
+    // advanced: a second uuid/QR over a printed receipt, and a forked chain.
+    const s = await seedSale({ configureFirst: false });
+    const [row] = await rowsFor(s.tenantId);
+    expect(row.etaUuid).toBeNull();
+
+    const outcomes = await Promise.all([1, 2, 3].map(() => finalizeSubmissionRow(s.tenantId, row.id)));
+
+    const statuses = outcomes.map((outcome) => outcome.status).sort();
+    expect(statuses).toEqual(["already-finalized", "already-finalized", "finalized"]);
+    const uuids = new Set(outcomes.map((outcome) => ("etaUuid" in outcome ? outcome.etaUuid : null)));
+    expect(uuids.size).toBe(1);
+
+    const [stored] = await rowsFor(s.tenantId);
+    expect(uuids.has(stored.etaUuid)).toBe(true);
+    // The chain advanced exactly once, from genesis, to the stored identity.
+    expect(header(stored.requestJson).previousUUID).toBe("");
+    const [chain] = await chainFor(s.tenantId);
+    expect(chain.lastUuid).toBe(stored.etaUuid);
+  });
+});
+
 describe("drainEtaSubmissions — accept path", () => {
   it("finalizes an unfinalized row, submits it, polls it, and accepts it with audits in the same tx", async () => {
     const s = await seedSale({ configureFirst: false });

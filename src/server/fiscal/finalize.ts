@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql, lt, gt, asc } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql, lt, gt, asc } from "drizzle-orm";
 import { withTenant, type Tx } from "@/db/with-tenant";
 import { orders, orderItems, type Order, type OrderItem } from "@/server/ordering/schema";
 import { orderPayments } from "@/server/pos/tender-schema";
@@ -183,6 +183,18 @@ export async function finalizeSubmissionRow(tenantId: string, submissionId: stri
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${tenantId})::bigint)`);
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`${tenantId}:${deviceId}`})::bigint)`);
 
+    // (b') RE-CHECK UNDER THE LOCKS. The `etaUuid` test above ran before either
+    // lock was held, so two finalizations of the SAME row — the sale path's
+    // inline call and a worker claim, which can land together because
+    // `next_attempt_at` defaults to now() — could both pass it. The loser then
+    // waited on the tenant lock and, without this re-read, would re-hash the
+    // document against the chain head the WINNER just advanced: a second uuid
+    // and QR over a receipt whose first ones are already printed, and a device
+    // chain with a link nobody filed. Re-selected `FOR UPDATE` so nothing else
+    // can stamp the row between this read and the write below.
+    const lockedUuid = await lockedEtaUuid(tx, tenantId, submissionId);
+    if (lockedUuid) return { status: "already-finalized", deviceId, etaUuid: lockedUuid } as const;
+
     const config = await loadTenantConfig(tx, tenantId);
     const deviceSerial = await loadDeviceSerial(tx, tenantId, deviceId);
 
@@ -220,8 +232,12 @@ export async function finalizeSubmissionRow(tenantId: string, submissionId: stri
 
     const finalized = finalizeReceipt(doc, wireCtx, { portalBase: getEtaEnv(config.environment).portalBase });
 
-    // (e) Persist the fiscal identity.
-    await tx.update(etaSubmissions).set({
+    // (e) Persist the fiscal identity — CONDITIONALLY. `eta_uuid IS NULL` makes
+    // the write itself refuse to overwrite an issued identity even if a future
+    // caller reaches here without the locked re-check above; zero rows back
+    // means someone else finalized, and the chain head must NOT advance over a
+    // uuid that was never persisted.
+    const stamped = await tx.update(etaSubmissions).set({
       // The EXACT bytes ETA will receive, cast rather than handed to Drizzle's
       // JSON mapper: `JSON.stringify` would turn every `WireDecimal` into
       // `{"literal":"114.00"}` and lose the unquoted literals ETA re-derives
@@ -237,7 +253,17 @@ export async function finalizeSubmissionRow(tenantId: string, submissionId: stri
       // uuid or the QR into it would misrepresent an unsigned document as a
       // signed one.
       hashOrSignature: null,
-    }).where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, submissionId)));
+    }).where(and(
+      eq(etaSubmissions.tenantId, tenantId),
+      eq(etaSubmissions.id, submissionId),
+      isNull(etaSubmissions.etaUuid),
+    )).returning({ id: etaSubmissions.id });
+
+    if (stamped.length === 0) {
+      const winner = await lockedEtaUuid(tx, tenantId, submissionId);
+      if (!winner) throw new Error(`fiscal: submission ${submissionId} could not be stamped and carries no etaUuid`);
+      return { status: "already-finalized", deviceId, etaUuid: winner } as const;
+    }
 
     // (f) Advance the chain head, in the same transaction as the hash that
     // used it.
@@ -322,6 +348,15 @@ export async function finalizeSubmissionRow(tenantId: string, submissionId: stri
  */
 async function finalizeInvoiceRow(tx: Tx, tenantId: string, row: EtaSubmission): Promise<FinalizeOutcome> {
   if (isWireDocument(row.requestJson)) return { status: "invoice-already-finalized" } as const;
+  // Same double-finalize hazard as the receipt path, without its advisory
+  // locks: two concurrent builds would each sign and write, and the second
+  // write could replace bytes the first had already handed to ETA. A row lock
+  // serializes them; the loser re-reads the winner's wire document and stops.
+  const [locked] = await tx.select({ requestJson: etaSubmissions.requestJson }).from(etaSubmissions)
+    .where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, row.id)))
+    .limit(1)
+    .for("update");
+  if (locked && isWireDocument(locked.requestJson)) return { status: "invoice-already-finalized" } as const;
 
   const config = await loadTenantConfig(tx, tenantId);
   const buyer = stagedBuyer(row);
@@ -664,6 +699,16 @@ export async function reconcileMissingReceipts(
 // ---------------------------------------------------------------------------
 // Loaders — every one of them runs on the caller's tenant-scoped transaction.
 // ---------------------------------------------------------------------------
+
+/** The row's `eta_uuid`, read with a row lock — the under-lock half of the
+ *  double-finalize guard in `finalizeSubmissionRow`. */
+async function lockedEtaUuid(tx: Tx, tenantId: string, submissionId: string): Promise<string | null> {
+  const [locked] = await tx.select({ etaUuid: etaSubmissions.etaUuid }).from(etaSubmissions)
+    .where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, submissionId)))
+    .limit(1)
+    .for("update");
+  return locked?.etaUuid ?? null;
+}
 
 async function loadSubmission(tx: Tx, tenantId: string, submissionId: string): Promise<EtaSubmission> {
   const [row] = await tx.select().from(etaSubmissions)
