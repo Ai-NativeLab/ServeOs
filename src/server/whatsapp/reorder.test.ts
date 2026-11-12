@@ -3,7 +3,7 @@ import { placeOrder } from "@/server/ordering/service";
 import { lastWhatsappCart } from "./reorder";
 import { seedWhatsappContext } from "./test-helpers";
 
-const WA = "201012345678"; // a VALID EG mobile once the #173 rule landed (+20 10 �)
+const WA = "201012345678"; // a VALID EG mobile once the #173 rule landed (+20 10 …)
 
 describe("lastWhatsappCart", () => {
   it("returns null when this number has never ordered", async () => {
@@ -41,7 +41,7 @@ describe("lastWhatsappCart", () => {
   });
 
   // #187 review: a FOREIGN wa_id (e.g. a UK number on an EG tenant) is still
-  // Meta-verified and reachable � the country rule must not dead-letter the
+  // Meta-verified and reachable — the country rule must not dead-letter the
   // confirmed order.
   it("places an order for a foreign wa_id without applying the tenant phone rule", async () => {
     const { tenantId, branchId, productId } = await seedWhatsappContext();

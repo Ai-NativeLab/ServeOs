@@ -2,7 +2,7 @@ import { resolveDevice } from "./service";
 import { PosAuthError, PosTenantBlockedError } from "./errors";
 import { getTenantById } from "@/server/tenancy";
 
-/** The terminal's own identity �?" deliberately NOT a cashier session (see
+/** The terminal's own identity — deliberately NOT a cashier session (see
  *  PosCashierContext). What sync-ingest.ts authenticates the whole batch
  *  against: every event inside still carries its own actorUserId. */
 export type PosDeviceContext = { deviceId: string; tenantId: string; branchId: string; createdByUserId: string };
