@@ -999,6 +999,77 @@ describe("drainEtaSubmissions — return receipts", () => {
   });
 });
 
+describe("drainEtaSubmissions — return receipts on a corrected sale", () => {
+  async function refundOne(s: Fixture, clientRefundId: string) {
+    return issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "partial",
+      lines: [{ orderItemId: (await orderItemIds(s.tenantId, s.receipt.orderId))[0], quantity: 1, amount: 100, restock: false }],
+      payments: [{ method: "cash", amount: 100 }],
+      reasonCode: "other",
+      clientRefundId,
+    });
+  }
+
+  it("references the ACCEPTED correction, not the rejected original", async () => {
+    const s = await seedSale({ configureFirst: true });
+    const original = (await rowsFor(s.tenantId))[0];
+    await drainEtaSubmissions({ provider: new FakeEta([rejection()]), reconcile: false });
+
+    const correctionId = (await enqueueCorrectedResubmission({ tenantId: s.tenantId }, original.id))!;
+    const saleProvider = new FakeEta([accepted202("sub-fix")], [pollValid("LONG-FIX")]);
+    await drainEtaSubmissions({ provider: saleProvider, reconcile: false });
+    await makeEligible(s.tenantId, correctionId);
+    await drainEtaSubmissions({ provider: saleProvider, reconcile: false });
+    const correction = (await rowsFor(s.tenantId)).find((row) => row.id === correctionId)!;
+    expect(correction.status).toBe("accepted");
+
+    const refund = await refundOne(s, "r-corrected");
+    const returnProvider = new FakeEta([accepted202("sub-return")]);
+    await drainEtaSubmissions({ provider: returnProvider, reconcile: false });
+
+    const ret = (await rowsFor(s.tenantId)).find((row) => row.refundId === refund.refundId)!;
+    expect(ret.status).toBe("submitted");
+    expect(header(ret.requestJson).referenceUUID).toBe(correction.etaUuid);
+    expect(header(ret.requestJson).referenceUUID).not.toBe(original.etaUuid);
+  });
+
+  it("fails permanently, with an owner alert, when the sale was rejected and never corrected", async () => {
+    const s = await seedSale({ configureFirst: true });
+    await drainEtaSubmissions({ provider: new FakeEta([rejection()]), reconcile: false });
+    const refund = await refundOne(s, "r-orphan");
+
+    await drainEtaSubmissions({ provider: new FakeEta([]), reconcile: false });
+
+    const ret = (await rowsFor(s.tenantId)).find((row) => row.refundId === refund.refundId)!;
+    expect(ret.status).toBe("failed");
+    expect(ret.attempts).toBe(MAX_ATTEMPTS);
+    expect(ret.lastError).toMatch(/parent-receipt-not-accepted/);
+    const alerts = (await notificationsFor(s.tenantId)).filter((n) => n.entityId === ret.id);
+    expect(alerts).toHaveLength(1);
+  });
+
+  it("keeps deferring while a correction of the rejected sale is still in flight", async () => {
+    const s = await seedSale({ configureFirst: true });
+    const original = (await rowsFor(s.tenantId))[0];
+    await drainEtaSubmissions({ provider: new FakeEta([rejection()]), reconcile: false });
+    await enqueueCorrectedResubmission({ tenantId: s.tenantId }, original.id);
+    const refund = await refundOne(s, "r-waiting");
+
+    // Only the RETURN is eligible: the pending correction keeps the parent live.
+    const ret0 = (await rowsFor(s.tenantId)).find((row) => row.refundId === refund.refundId)!;
+    await withTenant(s.tenantId, (tx) => tx.update(etaSubmissions)
+      .set({ nextAttemptAt: sql`now() + interval '1 hour'` })
+      .where(and(eq(etaSubmissions.tenantId, s.tenantId), sql`${etaSubmissions.id} <> ${ret0.id}`)));
+    const result = await drainEtaSubmissions({ provider: new FakeEta([]), reconcile: false });
+
+    expect(result.deferred).toBe(1);
+    const ret = (await rowsFor(s.tenantId)).find((row) => row.refundId === refund.refundId)!;
+    expect(ret.status).toBe("pending");
+    expect(ret.attempts).toBe(0);
+  });
+});
+
 describe("drainEtaSubmissions — corrected resubmission", () => {
   it("hashes the rejected document's uuid into the correction and chains it after it", async () => {
     const s = await seedSale({ configureFirst: true });

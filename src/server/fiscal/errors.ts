@@ -232,3 +232,22 @@ export class BuyerIdRequiredError extends FiscalDocumentError {
     this.name = "BuyerIdRequiredError";
   }
 }
+
+/**
+ * A return receipt whose parent sale will never be accepted by ETA as things
+ * stand: every `e_receipt` filed for the order is terminal (rejected, or failed
+ * at the attempt cap) and none was accepted. A return's `referenceUUID` must
+ * name a receipt ETA holds as valid, so there is nothing to reference and
+ * waiting will not produce one. PERMANENT, so the owner is alerted: correct and
+ * resubmit the SALE first; the return can only be filed once it is accepted.
+ */
+export class ParentReceiptNotAcceptedError extends FiscalDocumentError {
+  readonly code = "parent-receipt-not-accepted";
+  constructor(readonly orderId: string, readonly detail: string) {
+    super(
+      `fiscal: the sale receipt for order ${orderId} was never accepted by ETA (${detail}), so this return has no ` +
+        "receipt to reference. Resubmit a corrected sale receipt from the fiscal dashboard first.",
+    );
+    this.name = "ParentReceiptNotAcceptedError";
+  }
+}

@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql, lt, gt, asc } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql, lt, gt, asc, desc } from "drizzle-orm";
 import { withTenant, type Tx } from "@/db/with-tenant";
 import { orders, orderItems, type Order, type OrderItem } from "@/server/ordering/schema";
 import { orderPayments } from "@/server/pos/tender-schema";
@@ -16,12 +16,13 @@ import { signingKeyThunk } from "./config";
 import { stringifyWire } from "./serialize";
 import { getEtaEnv } from "./eta-env";
 import { EtaConfigError } from "./eta-transport-errors";
-import { IrreconcilableOrderError } from "./errors";
+import { IrreconcilableOrderError, ParentReceiptNotAcceptedError } from "./errors";
 import {
   allocateLargestRemainder, assertDecimal, compareDecimal, divideDecimal, isZeroDecimal,
   multiplyDecimal, subtractDecimal, sumDecimal,
 } from "./decimal";
 import { enqueueFiscalDocument } from "./enqueue";
+import { SUBMISSION_MAX_ATTEMPTS } from "./constants";
 import type { FiscalDocument, FiscalSaleInput, FiscalInvoiceBuyer } from "./provider";
 
 /**
@@ -759,22 +760,56 @@ async function loadRefundOrderId(tx: Tx, tenantId: string, row: EtaSubmission): 
   return refund.orderId;
 }
 
-/** The parent sale's self-computed uuid, or null while it has none — the
- *  return receipt's Mandatory `referenceUUID`. */
+/**
+ * The uuid the return receipt's Mandatory `referenceUUID` names: the order's
+ * ACCEPTED sale receipt — or null while there is none yet (the caller defers).
+ *
+ * NOT "the original row". An order can carry several `e_receipt` rows: the
+ * original and, after a rejection, corrected resubmissions (each a new
+ * document with its own uuid, `referenceOldUuid` pointing back). The original
+ * of a corrected sale is by definition the REJECTED one, so keying on
+ * `referenceOldUuid IS NULL` (as this once did) picked exactly the document ETA
+ * refused and deferred the return forever. What a return must reference is the
+ * document ETA holds as valid, so the accepted row wins, latest first.
+ *
+ * ACCEPTED, not merely finalized: the uuid exists as soon as a sale is hashed,
+ * but a return naming a receipt ETA has not accepted would name a document
+ * that may never exist on ETA's side.
+ *
+ * NO ACCEPTED ROW:
+ *   - some receipt is still live (pending / submitted / failed-but-retrying):
+ *     defer, it may yet be accepted;
+ *   - none exists at all: defer — the sale may not have been enqueued yet
+ *     (the reconciliation sweep adopts it);
+ *   - every one is terminal: `ParentReceiptNotAcceptedError`, permanent, so the
+ *     owner is told to correct the sale rather than the return waiting forever.
+ */
 async function loadParentUuid(tx: Tx, tenantId: string, row: EtaSubmission): Promise<string | null> {
   const orderId = await loadRefundOrderId(tx, tenantId, row);
-  const [parent] = await tx.select({ etaUuid: etaSubmissions.etaUuid, status: etaSubmissions.status })
+  const receipts = await tx.select({
+    etaUuid: etaSubmissions.etaUuid, status: etaSubmissions.status, attempts: etaSubmissions.attempts,
+  })
     .from(etaSubmissions)
     .where(and(
       eq(etaSubmissions.tenantId, tenantId),
       eq(etaSubmissions.docType, "e_receipt"),
       eq(etaSubmissions.orderId, orderId),
-      sql`${etaSubmissions.referenceOldUuid} is null`,
-    )).limit(1);
-  // ACCEPTED, not merely finalized. The uuid exists as soon as the sale is
-  // hashed, but a return referencing a receipt ETA has not accepted (or has
-  // rejected) would name a document that may never exist on ETA's side.
-  return parent?.status === "accepted" ? parent.etaUuid : null;
+    ))
+    .orderBy(desc(etaSubmissions.createdAt), desc(etaSubmissions.id));
+
+  const accepted = receipts.find((receipt) => receipt.status === "accepted" && receipt.etaUuid);
+  if (accepted) return accepted.etaUuid;
+  if (receipts.length === 0) return null;
+
+  const live = receipts.some((receipt) =>
+    receipt.status === "pending" || receipt.status === "submitted" ||
+    (receipt.status === "failed" && receipt.attempts < SUBMISSION_MAX_ATTEMPTS));
+  if (live) return null;
+
+  throw new ParentReceiptNotAcceptedError(
+    orderId,
+    receipts.map((receipt) => receipt.status === "failed" ? "failed permanently" : receipt.status).join(", "),
+  );
 }
 
 type ResolvedConfig = {

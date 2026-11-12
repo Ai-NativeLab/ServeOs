@@ -13,7 +13,7 @@ import { FiscalDocumentError } from "./errors";
 import { EtaConfigError, EtaTransportError } from "./eta-transport-errors";
 import type { EmailProvider } from "@/server/email/provider";
 import { FISCAL_AUDIT_ACTIONS, recordFiscalAudit, notifyFiscalFailure } from "./effects";
-import { SUBMISSION_WINDOW_MS, isReceiptSubmissionWindowFamily } from "./constants";
+import { SUBMISSION_MAX_ATTEMPTS, SUBMISSION_WINDOW_MS, isReceiptSubmissionWindowFamily } from "./constants";
 import { deliverFiscalDocumentEmail } from "./customer-email";
 import { finalizeSubmissionRow, reconcileMissingReceipts } from "./finalize";
 import { parseWire } from "./parse-wire";
@@ -43,7 +43,7 @@ import { parseWire } from "./parse-wire";
  * response — which arrives as a retryable `EtaTransportError` carrying
  * `retryAfterSeconds` — is what keeps that bounded.
  */
-export const MAX_ATTEMPTS = 6;
+export const MAX_ATTEMPTS = SUBMISSION_MAX_ATTEMPTS;
 
 /** Same base and shape as the notifications outbox: `2 ** attempts * base`. */
 const BACKOFF_BASE_MS = 30 * 1000;
