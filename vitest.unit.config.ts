@@ -22,7 +22,8 @@ export default defineConfig({
       "src/app/subscribe/**/*.test.ts",
       "src/app/register/**/*.test.ts",
       "src/app/_components/**/*.test.ts",
-      "src/app/dashboard/**/*.test.ts",
+      // Pure form parsers only — the dashboard action tests need a database.
+      "src/app/dashboard/**/*-form.test.ts",
       "src/server/catalog/pricing.test.ts",
     ],
     env: { NODE_ENV: "test" },

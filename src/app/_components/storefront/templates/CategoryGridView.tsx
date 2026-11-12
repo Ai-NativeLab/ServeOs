@@ -2,38 +2,17 @@
 import { useState, useEffect } from "react";
 import { ArrowLeft, Search } from "lucide-react";
 import type { PublishedMenu } from "@/server/catalog/schema";
-import type { Cart } from "@/app/_components/cart";
-import { getSimpleProductQuantity } from "@/app/_components/cart";
-import { ProductCard, type MenuProduct } from "@/app/_components/storefront/ProductCard";
-import { FeaturedCard } from "@/app/_components/storefront/FeaturedCard";
+import type { MenuProduct } from "@/app/_components/storefront/ProductCard";
 import { SectionHeader } from "@/app/_components/storefront/SectionHeader";
-import { isNewProduct } from "@/lib/product-badges";
 
 export function CategoryGridView({
   menu,
-  currency,
-  orderingEnabled,
-  popularIds,
-  cart,
-  needsBranchPick,
-  onOpenProduct,
-  onPickBranch,
-  onUpdateQuantity,
   renderProductCard,
+  renderFeaturedCard,
 }: {
   menu: PublishedMenu;
-  currency: string;
-  orderingEnabled: boolean;
-  popularIds: string[];
-  cart: Cart;
-  needsBranchPick: boolean;
-  onOpenProduct: (p: MenuProduct) => void;
-  onPickBranch: (productId: string) => void;
-  onUpdateQuantity: (
-    product: { id: string; nameEn: string; nameAr: string; effectivePrice: number },
-    delta: number,
-  ) => void;
-  renderProductCard?: (product: MenuProduct) => React.ReactNode;
+  renderProductCard: (product: MenuProduct) => React.ReactNode;
+  renderFeaturedCard?: (product: MenuProduct) => React.ReactNode;
 }) {
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -126,28 +105,7 @@ export function CategoryGridView({
           ) : (
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
               {filteredProducts.map((p) =>
-                renderProductCard ? (
-                  renderProductCard(p)
-                ) : (
-                  <ProductCard
-                    key={p.id}
-                    product={p}
-                    interactive={orderingEnabled}
-                    onOpen={() => (needsBranchPick ? onPickBranch(p.id) : onOpenProduct(p))}
-                    currency={currency}
-                    badge={popularIds.includes(p.id) ? "popular" : isNewProduct(p.createdAt) ? "new" : null}
-                    quantity={getSimpleProductQuantity(cart, p.id)}
-                    onQuickAdd={() => {
-                      if (needsBranchPick) onPickBranch(p.id);
-                      else onUpdateQuantity(p, 1);
-                    }}
-                    onIncrement={() => {
-                      if (needsBranchPick) onPickBranch(p.id);
-                      else onUpdateQuantity(p, 1);
-                    }}
-                    onDecrement={() => onUpdateQuantity(p, -1)}
-                  />
-                ),
+                renderProductCard(p),
               )}
             </div>
           )}
@@ -174,44 +132,14 @@ export function CategoryGridView({
           />
 
           {(() => {
-            const featured = selectedCategory.products.find((p) => p.isFeatured) ?? null;
+            const featured = renderFeaturedCard ? (selectedCategory.products.find((p) => p.isFeatured) ?? null) : null;
             const rest = selectedCategory.products.filter((p) => p.id !== featured?.id);
             return (
               <>
-                {featured && (
-                  <div className="mt-4">
-                    <FeaturedCard
-                      product={featured}
-                      currency={currency}
-                      interactive={orderingEnabled}
-                      onOpen={() => (needsBranchPick ? onPickBranch(featured.id) : onOpenProduct(featured))}
-                    />
-                  </div>
-                )}
+                {featured && renderFeaturedCard && <div className="mt-4">{renderFeaturedCard(featured)}</div>}
                 <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
                   {rest.map((p) =>
-                    renderProductCard ? (
-                      renderProductCard(p)
-                    ) : (
-                      <ProductCard
-                        key={p.id}
-                        product={p}
-                        interactive={orderingEnabled}
-                        onOpen={() => (needsBranchPick ? onPickBranch(p.id) : onOpenProduct(p))}
-                        currency={currency}
-                        badge={popularIds.includes(p.id) ? "popular" : isNewProduct(p.createdAt) ? "new" : null}
-                        quantity={getSimpleProductQuantity(cart, p.id)}
-                        onQuickAdd={() => {
-                          if (needsBranchPick) onPickBranch(p.id);
-                          else onUpdateQuantity(p, 1);
-                        }}
-                        onIncrement={() => {
-                          if (needsBranchPick) onPickBranch(p.id);
-                          else onUpdateQuantity(p, 1);
-                        }}
-                        onDecrement={() => onUpdateQuantity(p, -1)}
-                      />
-                    ),
+                    renderProductCard(p),
                   )}
                 </div>
               </>

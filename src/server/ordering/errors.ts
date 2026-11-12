@@ -77,6 +77,27 @@ export class OutOfStockError extends DomainError {
   }
 }
 
+export type ChangedLinePrice = { index: number; productId: string; expectedUnitPrice: number; unitPrice: number };
+
+/**
+ * A line's live unit price differs from the one the customer's cart showed —
+ * typically a promotion that ended (or started) after the item was carted.
+ * The order is refused rather than charged at a price the customer never
+ * saw; `lines` carries the live prices so the client can reprice its cart.
+ */
+export class PriceChangedError extends DomainError {
+  readonly code = "price_changed";
+  constructor(public readonly lines: ChangedLinePrice[]) {
+    super(`Price changed on ${lines.length} line(s)`);
+    this.name = "PriceChangedError";
+  }
+  messageFor(locale: Locale): string {
+    return locale === "ar"
+      ? "تغيّرت بعض الأسعار منذ أضفتها للسلة — راجع السلة المحدّثة ثم أكّد الطلب"
+      : "Some prices changed since you added them to your cart — review the updated cart and place the order again";
+  }
+}
+
 /**
  * The client displayed a total that does not match what the server computes
  * from live prices. A register must fail loudly rather than quietly charge a

@@ -1,6 +1,7 @@
 import { formatMoney } from "@/lib/money";
 import { arabicDescription } from "./bilingual";
 import type { MenuProduct } from "./ProductCard";
+import { discountLabel } from "./Badge";
 
 export function FeaturedCard({ product, currency, interactive, onOpen }: {
   product: MenuProduct; currency: string; interactive: boolean; onOpen: () => void;
@@ -19,9 +20,9 @@ export function FeaturedCard({ product, currency, interactive, onOpen }: {
         : <div className="h-full w-full bg-secondary" />}
       <div className="absolute inset-0 bg-gradient-to-r from-ink/85 via-ink/40 to-transparent" />
       <div className="absolute inset-y-0 left-0 flex max-w-[75%] flex-col justify-end p-4 sm:p-5">
-        {product.hasDiscount && product.discountPercent ? (
+        {discountLabel(product) ? (
           <span className="sf-badge bg-destructive text-destructive-foreground font-bold mb-2 self-start shadow-sm">
-            {`-${product.discountPercent}%`}
+            {discountLabel(product)}
           </span>
         ) : (
           <span className="sf-badge-soft mb-2 self-start">Featured</span>

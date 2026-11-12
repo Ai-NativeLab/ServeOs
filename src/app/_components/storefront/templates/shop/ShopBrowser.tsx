@@ -5,6 +5,7 @@ import {
   addLine,
   loadCart,
   setLineQuantity,
+  clearCart,
   cartSubtotal,
   getSimpleProductQuantity,
   updateSimpleProductQuantity,
@@ -19,6 +20,7 @@ import { BranchPickSheet } from "@/app/_components/storefront/BranchPickSheet";
 import { CartDrawer } from "@/app/_components/storefront/CartDrawer";
 import { SectionHeader } from "@/app/_components/storefront/SectionHeader";
 import { ShopProductCard } from "./ShopProductCard";
+import { CartAnnouncer, quantityAnnouncement } from "@/app/_components/storefront/QuickAddControl";
 import { RetailProductSheet } from "./RetailProductSheet";
 import { filterCatalog } from "./shop-search";
 import { CategoryGridView } from "@/app/_components/storefront/templates/CategoryGridView";
@@ -43,6 +45,7 @@ export function ShopBrowser({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [activeProduct, setActiveProduct] = useState<MenuProduct | null>(null);
   const [branchPickFor, setBranchPickFor] = useState<string | null>(null);
+  const [announcement, setAnnouncement] = useState("");
   const [query, setQuery] = useState("");
   const needsBranchPick = branchId === null && branches.length > 1;
 
@@ -72,136 +75,45 @@ export function ShopBrowser({
     }));
   }
 
+  /** Card quick-add / stepper. Increments need a branch first (same as the
+   * sheet); decrements only ever touch lines already in this branch's cart. */
+  function changeSimpleQuantity(p: MenuProduct, delta: 1 | -1) {
+    if (delta > 0 && needsBranchPick) {
+      setBranchPickFor(p.id);
+      return;
+    }
+    const next = updateSimpleProductQuantity(
+      branchId,
+      { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
+      delta,
+    );
+    setCart(next);
+    setAnnouncement(quantityAnnouncement(p.nameEn, getSimpleProductQuantity(next, p.id, branchId)));
+  }
+
   const itemCount = cart.lines.reduce((s, l) => s + l.quantity, 0);
   const visible = filterCatalog(menu.categories, query);
+
+  const renderProductCard = (p: MenuProduct) => (
+    <ShopProductCard
+      key={p.id}
+      product={p}
+      interactive={orderingEnabled}
+      onOpen={() => (needsBranchPick ? setBranchPickFor(p.id) : setActiveProduct(p))}
+      currency={currency}
+      quantity={getSimpleProductQuantity(cart, p.id, branchId)}
+      onQuickAdd={() => changeSimpleQuantity(p, 1)}
+      onIncrement={() => changeSimpleQuantity(p, 1)}
+      onDecrement={() => changeSimpleQuantity(p, -1)}
+    />
+  );
 
   return (
     <>
       {catalogDisplayMode === "category_grid" ? (
-        <CategoryGridView
-          menu={menu}
-          currency={currency}
-          orderingEnabled={orderingEnabled}
-          popularIds={[]}
-          cart={cart}
-          needsBranchPick={needsBranchPick}
-          onOpenProduct={(p) => setActiveProduct(p)}
-          onPickBranch={(pid) => setBranchPickFor(pid)}
-          onUpdateQuantity={(p, delta) => {
-            setCart(updateSimpleProductQuantity(branchId, p, delta));
-          }}
-          renderProductCard={(p) => {
-            const simpleQty = getSimpleProductQuantity(cart, p.id);
-            return (
-              <ShopProductCard
-                key={p.id}
-                product={p}
-                interactive={orderingEnabled}
-                onOpen={() => (needsBranchPick ? setBranchPickFor(p.id) : setActiveProduct(p))}
-                currency={currency}
-                quantity={simpleQty}
-                onQuickAdd={() => {
-                  if (needsBranchPick) {
-                    setBranchPickFor(p.id);
-                  } else {
-                    setCart(
-                      updateSimpleProductQuantity(
-                        branchId,
-                        { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
-                        1,
-                      ),
-                    );
-                  }
-                }}
-                onIncrement={() => {
-                  if (needsBranchPick) {
-                    setBranchPickFor(p.id);
-                  } else {
-                    setCart(
-                      updateSimpleProductQuantity(
-                        branchId,
-                        { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
-                        1,
-                      ),
-                    );
-                  }
-                }}
-                onDecrement={() => {
-                  setCart(
-                    updateSimpleProductQuantity(
-                      branchId,
-                      { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
-                      -1,
-                    ),
-                  );
-                }}
-              />
-            );
-          }}
-        />
+        <CategoryGridView menu={menu} renderProductCard={renderProductCard} />
       ) : catalogDisplayMode === "paginated" ? (
-        <PaginatedCatalogView
-          menu={menu}
-          currency={currency}
-          orderingEnabled={orderingEnabled}
-          popularIds={[]}
-          cart={cart}
-          needsBranchPick={needsBranchPick}
-          itemsPerPage={itemsPerPage}
-          onOpenProduct={(p) => setActiveProduct(p)}
-          onPickBranch={(pid) => setBranchPickFor(pid)}
-          onUpdateQuantity={(p, delta) => {
-            setCart(updateSimpleProductQuantity(branchId, p, delta));
-          }}
-          renderProductCard={(p) => {
-            const simpleQty = getSimpleProductQuantity(cart, p.id);
-            return (
-              <ShopProductCard
-                key={p.id}
-                product={p}
-                interactive={orderingEnabled}
-                onOpen={() => (needsBranchPick ? setBranchPickFor(p.id) : setActiveProduct(p))}
-                currency={currency}
-                quantity={simpleQty}
-                onQuickAdd={() => {
-                  if (needsBranchPick) {
-                    setBranchPickFor(p.id);
-                  } else {
-                    setCart(
-                      updateSimpleProductQuantity(
-                        branchId,
-                        { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
-                        1,
-                      ),
-                    );
-                  }
-                }}
-                onIncrement={() => {
-                  if (needsBranchPick) {
-                    setBranchPickFor(p.id);
-                  } else {
-                    setCart(
-                      updateSimpleProductQuantity(
-                        branchId,
-                        { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
-                        1,
-                      ),
-                    );
-                  }
-                }}
-                onDecrement={() => {
-                  setCart(
-                    updateSimpleProductQuantity(
-                      branchId,
-                      { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
-                      -1,
-                    ),
-                  );
-                }}
-              />
-            );
-          }}
-        />
+        <PaginatedCatalogView menu={menu} itemsPerPage={itemsPerPage} renderProductCard={renderProductCard} />
       ) : (
         <>
           <div className="sticky top-0 z-20 -mx-4 bg-background/90 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
@@ -223,54 +135,7 @@ export function ShopBrowser({
             <div key={cat.id} id={`category-${cat.id}`} className="scroll-mt-32 py-6">
               <SectionHeader eyebrow={cat.nameAr} title={cat.nameEn} count={cat.products.length} />
               <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-                {cat.products.map((p) => {
-                  const simpleQty = getSimpleProductQuantity(cart, p.id);
-                  return (
-                    <ShopProductCard
-                      key={p.id}
-                      product={p}
-                      interactive={orderingEnabled}
-                      onOpen={() => (needsBranchPick ? setBranchPickFor(p.id) : setActiveProduct(p))}
-                      currency={currency}
-                      quantity={simpleQty}
-                      onQuickAdd={() => {
-                        if (needsBranchPick) {
-                          setBranchPickFor(p.id);
-                        } else {
-                          setCart(
-                            updateSimpleProductQuantity(
-                              branchId,
-                              { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
-                              1,
-                            ),
-                          );
-                        }
-                      }}
-                      onIncrement={() => {
-                        if (needsBranchPick) {
-                          setBranchPickFor(p.id);
-                        } else {
-                          setCart(
-                            updateSimpleProductQuantity(
-                              branchId,
-                              { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
-                              1,
-                            ),
-                          );
-                        }
-                      }}
-                      onDecrement={() => {
-                        setCart(
-                          updateSimpleProductQuantity(
-                            branchId,
-                            { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
-                            -1,
-                          ),
-                        );
-                      }}
-                    />
-                  );
-                })}
+                {cat.products.map(renderProductCard)}
               </div>
             </div>
           ))}
@@ -301,7 +166,12 @@ export function ShopBrowser({
             open={drawerOpen}
             onOpenChange={setDrawerOpen}
             onSetQuantity={(i, q) => setCart(setLineQuantity(i, q))}
+            onClear={() => {
+              clearCart();
+              setCart({ branchId: null, lines: [] });
+            }}
           />
+          <CartAnnouncer message={announcement} />
         </>
       )}
     </>

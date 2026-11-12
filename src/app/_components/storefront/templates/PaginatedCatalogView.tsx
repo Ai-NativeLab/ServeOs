@@ -2,38 +2,16 @@
 import { useState, useEffect, useMemo } from "react";
 import { Search, ChevronLeft, ChevronRight } from "lucide-react";
 import type { PublishedMenu } from "@/server/catalog/schema";
-import type { Cart } from "@/app/_components/cart";
-import { getSimpleProductQuantity } from "@/app/_components/cart";
-import { ProductCard, type MenuProduct } from "@/app/_components/storefront/ProductCard";
-import { isNewProduct } from "@/lib/product-badges";
+import type { MenuProduct } from "@/app/_components/storefront/ProductCard";
 
 export function PaginatedCatalogView({
   menu,
-  currency,
-  orderingEnabled,
-  popularIds,
-  cart,
-  needsBranchPick,
   itemsPerPage = 12,
-  onOpenProduct,
-  onPickBranch,
-  onUpdateQuantity,
   renderProductCard,
 }: {
   menu: PublishedMenu;
-  currency: string;
-  orderingEnabled: boolean;
-  popularIds: string[];
-  cart: Cart;
-  needsBranchPick: boolean;
   itemsPerPage?: number;
-  onOpenProduct: (p: MenuProduct) => void;
-  onPickBranch: (productId: string) => void;
-  onUpdateQuantity: (
-    product: { id: string; nameEn: string; nameAr: string; effectivePrice: number },
-    delta: number,
-  ) => void;
-  renderProductCard?: (product: MenuProduct) => React.ReactNode;
+  renderProductCard: (product: MenuProduct) => React.ReactNode;
 }) {
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -158,28 +136,7 @@ export function PaginatedCatalogView({
       ) : (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
           {pagedProducts.map((p) =>
-            renderProductCard ? (
-              renderProductCard(p)
-            ) : (
-              <ProductCard
-                key={p.id}
-                product={p}
-                interactive={orderingEnabled}
-                onOpen={() => (needsBranchPick ? onPickBranch(p.id) : onOpenProduct(p))}
-                currency={currency}
-                badge={popularIds.includes(p.id) ? "popular" : isNewProduct(p.createdAt) ? "new" : null}
-                quantity={getSimpleProductQuantity(cart, p.id)}
-                onQuickAdd={() => {
-                  if (needsBranchPick) onPickBranch(p.id);
-                  else onUpdateQuantity(p, 1);
-                }}
-                onIncrement={() => {
-                  if (needsBranchPick) onPickBranch(p.id);
-                  else onUpdateQuantity(p, 1);
-                }}
-                onDecrement={() => onUpdateQuantity(p, -1)}
-              />
-            ),
+            renderProductCard(p),
           )}
         </div>
       )}
