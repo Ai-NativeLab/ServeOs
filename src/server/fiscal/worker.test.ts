@@ -7,6 +7,8 @@ import { orders, orderItems } from "@/server/ordering/schema";
 import { placeOrder } from "@/server/ordering/service";
 import { createCategory, createProduct, updateProduct } from "@/server/catalog/service";
 import { auditEvents } from "@/server/audit/schema";
+import { recordAuditEvent } from "@/server/audit/service";
+import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { notifications } from "@/server/notifications/schema";
 import { FakeEmailProvider } from "@/server/email/fake-provider";
 import { seedPosContext, openShiftForCtx } from "@/server/pos/test-helpers";
@@ -271,6 +273,10 @@ async function seedFiscalConfig(
   const refs = await tenantSecretRefs(tenantId);
   await withTenant(tenantId, (tx) => tx.insert(etaTenantConfig).values({
     tenantId,
+    // Configured well in the past by default: the reconciliation sweep is
+    // floored at the tenant's activation, and these fixtures backdate the orders
+    // they want swept. The activation-floor test sets its own.
+    createdAt: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000),
     registrationNumber: "200173707",
     clientId: "erp-client",
     clientSecretRef: refs.erp,
@@ -1116,6 +1122,29 @@ describe("drainEtaSubmissions — reconciliation sweep", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].orderId).toBe(recent);
     expect(rows.some((row) => row.orderId === ancient)).toBe(false);
+  });
+
+  it("never adopts a sale made BEFORE the tenant was activated, even inside the horizon", async () => {
+    const s = await seedPosContext("owner");
+    await seedTaxCode(s.tenantId, s.productId);
+    const before = await placeWebOrder(s.tenantId, s.branchId, s.productId, { minutesAgo: 60 * 24 * 2 });
+    // The config ROW is old, but the tenant was ACTIVATED just now — audited
+    // the way the config service writes it (the audit log is append-only, so the
+    // activation is "now" and the sweep's age threshold is waived instead).
+    await seedFiscalConfig(s.tenantId, { onlineDeviceId: s.ctx.deviceId, createdAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) });
+    await seedDeviceCredential(s.tenantId, s.ctx.deviceId);
+    await withTenant(s.tenantId, (tx) => recordAuditEvent({ tenantId: s.tenantId, actorUserId: null, fingerprint: emptyFingerprint() }, {
+      action: "eta.config.updated", entityType: "eta_tenant_config", entityId: s.tenantId,
+      summary: "ETA configuration updated", metadata: { activationStatus: "active" }, actorType: "system",
+    }, tx));
+    const after = await placeWebOrder(s.tenantId, s.branchId, s.productId, { minutesAgo: 0 });
+
+    const res = await reconcileMissingReceipts({ tenantId: s.tenantId }, { olderThanMs: -60_000 });
+
+    expect(res.enqueued).toBe(1);
+    const rows = await rowsFor(s.tenantId);
+    expect(rows.map((row) => row.orderId)).toEqual([after]);
+    expect(rows.some((row) => row.orderId === before)).toBe(false);
   });
 
   it("ignores an unpaid order — no sale, no receipt", async () => {

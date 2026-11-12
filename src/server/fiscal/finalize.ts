@@ -3,6 +3,7 @@ import { withTenant, type Tx } from "@/db/with-tenant";
 import { orders, orderItems, type Order, type OrderItem } from "@/server/ordering/schema";
 import { orderPayments } from "@/server/pos/tender-schema";
 import { posOrderReceipts } from "@/server/pos/schema";
+import { auditEvents } from "@/server/audit/schema";
 import { refunds, refundLines, refundPayments, type Refund, type RefundLine } from "@/server/pos/refund-schema";
 import {
   etaSubmissions, etaTenantConfig, etaPosCredentials, etaDeviceChains, productTaxCodes,
@@ -625,9 +626,12 @@ export async function enqueueAndFinalizeInvoice(
  *    reachable only after the fact.
  *
  * BOUNDED AT BOTH ENDS: at least `RECONCILE_AFTER_MS` old so an in-flight sale
- * is never swept out from under its own enqueue, and at most
- * `RECONCILE_HORIZON_MS` old so activating a tenant does not back-submit its
- * whole pre-ETA history past the 24-hour window.
+ * is never swept out from under its own enqueue, and NEWER than both
+ * `RECONCILE_HORIZON_MS` and the tenant's ETA ACTIVATION (`tenantActivatedAt`).
+ * The horizon alone let a tenant that activated today adopt up to seven days of
+ * sales it made BEFORE it was an ETA issuer — documents nobody asked it to file,
+ * submitted late by construction. The activation floor makes "which history to
+ * file" an explicit human decision rather than a side effect of finishing setup.
  *
  * SCOPE — orders where money actually moved. `unpaid` and
  * `pending_verification` are excluded (no sale has occurred yet; a receipt
@@ -645,6 +649,8 @@ export async function reconcileMissingReceipts(
   const limit = opts.limit ?? 50;
   const cutoff = new Date(Date.now() - (opts.olderThanMs ?? RECONCILE_AFTER_MS));
   const horizon = new Date(Date.now() - (opts.newerThanMs ?? RECONCILE_HORIZON_MS));
+  const activatedAt = await withTenant(ctx.tenantId, (tx) => tenantActivatedAt(tx, ctx.tenantId));
+  const floor = activatedAt && activatedAt > horizon ? activatedAt : horizon;
 
   // Read and write in separate transactions: `enqueueAndFinalizeReceipt` opens
   // its own (and takes advisory locks), so holding this select's transaction
@@ -655,8 +661,9 @@ export async function reconcileMissingReceipts(
       .where(and(
         eq(orders.tenantId, ctx.tenantId),
         lt(orders.placedAt, cutoff),
-        // The back-submission horizon — see RECONCILE_HORIZON_MS.
-        gt(orders.placedAt, horizon),
+        // The back-submission floor: the horizon or the activation, whichever
+        // is LATER — see RECONCILE_HORIZON_MS and `tenantActivatedAt`.
+        gt(orders.placedAt, floor),
         sql`${orders.status} not in ('cancelled','rejected')`,
         sql`${orders.paymentStatus} not in ('unpaid','pending_verification')`,
         // ANY order-carrying document satisfies this, not just an `e_receipt`.
@@ -695,6 +702,28 @@ export async function reconcileMissingReceipts(
   // FAILED to enqueue would read the same whether it worked or not — precisely
   // the blindness it is here to close.
   return { enqueued };
+}
+
+/**
+ * When this tenant became an ETA issuer: the first `eta.config.updated` audit
+ * event that recorded `activationStatus: "active"` (the config service writes
+ * one on every save, so the audit trail IS the activation history — no column
+ * needed). A config row written past the service has no such event, and falls
+ * back to the row's own `created_at`: nothing can have been activated before the
+ * configuration existed. Null only when there is no config at all.
+ */
+async function tenantActivatedAt(tx: Tx, tenantId: string): Promise<Date | null> {
+  const [event] = await tx.select({ at: sql<Date | null>`min(${auditEvents.createdAt})`.mapWith(auditEvents.createdAt) })
+    .from(auditEvents)
+    .where(and(
+      eq(auditEvents.tenantId, tenantId),
+      eq(auditEvents.action, "eta.config.updated"),
+      sql`${auditEvents.metadata}->>'activationStatus' = 'active'`,
+    ));
+  if (event?.at) return event.at;
+  const [config] = await tx.select({ createdAt: etaTenantConfig.createdAt }).from(etaTenantConfig)
+    .where(eq(etaTenantConfig.tenantId, tenantId)).limit(1);
+  return config?.createdAt ?? null;
 }
 
 // ---------------------------------------------------------------------------
