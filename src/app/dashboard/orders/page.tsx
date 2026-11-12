@@ -1,6 +1,7 @@
 import { requireOrdersPermission } from "../orders-permission";
 import { listOrders, toOrderRow } from "@/server/ordering/service";
 import { getTenantById } from "@/server/tenancy";
+import { tenantRealtimeConfig } from "@/server/realtime/token";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { OrdersTable } from "./OrdersTable";
 
@@ -15,7 +16,13 @@ export default async function OrdersPage() {
         title="Orders"
         description="Live view of incoming and in-progress orders. Refreshes automatically."
       />
-      <OrdersTable initial={orders.map(toOrderRow)} timezone={tenant?.timezone ?? "Africa/Cairo"} />
+      <OrdersTable
+        initial={orders.map(toOrderRow)}
+        timezone={tenant?.timezone ?? "Africa/Cairo"}
+        // Minted here, from the session that already proved this tenant — the
+        // browser never names the tenant it wants to listen to.
+        realtime={tenantRealtimeConfig(tenantId)}
+      />
     </>
   );
 }

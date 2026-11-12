@@ -10,6 +10,7 @@ import { getTenantById } from "@/server/tenancy";
 import { requireCapability, type VerticalId } from "@/server/verticals";
 import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
+import { bumpCatalogVersion } from "./version";
 import { productInventoryLinks, inventoryItems, stockLedger } from "@/server/inventory/schema";
 import { adjustStock, getOrCreateDefaultLocation, onHandOnTx } from "@/server/inventory/service";
 import { assertInventoryUom } from "@/server/inventory/uom";
@@ -66,6 +67,7 @@ export async function upsertVariant(tenantId: string, productId: string, input: 
       action: "catalog.variant.upserted", entityType: "product_variant", entityId: row.id,
       summary: `Variant "${row.nameEn}" saved`, metadata: auditMeta(audit, { productId, price: row.price }), actorType: audit?.actorType,
     }, tx);
+    await bumpCatalogVersion(tenantId, tx);
     return row;
   });
 }
@@ -78,6 +80,7 @@ export async function deleteVariant(tenantId: string, variantId: string, audit?:
       action: "catalog.variant.deleted", entityType: "product_variant", entityId: variantId,
       summary: `Variant deleted`, metadata: auditMeta(audit), actorType: audit?.actorType,
     }, tx);
+    await bumpCatalogVersion(tenantId, tx);
   });
 }
 
@@ -95,6 +98,9 @@ export async function setVariantStock(tenantId: string, variantId: string, qty: 
       summary: `Variant stock ${before?.stockQuantity ?? "∅"} → ${qty ?? "∅"}`,
       metadata: auditMeta(audit, { before: before?.stockQuantity ?? null, after: qty }), actorType: audit?.actorType,
     }, tx);
+    // Stock crossing to/from zero flips inStock on the published menu — a
+    // catalog-visible change with no row's updated_at to show for it.
+    await bumpCatalogVersion(tenantId, tx);
   });
 }
 
@@ -109,6 +115,7 @@ export async function setProductStock(tenantId: string, productId: string, qty: 
       summary: `Product stock ${before?.stockQuantity ?? "∅"} → ${qty ?? "∅"}`,
       metadata: auditMeta(audit, { before: before?.stockQuantity ?? null, after: qty }), actorType: audit?.actorType,
     }, tx);
+    await bumpCatalogVersion(tenantId, tx);
   });
 }
 

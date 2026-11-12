@@ -293,7 +293,7 @@ describe("issueRefund", () => {
 
   it("lets a pos:sell cashier refund with a manager grant, capturing authorizedByUserId", async () => {
     const s = await seedPaidSale("staff");
-    const token = issueGrant(s.tenantId, "pos:refund", s.managerId);
+    const token = await issueGrant(s.tenantId, "pos:refund", s.managerId);
     const res = await issueRefund(actorFrom(s.ctx), {
       orderId: s.receipt.orderId,
       kind: "full",

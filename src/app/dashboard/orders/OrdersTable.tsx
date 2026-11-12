@@ -1,9 +1,11 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Bike, ShoppingBag } from "lucide-react";
 import type { OrderRow } from "@/server/ordering/service";
+import type { TenantEventType, TenantRealtimeConfig } from "@/lib/realtime";
+import { useTenantEvents, RELAXED_POLL_MS } from "@/lib/realtime-client";
 import { cn } from "@/lib/utils";
 import { formatDayTime } from "@/lib/datetime";
 import { StatusBadge } from "@/components/dashboard/StatusBadge";
@@ -12,6 +14,10 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
+
+/** A web order, a status change, or a till's queue landing after an outage —
+ *  all of them change what belongs on this screen. */
+const ORDER_EVENTS: TenantEventType[] = ["orders.changed", "sync.applied"];
 
 const FILTERS: Record<string, (r: OrderRow) => boolean> = {
   all: () => true,
@@ -48,21 +54,35 @@ function ScheduledChip({ iso, timezone }: { iso: string | null; timezone: string
   );
 }
 
-export function OrdersTable({ initial, timezone }: { initial: OrderRow[]; timezone: string }) {
+/** The cadence when this table is on its own. Realtime relaxes it to
+ *  RELAXED_POLL_MS, and only while the channel is actually joined. */
+const POLL_MS = 8000;
+
+export function OrdersTable({ initial, timezone, realtime }: {
+  initial: OrderRow[];
+  timezone: string;
+  realtime: TenantRealtimeConfig | null;
+}) {
   const [rows, setRows] = useState<OrderRow[]>(initial);
   const [filter, setFilter] = useState<string>("all");
   const router = useRouter();
   const pendingCount = rows.filter((r) => r.status === "pending").length;
 
-  useEffect(() => {
-    const id = setInterval(async () => {
-      try {
-        const res = await fetch("/api/dashboard/orders", { cache: "no-store" });
-        if (res.ok) setRows(await res.json());
-      } catch { /* keep polling */ }
-    }, 8000);
-    return () => clearInterval(id);
+  // The broadcast carries ids only; the rows still come from the endpoint that
+  // authenticates the session and applies the tenant's RLS.
+  const refresh = useCallback(async () => {
+    try {
+      const res = await fetch("/api/dashboard/orders", { cache: "no-store" });
+      if (res.ok) setRows(await res.json());
+    } catch { /* keep polling */ }
   }, []);
+
+  const live = useTenantEvents(realtime, ORDER_EVENTS, refresh);
+
+  useEffect(() => {
+    const id = setInterval(() => void refresh(), live ? RELAXED_POLL_MS : POLL_MS);
+    return () => clearInterval(id);
+  }, [refresh, live]);
 
   const visible = rows.filter(FILTERS[filter] ?? FILTERS.all);
 

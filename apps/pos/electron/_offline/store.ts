@@ -1,4 +1,6 @@
 import type Database from "better-sqlite3";
+import crypto from "node:crypto";
+import { noCipher, encryptAtRest, decryptAtRest, type AtRestCipher } from "./db";
 
 export interface OutboxRow {
   client_order_id: string;
@@ -17,24 +19,99 @@ export interface DeviceRow {
   branch_name: string | null;
 }
 
-export class Store {
-  constructor(private db: Database.Database) {}
+export type EventStatus = "pending" | "synced" | "failed";
 
-  saveCatalog(json: string, syncedAt: string): void {
+/** One row of the append-only event log. `payload` and `server_response` are
+ *  JSON text as stored — callers parse/stringify at the boundary, the same
+ *  discipline `order_outbox.draft_json` already uses. */
+export interface EventRow {
+  event_id: string;
+  seq: number;
+  type: string;
+  payload: string;
+  occurred_at: string;
+  status: EventStatus;
+  server_response: string | null;
+}
+
+/** Mirrors the server's `PosRosterUser` (src/app/api/pos/v1/sync/auth/route.ts)
+ *  field for field, so the offline roster and the online roster never drift
+ *  apart in shape. `passwordHash` is given and returned as plaintext (the
+ *  scrypt hash, not a raw password) — `saveAuthRoster`/`findAuthUser`
+ *  encrypt/decrypt it at rest (Task 14) transparently, at the store boundary. */
+export interface AuthUser {
+  userId: string;
+  name: string;
+  email: string;
+  passwordHash: string;
+  permissions: string[];
+}
+
+interface AuthCacheRow {
+  user_id: string;
+  name: string;
+  email: string;
+  password_hash: string;
+  permissions: string;
+  synced_at: string;
+}
+
+/** Task 14's local_events retention window. */
+const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** local_state key holding the seq high-water mark independently of
+ *  local_events (C1 fix). local_events is the append log AND, until this
+ *  fix, the only record of "the highest seq ever assigned" — but retention
+ *  pruning can delete every row (a 30+ day idle till, or a backward clock
+ *  jump that lets a high-seq row's occurred_at sort before a low-seq row's).
+ *  Once the table is empty, `MAX(seq)` restarts at 0 and appendEvent would
+ *  reissue seqs the server already holds receipts for, which the server's
+ *  out_of_order check rejects with no client-side recovery. The watermark
+ *  survives a prune that would erase the log entirely. */
+const SEQ_WATERMARK_KEY = "local_events_seq_watermark";
+
+export class Store {
+  /** `cipher` defaults to a plaintext passthrough (every test, and any build
+   *  that never wires one up) — see db.ts's AtRestCipher. `pos-main.ts` is the
+   *  only caller that passes the real safeStorage-backed one. */
+  constructor(private db: Database.Database, private cipher: AtRestCipher = noCipher) {}
+
+  // ---- catalog (existing table; gains pricing + version, Task 8) ----
+
+  /** `json` (the menu) is encrypted at rest (Task 14) — `pricingJson` and
+   *  `shiftPolicyJson` are not, since neither is customer or credential data
+   *  and both are read on every checkout render, where decrypting on a cold
+   *  cache would be wasted work for no confidentiality gain. */
+  saveCatalog(json: string, pricingJson: string, shiftPolicyJson: string, catalogVersion: number, syncedAt: string): void {
     this.db
       .prepare(
-        `INSERT INTO catalog_cache (id, json, synced_at) VALUES (1, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET json = excluded.json, synced_at = excluded.synced_at`,
+        `INSERT INTO catalog_cache (id, json, pricing_json, shift_policy_json, catalog_version, synced_at) VALUES (1, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           json = excluded.json,
+           pricing_json = excluded.pricing_json,
+           shift_policy_json = excluded.shift_policy_json,
+           catalog_version = excluded.catalog_version,
+           synced_at = excluded.synced_at`,
       )
-      .run(json, syncedAt);
+      .run(encryptAtRest(this.cipher, json), pricingJson, shiftPolicyJson, catalogVersion, syncedAt);
   }
 
-  getCatalog(): { json: string; syncedAt: string } | null {
+  getCatalog(): {
+    json: string; pricingJson: string | null; shiftPolicyJson: string | null; catalogVersion: number | null; syncedAt: string;
+  } | null {
     const row = this.db
-      .prepare("SELECT json, synced_at AS syncedAt FROM catalog_cache WHERE id = 1")
-      .get() as { json: string; syncedAt: string } | undefined;
-    return row ? { json: row.json, syncedAt: row.syncedAt } : null;
+      .prepare(
+        `SELECT json, pricing_json AS pricingJson, shift_policy_json AS shiftPolicyJson,
+                catalog_version AS catalogVersion, synced_at AS syncedAt
+         FROM catalog_cache WHERE id = 1`,
+      )
+      .get() as
+      | { json: string; pricingJson: string | null; shiftPolicyJson: string | null; catalogVersion: number | null; syncedAt: string }
+      | undefined;
+    return row ? { ...row, json: decryptAtRest(this.cipher, row.json) } : null;
   }
+
+  // ---- order outbox (pre-existing; superseded by local_events for new work) ----
 
   enqueueOrder(clientOrderId: string, draftJson: string): void {
     const now = new Date().toISOString();
@@ -92,5 +169,186 @@ export class Store {
 
   clearDevice(): void {
     this.db.prepare("DELETE FROM device WHERE id = 1").run();
+  }
+
+  // ---- event log (Task 8) ----
+
+  /** Appends one event and assigns it the next seq, gap-free and strictly
+   *  increasing per device: the insert and the watermark update run inside a
+   *  single synchronous better-sqlite3 transaction, so there is no window for
+   *  a second writer to interleave (there is only ever one, this process) and
+   *  no window where the watermark could drift from what was just assigned.
+   *  seq is `MAX(current table max, stored watermark) + 1` rather than just
+   *  the table's own MAX(seq) (C1 fix) — the table alone under-reports once
+   *  retention pruning has deleted rows the server already has receipts for,
+   *  which reissuing their seqs would collide with. `payload` carries
+   *  whatever the wire contract needs on it — actorUserId, clientShiftId,
+   *  authorizedByUserId — the store itself is agnostic to event shape.
+   *  `occurred_at` is stamped now: it is the till's own clock at the moment
+   *  the operator acted, which is what the server's business-day and
+   *  clock-skew logic keys off. */
+  appendEvent(type: string, payload: unknown): { eventId: string; seq: number; occurredAt: string } {
+    const eventId = crypto.randomUUID();
+    const occurredAt = new Date().toISOString();
+    const append = this.db.transaction(() => {
+      const { maxSeq } = this.db.prepare(`SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM local_events`).get() as { maxSeq: number };
+      const watermark = this.getState<number>(SEQ_WATERMARK_KEY) ?? 0;
+      const seq = Math.max(maxSeq, watermark) + 1;
+      this.db
+        .prepare(
+          `INSERT INTO local_events (event_id, seq, type, payload, occurred_at, status)
+           VALUES (?, ?, ?, ?, ?, 'pending')`,
+        )
+        .run(eventId, seq, type, JSON.stringify(payload), occurredAt);
+      this.setState(SEQ_WATERMARK_KEY, seq);
+      return seq;
+    });
+    return { eventId, seq: append(), occurredAt };
+  }
+
+  /** Everything still owed to the server, oldest first — the flush order. */
+  pendingEvents(): EventRow[] {
+    return this.db
+      .prepare("SELECT * FROM local_events WHERE status = 'pending' ORDER BY seq ASC")
+      .all() as EventRow[];
+  }
+
+  /** Pending AND failed, oldest first: everything the server has not accepted,
+   *  which is exactly what the till-state snapshot has not absorbed yet (the
+   *  snapshot advances one event at a time as each is confirmed). A failed
+   *  event still happened at the till — the money moved — so boot must replay
+   *  it into local state even though the queue is halted behind it. */
+  unsyncedEvents(): EventRow[] {
+    return this.db
+      .prepare("SELECT * FROM local_events WHERE status <> 'synced' ORDER BY seq ASC")
+      .all() as EventRow[];
+  }
+
+  /** Sticky-halt guard (Task 10): a failed event must stop the queue, since
+   *  skipping past it would replay everything after it out of order. */
+  hasFailedEvents(): boolean {
+    const row = this.db.prepare("SELECT 1 FROM local_events WHERE status = 'failed' LIMIT 1").get();
+    return row !== undefined;
+  }
+
+  /** Operator resolution (Task 11's Retry action): a failed event goes back
+   *  to pending so the next flush resumes from its seq. Only ever moves
+   *  failed → pending — a synced event is not retryable. */
+  retryFailedEvent(eventId: string): void {
+    this.db
+      .prepare(
+        `UPDATE local_events SET status = 'pending', server_response = NULL
+         WHERE event_id = ? AND status = 'failed'`,
+      )
+      .run(eventId);
+  }
+
+  /**
+   * `onCommit`, when given, runs INSIDE the same better-sqlite3 transaction as
+   * the status update (Task 14 — folding in Task 10's deferred item: these
+   * used to be two separate statements, and a crash between them dropped one
+   * event from the confirmed till-state snapshot). `pos-main.ts` passes the
+   * snapshot's own store write (`setState(TILL_STATE_KEY, ...)`) as
+   * `onCommit`, so "this event is synced" and "the snapshot advanced past it"
+   * now land together or not at all — and if `onCommit` throws, the status
+   * update rolls back with it, leaving the event pending for the next flush
+   * rather than silently synced-but-unabsorbed.
+   */
+  markEventSynced(eventId: string, response: unknown, onCommit?: () => void): void {
+    const run = this.db.transaction(() => {
+      this.db
+        .prepare(`UPDATE local_events SET status = 'synced', server_response = ? WHERE event_id = ?`)
+        .run(JSON.stringify(response), eventId);
+      onCommit?.();
+    });
+    run();
+  }
+
+  markEventFailed(eventId: string, error: string): void {
+    this.db
+      .prepare(`UPDATE local_events SET status = 'failed', server_response = ? WHERE event_id = ?`)
+      .run(JSON.stringify({ error }), eventId);
+  }
+
+  /** Boot-time retention (Task 14): a synced event has nothing left to replay
+   *  — the confirmed snapshot has already absorbed it — and nothing reads
+   *  `local_events` for history (sales history is a server query), so a row
+   *  synced for 30+ days is dead weight `pendingEvents`/`unsyncedEvents` scan
+   *  past forever. Only ever touches `status = 'synced'`: pending and failed
+   *  rows are live state (a failed one holds the sticky halt) and must never
+   *  age out from under it. `now` is injectable so a test can control the
+   *  cutoff without waiting on wall time. Returns the row count deleted.
+   *
+   *  Folds the table's current `MAX(seq)` into the watermark BEFORE deleting
+   *  (C1 fix), in the same transaction as the delete: this is what keeps
+   *  appendEvent's next seq gap-free even when the row carrying the true
+   *  high-seq is exactly the one this call deletes — e.g. a full-table prune
+   *  (idle till), or a backward clock jump that back-dates a high-seq row's
+   *  occurred_at ahead of a low-seq row's, so a synced high-seq row is
+   *  eligible while a lower-seq one survives. Reads MAX(seq) over the WHOLE
+   *  table, not just eligible rows, so a surviving pending/failed row with a
+   *  higher seq than anything deleted is still folded in. */
+  pruneSyncedEvents(now: Date = new Date()): number {
+    const cutoff = new Date(now.getTime() - RETENTION_MS).toISOString();
+    const prune = this.db.transaction(() => {
+      const { maxSeq } = this.db.prepare(`SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM local_events`).get() as { maxSeq: number };
+      const watermark = this.getState<number>(SEQ_WATERMARK_KEY) ?? 0;
+      if (maxSeq > watermark) this.setState(SEQ_WATERMARK_KEY, maxSeq);
+      return this.db.prepare(`DELETE FROM local_events WHERE status = 'synced' AND occurred_at < ?`).run(cutoff).changes;
+    });
+    return prune();
+  }
+
+  // ---- auth roster cache (Task 8) ----
+
+  /** Replace-all: the roster is a point-in-time mirror of the server's, so a
+   *  user removed/deactivated server-side must disappear from the cache too
+   *  — an additive upsert would leave departed users able to sign in
+   *  offline forever. Runs in one transaction so a reader never observes an
+   *  empty roster mid-swap. `passwordHash` is encrypted at rest (Task 14) —
+   *  the roster otherwise carries every POS-capable user's credential hash on
+   *  a device that leaves the building. */
+  saveAuthRoster(users: AuthUser[], syncedAt: string): void {
+    const replace = this.db.transaction((rows: AuthUser[]) => {
+      this.db.prepare("DELETE FROM auth_cache").run();
+      const insert = this.db.prepare(
+        `INSERT INTO auth_cache (user_id, name, email, password_hash, permissions, synced_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      );
+      for (const u of rows) {
+        insert.run(u.userId, u.name, u.email, encryptAtRest(this.cipher, u.passwordHash), JSON.stringify(u.permissions), syncedAt);
+      }
+    });
+    replace(users);
+  }
+
+  findAuthUser(email: string): AuthUser | null {
+    const row = this.db
+      .prepare("SELECT * FROM auth_cache WHERE email = ?")
+      .get(email) as AuthCacheRow | undefined;
+    if (!row) return null;
+    return {
+      userId: row.user_id,
+      name: row.name,
+      email: row.email,
+      passwordHash: decryptAtRest(this.cipher, row.password_hash),
+      permissions: JSON.parse(row.permissions) as string[],
+    };
+  }
+
+  // ---- generic durable state (Task 8) ----
+
+  getState<T>(key: string): T | null {
+    const row = this.db.prepare("SELECT json FROM local_state WHERE key = ?").get(key) as { json: string } | undefined;
+    return row ? (JSON.parse(row.json) as T) : null;
+  }
+
+  setState(key: string, value: unknown): void {
+    this.db
+      .prepare(
+        `INSERT INTO local_state (key, json) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET json = excluded.json`,
+      )
+      .run(key, JSON.stringify(value));
   }
 }

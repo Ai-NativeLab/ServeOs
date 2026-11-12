@@ -16,21 +16,43 @@ const STATUS_LABEL: Record<string, string> = {
   rejected: "Rejected", cancelled: "Cancelled",
 };
 
-export function OrdersQueue() {
+/** What the queue costs the server on its own, and what it costs once the
+ *  subscription is carrying the news. Still a real interval either way — the
+ *  net under a channel that died without saying so. */
+const POLL_MS = 8000;
+const RELAXED_POLL_MS = 60_000;
+
+/** Web (online-placed) orders live only on the server — there is no local
+ *  copy to fall back on, so an outage means the queue has nothing to show
+ *  rather than a stale one (pos-main's getOrders already answers `[]` while
+ *  offline; this notice explains why instead of just looking empty). */
+export function OrdersQueue({ offline }: { offline: boolean }) {
   const [orders, setOrders] = useState<OrderSummary[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
+  /** Only true while main's channel is actually joined. Realtime off, blocked
+   *  by the café's network, or unauthorized → this stays false and the queue
+   *  polls exactly as it did before. */
+  const [live, setLive] = useState(false);
 
   const refresh = useCallback(async () => {
     setOrders(await window.pos.getOrders());
   }, []);
 
+  // The signal says only that something moved; the orders themselves still
+  // come from the same server call the poll makes.
+  useEffect(() => window.pos.onRealtimeEvent((message) => {
+    if (message.kind === "status") setLive(message.live);
+    else void refresh();
+  }), [refresh]);
+
   useEffect(() => {
+    if (offline) return;
     // Fetch on mount + poll; setState happens after an async fetch, not synchronously.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh();
-    const id = setInterval(() => void refresh(), 8000);
+    const id = setInterval(() => void refresh(), live ? RELAXED_POLL_MS : POLL_MS);
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [refresh, offline, live]);
 
   async function advance(o: OrderSummary) {
     const next = NEXT[o.status];
@@ -42,6 +64,15 @@ export function OrdersQueue() {
     } finally {
       setBusy(null);
     }
+  }
+
+  if (offline) {
+    return (
+      <div className="grid place-items-center gap-1 py-20 text-center text-sm text-muted-foreground">
+        <p className="font-medium text-ink">Web orders are unavailable offline</p>
+        <p>This queue reads live from the server — it will catch up once the till reconnects.</p>
+      </div>
+    );
   }
 
   if (orders.length === 0) {
