@@ -3,7 +3,7 @@ import {
   cartSubtotal,
   mergeLine,
   withLineQuantity,
-  getProductQuantity,
+  getSimpleProductQuantity,
   isProductConfigurable,
   changeSimpleProductQuantity,
   type Cart,
@@ -112,19 +112,40 @@ describe("dimensional merge (P4)", () => {
   });
 });
 
-describe("getProductQuantity", () => {
-  it("returns total quantity of product across all lines", () => {
+describe("getSimpleProductQuantity", () => {
+  it("returns the quantity of the plain (unconfigured) line only", () => {
     const cart: Cart = {
       branchId: "b1",
       lines: [
         line({ productId: "p1", quantity: 2 }),
         line({ productId: "p1", variantId: "v1", quantity: 3 }),
+        line({ productId: "p1", selectedOptionIds: ["o1"], quantity: 4 }),
+        line({ productId: "p1", dimensions: { lengthMm: 1000 }, quantity: 5 }),
         line({ productId: "p2", quantity: 1 }),
       ],
     };
-    expect(getProductQuantity(cart, "p1")).toBe(5);
-    expect(getProductQuantity(cart, "p2")).toBe(1);
-    expect(getProductQuantity(cart, "p3")).toBe(0);
+    expect(getSimpleProductQuantity(cart, "p1", "b1")).toBe(2);
+    expect(getSimpleProductQuantity(cart, "p2", "b1")).toBe(1);
+  });
+
+  it("returns 0 when the product is not in the cart", () => {
+    expect(getSimpleProductQuantity({ branchId: "b1", lines: [] }, "p1", "b1")).toBe(0);
+    expect(getSimpleProductQuantity({ branchId: "b1", lines: [line({ productId: "p2" })] }, "p1", "b1")).toBe(0);
+  });
+
+  it("returns 0 when only configured lines exist", () => {
+    const cart: Cart = { branchId: "b1", lines: [line({ productId: "p1", variantId: "v1", quantity: 3 })] };
+    expect(getSimpleProductQuantity(cart, "p1", "b1")).toBe(0);
+  });
+
+  it("returns 0 when the cart belongs to another branch (adding here would reset it)", () => {
+    const cart: Cart = { branchId: "b1", lines: [line({ productId: "p1", quantity: 2 })] };
+    expect(getSimpleProductQuantity(cart, "p1", "b2")).toBe(0);
+  });
+
+  it("counts a cart that has no branch yet", () => {
+    const cart: Cart = { branchId: null, lines: [line({ productId: "p1", quantity: 2 })] };
+    expect(getSimpleProductQuantity(cart, "p1", "b1")).toBe(2);
   });
 });
 
@@ -145,7 +166,10 @@ describe("isProductConfigurable", () => {
   it("returns true if product has dimensional unit of measure", () => {
     expect(isProductConfigurable({ unitOfMeasure: "m" })).toBe(true);
     expect(isProductConfigurable({ unitOfMeasure: "m2" })).toBe(true);
+    expect(isProductConfigurable({ unitOfMeasure: "bf" })).toBe(true);
     expect(isProductConfigurable({ unitOfMeasure: "each" })).toBe(false);
+    expect(isProductConfigurable({ unitOfMeasure: "kg" })).toBe(false);
+    expect(isProductConfigurable({ unitOfMeasure: null })).toBe(false);
   });
 });
 
@@ -196,5 +220,48 @@ describe("changeSimpleProductQuantity", () => {
     const next = changeSimpleProductQuantity(cart, "b1", prod, -1);
     expect(next.lines).toHaveLength(0);
   });
-});
 
+  it("resets the cart when adding on a different branch (same rule as mergeLine)", () => {
+    const cart: Cart = {
+      branchId: "b1",
+      lines: [
+        { productId: "p1", nameEn: "Cola", nameAr: "كولا", quantity: 2, unitPrice: 20, selectedOptionIds: [], modifierSummaryEn: "" },
+        { productId: "p9", nameEn: "Water", nameAr: "مياه", quantity: 1, unitPrice: 10, selectedOptionIds: [], modifierSummaryEn: "" },
+      ],
+    };
+    const next = changeSimpleProductQuantity(cart, "b2", prod, 1);
+    expect(next.branchId).toBe("b2");
+    expect(next.lines).toHaveLength(1);
+    expect(next.lines[0]).toMatchObject({ productId: "p1", quantity: 1 });
+  });
+
+  it("does not touch another branch's cart when decrementing", () => {
+    const cart: Cart = {
+      branchId: "b1",
+      lines: [{ productId: "p1", nameEn: "Cola", nameAr: "كولا", quantity: 2, unitPrice: 20, selectedOptionIds: [], modifierSummaryEn: "" }],
+    };
+    expect(changeSimpleProductQuantity(cart, "b2", prod, -1)).toBe(cart);
+  });
+
+  it("stamps the branch on a branchless cart when incrementing", () => {
+    const cart: Cart = {
+      branchId: null,
+      lines: [{ productId: "p1", nameEn: "Cola", nameAr: "كولا", quantity: 1, unitPrice: 20, selectedOptionIds: [], modifierSummaryEn: "" }],
+    };
+    const next = changeSimpleProductQuantity(cart, "b1", prod, 1);
+    expect(next.branchId).toBe("b1");
+    expect(next.lines[0].quantity).toBe(2);
+  });
+
+  it("increments the plain line, not a configured line of the same product", () => {
+    const cart: Cart = {
+      branchId: "b1",
+      lines: [{ productId: "p1", variantId: "v1", nameEn: "Cola", nameAr: "كولا", quantity: 3, unitPrice: 25, selectedOptionIds: [], modifierSummaryEn: "" }],
+    };
+    const next = changeSimpleProductQuantity(cart, "b1", prod, 1);
+    expect(next.lines).toHaveLength(2);
+    expect(next.lines[0].quantity).toBe(3);
+    expect(next.lines[1]).toMatchObject({ productId: "p1", quantity: 1 });
+    expect(next.lines[1].variantId).toBeUndefined();
+  });
+});

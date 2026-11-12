@@ -5,6 +5,7 @@ import {
   addLine,
   loadCart,
   setLineQuantity,
+  clearCart,
   cartSubtotal,
   getSimpleProductQuantity,
   updateSimpleProductQuantity,
@@ -12,6 +13,7 @@ import {
 } from "./cart";
 import { CategoryNav } from "./storefront/CategoryNav";
 import { ProductCard, type MenuProduct } from "./storefront/ProductCard";
+import { CartAnnouncer, quantityAnnouncement } from "./storefront/QuickAddControl";
 import { ProductSheet } from "./storefront/ProductSheet";
 import { CartBar } from "./storefront/CartBar";
 import { BranchPickSheet } from "./storefront/BranchPickSheet";
@@ -36,6 +38,7 @@ export function StorefrontMenu({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [activeProduct, setActiveProduct] = useState<MenuProduct | null>(null);
   const [branchPickFor, setBranchPickFor] = useState<string | null>(null);
+  const [announcement, setAnnouncement] = useState("");
   const needsBranchPick = branchId === null && branches.length > 1;
 
   useEffect(() => {
@@ -66,6 +69,22 @@ export function StorefrontMenu({
     }));
   }
 
+  /** Card quick-add / stepper. Increments need a branch first (same as the
+   * sheet); decrements only ever touch lines already in this branch's cart. */
+  function changeSimpleQuantity(p: MenuProduct, delta: 1 | -1) {
+    if (delta > 0 && needsBranchPick) {
+      setBranchPickFor(p.id);
+      return;
+    }
+    const next = updateSimpleProductQuantity(
+      branchId,
+      { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
+      delta,
+    );
+    setCart(next);
+    setAnnouncement(quantityAnnouncement(p.nameEn, getSimpleProductQuantity(next, p.id, branchId)));
+  }
+
   const itemCount = cart.lines.reduce((s, l) => s + l.quantity, 0);
 
   return (
@@ -90,7 +109,7 @@ export function StorefrontMenu({
             )}
             <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
               {rest.map((p) => {
-                const simpleQty = getSimpleProductQuantity(cart, p.id);
+                const simpleQty = getSimpleProductQuantity(cart, p.id, branchId);
                 return (
                   <ProductCard
                     key={p.id}
@@ -100,41 +119,9 @@ export function StorefrontMenu({
                     currency={currency}
                     badge={popularIds.includes(p.id) ? "popular" : isNewProduct(p.createdAt) ? "new" : null}
                     quantity={simpleQty}
-                    onQuickAdd={() => {
-                      if (needsBranchPick) {
-                        setBranchPickFor(p.id);
-                      } else {
-                        setCart(
-                          updateSimpleProductQuantity(
-                            branchId,
-                            { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
-                            1,
-                          ),
-                        );
-                      }
-                    }}
-                    onIncrement={() => {
-                      if (needsBranchPick) {
-                        setBranchPickFor(p.id);
-                      } else {
-                        setCart(
-                          updateSimpleProductQuantity(
-                            branchId,
-                            { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
-                            1,
-                          ),
-                        );
-                      }
-                    }}
-                    onDecrement={() => {
-                      setCart(
-                        updateSimpleProductQuantity(
-                          branchId,
-                          { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
-                          -1,
-                        ),
-                      );
-                    }}
+                    onQuickAdd={() => changeSimpleQuantity(p, 1)}
+                    onIncrement={() => changeSimpleQuantity(p, 1)}
+                    onDecrement={() => changeSimpleQuantity(p, -1)}
                   />
                 );
               })}
@@ -167,7 +154,12 @@ export function StorefrontMenu({
             open={drawerOpen}
             onOpenChange={setDrawerOpen}
             onSetQuantity={(i, q) => setCart(setLineQuantity(i, q))}
+            onClear={() => {
+              clearCart();
+              setCart({ branchId: null, lines: [] });
+            }}
           />
+          <CartAnnouncer message={announcement} />
         </>
       )}
     </>
