@@ -20,10 +20,10 @@ sequenceDiagram
     API->>API: resolve tenant by slug (active/trial only), customer from serveos_customer cookie
     API->>Svc: placeOrder(tenantId, input)
     Svc->>Svc: payment method check (offline methods → pending_verification)
-    Svc->>DB: BEGIN; set_config('app.tenant_id')
+    Svc->>DB: BEGIN, set_config('app.tenant_id')
     Svc->>DB: branch orderable? lines valid vs catalog (snapshots, modifiers, variants)
     Svc->>DB: delivery area / fee, totals (order-totals.ts)
-    Svc->>DB: pg_advisory_xact_lock(hashtext(tenant_id)); order_number = max + 1
+    Svc->>DB: pg_advisory_xact_lock(hashtext(tenant_id)), order_number = max + 1
     Svc->>DB: INSERT orders, order_items, order_status_events (pending)
     alt inventory capability
         Svc->>DB: deductForOrderLine per line (FIFO lots, sale_deduction ledger rows)
@@ -141,7 +141,7 @@ sequenceDiagram
 
     Cashier->>POS: count drawer
     POS->>API: POST /shifts/close { count: { countedTotal, denominations? }, grants? }
-    API->>API: expected = float + cash tenders − cash refunds + pay-ins − pay-outs − safe drops; variance = counted − expected
+    API->>API: expected = float + cash tenders − cash refunds + pay-ins − pay-outs − safe drops, variance = counted − expected
     API->>DB: INSERT closing cash_counts, UPDATE pos_shifts → closed, audit
     API-->>POS: { report } (Z report)
 ```
@@ -162,7 +162,7 @@ sequenceDiagram
     API->>API: requirePosCashier, assert pos:sell
     API->>Svc: issueRefund
     Svc->>Svc: resolveAuthorizer(pos:refund) — cashier's own permission or a manager grant, else 403
-    Svc->>DB: BEGIN; lock order (FOR UPDATE); refuse cancelled/rejected/unpaid
+    Svc->>DB: BEGIN, lock order (FOR UPDATE), refuse cancelled/rejected/unpaid
     Svc->>DB: INSERT refunds, refund_lines, refund_payments
     Svc->>DB: restock lines with restock = true
     Svc->>DB: UPDATE orders.payment_status → refunded | partially_refunded
@@ -196,7 +196,7 @@ sequenceDiagram
             Inv->>Inv: deductFifo(item, component qty × sold qty)
         end
     end
-    Note over Inv,DB: deductFifo: take unexpired lots ordered by expiry, then received_at;<br/>INSERT stock_ledger (sale_deduction) per lot used
+    Note over Inv,DB: deductFifo: take unexpired lots ordered by expiry, then received_at,<br/>INSERT stock_ledger (sale_deduction) per lot used
     alt shortfall, negative not allowed
         Inv-->>PO: OutOfStockError (whole order rolls back)
     else shortfall, negative allowed
@@ -219,11 +219,11 @@ sequenceDiagram
     Manager->>App: create draft PO
     App->>DB: INSERT purchase_orders (draft), purchase_order_lines
     Manager->>App: send
-    App->>DB: lock PO; INSERT notification_outbox (HTML PO to supplier email); notify owner/manager; status → sent
+    App->>DB: lock PO, INSERT notification_outbox (HTML PO to supplier email), notify owner/manager, status → sent
     Worker->>DB: drain outbox
     Worker->>Resend: send email
     Manager->>App: post receipt (received qty per line)
-    App->>DB: INSERT po_receipts, po_receipt_lines; receiveStock → inventory_lots + receive ledger (valued at PO line cost)
+    App->>DB: INSERT po_receipts, po_receipt_lines, receiveStock → inventory_lots + receive ledger (valued at PO line cost)
     App->>DB: status → partially_received | received
     Manager->>App: enter invoice total
     App->>DB: store invoice total
@@ -270,7 +270,7 @@ sequenceDiagram
     Customer->>Meta: message / button tap
     Meta->>API: POST (x-hub-signature-256)
     API->>Ing: raw body
-    Ing->>Ing: verify HMAC; resolve whatsapp_accounts by phone number id
+    Ing->>Ing: verify HMAC, resolve whatsapp_accounts by phone number id
     Ing->>Ing: skip if tenant not servable or plan lacks the whatsapp feature
     Ing->>DB: record inbound whatsapp_messages (dedupe)
     Ing->>Run: handleInbound
@@ -310,8 +310,8 @@ sequenceDiagram
     Customer->>SF: checkout with prescription items
     SF->>Ord: order
     Ord->>DB: needs a pending, unattached prescription for this customer
-    Ord->>DB: INSERT orders (status pending, rx_review_status pending); attach prescription
+    Ord->>DB: INSERT orders (status pending, rx_review_status pending), attach prescription
     Pharm->>Act: approve / reject (dashboard → prescriptions)
     Act->>DB: prescriptions.status and orders.rx_review_status → approved | rejected (one tx) + audit
-    Note over DB: order status is unchanged; staff then confirm, reject or cancel it.<br/>While rx_review_status is pending only reject/cancel are allowed.
+    Note over DB: order status is unchanged, staff then confirm, reject or cancel it.<br/>While rx_review_status is pending only reject/cancel are allowed.
 ```

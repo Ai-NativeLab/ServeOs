@@ -41,7 +41,7 @@ C4Container
     Person(staff, "Tenant staff")
 
     System_Boundary(b, "ServeOS") {
-        Container(web, "Next.js 16 app", "React 19, App Router", "Storefront, dashboard, admin, marketing, /api/*; business logic in src/server/*")
+        Container(web, "Next.js 16 app", "React 19, App Router", "Storefront, dashboard, admin, marketing, /api/*, business logic in src/server/*")
         ContainerDb(pg, "PostgreSQL", "Supabase", "Tenant data under FORCE RLS")
         Container_Boundary(pos, "POS terminal") {
             Container(electron, "Electron POS", "Electron, Vite, React", "apps/pos")
@@ -79,17 +79,40 @@ Business logic lives in **27** modules under `src/server/`:
 
 ```mermaid
 graph TD
-    subgraph Platform
-        tenancy; auth; rbac; subscription; entitlements; billing; onboarding; platform; enquiries; demo; verticals
+    subgraph PlatformGroup [Platform]
+        tenancy
+        auth
+        rbac
+        subscription
+        entitlements
+        billing
+        onboarding
+        platform
+        enquiries
+        demo
+        verticals
     end
-    subgraph Commerce
-        catalog; branches; ordering; payments; customers; prescriptions; banners
+    subgraph CommerceGroup [Commerce]
+        catalog
+        branches
+        ordering
+        payments
+        customers
+        prescriptions
+        banners
     end
-    subgraph Operations
-        pos; inventory; purchasing; analytics
+    subgraph OperationsGroup [Operations]
+        pos
+        inventory
+        purchasing
+        analytics
     end
-    subgraph Infrastructure
-        audit; notifications; email; realtime; whatsapp
+    subgraph InfraGroup [Infrastructure]
+        audit
+        notifications
+        email
+        realtime
+        whatsapp
     end
 ```
 

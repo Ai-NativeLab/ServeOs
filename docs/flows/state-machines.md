@@ -57,8 +57,8 @@ stateDiagram-v2
     [*] --> pending_verification: web order, offline method + reference
     [*] --> paid: POS sale, fully tendered
     [*] --> partially_paid: POS sale, under-tendered
-    unpaid --> paid: markPaid (orders:manage)
-    pending_verification --> paid: confirmOrderPayment (payments:confirm)
+    unpaid --> paid: markPaid
+    pending_verification --> paid: confirmOrderPayment
     pending_verification --> unpaid: rejectOrderPayment (also cancels the order)
     partially_paid --> paid: addTender
     paid --> partially_refunded: issueRefund
@@ -208,8 +208,8 @@ stateDiagram-v2
 stateDiagram-v2
     state Prescription {
         [*] --> pending: customer uploads
-        pending --> approved: rx:review
-        pending --> rejected: rx:review
+        pending --> approved: reviewer approves
+        pending --> rejected: reviewer rejects
     }
     state OrderRxReview {
         [*] --> not_required: no prescription items
