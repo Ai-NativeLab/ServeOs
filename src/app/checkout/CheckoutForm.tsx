@@ -7,6 +7,7 @@ import { computeOrderTotals, type CheckoutPricing } from "@/lib/order-totals";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { checkoutEmailError, checkoutEmailPayload } from "./checkout-email";
 
 export type SlotOption = { iso: string; label: string; day: "Today" | "Tomorrow" };
 type Area = { id: string; nameEn: string; nameAr: string; deliveryFee: string; minOrderAmount: string; etaMinutes: number | null };
@@ -31,6 +32,7 @@ export type OfflineMethodOption = { type: string; label: string; payToDetail: st
 export function CheckoutForm({
   slug, branchId, branchName, pricing, currency, openNow, slots, methods,
   initialName = "", initialPhone = "", initialAddress = "", initialEmail = "",
+  fiscalEnabled = false,
 }: {
   slug: string;
   branchId: string;
@@ -44,6 +46,9 @@ export function CheckoutForm({
   initialPhone?: string;
   initialAddress?: string;
   initialEmail?: string;
+  /** EG AND ETA activation `active`. Only then is the tax-receipt email field
+   *  shown or sent — every other tenant's checkout is what it was before ETA. */
+  fiscalEnabled?: boolean;
 }) {
   const [cart, setCart] = useState<Cart>({ branchId: null, lines: [] });
   const [fulfillment, setFulfillment] = useState<"pickup" | "delivery">("delivery");
@@ -124,8 +129,9 @@ export function CheckoutForm({
     // which for a mistyped email points the customer at the wrong field
     // entirely. The server check stays (this route is public and the form is
     // not the only caller); this one is what makes the message actionable.
-    if (email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim())) {
-      setError("That email doesn't look right — fix it, or clear it to skip the receipt.");
+    const emailError = checkoutEmailError(fiscalEnabled, email);
+    if (emailError) {
+      setError(emailError);
       return;
     }
     setSubmitting(true);
@@ -135,7 +141,8 @@ export function CheckoutForm({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           slug, branchId, fulfillmentType: fulfillment,
-          customerName: name, customerPhone: phone, customerEmail: email, notes,
+          customerName: name, customerPhone: phone, notes,
+          ...checkoutEmailPayload(fiscalEnabled, email),
           areaId: fulfillment === "delivery" ? areaId : undefined,
           addressText: fulfillment === "delivery" ? address : undefined,
           scheduledFor: when === "scheduled" ? slotIso : undefined,
@@ -281,10 +288,12 @@ export function CheckoutForm({
             tax receipt is the seller's obligation to FILE, not the buyer's to
             receive, so a blank here costs the customer their emailed copy and
             nothing else. */}
-        <div className="grid gap-1.5">
-          <Label htmlFor="co-email">Email (optional) — for your tax receipt</Label>
-          <Input id="co-email" placeholder="you@example.com" type="email" inputMode="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-        </div>
+        {fiscalEnabled && (
+          <div className="grid gap-1.5">
+            <Label htmlFor="co-email">Email (optional) — for your tax receipt</Label>
+            <Input id="co-email" placeholder="you@example.com" type="email" inputMode="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          </div>
+        )}
         {fulfillment === "delivery" && (
           <>
             <div className="grid gap-1.5">

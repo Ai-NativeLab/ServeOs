@@ -10,7 +10,7 @@ import {
 } from "./_offline/offline-auth";
 import { EMPTY_TILL_STATE, reduce, type TillState } from "./_offline/reducer";
 import { createApiClient, type PosApi } from "./_offline/api";
-import { SyncEngine, type SyncStatus } from "./_offline/sync";
+import { FISCAL_ENABLED_KEY, SyncEngine, type SyncStatus } from "./_offline/sync";
 import { TenantSignal, type RealtimeEvent, type TenantEventType } from "./_offline/realtime";
 import { createRealtimeTransport } from "./_offline/realtime-transport";
 import {
@@ -1009,6 +1009,18 @@ export class PosMain {
    * tell non-EG from not-yet from transport-failure must WIDEN THIS RETURN TYPE
    * — never infer meaning from `null`, which says only "nothing to print".
    */
+  /**
+   * Whether this tenant files with ETA (EG + activation `active`), as of the
+   * last catalog pull — the server's `isFiscalEnabled`, cached in local_state so
+   * it survives an outage. `false` until the first pull (and on an unpaired
+   * till): every fiscal affordance — the B2B buyer section, the "fetching
+   * fiscal code" line — stays hidden rather than guessing "on".
+   */
+  fiscalEnabled(): boolean {
+    if (!this.device) return false;
+    return this.store.getState<boolean>(FISCAL_ENABLED_KEY) === true;
+  }
+
   async saleFiscalStatus(orderId: string): Promise<SaleFiscalStatus | null> {
     if (!this.device || !this.cashier) return null;
     try {

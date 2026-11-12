@@ -70,11 +70,9 @@ export type OrderFiscalView =
  * `null` means RENDER NOTHING — and it is the byte-identical-page guarantee for
  * every tenant outside Egypt, which is the country gate's promise (F1/F2).
  *
- * `fiscalEnabled` is the caller's `tenants.country === "EG"`, the same gate
- * `@/server/fiscal/enqueue`'s `isFiscalEnabled` applies and the same one
- * `src/app/dashboard/orders/[id]/page.tsx` spells inline from a tenant row it
- * already holds. Passed in rather than read here so the page pays no query for
- * it, and so this function stays pure.
+ * `fiscalEnabled` is the caller's `country === "EG"` AND ETA activation
+ * `active` — the same gate `@/server/fiscal/enqueue`'s `isFiscalEnabled`
+ * applies. Passed in rather than read here so this function stays pure.
  *
  * IT IS ALSO WHAT SEPARATES THE TWO MEANINGS OF `null` FISCAL DATA. The read
  * model returns `null` both for "this tenant files nothing" and for "this EG

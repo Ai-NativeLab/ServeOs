@@ -131,6 +131,16 @@ describe("GET /api/pos/v1/sales/[id]/fiscal", () => {
     expect(await res.json()).toBeNull();
   });
 
+  it("400s a malformed sale id instead of letting it reach the uuid column as a 500", async () => {
+    const s = await seedPosContext("owner");
+    signedIn(s.ctx, ["pos:sell"]);
+    for (const id of ["x", "not-a-uuid", "00000000-0000-4000-8000-00000000000"]) {
+      const res = await GET(req(), params(id));
+      expect(res.status, id).toBe(400);
+      expect(await res.json()).toEqual({ error: "Invalid sale id" });
+    }
+  });
+
   it("returns status, uuid and a rendered QR for a finalized sale", async () => {
     const s = await seedFiscalSale();
     signedIn(s.ctx, ["pos:sell"]);

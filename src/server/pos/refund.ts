@@ -1,5 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
+import type { db } from "@/db/client";
 import { recordAuditEvent } from "@/server/audit/service";
 import { publishTenantEvent } from "@/server/realtime/publish";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
@@ -13,6 +14,9 @@ import { REASON_CODES, type ReasonCode } from "./record-sale";
 import { PosRefundError } from "./errors";
 import type { Permission } from "@/server/rbac/permissions";
 import { isFiscalEnabled, enqueueFiscalDocument } from "@/server/fiscal/enqueue";
+import { etaSubmissions } from "@/server/fiscal/schema";
+import { notifyFiscalFailure } from "@/server/fiscal/effects";
+import { redactedCause } from "@/lib/redacted-cause";
 import { computeRefundVat } from "./refund-vat";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -216,6 +220,7 @@ export async function issueRefund(
         totalAmount: Number(dup.totalAmount),
         paymentStatus: order.paymentStatus,
         idempotent: true,
+        fiscalFollowUp: "none" as RefundFiscalFollowUp,
       };
     }
 
@@ -367,6 +372,13 @@ export async function issueRefund(
       .set({ paymentStatus, updatedAt: new Date() })
       .where(eq(orders.id, input.orderId));
 
+    // 8b. Fiscal family of the sale being refunded (EG + ETA-active only) — see
+    //     step 10 for what each answer does. Read here so the audit event below
+    //     records which fiscal consequence this refund had.
+    const fiscalFollowUp: RefundFiscalFollowUp = fiscalEnabled
+      ? await refundFiscalFollowUp(tx, actor.tenantId, input.orderId)
+      : "none";
+
     // 9. Audit — DIRECT recordAuditEvent, same tx, so the refund.issued row
     //    commits/rolls back with the refund. The audit chain is live on-branch
     //    (unlike the plan's seam premise), so this matches record-sale's
@@ -394,6 +406,8 @@ export async function issueRefund(
           paymentStatus,
           byUserId: actor.actorUserId,
           authorizedByUserId,
+          // Only on a fiscal tenant, so every other tenant's event is unchanged.
+          ...(fiscalEnabled ? { fiscalFollowUp } : {}),
         },
       },
       tx,
@@ -412,8 +426,25 @@ export async function issueRefund(
     //     which stays reserved for the deferred B2B e-invoice correction.
     //     `fiscalEnabled` was read ABOVE the transaction (pool-deadlock
     //     avoidance — see that comment); only the WRITE belongs in here.
-    if (fiscalEnabled) {
+    //
+    //     FAMILY-AWARE (step 8b). A return receipt references the sale's
+    //     ORIGINAL e-receipt, so it is only enqueued when one exists:
+    //       - "return_receipt": the sale was filed as an e-receipt.
+    //       - "credit_note_required": the sale was filed as a B2B tax invoice.
+    //         Its correction is a CREDIT NOTE, which ServeOS does not build yet
+    //         (the worker leaves `credit_note` rows inert). The row is still
+    //         queued — `pending`, docType `credit_note` — because it is the
+    //         durable, visible record that a credit note is owed: it shows on the
+    //         fiscal dashboard's submissions feed (and ages into "overdue"), and
+    //         the owner is alerted after commit. A `return_receipt` here would
+    //         wait forever on a parent receipt that does not exist.
+    //       - "none": the sale has NO fiscal document (rung before fiscal was
+    //         enabled/activated): there is nothing to reverse, so nothing is
+    //         queued.
+    if (fiscalFollowUp === "return_receipt") {
       await enqueueFiscalDocument({ tenantId: actor.tenantId }, { docType: "return_receipt", refundId: refund.id }, tx);
+    } else if (fiscalFollowUp === "credit_note_required") {
+      await enqueueFiscalDocument({ tenantId: actor.tenantId }, { docType: "credit_note", refundId: refund.id }, tx);
     }
 
     return {
@@ -421,8 +452,28 @@ export async function issueRefund(
       totalAmount: thisTotal,
       paymentStatus,
       idempotent: false,
+      fiscalFollowUp,
     };
   });
+
+  // The owner alert for a refund of a B2B-invoiced sale. AFTER commit and
+  // best-effort: the refund and its `credit_note` row are already durable, and
+  // a notification failure must never fail a refund the customer has been given.
+  if (!result.idempotent && result.fiscalFollowUp === "credit_note_required") {
+    console.warn(`[fiscal] refund ${result.refundId} on order ${input.orderId} (tenant ${actor.tenantId}) needs a B2B credit note — queued as credit_note, not filed automatically`);
+    try {
+      await notifyFiscalFailure({ tenantId: actor.tenantId }, {
+        title: "Credit note required",
+        body: `A refund was issued on a sale filed with ETA as a tax invoice. ETA needs a credit note for it, which ServeOS does not file automatically yet — it is listed as a pending credit_note on the Fiscal page.`,
+        entityType: "refund",
+        entityId: result.refundId,
+        targets: [{ role: "owner" }],
+        channels: ["in_app"],
+      });
+    } catch (err) {
+      console.error(`[fiscal] credit-note alert failed for refund ${result.refundId} (refund unaffected)`, redactedCause(err));
+    }
+  }
 
   // Post-commit, and only for a refund that actually happened: the sale's row
   // and the stock it put back both moved, and neither screen should wait out a
@@ -431,5 +482,36 @@ export async function issueRefund(
     await publishTenantEvent(actor.tenantId, { type: "orders.changed", entityIds: [input.orderId] });
     await publishTenantEvent(actor.tenantId, { type: "stock.changed", entityIds: [input.orderId] });
   }
-  return result;
+  return {
+    refundId: result.refundId,
+    totalAmount: result.totalAmount,
+    paymentStatus: result.paymentStatus,
+    idempotent: result.idempotent,
+  };
+}
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** What a fiscal tenant's refund owes ETA — see `issueRefund` step 10. */
+type RefundFiscalFollowUp = "return_receipt" | "credit_note_required" | "none";
+
+/**
+ * The document family the refunded sale was filed under, read on the refund's
+ * own transaction (RLS-scoped, no second connection). An invoice anywhere in
+ * the order's history wins: the one permitted family switch (every receipt
+ * rejected, then invoiced — `requestB2bInvoice`) leaves rejected receipt rows
+ * behind, and the sale's live document is then the invoice.
+ */
+async function refundFiscalFollowUp(
+  tx: Tx,
+  tenantId: string,
+  orderId: string,
+): Promise<RefundFiscalFollowUp> {
+  const rows = await tx
+    .select({ docType: etaSubmissions.docType })
+    .from(etaSubmissions)
+    .where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.orderId, orderId)));
+  if (rows.some((r) => r.docType === "e_invoice")) return "credit_note_required";
+  if (rows.some((r) => r.docType === "e_receipt")) return "return_receipt";
+  return "none";
 }

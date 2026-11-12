@@ -36,9 +36,21 @@ export type ReceiptFiscal = Pick<
  * The split is on `docType` and not on "is there a QR", because an `e_receipt`
  * in the seconds before its finalization lands has no QR either — reading the
  * family off that absence would print tax-invoice text on a consumer sale.
+ *
+ * `fetching` — the till's FIRST read of the fiscal record is still in flight
+ * (EG tenants only; the caller decides). Without it, a receipt printed in that
+ * second would carry no footer at all and look like a non-fiscal sale; with it,
+ * the copy says the code is on its way. Ignored once `fiscal` is known.
  */
-export function ReceiptFiscalFooter({ fiscal }: { fiscal?: ReceiptFiscal | null }) {
-  if (!fiscal) return null;
+export function ReceiptFiscalFooter({ fiscal, fetching = false }: { fiscal?: ReceiptFiscal | null; fetching?: boolean }) {
+  if (!fiscal) {
+    if (!fetching) return null;
+    return (
+      <div className="mt-4 border-t border-dashed border-border pt-3 text-center">
+        <p className="text-[10px] text-muted-foreground">Fetching fiscal code…</p>
+      </div>
+    );
+  }
 
   if (fiscal.docType === "e_invoice") {
     return (
@@ -62,7 +74,7 @@ export function ReceiptFiscalFooter({ fiscal }: { fiscal?: ReceiptFiscal | null 
 
   return (
     <div className="mt-4 border-t border-dashed border-border pt-3 text-center">
-      {fiscal.qrImageDataUrl ? (
+      {isPngDataUrl(fiscal.qrImageDataUrl) ? (
         <img src={fiscal.qrImageDataUrl} alt="ETA receipt QR" className="mx-auto h-28 w-28" />
       ) : (
         // The row exists but has not been finalized yet — rare, and it resolves
@@ -77,6 +89,13 @@ export function ReceiptFiscalFooter({ fiscal }: { fiscal?: ReceiptFiscal | null 
       )}
     </div>
   );
+}
+
+/** The endpoint only ever sends a server-rendered PNG data URL. Anything else
+ *  (a remote URL, an SVG, `javascript:`) is not rendered as an image source —
+ *  the footer falls back to its pending line instead. */
+export function isPngDataUrl(src: string | null | undefined): src is string {
+  return typeof src === "string" && src.startsWith("data:image/png;base64,");
 }
 
 export type ReceiptTender = { method: string; amount: number };
@@ -108,11 +127,14 @@ export type ReceiptData = {
 export function Receipt({
   data,
   fiscal,
+  fiscalFetching = false,
   onPrint,
   onNewOrder,
 }: {
   data: ReceiptData;
   fiscal?: ReceiptFiscal | null;
+  /** EG + the first fiscal read still in flight — see `ReceiptFiscalFooter`. */
+  fiscalFetching?: boolean;
   onPrint: () => void;
   onNewOrder: () => void;
 }) {
@@ -193,7 +215,7 @@ export function Receipt({
           <div className="mt-1 text-center text-xs text-muted-foreground">Thank you!</div>
           {/* Inside #receipt so the print stylesheet's `#receipt *` rule keeps
               the QR visible on the customer copy. */}
-          <ReceiptFiscalFooter fiscal={fiscal} />
+          <ReceiptFiscalFooter fiscal={fiscal} fetching={fiscalFetching} />
         </div>
 
         <div className="no-print mt-4 flex gap-2">

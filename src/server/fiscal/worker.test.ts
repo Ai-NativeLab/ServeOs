@@ -11,7 +11,7 @@ import { recordAuditEvent } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { notifications } from "@/server/notifications/schema";
 import { FakeEmailProvider } from "@/server/email/fake-provider";
-import { seedPosContext, openShiftForCtx } from "@/server/pos/test-helpers";
+import { seedPosContext, openShiftForCtx, activateFiscal } from "@/server/pos/test-helpers";
 import { recordSale } from "@/server/pos/record-sale";
 import { issueRefund, type RefundActor } from "@/server/pos/refund";
 import { refundLines, refunds } from "@/server/pos/refund-schema";
@@ -266,12 +266,14 @@ async function seedTaxCode(tenantId: string, productId: string) {
   }));
 }
 
+/** Upserts, so it completes a config `activateFiscal` opened earlier (the
+ *  "rung before the tenant was fully configured" fixtures). */
 async function seedFiscalConfig(
   tenantId: string,
   overrides: Partial<typeof etaTenantConfig.$inferInsert> = {},
 ) {
   const refs = await tenantSecretRefs(tenantId);
-  await withTenant(tenantId, (tx) => tx.insert(etaTenantConfig).values({
+  const values = {
     tenantId,
     // Configured well in the past by default: the reconciliation sweep is
     // floored at the tenant's activation, and these fixtures backdate the orders
@@ -280,11 +282,13 @@ async function seedFiscalConfig(
     registrationNumber: "200173707",
     clientId: "erp-client",
     clientSecretRef: refs.erp,
-    environment: "preprod",
-    activationStatus: "active",
+    environment: "preprod" as const,
+    activationStatus: "active" as const,
     wireContextJson: WIRE_CONTEXT,
     ...overrides,
-  }));
+  };
+  await withTenant(tenantId, (tx) => tx.insert(etaTenantConfig).values(values)
+    .onConflictDoUpdate({ target: etaTenantConfig.tenantId, set: values }));
 }
 
 async function seedDeviceCredential(tenantId: string, deviceId: string, etaSerial = "POS-001") {
@@ -322,6 +326,10 @@ async function seedSale(
     : {};
   await openShiftForCtx(s.ctx);
   await seedTaxCode(s.tenantId, s.productId);
+  // ETA-ACTIVE either way — an inactive tenant enqueues nothing at all
+  // (`isFiscalEnabled`). Configured-after means active but INCOMPLETE (no wire
+  // context, no device credential), so the inline finalization fails.
+  if (!configureFirst) await activateFiscal(s.tenantId);
 
   if (configureFirst) {
     await seedFiscalConfig(s.tenantId, fiscalConfig);
@@ -421,11 +429,13 @@ describe("finalization at enqueue time", () => {
   });
 
   it("chains concurrent finalizations on one device: distinct uuids, second links to the first", async () => {
-    // BOTH sales are rung before the tenant is configured, so neither is
-    // finalized inline and the two finalizations can be raced deliberately.
+    // BOTH sales are rung before the tenant is fully configured (active, but
+    // no wire context or device credential), so neither is finalized inline
+    // and the two finalizations can be raced deliberately.
     const s = await seedPosContext("owner");
     await openShiftForCtx(s.ctx);
     await seedTaxCode(s.tenantId, s.productId);
+    await activateFiscal(s.tenantId);
     const first = await recordSale(s.ctx, {
       clientOrderId: "chain-a",
       lines: [{ productId: s.productId, quantity: 1, selectedOptionIds: [] }],

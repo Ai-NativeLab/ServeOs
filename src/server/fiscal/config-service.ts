@@ -39,7 +39,7 @@ import {
   type EtaPosCredentialStatus,
   type EtaCodeSource,
 } from "./schema";
-import { enqueueFiscalDocument } from "./enqueue";
+import { enqueueFiscalDocument, isFiscalEnabled } from "./enqueue";
 import { finalizeSubmissionRow } from "./finalize";
 import { etaSecretRefPrefix, isTenantBoundSecretRef, loadTenantSlug } from "./config";
 
@@ -129,8 +129,11 @@ function parseOrThrow<T extends z.ZodType>(schema: T, value: unknown): z.infer<T
 }
 
 /** ETA's Registration Identification Number: exactly 9 digits (Main
- *  Calculations). Anything else is refused rather than filed. */
-const rinSchema = z.string().trim().regex(/^\d{9}$/, "must be exactly 9 digits — ETA's Registration Identification Number");
+ *  Calculations). Anything else is refused rather than filed. Spaces and `-`
+ *  are stripped first — a TRN is commonly printed `123-456-789` — and the
+ *  stored value is the bare nine digits (the till's `normalizeRin` mirrors
+ *  this). */
+const rinSchema = z.string().transform((v) => v.replace(/[\s-]/g, "")).pipe(z.string().regex(/^\d{9}$/, "must be exactly 9 digits — ETA's Registration Identification Number"));
 
 /** The serial the device is registered under at pos.eta.gov.eg. ETA caps it at
  *  100 characters, and it is part of every hashed receipt that device issues. */
@@ -298,7 +301,10 @@ const buyerSchema = z.object({
   rin: rinSchema,
   name: requiredText("the buyer's registered name"),
   address: z.object({
-    country: requiredText("a country code"),
+    // Locked to EG: a type-`B` receiver is an Egyptian business by definition
+    // (a foreign buyer is receiver type `F`, which ServeOS does not file).
+    // Case-insensitive on input, stored upper-case. Mirrored by the till.
+    country: z.string().trim().toUpperCase().refine((v) => v === "EG", "must be EG — a B2B tax invoice names an Egyptian business"),
     governate: requiredText("a governate"),
     regionCity: requiredText("a region/city"),
     street: requiredText("a street"),
@@ -1159,12 +1165,25 @@ export async function requestB2bInvoice(
   const parsed: EtaSubmissionBuyer = parseOrThrow(buyerSchema, buyer);
   if (!isUuid(orderId)) return { ok: false, status: 404, error: "Order not found" };
 
+  // THE FISCAL GATE, enforced HERE and not only by the dashboard hiding its
+  // button: a non-EG tenant, or an EG tenant whose ETA activation is not
+  // `active`, can never file a document, so an invoice row for it would sit
+  // unsubmittable forever. Read BEFORE the transaction (it takes its own pool
+  // connection — see `isFiscalEnabled`).
+  if (!(await isFiscalEnabled(tenantId))) {
+    return {
+      ok: false,
+      status: 409,
+      error: "Tax invoices are only available once this business is activated with ETA (Egypt) — see the Fiscal page",
+    };
+  }
+
   const outcome = await withTenant(tenantId, async (tx): Promise<RequestB2bInvoiceOutcome> => {
     // `orders` is RLS-backed, so another tenant's order simply reads as absent
     // and lands on the same 404 as a fictional one — which is the right answer
     // for both: neither tells the caller whether the id exists elsewhere.
     const [order] = await tx
-      .select({ id: orders.id, orderNumber: orders.orderNumber, status: orders.status })
+      .select({ id: orders.id, orderNumber: orders.orderNumber, status: orders.status, paymentStatus: orders.paymentStatus })
       .from(orders)
       .where(and(eq(orders.id, orderId), eq(orders.tenantId, tenantId)))
       .limit(1);
@@ -1178,6 +1197,18 @@ export async function requestB2bInvoice(
         ok: false,
         status: 409,
         error: `Order ${order.orderNumber} is ${order.status} — a cancelled sale has nothing to invoice`,
+      };
+    }
+
+    // ONLY A PAID SALE IS INVOICED. An unpaid (or `pending_verification`)
+    // order has not been sold yet — it may still be voided — and a filed tax
+    // invoice cannot be. Refunded / partially refunded orders WERE paid and
+    // pass: their correction is a credit note, not a missing invoice.
+    if (order.paymentStatus === "unpaid" || order.paymentStatus === "pending_verification") {
+      return {
+        ok: false,
+        status: 409,
+        error: `Order ${order.orderNumber} is not paid yet — only a paid sale can be invoiced`,
       };
     }
 

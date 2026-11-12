@@ -11,6 +11,7 @@ import { formatMoney } from "@/lib/money";
 import { formatDayTime } from "@/lib/datetime";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { getSaleFiscalStatusByToken } from "@/server/fiscal/read-model";
+import { isEtaActivated } from "@/server/fiscal/enqueue";
 import { orderFiscalView } from "./order-fiscal";
 import { StatusPoller } from "./StatusPoller";
 
@@ -39,14 +40,13 @@ export default async function OrderStatusPage({ params }: { params: Promise<{ to
     );
   }
 
-  // THE COUNTRY GATE, spelled from the tenant row already in hand — the same
-  // thing `@/server/fiscal/enqueue`'s `isFiscalEnabled` asserts (that function
-  // is the authority; it is not called here because it would be a second query
-  // for a column this page has already selected), and the same way
-  // `src/app/dashboard/orders/[id]/page.tsx` spells it. Read BEFORE the fiscal
-  // lookup rather than after: a non-EG storefront then issues no extra query at
-  // all, so its page is unchanged in cost as well as in bytes.
-  const fiscalEnabled = tenant.country === "EG";
+  // THE FISCAL GATE — the same thing `@/server/fiscal/enqueue`'s
+  // `isFiscalEnabled` asserts: country EG AND ETA activation `active`. The
+  // country half is spelled from the tenant row already in hand, so a non-EG
+  // storefront issues no extra query at all (its page is unchanged in cost as
+  // well as in bytes); only an EG tenant pays the activation read. An EG tenant
+  // still onboarding with ETA shows no fiscal block — it files nothing.
+  const fiscalEnabled = tenant.country === "EG" && (await isEtaActivated(tenant.id));
   const [whatsappNumber, branches, fiscal] = await Promise.all([
     getWhatsappNumber(tenant.id),
     listBranches(tenant.id),

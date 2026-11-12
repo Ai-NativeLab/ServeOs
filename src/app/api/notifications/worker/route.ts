@@ -11,10 +11,10 @@ import { CloudApiProvider } from "@/server/whatsapp/cloud-api-provider";
  * gate stays, because an open endpoint invites hammering the provider.
  *
  * The ETA fiscal drain used to ride this tick and no longer does: it owns
- * `/api/fiscal/worker` on its own 15-minute cron entry, because this route's
- * daily 3am slot leaves a receipt almost no margin inside ETA's 24-hour
- * submission window. See that route for the full reasoning and the Vercel-tier
- * gate the schedule depends on.
+ * `/api/fiscal/worker`, driven every 15 minutes by a GitHub Actions schedule
+ * (Vercel Hobby rejects sub-daily crons), because this route's daily 3am slot
+ * leaves a receipt almost no margin inside ETA's 24-hour submission window.
+ * See that route for the full reasoning and the go-live gate.
  */
 export async function GET(req: NextRequest) {
   const secret = process.env.CRON_SECRET;

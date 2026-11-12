@@ -19,6 +19,8 @@ import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { formatDayTime } from "@/lib/datetime";
 import { getTenantById } from "@/server/tenancy";
+import { isFiscalEnabled } from "@/server/fiscal/enqueue";
+import { getSaleFiscalStatus } from "@/server/fiscal/read-model";
 
 const STATUS_LABEL: Record<string, string> = {
   confirmed: "Confirm", preparing: "Start preparing", ready: "Mark ready",
@@ -51,25 +53,26 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
   // each is gated by its OWN permission rather than by the page's. `fiscal:manage`
   // is owner-only — deliberately narrower than the orders screen itself.
   //
-  // Country-gated too, because `isFiscalEnabled` gates the whole subsystem on
-  // `tenants.country === "EG"`: offering the button to a non-EG tenant would
-  // queue a document nothing will ever submit. The fiscal dashboard says the
-  // same thing in its own banner.
-  //
-  // NOT gated on the order's FISCAL state, and that is a decision. The
-  // one-sale-one-document-family rule (`requestB2bInvoice`) refuses an order
-  // already filed as an e-receipt, so on a receipted sale this form is offered
-  // and then answers 409 — worse UX than hiding it. Hiding it would mean reading
-  // `getSaleFiscalStatus` here, and that function's docType filter is about to
-  // change meaning under round-2 Task 5 (it widens to the invoice family), so a
-  // button gated on it would silently start hiding itself for a different reason
-  // than the one written here. The LADDER is the enforcement; the gate stays
-  // permission + country + order status until Task 5 settles that read.
+  // Fiscal-gated too — `isFiscalEnabled` (country EG AND ETA activation
+  // `active`): offering the button to any other tenant would only earn a 409.
+  // `requestB2bInvoice` enforces every one of these rules itself; this gate is
+  // the affordance, so the form is not offered where it can only be refused:
+  //   - only a PAID sale is invoiced (unpaid / pending_verification refused);
+  //   - one sale, one document family: a sale that already has a LIVE fiscal
+  //     document (a receipt or an invoice, anything not rejected) cannot take
+  //     an invoice. `getSaleFiscalStatus` reads both families, newest live row
+  //     first. The one permitted switch — a REJECTED receipt with no correction
+  //     queued — keeps the form, matching the ladder.
+  const fiscalEnabled =
+    can(ctx.roleKeys, "fiscal:manage") && tenant?.country === "EG" && (await isFiscalEnabled(tenantId));
+  const saleFiscal = fiscalEnabled ? await getSaleFiscalStatus(tenantId, id) : null;
   const canInvoice =
-    can(ctx.roleKeys, "fiscal:manage") &&
-    tenant?.country === "EG" &&
+    fiscalEnabled &&
     order.status !== "cancelled" &&
-    order.status !== "rejected";
+    order.status !== "rejected" &&
+    order.paymentStatus !== "unpaid" &&
+    order.paymentStatus !== "pending_verification" &&
+    (saleFiscal === null || (saleFiscal.docType === "e_receipt" && saleFiscal.status === "rejected"));
 
   return (
     <>

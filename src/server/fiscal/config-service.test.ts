@@ -10,7 +10,7 @@ import { users } from "@/server/auth/schema";
 import { posDevices } from "@/server/pos/schema";
 import { auditEvents } from "@/server/audit/schema";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
-import { seedPosContext, openShiftForCtx } from "@/server/pos/test-helpers";
+import { seedPosContext, openShiftForCtx, activateFiscal } from "@/server/pos/test-helpers";
 import { recordSale } from "@/server/pos/record-sale";
 import {
   etaSubmissions,
@@ -1180,6 +1180,10 @@ async function seedSale(opts: { configureFirst: boolean }) {
         environment: "preprod",
         activationStatus: "active",
         wireContextJson: WIRE_CONTEXT,
+      }).onConflictDoUpdate({
+        // Completes the config `activateFiscal` opened for a configured-after sale.
+        target: etaTenantConfig.tenantId,
+        set: { clientSecretRef: REFS.erp, activationStatus: "active", wireContextJson: WIRE_CONTEXT },
       }),
     );
     await withTenant(s.tenantId, (tx) =>
@@ -1196,6 +1200,9 @@ async function seedSale(opts: { configureFirst: boolean }) {
     );
   };
 
+  // Active either way (an inactive tenant enqueues nothing — `isFiscalEnabled`);
+  // configured-after means active but incomplete, so finalization fails inline.
+  if (!opts.configureFirst) await activateFiscal(s.tenantId);
   if (opts.configureFirst) await configure();
   const receipt = await recordSale(s.ctx, {
     clientOrderId: `sale-${n++}`,
@@ -1691,7 +1698,7 @@ describe("requestB2bInvoice — buyer validation", () => {
     const s = await seedInvoiceableSale();
     // A document naming a 9-digit issuer and an 8-digit receiver is not well
     // formed — ETA's Registration Identification Number is one kind of value.
-    for (const rin of ["12345678", "1234567890", "20017370x", "200 173 707", ""]) {
+    for (const rin of ["12345678", "1234567890", "20017370x", "200.173.707", ""]) {
       await expectRejected(
         () => requestB2bInvoice(s.tenantId, s.receipt.orderId, { ...B2B_BUYER(), rin }),
         { path: "rin", match: /9 digits/ },
@@ -1704,6 +1711,27 @@ describe("requestB2bInvoice — buyer validation", () => {
     expect(row.buyerJson!.rin).toBe("313717919");
   });
 
+  it("accepts a RIN typed with the separators printed on a tax card, and stores the bare digits", async () => {
+    const s = await seedInvoiceableSale();
+    expect((await requestB2bInvoice(s.tenantId, s.receipt.orderId, { ...B2B_BUYER(), rin: "313-717 919" })).ok).toBe(true);
+    const [row] = await invoiceRows(s.tenantId);
+    expect(row.buyerJson!.rin).toBe("313717919");
+  });
+
+  it("locks a type-B receiver's country to EG (case-insensitive, stored upper-case)", async () => {
+    const s = await seedInvoiceableSale();
+    for (const country of ["SA", "Egypt", "US"]) {
+      await expectRejected(
+        () => requestB2bInvoice(s.tenantId, s.receipt.orderId, { ...B2B_BUYER(), address: { ...B2B_BUYER().address, country } }),
+        { path: "address.country", match: /must be EG/ },
+      );
+    }
+    const ok = await requestB2bInvoice(s.tenantId, s.receipt.orderId, { ...B2B_BUYER(), address: { ...B2B_BUYER().address, country: "eg" } });
+    expect(ok.ok).toBe(true);
+    const [row] = await invoiceRows(s.tenantId);
+    expect(row.buyerJson!.address.country).toBe("EG");
+  });
+
   it("validates the buyer BEFORE the order lookup — the operator's own typing comes first", async () => {
     const s = await seedInvoiceableSale();
     // Both the order id and the buyer are wrong. The buyer is the half they can
@@ -1712,6 +1740,33 @@ describe("requestB2bInvoice — buyer validation", () => {
       () => requestB2bInvoice(s.tenantId, "00000000-0000-4000-8000-000000000000", buyerWithout("name")),
       { path: "name" },
     );
+  });
+});
+
+describe("requestB2bInvoice — the fiscal and payment gates (enforced in the service, not only the UI)", () => {
+  it("409s a tenant that does not file with ETA — non-EG, or EG not yet activated — and writes nothing", async () => {
+    const notActive = await seedInvoiceableSale();
+    await withTenant(notActive.tenantId, (tx) =>
+      tx.update(etaTenantConfig).set({ activationStatus: "pending" }).where(eq(etaTenantConfig.tenantId, notActive.tenantId)));
+    expect(await requestB2bInvoice(notActive.tenantId, notActive.receipt.orderId, B2B_BUYER()))
+      .toMatchObject({ ok: false, status: 409, error: expect.stringMatching(/activated with ETA/) });
+    expect(await invoiceRows(notActive.tenantId)).toEqual([]);
+
+    const nonEg = await seedInvoiceableSale();
+    await db.update(tenants).set({ country: "SA" }).where(eq(tenants.id, nonEg.tenantId));
+    expect(await requestB2bInvoice(nonEg.tenantId, nonEg.receipt.orderId, B2B_BUYER()))
+      .toMatchObject({ ok: false, status: 409 });
+    expect(await invoiceRows(nonEg.tenantId)).toEqual([]);
+  });
+
+  it("409s an unpaid or pending_verification order — only a paid sale is invoiced", async () => {
+    const s = await seedInvoiceableSale();
+    for (const paymentStatus of ["unpaid", "pending_verification"] as const) {
+      await withTenant(s.tenantId, (tx) => tx.update(orders).set({ paymentStatus }).where(eq(orders.id, s.receipt.orderId)));
+      expect(await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER()), paymentStatus)
+        .toMatchObject({ ok: false, status: 409, error: expect.stringMatching(/not paid yet/) });
+    }
+    expect(await invoiceRows(s.tenantId)).toEqual([]);
   });
 });
 

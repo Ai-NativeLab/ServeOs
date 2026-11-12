@@ -7,6 +7,7 @@ import { formatSlotLabel } from "@/lib/datetime";
 import { listEnabledOfflineMethods } from "@/server/payments/offline/methods";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { CheckoutForm, type SlotOption } from "./CheckoutForm";
+import { isEtaActivated } from "@/server/fiscal/enqueue";
 
 export default async function CheckoutPage({
   searchParams,
@@ -34,13 +35,16 @@ export default async function CheckoutPage({
     );
   }
 
-  const [branches, pricing, offlineMethods, me] = await Promise.all([
+  const [branches, pricing, offlineMethods, me, fiscalEnabled] = await Promise.all([
     listBranches(tenant.id),
     getCheckoutPricing(tenant.id),
     listEnabledOfflineMethods(tenant.id),
     // Signed-in customers get their contact details prefilled (P2, C3) —
     // checkout itself stays guest-shaped either way.
     currentCustomer(tenant.id),
+    // The tax-receipt email field is an ETA feature: only a tenant that files
+    // (EG AND activation `active`) asks for it. A non-EG tenant pays no query.
+    tenant.country === "EG" ? isEtaActivated(tenant.id) : false,
   ]);
   // No silent fallback: resolve only an explicit ?branch= or the single branch.
   const branch =
@@ -85,7 +89,8 @@ export default async function CheckoutPage({
           initialName={me?.name ?? ""}
           initialPhone={me?.phone ?? ""}
           initialAddress={me?.defaultAddressText ?? ""}
-          initialEmail={me?.email ?? ""}
+          initialEmail={fiscalEnabled ? (me?.email ?? "") : ""}
+          fiscalEnabled={fiscalEnabled}
           branchId={branch.id}
           branchName={branch.name}
           pricing={pricing}

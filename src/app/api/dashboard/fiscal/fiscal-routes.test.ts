@@ -11,7 +11,7 @@ import { users, type User } from "@/server/auth/schema";
 import { auditEvents } from "@/server/audit/schema";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { etaSubmissions } from "@/server/fiscal/schema";
-import { seedPosContext } from "@/server/pos/test-helpers";
+import { seedPosContext, activateFiscal } from "@/server/pos/test-helpers";
 import type { RoleKey } from "@/server/rbac/permissions";
 
 /**
@@ -464,6 +464,16 @@ describe("POST /api/dashboard/fiscal/submissions/[id]/resubmit", () => {
     });
   });
 
+  it("404s a malformed submission id instead of a uuid-cast 500", async () => {
+    const { tenantId, userId } = await seedRejected();
+    signIn(tenantId, ["owner"], userId);
+    for (const id of ["x", "not-a-uuid"]) {
+      const res = await postResubmit(post(), params(id));
+      expect(res.status, id).toBe(404);
+      expect(await res.json()).toEqual({ error: "Submission not found" });
+    }
+  });
+
   it("refuses a non-owner with 403 and queues nothing", async () => {
     const { tenantId, userId, submission } = await seedRejected();
     signIn(tenantId, ["manager"], userId);
@@ -541,6 +551,9 @@ describe("POST /api/dashboard/fiscal/orders/[id]/invoice", () => {
    */
   async function seedOrder() {
     const { tenantId, userId } = await seedTenant();
+    // ETA-activated (the service refuses any other tenant) and a PAID order
+    // (the service refuses an unpaid one).
+    await activateFiscal(tenantId);
     const [branch] = await withTenant(tenantId, (tx) =>
       tx.insert(branches).values({ tenantId, name: "Main" }).returning(),
     );
@@ -557,6 +570,7 @@ describe("POST /api/dashboard/fiscal/orders/[id]/invoice", () => {
         vatAmount: "14.00",
         total: "114.00",
         statusToken: `tok-invoice-${n++}`,
+        paymentStatus: "paid",
       }).returning(),
     );
     return { tenantId, userId, orderId: order.id };

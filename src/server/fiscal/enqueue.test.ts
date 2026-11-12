@@ -5,7 +5,7 @@ import { withTenant } from "@/db/with-tenant";
 import { tenants } from "@/server/tenancy/schema";
 import { etaSubmissions } from "./schema";
 import { isFiscalEnabled, enqueueFiscalDocument, enqueueCorrectedResubmission } from "./enqueue";
-import { seedPosContext, openShiftForCtx } from "@/server/pos/test-helpers";
+import { seedPosContext, openShiftForCtx, activateFiscal } from "@/server/pos/test-helpers";
 import { recordSale } from "@/server/pos/record-sale";
 import { issueRefund, type RefundActor } from "@/server/pos/refund";
 import type { PosCashierContext } from "@/server/pos/require-cashier";
@@ -46,9 +46,11 @@ async function submissionsByRefund(tenantId: string, refundId: string) {
     tx.select().from(etaSubmissions).where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.refundId, refundId))));
 }
 
-/** A completed, fully-paid cash sale on an EG tenant (seedPosContext's default) — no change due. */
+/** A completed, fully-paid cash sale on an EG tenant (seedPosContext's default),
+ *  ETA-activated (`activateFiscal`) so the gate is open — no change due. */
 async function seedPaidSale() {
   const s = await seedPosContext("owner");
+  await activateFiscal(s.tenantId);
   await openShiftForCtx(s.ctx);
   const receipt = await recordSale(s.ctx, {
     clientOrderId: "sale-1",
@@ -60,9 +62,17 @@ async function seedPaidSale() {
 }
 
 describe("isFiscalEnabled", () => {
-  it("is true for an EG tenant", async () => {
+  it("is true for an EG tenant whose ETA activation is active", async () => {
     const { tenantId } = await seedPosContext("owner");
+    await activateFiscal(tenantId);
     expect(await isFiscalEnabled(tenantId)).toBe(true);
+  });
+
+  it("is false for an EG tenant still onboarding with ETA (no config, or not active)", async () => {
+    const { tenantId } = await seedPosContext("owner");
+    expect(await isFiscalEnabled(tenantId)).toBe(false);
+    await activateFiscal(tenantId, "pending");
+    expect(await isFiscalEnabled(tenantId)).toBe(false);
   });
 
   it("is false for a non-EG tenant", async () => {

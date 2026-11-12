@@ -13,7 +13,7 @@ import { posSyncEventReceipts } from "./schema";
 import { etaSubmissions } from "@/server/fiscal/schema";
 import { cashCounts, cashMovements, posShifts } from "./shift-schema";
 import { createPairingCode, redeemPairingCode, resolveDevice } from "./service";
-import { seedPosContext } from "./test-helpers";
+import { seedPosContext, activateFiscal } from "./test-helpers";
 import { openDb } from "../../../apps/pos/electron/_offline/db";
 import { Store, type EventRow } from "../../../apps/pos/electron/_offline/store";
 import { createApiClient } from "../../../apps/pos/electron/_offline/api";
@@ -322,6 +322,8 @@ describe("POS sync over the wire", () => {
     // already declared (VERIFY-12).
     // ---------------------------------------------------------------------
     const { ctx, tenantId, branchId, productId, total, managerId } = await seedPosContext("owner");
+    // ETA-active: an EG tenant still onboarding files nothing (isFiscalEnabled).
+    await activateFiscal(tenantId);
     const { deviceToken } = await pairTill(tenantId, branchId, managerId);
     installWire();
     const till = makeTill(() => deviceToken);
@@ -362,6 +364,8 @@ describe("POS sync over the wire", () => {
     // no buyer, and the family flips back. Without this the assertion there
     // could be satisfied by a bug that made every synced sale an invoice.
     const { ctx, tenantId, branchId, productId, total, managerId } = await seedPosContext("owner");
+    // ETA-active: an EG tenant still onboarding files nothing (isFiscalEnabled).
+    await activateFiscal(tenantId);
     const { deviceToken } = await pairTill(tenantId, branchId, managerId);
     installWire();
     const till = makeTill(() => deviceToken);

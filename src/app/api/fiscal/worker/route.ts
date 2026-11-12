@@ -9,20 +9,21 @@ import { drainEtaSubmissions } from "@/server/fiscal/worker";
  */
 export const maxDuration = 300;
 
-// The schedule this route is registered under in vercel.json. Written as a line
-// comment because the cron literal contains the characters that close a block
-// comment: */15 * * * *
-//
-// VERCEL TIER GATE — DEPLOY REVIEW MUST CONFIRM. Cron jobs on Vercel's Hobby
-// plan run at DAILY granularity only; a 15-minute schedule needs Pro or above.
-// On Hobby the entry silently does not run at the stated interval, and no EG
-// tenant should go live until the tier is confirmed — the compliance window
-// below depends on it.
+// SCHEDULING. Two callers hit this route, both with the same bearer:
+//   1. .github/workflows/fiscal-worker.yml — the REAL cadence, every 15 min
+//      (needs repo variable FISCAL_WORKER_URL + secret CRON_SECRET).
+//   2. vercel.json — a DAILY safety-net entry only. Vercel's Hobby plan REJECTS
+//      any sub-daily cron at deploy time (the whole deployment fails, see commit
+//      ab3b8f2), so a 15-minute schedule cannot live in vercel.json on Hobby.
+// GO-LIVE GATE: no EG tenant goes live until the GitHub workflow is confirmed
+// running against production — with only the daily entry, the 24h compliance
+// window below has almost no margin.
 
 /**
- * The ETA submission drain, on its OWN Vercel Cron entry (see the schedule note
- * above). CRON_SECRET-gated exactly like `/api/notifications/worker`: Vercel
- * sends `Authorization: Bearer ${CRON_SECRET}`; anything else is 401.
+ * The ETA submission drain, on its OWN schedule (see the note above).
+ * CRON_SECRET-gated exactly like `/api/notifications/worker`: Vercel Cron and
+ * the GitHub workflow both send `Authorization: Bearer ${CRON_SECRET}`;
+ * anything else is 401.
  *
  * WHY IT LEFT THE NOTIFICATIONS TICK. It rode that route's inherited daily
  * 3am slot, which is too slow to be safe: ETA gives ~24 hours from issuance to

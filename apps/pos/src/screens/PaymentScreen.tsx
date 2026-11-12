@@ -40,6 +40,26 @@ function cashChips(remaining: number): number[] {
 }
 
 /**
+ * What `complete()` does with the business-buyer section, as a pure function so
+ * the gate is testable without a DOM: a collapsed section is an ordinary sale
+ * (`buyer: undefined`, never validated); an open one must validate, and then
+ * carries the built buyer; an open, incomplete one blocks the sale with the
+ * field errors to mark.
+ */
+export type BuyerGate =
+  | { ok: true; buyer: PosSaleBuyer | undefined }
+  | { ok: false; errors: BuyerErrors };
+
+export function resolveCompletionBuyer(open: boolean, draft: BuyerDraft): BuyerGate {
+  if (!open) return { ok: true, buyer: undefined };
+  const errors = validateBuyerDraft(draft);
+  if (Object.keys(errors).length > 0) return { ok: false, errors };
+  // Non-null by construction — validation just passed — but read back through
+  // the same builder so there is one place that shapes the payload.
+  return { ok: true, buyer: buildPosSaleBuyer(draft) ?? undefined };
+}
+
+/**
  * THE BUSINESS-BUYER SECTION, AND WHY IT IS COLLAPSED BY DEFAULT.
  *
  * Leaving it shut is an ORDINARY B2C SALE — the same sale this screen has always
@@ -54,10 +74,16 @@ function cashChips(remaining: number): number[] {
  * server's `buyerSchema` by hand; the sale is refused at this button if the
  * section is open and incomplete, because the alternative is a permanent
  * `EtaConfigError` on a `failed` row hours later, with the customer long gone.
+ *
+ * ONLY FOR A TENANT THAT FILES WITH ETA. `fiscalEnabled` (country EG AND ETA
+ * activation `active`, synced with the catalog — `window.pos.fiscalEnabled()`)
+ * decides whether the section exists at all; every other tenant's payment
+ * screen is exactly what it was before ETA, and can never send a buyer.
  */
 export function PaymentScreen({
   total,
   cashierName,
+  fiscalEnabled,
   hasOpenShift,
   onNeedDrawer,
   onCancel,
@@ -65,6 +91,8 @@ export function PaymentScreen({
 }: {
   total: number;
   cashierName: string;
+  /** EG + ETA activation `active`. False hides the business-buyer section. */
+  fiscalEnabled: boolean;
   /** Cash needs an open drawer. The server enforces it; this is the affordance. */
   hasOpenShift: boolean;
   onNeedDrawer: () => void;
@@ -132,19 +160,15 @@ export function PaymentScreen({
     // sale and is never validated; an OPEN one must be complete, because a tax
     // invoice has no partial form and there is no way back to a receipt once
     // this sale is filed.
-    let captured: PosSaleBuyer | undefined;
-    if (b2bOpen) {
-      const errors = validateBuyerDraft(buyer);
-      if (Object.keys(errors).length > 0) {
-        setBuyerErrors(errors);
-        setError("Complete the business buyer details, or close that section to ring an ordinary sale");
-        return;
-      }
-      // Non-null by construction — `validateBuyerDraft` just passed — but read
-      // back through the same builder so there is one place that shapes the
-      // payload.
-      captured = buildPosSaleBuyer(buyer) ?? undefined;
+    // `fiscalEnabled &&` so a section opened before the flag turned off can
+    // never smuggle a buyer onto a tenant that does not file with ETA.
+    const gate = resolveCompletionBuyer(fiscalEnabled && b2bOpen, buyer);
+    if (!gate.ok) {
+      setBuyerErrors(gate.errors);
+      setError("Complete the business buyer details, or close that section to ring an ordinary sale");
+      return;
     }
+    const captured = gate.buyer;
 
     setBusy(true);
     setError(null);
@@ -266,61 +290,38 @@ export function PaymentScreen({
             Add {method} tender
           </button>
 
-          <div className="mt-5 rounded-xl border border-border">
-            <button
-              type="button"
-              onClick={() => setB2bOpen(!b2bOpen)}
-              aria-expanded={b2bOpen}
-              className="flex w-full items-center justify-between px-3 py-2.5 text-left text-sm font-medium text-ink"
-            >
-              <span>
-                Business buyer <span dir="rtl" lang="ar">(فاتورة ضريبية)</span>
-              </span>
-              <span className="text-muted-foreground">{b2bOpen ? "−" : "+"}</span>
-            </button>
+          {fiscalEnabled && (
+            <div className="mt-5 rounded-xl border border-border">
+              <button
+                type="button"
+                onClick={() => setB2bOpen(!b2bOpen)}
+                aria-expanded={b2bOpen}
+                className="flex w-full items-center justify-between px-3 py-2.5 text-left text-sm font-medium text-ink"
+              >
+                <span>
+                  Business buyer <span dir="rtl" lang="ar">(فاتورة ضريبية)</span>
+                </span>
+                <span className="text-muted-foreground">{b2bOpen ? "−" : "+"}</span>
+              </button>
 
-            {b2bOpen && (
-              <div className="border-t border-border px-3 py-3">
-                <p className="text-xs text-muted-foreground">
-                  This sale will be filed with ETA as a tax invoice instead of an e-receipt. All seven
-                  fields are required and cannot be added later.
-                </p>
+              {b2bOpen && (
+                <div className="border-t border-border px-3 py-3">
+                  <p className="text-xs text-muted-foreground">
+                    This sale will be filed with ETA as a tax invoice instead of an e-receipt. All seven
+                    fields are required and cannot be added later.
+                  </p>
 
-                {/* TRN and name first and on their own: they are what the cashier
-                    asks the customer for, and the address is what the customer
-                    reads off a card. */}
-                {REQUIRED_BUYER_FIELDS.slice(0, 2).map((field) => (
-                  <div key={field.key} className="mt-2">
-                    <input
-                      value={buyer[field.key]}
-                      onChange={(e) => setBuyerField(field.key, e.target.value)}
-                      placeholder={field.label}
-                      aria-label={field.label}
-                      inputMode={field.key === "rin" ? "numeric" : undefined}
-                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                    />
-                    {buyerErrors[field.key] && (
-                      <p role="alert" className="mt-1 text-xs text-destructive">
-                        {field.label}: {buyerErrors[field.key]}
-                      </p>
-                    )}
-                  </div>
-                ))}
-
-                {/* The five mandatory address parts, grouped and labelled as one
-                    thing — ETA treats the address as a unit and refuses an
-                    invoice missing any part of it. */}
-                <p className="mt-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  Registered address
-                </p>
-                <div className="mt-1 grid grid-cols-2 gap-2">
-                  {REQUIRED_BUYER_FIELDS.slice(2).map((field) => (
-                    <div key={field.key}>
+                  {/* TRN and name first and on their own: they are what the cashier
+                      asks the customer for, and the address is what the customer
+                      reads off a card. */}
+                  {REQUIRED_BUYER_FIELDS.slice(0, 2).map((field) => (
+                    <div key={field.key} className="mt-2">
                       <input
                         value={buyer[field.key]}
                         onChange={(e) => setBuyerField(field.key, e.target.value)}
                         placeholder={field.label}
                         aria-label={field.label}
+                        inputMode={field.key === "rin" ? "numeric" : undefined}
                         className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
                       />
                       {buyerErrors[field.key] && (
@@ -330,20 +331,45 @@ export function PaymentScreen({
                       )}
                     </div>
                   ))}
-                  {OPTIONAL_BUYER_FIELDS.map((field) => (
-                    <input
-                      key={field.key}
-                      value={buyer[field.key]}
-                      onChange={(e) => setBuyerField(field.key, e.target.value)}
-                      placeholder={`${field.label} (optional)`}
-                      aria-label={`${field.label} (optional)`}
-                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                    />
-                  ))}
+
+                  {/* The five mandatory address parts, grouped and labelled as one
+                      thing — ETA treats the address as a unit and refuses an
+                      invoice missing any part of it. */}
+                  <p className="mt-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Registered address
+                  </p>
+                  <div className="mt-1 grid grid-cols-2 gap-2">
+                    {REQUIRED_BUYER_FIELDS.slice(2).map((field) => (
+                      <div key={field.key}>
+                        <input
+                          value={buyer[field.key]}
+                          onChange={(e) => setBuyerField(field.key, e.target.value)}
+                          placeholder={field.label}
+                          aria-label={field.label}
+                          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        />
+                        {buyerErrors[field.key] && (
+                          <p role="alert" className="mt-1 text-xs text-destructive">
+                            {field.label}: {buyerErrors[field.key]}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                    {OPTIONAL_BUYER_FIELDS.map((field) => (
+                      <input
+                        key={field.key}
+                        value={buyer[field.key]}
+                        onChange={(e) => setBuyerField(field.key, e.target.value)}
+                        placeholder={`${field.label} (optional)`}
+                        aria-label={`${field.label} (optional)`}
+                        className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                      />
+                    ))}
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
 
           <div className="mt-3 flex gap-2">
             <button

@@ -1062,11 +1062,12 @@ describe("issueRefund VAT persistence", () => {
     expect(rows.map((r) => r.vatAmount)).toEqual(["0.00", "0.00"]);
   });
 
-  it("refuses a refund whose VAT would push the order's reversed VAT above what it charged", async () => {
+  it("CAPS (never refuses) a refund whose VAT would push the order's reversed VAT above what it charged", async () => {
     // A goodwill full refund takes a scaled share of the remaining VAT without
     // naming items; itemising the SAME units afterwards would reverse their VAT
-    // a second time. The refund is refused rather than over-reversing — the
-    // order's declared VAT is the ceiling, always.
+    // a second time. The refund goes through — refusing would block a refund,
+    // for every tenant, over a tax figure — and its VAT is capped at what is
+    // left unreversed, so the order's declared VAT stays the ceiling.
     const s = await seedPricedPaidSale({
       pricesIncludeVat: true,
       lines: [{ basePrice: "100", quantity: 2 }],
@@ -1082,24 +1083,21 @@ describe("issueRefund VAT persistence", () => {
       clientRefundId: "goodwill",
     });
 
-    const err = await issueRefund(actorFrom(s.ctx), {
+    const res = await issueRefund(actorFrom(s.ctx), {
       orderId: s.receipt.orderId,
       kind: "partial",
       lines: [{ orderItemId: order.items[0].id, quantity: 2, amount: 100, restock: false }],
       payments: [{ method: "cash", amount: 100 }],
       reasonCode: "wrong_item",
       clientRefundId: "over",
-    }).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(PosRefundError);
-    // The message has to tell the cashier what to DO, not just that it failed.
-    expect((err as Error).message).toContain("24.56 the order charged");
-    expect((err as Error).message).toContain("issue this as a full refund without item lines instead");
+    });
+    expect(res.idempotent).toBe(false);
 
-    // Nothing of the refused refund survives — one refund row, one payment.
     const rows = await refundRows(s.tenantId);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].vatAmount).toBe("12.28");
-    expect(await withTenant(s.tenantId, (tx) => tx.select().from(refundPayments))).toHaveLength(1);
+    expect(rows).toHaveLength(2);
+    // 12.28 + 12.28 = the order's 24.56 — never more.
+    expect(rows.map((r) => r.vatAmount).sort()).toEqual(["12.28", "12.28"]);
+    expect(await withTenant(s.tenantId, (tx) => tx.select().from(refundPayments))).toHaveLength(2);
   });
 
   it("an idempotent replay returns the stored refund without doubling its VAT", async () => {

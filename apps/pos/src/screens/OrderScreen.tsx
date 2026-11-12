@@ -15,7 +15,7 @@ import {
   removeLine,
   type CartLine,
 } from "../order/cart";
-import { useSaleFiscal } from "../fiscal/sale-fiscal";
+import { useFiscalEnabled, useSaleFiscal } from "../fiscal/sale-fiscal";
 import { Receipt, type ReceiptData } from "./Receipt";
 import { PaymentScreen, changeFor, type TenderDraft } from "./PaymentScreen";
 import type { PosSaleBuyer } from "../fiscal/buyer";
@@ -66,7 +66,8 @@ export function OrderScreen({
   // Set only AFTER the sale is committed and the receipt rendered — the fiscal
   // read is never on the checkout path.
   const [fiscalOrderId, setFiscalOrderId] = useState<string | null>(null);
-  const fiscal = useSaleFiscal(fiscalOrderId);
+  const { fiscal, fetching: fiscalFetching } = useSaleFiscal(fiscalOrderId);
+  const fiscalEnabled = useFiscalEnabled();
 
   const [view, setView] = useState<"cart" | "payment">("cart");
   const [saleId, setSaleId] = useState<string | null>(null);
@@ -298,6 +299,7 @@ export function OrderScreen({
       <Receipt
         data={receipt}
         fiscal={fiscal}
+        fiscalFetching={fiscalEnabled && fiscalFetching}
         onPrint={() => window.print()}
         onNewOrder={() => { setReceipt(null); setFiscalOrderId(null); setCartError(null); }}
       />
@@ -309,6 +311,7 @@ export function OrderScreen({
       <PaymentScreen
         total={totals.total}
         cashierName={cashier.name}
+        fiscalEnabled={fiscalEnabled}
         hasOpenShift={hasOpenShift}
         onNeedDrawer={onNeedDrawer}
         onCancel={() => setView("cart")}

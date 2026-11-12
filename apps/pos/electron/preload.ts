@@ -74,6 +74,10 @@ export interface PosBridge {
    *  apart needs a wider return type, not a reading of `null`: see
    *  `PosMain.saleFiscalStatus`. */
   saleFiscalStatus(orderId: string): Promise<SaleFiscalStatus | null>;
+  /** Whether this tenant files with ETA (country EG and activation `active`),
+   *  as of the last catalog sync. `false` until the first sync. Gates every
+   *  fiscal affordance in the renderer. */
+  fiscalEnabled(): Promise<boolean>;
   refundSale(input: RefundSaleInput): Promise<RefundSaleResult>;
   signInCashier(email: string, password: string): Promise<CashierInfo>;
   cashier(): Promise<CashierInfo | null>;
@@ -116,6 +120,7 @@ contextBridge.exposeInMainWorld("pos", {
   getSale: (orderId: string) => ipcRenderer.invoke("pos:getSale", orderId),
   reprintReceipt: (orderId: string) => ipcRenderer.invoke("pos:reprintReceipt", orderId),
   saleFiscalStatus: (orderId: string) => ipcRenderer.invoke("pos:saleFiscalStatus", orderId),
+  fiscalEnabled: () => ipcRenderer.invoke("pos:fiscalEnabled"),
   refundSale: (input: RefundSaleInput) => ipcRenderer.invoke("pos:refundSale", input),
   signInCashier: (email: string, password: string) => ipcRenderer.invoke("pos:signInCashier", email, password),
   cashier: () => ipcRenderer.invoke("pos:cashier"),

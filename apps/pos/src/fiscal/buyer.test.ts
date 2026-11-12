@@ -49,7 +49,7 @@ describe("validateBuyerDraft", () => {
     // The field where a plausible wrong value is easiest to type and hardest to
     // recover from: the document is filed under it and cannot be edited in
     // place. Mirrors the server's `rinSchema` (`/^\d{9}$/`).
-    for (const rin of ["12345678", "1234567890", "12345678a", "123 456 789", "١٢٣٤٥٦٧٨٩", ""]) {
+    for (const rin of ["12345678", "1234567890", "12345678a", "123.456.789", "١٢٣٤٥٦٧٨٩", ""]) {
       expect(validateBuyerDraft({ ...complete, rin }).rin, `"${rin}" was accepted`).toBeDefined();
     }
     expect(validateBuyerDraft({ ...complete, rin: "000000000" }).rin).toBeUndefined();
@@ -63,6 +63,22 @@ describe("validateBuyerDraft", () => {
   it("treats whitespace as empty, and trims before matching the number", () => {
     expect(validateBuyerDraft({ ...complete, name: "   " }).name).toBe("Required");
     expect(validateBuyerDraft({ ...complete, rin: "  123456789  " }).rin).toBeUndefined();
+  });
+
+  it("accepts a registration number typed with the separators printed on a tax card", () => {
+    // `123-456-789` and `123 456 789` are the same nine digits; refusing them
+    // sends the cashier hunting for a typo that is not there.
+    for (const rin of ["123-456-789", "123 456 789", " 123-456 789 "]) {
+      expect(validateBuyerDraft({ ...complete, rin }).rin, `"${rin}" was refused`).toBeUndefined();
+    }
+    expect(validateBuyerDraft({ ...complete, rin: "123-456-78" }).rin).toBe("Must be exactly 9 digits");
+  });
+
+  it("locks a type-B receiver's country to EG (case-insensitive)", () => {
+    expect(validateBuyerDraft({ ...complete, country: "eg" }).country).toBeUndefined();
+    for (const country of ["SA", "Egypt", "E G", "US"]) {
+      expect(validateBuyerDraft({ ...complete, country }).country, `"${country}" was accepted`).toBeDefined();
+    }
   });
 
   it("never requires an optional address component", () => {
@@ -120,6 +136,12 @@ describe("buildPosSaleBuyer", () => {
     expect(built!.rin).toBe("123456789");
     expect(built!.name).toBe("Nile Trading Co.");
     expect(built!.address.street).toBe("Road 9");
+  });
+
+  it("sends the RIN without separators and the country upper-cased", () => {
+    const built = buildPosSaleBuyer({ ...complete, rin: "123-456 789", country: "eg" });
+    expect(built!.rin).toBe("123456789");
+    expect(built!.address.country).toBe("EG");
   });
 
   it("REFUSES rather than coercing an incomplete draft", () => {

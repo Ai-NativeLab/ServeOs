@@ -5,7 +5,10 @@ import {
   FISCAL_POLL_MAX_MS,
   fetchSaleFiscal,
   isFiscalPollDone,
+  keyedFiscalFor,
   sameFiscal,
+  settleKeyedFiscalRead,
+  startKeyedFiscalRead,
   startSaleFiscalPoll,
 } from "./sale-fiscal";
 
@@ -267,5 +270,56 @@ describe("fetchSaleFiscal", () => {
     vi.stubGlobal("window", { pos: { saleFiscalStatus } });
 
     await expect(fetchSaleFiscal("order-1")).resolves.toBeNull();
+  });
+});
+
+describe("startSaleFiscalPoll — onFirstPoll", () => {
+  it("fires exactly once, after the first read settles, even when that read found nothing", async () => {
+    const fetchStatus = vi.fn().mockResolvedValue(null);
+    const onFirstPoll = vi.fn();
+    const cancel = startSaleFiscalPoll("order-1", vi.fn(), { fetchStatus, onFirstPoll });
+    expect(onFirstPoll).not.toHaveBeenCalled();
+    await firstTick();
+    expect(onFirstPoll).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(FISCAL_POLL_INTERVAL_MS * 3);
+    expect(onFirstPoll).toHaveBeenCalledTimes(1);
+    cancel();
+  });
+
+  it("does not fire for a poll cancelled before its first read lands", async () => {
+    const onFirstPoll = vi.fn();
+    const cancel = startSaleFiscalPoll("order-1", vi.fn(), {
+      fetchStatus: () => new Promise((r) => setTimeout(() => r(status()), 50)),
+      onFirstPoll,
+    });
+    cancel();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(onFirstPoll).not.toHaveBeenCalled();
+  });
+});
+
+describe("the reprint slip's keyed fiscal read", () => {
+  it("drops a late answer for sale A once the slip has moved on to sale B", () => {
+    // Open A, close it, open B — then A's slow read lands.
+    let state = startKeyedFiscalRead("A");
+    state = startKeyedFiscalRead("B");
+    const afterLateA = settleKeyedFiscalRead(state, "A", status({ etaUuid: "uuid-A" }));
+    expect(afterLateA).toBe(state);
+    expect(keyedFiscalFor(afterLateA, "B")).toEqual({ fiscal: null, fetching: true });
+    // B's own answer is applied.
+    const settled = settleKeyedFiscalRead(afterLateA, "B", status({ etaUuid: "uuid-B" }));
+    expect(keyedFiscalFor(settled, "B").fiscal?.etaUuid).toBe("uuid-B");
+    expect(keyedFiscalFor(settled, "B").fetching).toBe(false);
+  });
+
+  it("drops an answer that lands after the slip was CLOSED (state reset to null)", () => {
+    expect(settleKeyedFiscalRead(null, "A", status())).toBeNull();
+  });
+
+  it("never shows one order's footer on another order's slip", () => {
+    const a = settleKeyedFiscalRead(startKeyedFiscalRead("A"), "A", status());
+    expect(keyedFiscalFor(a, "B")).toEqual({ fiscal: null, fetching: false });
+    expect(keyedFiscalFor(a, null)).toEqual({ fiscal: null, fetching: false });
+    expect(keyedFiscalFor(a, "A").fiscal).toEqual(status());
   });
 });

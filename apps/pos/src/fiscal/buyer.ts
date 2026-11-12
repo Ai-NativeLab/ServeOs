@@ -57,10 +57,14 @@
  * text scan for them would be noise. They are prose-linked and nothing more.
  *
  * The rules mirrored, one for one:
- *   - `rin`      — `rinSchema`, `/^\d{9}$/` after trimming (this one is the
- *                  scanned half). The buyer's number is checked to exactly the
- *                  shape the SELLER's is; a document naming a 9-digit issuer and
- *                  an 8-digit receiver is not well formed.
+ *   - `rin`      — `rinSchema`, `/^\d{9}$/` after stripping spaces and `-`
+ *                  (`normalizeRin`; a TRN is commonly printed `123-456-789`).
+ *                  This one is the scanned half. The buyer's number is checked
+ *                  to exactly the shape the SELLER's is; a document naming a
+ *                  9-digit issuer and an 8-digit receiver is not well formed.
+ *   - `country`  — `"EG"` only (case-insensitive, sent upper-case): a type-`B`
+ *                  receiver is an Egyptian business by definition; a foreign
+ *                  buyer is ETA receiver type `F`, which ServeOS does not file.
  *   - `name`     — non-empty after trimming (`requiredText`).
  *   - the five mandatory address components — non-empty after trimming.
  *   - the five optional components — carried verbatim, trimmed, omitted when
@@ -80,6 +84,15 @@
  * three are fine changes to make; make them in the scan too, in one commit.
  */
 export const BUYER_RIN_RE = /^\d{9}$/;
+
+/** The RIN as typed, minus the separators people copy off a tax card
+ *  (`123-456-789`, `123 456 789`). Mirrors the server's `rinSchema` transform. */
+export function normalizeRin(value: string): string {
+  return value.replace(/[\s-]/g, "");
+}
+
+/** The only receiver country a type-`B` (Egyptian business) invoice can name. */
+export const BUYER_COUNTRY = "EG";
 
 /** What the form holds while it is being typed — every field a string, because
  *  that is what an `<input>` gives back. */
@@ -159,13 +172,18 @@ export type BuyerErrors = Partial<Record<keyof BuyerDraft, string>>;
 export function validateBuyerDraft(draft: BuyerDraft): BuyerErrors {
   const errors: BuyerErrors = {};
 
-  const rin = draft.rin.trim();
+  const rin = normalizeRin(draft.rin);
   if (!rin) errors.rin = "Required";
   else if (!BUYER_RIN_RE.test(rin)) errors.rin = "Must be exactly 9 digits";
 
   for (const field of REQUIRED_BUYER_FIELDS) {
     if (field.key === "rin") continue;
     if (!draft[field.key].trim()) errors[field.key] = "Required";
+  }
+
+  const country = draft.country.trim();
+  if (country && country.toUpperCase() !== BUYER_COUNTRY) {
+    errors.country = "Must be EG — a tax invoice from the till is for an Egyptian business";
   }
 
   return errors;
@@ -187,10 +205,10 @@ export function buildPosSaleBuyer(draft: BuyerDraft): PosSaleBuyer | null {
   };
 
   return {
-    rin: draft.rin.trim(),
+    rin: normalizeRin(draft.rin),
     name: draft.name.trim(),
     address: {
-      country: draft.country.trim(),
+      country: BUYER_COUNTRY,
       governate: draft.governate.trim(),
       regionCity: draft.regionCity.trim(),
       street: draft.street.trim(),

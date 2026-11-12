@@ -2,25 +2,46 @@ import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { tenants } from "@/server/tenancy/schema";
-import { etaSubmissions, type EtaSubmissionBuyer } from "./schema";
+import { etaSubmissions, etaTenantConfig, type EtaSubmissionBuyer } from "./schema";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /**
- * The country gate for the whole fiscal subsystem (F1/F2): ETA e-invoicing /
+ * The gate for the whole fiscal subsystem (F1/F2): ETA e-invoicing /
  * e-receipts is an Egypt-specific obligation, so only a tenant whose
- * `country` is `"EG"` ever gets a fiscal submission enqueued — every other
- * country enqueues nothing and sees no behavioural change.
+ * `country` is `"EG"` AND whose `eta_tenant_config.activation_status` is
+ * `active` ever gets a fiscal submission enqueued (or a fiscal surface shown).
+ * Every other tenant — any other country, or an EG tenant still part-way
+ * through ETA onboarding (`not_configured` / `pending` / `suspended`) —
+ * enqueues nothing and sees no behavioural change. The activation half is the
+ * same test `resolveEtaConfig` applies before the worker submits anything, so
+ * the enqueue side and the submit side can never disagree about a tenant.
  *
- * Evaluated PER SALE, at enqueue time — a plain, uncached `tenants` select.
- * A tenant's country essentially never changes post-onboarding, so this is
- * cheap and deliberately not memoized: the alternative (a cached/stale gate)
- * risks a tenant that changed country continuing to enqueue (or skip) based
- * on a value that no longer holds.
+ * Evaluated PER SALE, at enqueue time — plain, uncached selects. Deliberately
+ * not memoized: a cached/stale gate risks a tenant that changed country or
+ * activation continuing to enqueue (or skip) on a value that no longer holds.
+ *
+ * NEVER call this inside another `withTenant` transaction: it takes its own
+ * pool connection (see the pool-deadlock note in `issueRefund`).
  */
 export async function isFiscalEnabled(tenantId: string): Promise<boolean> {
   const [t] = await db.select({ country: tenants.country }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
-  return t?.country === "EG";
+  if (t?.country !== "EG") return false;
+  return isEtaActivated(tenantId);
+}
+
+/**
+ * The activation half of `isFiscalEnabled`, for a caller that already holds the
+ * tenant row and has checked `country === "EG"` itself.
+ */
+export async function isEtaActivated(tenantId: string): Promise<boolean> {
+  const [row] = await withTenant(tenantId, (tx) =>
+    tx.select({ activationStatus: etaTenantConfig.activationStatus })
+      .from(etaTenantConfig)
+      .where(eq(etaTenantConfig.tenantId, tenantId))
+      .limit(1),
+  );
+  return row?.activationStatus === "active";
 }
 
 /**
@@ -205,14 +226,18 @@ export async function enqueueFiscalDocument(ctx: { tenantId: string }, input: En
  * mistyped RIN being the commonest reason ETA refuses an invoice). Refused on
  * any other docType: a receipt has no buyer block at all.
  *
+ * `outerTx` is optional, like `enqueueFiscalDocument`'s: the dashboard passes its
+ * own so the who-asked-for-it audit event commits atomically with the row.
+ *
  * @returns the new row's id, or `null` when a live document already exists.
  */
 export async function enqueueCorrectedResubmission(
   ctx: { tenantId: string },
   originalSubmissionId: string,
   opts: { buyerJson?: EtaSubmissionBuyer } = {},
+  outerTx?: Tx,
 ): Promise<string | null> {
-  return withTenant(ctx.tenantId, async (tx) => {
+  const run = async (tx: Tx): Promise<string | null> => {
     const [original] = await tx.select().from(etaSubmissions)
       .where(and(eq(etaSubmissions.tenantId, ctx.tenantId), eq(etaSubmissions.id, originalSubmissionId)))
       .limit(1);
@@ -266,5 +291,6 @@ export async function enqueueCorrectedResubmission(
         }).returning({ id: etaSubmissions.id });
 
     return inserted[0]?.id ?? null;
-  });
+  };
+  return outerTx ? run(outerTx) : withTenant(ctx.tenantId, run);
 }
