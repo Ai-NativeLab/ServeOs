@@ -28,6 +28,23 @@ export type PoVariance = {
   overReceived: boolean;
 };
 
+/**
+ * money() for a figure this module only DISPLAYS, never writes.
+ *
+ * Decision (#169 step 3, throw-vs-coerce per site): getPoVariance is a pure
+ * read, and rows poisoned before money() gained its non-finite floor may
+ * already be stored — Postgres `numeric` accepts 'NaN' and 'Infinity'. A
+ * read must not throw on them, or the PO that needs fixing cannot be looked
+ * at (the detail page swallowed the throw and dropped the whole strip; the
+ * variance API answered 500). Neither is it coerced to a plausible number,
+ * which would hide the damage: the raw literal is surfaced, as
+ * formatUnitRate does. Writes (enterInvoiceTotal below) keep the throwing
+ * money().
+ */
+function displayMoney(n: number): string {
+  return Number.isFinite(n) ? money(n) : String(n);
+}
+
 /** Three money figures per PO and their pairwise deltas (Spec 9 Part C). */
 export async function getPoVariance(tenantId: string, poId: string): Promise<PoVariance> {
   return withTenant(tenantId, async (tx) => {
@@ -53,14 +70,14 @@ export async function getPoVariance(tenantId: string, poId: string): Promise<PoV
       WHERE pr.purchase_order_id = ${poId}
     `);
 
-    const receivedTotal = money(Number(receivedRows[0]?.received ?? 0));
+    const receivedTotal = displayMoney(Number(receivedRows[0]?.received ?? 0));
     const invoiceTotal = po.invoiceTotal ?? null;
     return {
       total: po.total,
       receivedTotal,
       invoiceTotal,
-      receivedVsOrdered: money(Number(receivedTotal) - Number(po.total)),
-      invoiceVsReceived: invoiceTotal === null ? null : money(Number(invoiceTotal) - Number(receivedTotal)),
+      receivedVsOrdered: displayMoney(Number(receivedTotal) - Number(po.total)),
+      invoiceVsReceived: invoiceTotal === null ? null : displayMoney(Number(invoiceTotal) - Number(receivedTotal)),
       overReceived,
     };
   });

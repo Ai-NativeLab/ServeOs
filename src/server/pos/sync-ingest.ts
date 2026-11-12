@@ -12,6 +12,7 @@ import {
   BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError,
 } from "@/server/ordering/errors";
 import { InvalidVariantError } from "@/server/catalog/errors";
+import { NonFiniteAmountError } from "@/shared/errors";
 import { posSyncEventReceipts } from "./schema";
 import { posShifts, type CashMovementType } from "./shift-schema";
 import type { PosDeviceContext } from "./require-device";
@@ -230,6 +231,14 @@ async function resolveShiftId(
   return s.id;
 }
 
+/** `typeof x === "number"` admits NaN and ±Infinity, and JSON's `1e999` IS
+ *  Infinity once parsed — so every amount a payload carries is checked with
+ *  this instead. A non-finite amount is a malformed event (invalid_event),
+ *  refused here rather than three frames down at `money()`. */
+function isFiniteNumber(x: unknown): x is number {
+  return typeof x === "number" && Number.isFinite(x);
+}
+
 // ---- Per-type payload contracts + handlers -------------------------------
 // Each payload type is this dispatcher's own wire contract (Tasks 8-10 build
 // the client against it) — none of these are shared with a live route's body.
@@ -263,7 +272,12 @@ function asSaleRecordedPayload(payload: Record<string, unknown>): SaleRecordedPa
   if (!Array.isArray(p.lineSnapshots) || p.lineSnapshots.length !== p.lines.length) {
     throw new SyncEventValidationError("sale.recorded requires lineSnapshots index-aligned with lines");
   }
-  if (typeof p.expectedTotal !== "number") throw new SyncEventValidationError("sale.recorded requires expectedTotal");
+  if (!isFiniteNumber(p.expectedTotal)) {
+    throw new SyncEventValidationError("sale.recorded requires a finite expectedTotal");
+  }
+  if (p.orderDiscountAmount !== undefined && !isFiniteNumber(p.orderDiscountAmount)) {
+    throw new SyncEventValidationError("sale.recorded orderDiscountAmount must be a finite number");
+  }
   if (!Array.isArray(p.payments)) throw new SyncEventValidationError("sale.recorded requires payments");
   // The drawer reference is mandatory, not optional-with-a-fallback: without
   // it recordSale would have to ask "whichever drawer is open right now",
@@ -301,7 +315,7 @@ type ShiftOpenedPayload = { openingFloat: number; denominations?: Record<string,
 
 function asShiftOpenedPayload(payload: Record<string, unknown>): ShiftOpenedPayload {
   const p = payload as Partial<ShiftOpenedPayload>;
-  if (typeof p.openingFloat !== "number") throw new SyncEventValidationError("shift.opened requires openingFloat");
+  if (!isFiniteNumber(p.openingFloat)) throw new SyncEventValidationError("shift.opened requires a finite openingFloat");
   return p as ShiftOpenedPayload;
 }
 
@@ -328,7 +342,7 @@ type ShiftClosedPayload = {
 
 function asShiftClosedPayload(payload: Record<string, unknown>): ShiftClosedPayload {
   const p = payload as Partial<ShiftClosedPayload>;
-  if (typeof p.countedTotal !== "number") throw new SyncEventValidationError("shift.closed requires countedTotal");
+  if (!isFiniteNumber(p.countedTotal)) throw new SyncEventValidationError("shift.closed requires a finite countedTotal");
   if (!p.shiftId && !p.clientShiftId) throw new SyncEventValidationError("shift.closed requires shiftId or clientShiftId");
   return p as ShiftClosedPayload;
 }
@@ -356,7 +370,7 @@ function asCashMovementPayload(payload: Record<string, unknown>): CashMovementPa
   if (typeof p.type !== "string" || !CASH_MOVEMENT_TYPES.has(p.type)) {
     throw new SyncEventValidationError("cash.movement requires a valid type");
   }
-  if (typeof p.amount !== "number") throw new SyncEventValidationError("cash.movement requires amount");
+  if (!isFiniteNumber(p.amount)) throw new SyncEventValidationError("cash.movement requires a finite amount");
   if (typeof p.reasonCode !== "string" || !p.reasonCode) {
     throw new SyncEventValidationError("cash.movement requires reasonCode");
   }
@@ -388,7 +402,7 @@ type CountRecordedPayload = {
 
 function asCountRecordedPayload(payload: Record<string, unknown>): CountRecordedPayload {
   const p = payload as Partial<CountRecordedPayload>;
-  if (typeof p.countedTotal !== "number") throw new SyncEventValidationError("count.recorded requires countedTotal");
+  if (!isFiniteNumber(p.countedTotal)) throw new SyncEventValidationError("count.recorded requires a finite countedTotal");
   if (!p.shiftId && !p.clientShiftId) throw new SyncEventValidationError("count.recorded requires shiftId or clientShiftId");
   return p as CountRecordedPayload;
 }
@@ -585,9 +599,18 @@ async function applyEvent(device: PosDeviceContext, actor: ResolvedActor, e: Syn
   }
 }
 
-function toErrorShape(err: unknown): { code: string; message: string } {
+/** Exported for tests only. */
+export function toErrorShape(err: unknown): { code: string; message: string } {
   const of = (code: string) => ({ code, message: err instanceof Error ? err.message : String(err) });
   if (err instanceof SyncEventValidationError) return of("invalid_event");
+  // The validators above refuse non-finite amounts by name; reaching the
+  // formatter's floor means one slipped past them. On this path the amounts
+  // come from the event's payload (stored drawer amounts are read
+  // defensively — see gatherShift), so it is reported as a problem with the
+  // event, like the validators' refusal, not as a server fault. The device
+  // halts on either code; the difference is telling the operator that
+  // retrying the same payload can never succeed.
+  if (err instanceof NonFiniteAmountError) return of("invalid_event");
   if (err instanceof UnknownSyncEventTypeError) return of("unknown_event_type");
   if (err instanceof UnknownActorError) return of("unknown_actor");
   if (err instanceof TotalMismatchError) return of("total_mismatch");

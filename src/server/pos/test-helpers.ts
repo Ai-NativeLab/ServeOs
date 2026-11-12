@@ -45,7 +45,7 @@ export async function seedPosContext(
   productId: string;
   managerId: string;
   total: number;
-  /** Raw tokens, for tests that drive a real route handler end to end. */
+  /** The raw bearer pair, for tests that drive a route handler over the wire. */
   deviceToken: string;
   cashierToken: string;
 }> {

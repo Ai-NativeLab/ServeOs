@@ -203,12 +203,7 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
   }
 
   // Validate tenders before touching the DB.
-  for (const p of input.payments) {
-    if (!(p.amount > 0)) throw new PosSaleError("A tender must be a positive amount");
-    if (p.method !== "cash" && p.tenderedAmount !== undefined && p.tenderedAmount !== p.amount) {
-      throw new PosSaleError("Only a cash tender can give change");
-    }
-  }
+  for (const p of input.payments) validateTender(p);
 
   // Paid/change math is a pure function of the tenders — no dependency on the
   // placed order — so it can run before placeOrder. Whether that paid amount
@@ -385,16 +380,37 @@ export async function recordSale(ctx: PosCashierContext, input: RecordSaleInput)
   return committedReceipt!;
 }
 
+/**
+ * The per-tender checks both recordSale and addTender run before any write.
+ *
+ * Every amount must be finite, not just positive: `!(amount > 0)` rejects NaN
+ * but ADMITS Infinity (`Infinity > 0`), JSON's `1e999` parses to Infinity, and
+ * tip/tendered had no check at all. Refused here as a PosSaleError (the
+ * routes' 400) rather than left to money()'s floor, which would surface it as
+ * a 500 three frames down.
+ */
+function validateTender(t: TenderInput): void {
+  if (!Number.isFinite(t.amount) || !(t.amount > 0)) {
+    throw new PosSaleError("A tender must be a positive finite amount");
+  }
+  if (t.tipAmount !== undefined && !Number.isFinite(t.tipAmount)) {
+    throw new PosSaleError("A tip must be a finite amount");
+  }
+  if (t.tenderedAmount !== undefined && !Number.isFinite(t.tenderedAmount)) {
+    throw new PosSaleError("A tendered amount must be finite");
+  }
+  if (t.method !== "cash" && t.tenderedAmount !== undefined && t.tenderedAmount !== t.amount) {
+    throw new PosSaleError("Only a cash tender can give change");
+  }
+}
+
 /** Adds a tender to an existing (typically partially_paid) sale. Idempotent on clientPaymentId. */
 export async function addTender(
   ctx: PosCashierContext,
   orderId: string,
   tender: TenderInput,
 ): Promise<SaleReceipt> {
-  if (!(tender.amount > 0)) throw new PosSaleError("A tender must be a positive amount");
-  if (tender.method !== "cash" && tender.tenderedAmount !== undefined && tender.tenderedAmount !== tender.amount) {
-    throw new PosSaleError("Only a cash tender can give change");
-  }
+  validateTender(tender);
 
   return withTenant(ctx.tenantId, async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
