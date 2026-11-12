@@ -478,4 +478,20 @@ export interface FiscalProvider {
    * being quietly wrong for the other.
    */
   poll(submissionUuid: string, cfg: EtaConfig, docType: EtaDocType): Promise<FiscalSubmitResult>;
+  /**
+   * Looks a RECEIPT-FAMILY document up by its self-computed uuid — `null` when
+   * ETA does not hold it (HTTP 404).
+   *
+   * WHY IT EXISTS: a submit can reach ETA without us learning so (a timeout
+   * after the request was sent, a 202 with no `submissionUUID`). Re-POSTing such
+   * a document is idempotent only inside ETA's ~10-minute payload dedupe, and
+   * the worker's next attempt is usually later than that — so before re-POSTing
+   * a row that MAY have been sent, the worker asks ETA whether it already has
+   * it. Receipts only: their uuid is ours and deterministic; an invoice's is
+   * ETA's and does not exist until ETA answers.
+   *
+   * OPTIONAL: a provider without it (the no-op provider, simple test fakes)
+   * simply makes the worker skip the lookup.
+   */
+  lookupReceipt?(uuid: string, cfg: EtaConfig): Promise<FiscalSubmitResult | null>;
 }

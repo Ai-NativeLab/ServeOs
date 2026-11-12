@@ -343,6 +343,14 @@ export const AUDIT_ALLOWLIST: Record<string, string> = {
   // `persistAccepted` / `persistRejected`, which emit eta.submission.accepted /
   // rejected themselves and are therefore not flagged here.
   "worker.pollPhase": "writes only the 'ETA is still processing' correction; the accepted/rejected verdicts it routes to emit eta.submission.* from persistAccepted/persistRejected",
+  // Two TRANSPORT-bookkeeping writers added by the PR #198 review fixes. Neither
+  // changes the fiscal record: markDispatched stamps `submitted_at` just before
+  // a POST leaves (the "may be with ETA" marker the next attempt looks up by
+  // uuid), and releaseUnprocessed clears the claim lease on rows a budget-cut
+  // pass never reached. What ETA then does with the document is audited as
+  // eta.submission.* by persistSubmitted / persistAccepted / persistRejected.
+  "worker.markDispatched": "stamps the dispatch marker before a POST; the submission it precedes is audited as eta.submission.submitted (or the verdict) on the same row",
+  "worker.releaseUnprocessed": "clears the claim lease on rows a budget-cut pass did not reach; no fiscal state changes and nothing was sent",
   // The invoice twin of finalizeSubmissionRow, allowlisted on identical terms:
   // it builds and persists the document's bytes (wire JSON, and for a signed
   // tenant the CAdES-BES signature), which is the document being PREPARED. An

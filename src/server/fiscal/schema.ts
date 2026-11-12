@@ -233,6 +233,14 @@ export const etaSubmissions = pgTable("eta_submissions", {
    * `RECEIPT_SUBMISSION_WINDOW_FAMILY` in `./constants` and VERIFY-13.
    */
   lateNotifiedAt: timestamp("late_notified_at", { withTimezone: true }),
+  /**
+   * When a submission POST for this row was last dispatched (stamped BEFORE the
+   * request leaves) and, once ETA answers with a handle, when it was accepted
+   * for processing. So `submitted_at IS NOT NULL AND submission_uuid IS NULL`
+   * is the worker's MAYBE-SENT state: a POST left and no handle came back (a
+   * timeout after the send, a 202 with no submissionUUID). The worker looks such
+   * a receipt up by its uuid before re-POSTing it — see `submitPhase`.
+   */
   submittedAt: timestamp("submitted_at", { withTimezone: true }),
   acceptedAt: timestamp("accepted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

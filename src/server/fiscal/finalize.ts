@@ -1,8 +1,9 @@
-import { and, eq, inArray, sql, lt, gt, asc } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql, lt, gt, asc, desc } from "drizzle-orm";
 import { withTenant, type Tx } from "@/db/with-tenant";
 import { orders, orderItems, type Order, type OrderItem } from "@/server/ordering/schema";
 import { orderPayments } from "@/server/pos/tender-schema";
 import { posOrderReceipts } from "@/server/pos/schema";
+import { auditEvents } from "@/server/audit/schema";
 import { refunds, refundLines, refundPayments, type Refund, type RefundLine } from "@/server/pos/refund-schema";
 import {
   etaSubmissions, etaTenantConfig, etaPosCredentials, etaDeviceChains, productTaxCodes,
@@ -12,16 +13,17 @@ import { buildReceipt, buildReturnReceipt } from "./build-document";
 import { buildInvoice } from "./build-invoice";
 import { finalizeReceipt, type WireContext } from "./eta-wire";
 import { toWireInvoice, attachSignatures } from "./eta-invoice-wire";
-import { signingKeyThunk } from "./config";
+import { loadTenantSlug, signingKeyThunk } from "./config";
 import { stringifyWire } from "./serialize";
 import { getEtaEnv } from "./eta-env";
 import { EtaConfigError } from "./eta-transport-errors";
-import { IrreconcilableOrderError } from "./errors";
+import { IrreconcilableOrderError, ParentReceiptNotAcceptedError, redactedErrorSummary } from "./errors";
 import {
   allocateLargestRemainder, assertDecimal, compareDecimal, divideDecimal, isZeroDecimal,
   multiplyDecimal, subtractDecimal, sumDecimal,
 } from "./decimal";
 import { enqueueFiscalDocument } from "./enqueue";
+import { SUBMISSION_MAX_ATTEMPTS } from "./constants";
 import type { FiscalDocument, FiscalSaleInput, FiscalInvoiceBuyer } from "./provider";
 
 /**
@@ -183,6 +185,18 @@ export async function finalizeSubmissionRow(tenantId: string, submissionId: stri
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${tenantId})::bigint)`);
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`${tenantId}:${deviceId}`})::bigint)`);
 
+    // (b') RE-CHECK UNDER THE LOCKS. The `etaUuid` test above ran before either
+    // lock was held, so two finalizations of the SAME row — the sale path's
+    // inline call and a worker claim, which can land together because
+    // `next_attempt_at` defaults to now() — could both pass it. The loser then
+    // waited on the tenant lock and, without this re-read, would re-hash the
+    // document against the chain head the WINNER just advanced: a second uuid
+    // and QR over a receipt whose first ones are already printed, and a device
+    // chain with a link nobody filed. Re-selected `FOR UPDATE` so nothing else
+    // can stamp the row between this read and the write below.
+    const lockedUuid = await lockedEtaUuid(tx, tenantId, submissionId);
+    if (lockedUuid) return { status: "already-finalized", deviceId, etaUuid: lockedUuid } as const;
+
     const config = await loadTenantConfig(tx, tenantId);
     const deviceSerial = await loadDeviceSerial(tx, tenantId, deviceId);
 
@@ -220,8 +234,12 @@ export async function finalizeSubmissionRow(tenantId: string, submissionId: stri
 
     const finalized = finalizeReceipt(doc, wireCtx, { portalBase: getEtaEnv(config.environment).portalBase });
 
-    // (e) Persist the fiscal identity.
-    await tx.update(etaSubmissions).set({
+    // (e) Persist the fiscal identity — CONDITIONALLY. `eta_uuid IS NULL` makes
+    // the write itself refuse to overwrite an issued identity even if a future
+    // caller reaches here without the locked re-check above; zero rows back
+    // means someone else finalized, and the chain head must NOT advance over a
+    // uuid that was never persisted.
+    const stamped = await tx.update(etaSubmissions).set({
       // The EXACT bytes ETA will receive, cast rather than handed to Drizzle's
       // JSON mapper: `JSON.stringify` would turn every `WireDecimal` into
       // `{"literal":"114.00"}` and lose the unquoted literals ETA re-derives
@@ -237,7 +255,17 @@ export async function finalizeSubmissionRow(tenantId: string, submissionId: stri
       // uuid or the QR into it would misrepresent an unsigned document as a
       // signed one.
       hashOrSignature: null,
-    }).where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, submissionId)));
+    }).where(and(
+      eq(etaSubmissions.tenantId, tenantId),
+      eq(etaSubmissions.id, submissionId),
+      isNull(etaSubmissions.etaUuid),
+    )).returning({ id: etaSubmissions.id });
+
+    if (stamped.length === 0) {
+      const winner = await lockedEtaUuid(tx, tenantId, submissionId);
+      if (!winner) throw new Error(`fiscal: submission ${submissionId} could not be stamped and carries no etaUuid`);
+      return { status: "already-finalized", deviceId, etaUuid: winner } as const;
+    }
 
     // (f) Advance the chain head, in the same transaction as the hash that
     // used it.
@@ -322,6 +350,15 @@ export async function finalizeSubmissionRow(tenantId: string, submissionId: stri
  */
 async function finalizeInvoiceRow(tx: Tx, tenantId: string, row: EtaSubmission): Promise<FinalizeOutcome> {
   if (isWireDocument(row.requestJson)) return { status: "invoice-already-finalized" } as const;
+  // Same double-finalize hazard as the receipt path, without its advisory
+  // locks: two concurrent builds would each sign and write, and the second
+  // write could replace bytes the first had already handed to ETA. A row lock
+  // serializes them; the loser re-reads the winner's wire document and stops.
+  const [locked] = await tx.select({ requestJson: etaSubmissions.requestJson }).from(etaSubmissions)
+    .where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, row.id)))
+    .limit(1)
+    .for("update");
+  if (locked && isWireDocument(locked.requestJson)) return { status: "invoice-already-finalized" } as const;
 
   const config = await loadTenantConfig(tx, tenantId);
   const buyer = stagedBuyer(row);
@@ -372,6 +409,18 @@ async function finalizeInvoiceRow(tx: Tx, tenantId: string, row: EtaSubmission):
   // takes. B2B invoices are the only caller, and they arrive through the worker.
   const { resolveInvoiceSigner, invoiceDigest, signInvoice } = await import("./sign-invoice");
   const signer = resolveInvoiceSigner({ signingKey: config.signingKey });
+  // UNSIGNED v0.9 IS A PREPROD AFFORDANCE, NOT A PRODUCTION FILING. Whether ETA
+  // still accepts v0.9 at all is VERIFY-gated, and filing a real B2B invoice
+  // with signature validation disabled is not a decision to take by default on
+  // a taxpayer's live account. In prod, no seal means no invoice — a permanent,
+  // owner-actionable config failure — rather than a quiet v0.9.
+  if (!signer && config.environment === "prod") {
+    throw new EtaConfigError(
+      "invoice-signer-required",
+      "fiscal: this tenant files to ETA PRODUCTION but has no e-seal configured (eta_tenant_config.signing_key_ref). " +
+        "An unsigned v0.9 invoice is only filed in preprod; configure the ITIDA e-seal to issue B2B invoices in production.",
+    );
+  }
 
   const unsigned = toWireInvoice(doc, {
     rin: config.registrationNumber,
@@ -498,7 +547,8 @@ export async function enqueueAndFinalizeReceipt(ctx: { tenantId: string }, order
   } catch (err) {
     // Identifiers, never the error alone: this log line is the only trace a
     // failed finalization leaves on the sale path.
-    console.error(`[fiscal] finalize-at-enqueue failed for tenant ${ctx.tenantId} order ${orderId} (row queued; the worker will retry)`, err);
+    // Redacted: a raw Drizzle error carries the failing query's parameters.
+    console.error(`[fiscal] finalize-at-enqueue failed for tenant ${ctx.tenantId} order ${orderId} (row queued; the worker will retry): ${redactedErrorSummary(err)}`);
   }
 }
 
@@ -555,7 +605,7 @@ export async function enqueueAndFinalizeInvoice(
 
     if (row) await finalizeSubmissionRow(ctx.tenantId, row.id);
   } catch (err) {
-    console.error(`[fiscal] finalize-at-enqueue failed for tenant ${ctx.tenantId} order ${orderId} docType e_invoice (row queued; the worker will retry)`, err);
+    console.error(`[fiscal] finalize-at-enqueue failed for tenant ${ctx.tenantId} order ${orderId} docType e_invoice (row queued; the worker will retry): ${redactedErrorSummary(err)}`);
   }
 }
 
@@ -589,9 +639,12 @@ export async function enqueueAndFinalizeInvoice(
  *    reachable only after the fact.
  *
  * BOUNDED AT BOTH ENDS: at least `RECONCILE_AFTER_MS` old so an in-flight sale
- * is never swept out from under its own enqueue, and at most
- * `RECONCILE_HORIZON_MS` old so activating a tenant does not back-submit its
- * whole pre-ETA history past the 24-hour window.
+ * is never swept out from under its own enqueue, and NEWER than both
+ * `RECONCILE_HORIZON_MS` and the tenant's ETA ACTIVATION (`tenantActivatedAt`).
+ * The horizon alone let a tenant that activated today adopt up to seven days of
+ * sales it made BEFORE it was an ETA issuer — documents nobody asked it to file,
+ * submitted late by construction. The activation floor makes "which history to
+ * file" an explicit human decision rather than a side effect of finishing setup.
  *
  * SCOPE — orders where money actually moved. `unpaid` and
  * `pending_verification` are excluded (no sale has occurred yet; a receipt
@@ -609,6 +662,8 @@ export async function reconcileMissingReceipts(
   const limit = opts.limit ?? 50;
   const cutoff = new Date(Date.now() - (opts.olderThanMs ?? RECONCILE_AFTER_MS));
   const horizon = new Date(Date.now() - (opts.newerThanMs ?? RECONCILE_HORIZON_MS));
+  const activatedAt = await withTenant(ctx.tenantId, (tx) => tenantActivatedAt(tx, ctx.tenantId));
+  const floor = activatedAt && activatedAt > horizon ? activatedAt : horizon;
 
   // Read and write in separate transactions: `enqueueAndFinalizeReceipt` opens
   // its own (and takes advisory locks), so holding this select's transaction
@@ -619,8 +674,9 @@ export async function reconcileMissingReceipts(
       .where(and(
         eq(orders.tenantId, ctx.tenantId),
         lt(orders.placedAt, cutoff),
-        // The back-submission horizon — see RECONCILE_HORIZON_MS.
-        gt(orders.placedAt, horizon),
+        // The back-submission floor: the horizon or the activation, whichever
+        // is LATER — see RECONCILE_HORIZON_MS and `tenantActivatedAt`.
+        gt(orders.placedAt, floor),
         sql`${orders.status} not in ('cancelled','rejected')`,
         sql`${orders.paymentStatus} not in ('unpaid','pending_verification')`,
         // ANY order-carrying document satisfies this, not just an `e_receipt`.
@@ -650,7 +706,7 @@ export async function reconcileMissingReceipts(
       await enqueueAndFinalizeReceipt(ctx, order.id);
       enqueued++;
     } catch (err) {
-      console.error(`[fiscal] reconciliation enqueue failed for tenant ${ctx.tenantId} order ${order.id}`, err);
+      console.error(`[fiscal] reconciliation enqueue failed for tenant ${ctx.tenantId} order ${order.id}: ${redactedErrorSummary(err)}`);
     }
   }
 
@@ -661,9 +717,41 @@ export async function reconcileMissingReceipts(
   return { enqueued };
 }
 
+/**
+ * When this tenant became an ETA issuer: the first `eta.config.updated` audit
+ * event that recorded `activationStatus: "active"` (the config service writes
+ * one on every save, so the audit trail IS the activation history — no column
+ * needed). A config row written past the service has no such event, and falls
+ * back to the row's own `created_at`: nothing can have been activated before the
+ * configuration existed. Null only when there is no config at all.
+ */
+async function tenantActivatedAt(tx: Tx, tenantId: string): Promise<Date | null> {
+  const [event] = await tx.select({ at: sql<Date | null>`min(${auditEvents.createdAt})`.mapWith(auditEvents.createdAt) })
+    .from(auditEvents)
+    .where(and(
+      eq(auditEvents.tenantId, tenantId),
+      eq(auditEvents.action, "eta.config.updated"),
+      sql`${auditEvents.metadata}->>'activationStatus' = 'active'`,
+    ));
+  if (event?.at) return event.at;
+  const [config] = await tx.select({ createdAt: etaTenantConfig.createdAt }).from(etaTenantConfig)
+    .where(eq(etaTenantConfig.tenantId, tenantId)).limit(1);
+  return config?.createdAt ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // Loaders — every one of them runs on the caller's tenant-scoped transaction.
 // ---------------------------------------------------------------------------
+
+/** The row's `eta_uuid`, read with a row lock — the under-lock half of the
+ *  double-finalize guard in `finalizeSubmissionRow`. */
+async function lockedEtaUuid(tx: Tx, tenantId: string, submissionId: string): Promise<string | null> {
+  const [locked] = await tx.select({ etaUuid: etaSubmissions.etaUuid }).from(etaSubmissions)
+    .where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, submissionId)))
+    .limit(1)
+    .for("update");
+  return locked?.etaUuid ?? null;
+}
 
 async function loadSubmission(tx: Tx, tenantId: string, submissionId: string): Promise<EtaSubmission> {
   const [row] = await tx.select().from(etaSubmissions)
@@ -714,22 +802,56 @@ async function loadRefundOrderId(tx: Tx, tenantId: string, row: EtaSubmission): 
   return refund.orderId;
 }
 
-/** The parent sale's self-computed uuid, or null while it has none — the
- *  return receipt's Mandatory `referenceUUID`. */
+/**
+ * The uuid the return receipt's Mandatory `referenceUUID` names: the order's
+ * ACCEPTED sale receipt — or null while there is none yet (the caller defers).
+ *
+ * NOT "the original row". An order can carry several `e_receipt` rows: the
+ * original and, after a rejection, corrected resubmissions (each a new
+ * document with its own uuid, `referenceOldUuid` pointing back). The original
+ * of a corrected sale is by definition the REJECTED one, so keying on
+ * `referenceOldUuid IS NULL` (as this once did) picked exactly the document ETA
+ * refused and deferred the return forever. What a return must reference is the
+ * document ETA holds as valid, so the accepted row wins, latest first.
+ *
+ * ACCEPTED, not merely finalized: the uuid exists as soon as a sale is hashed,
+ * but a return naming a receipt ETA has not accepted would name a document
+ * that may never exist on ETA's side.
+ *
+ * NO ACCEPTED ROW:
+ *   - some receipt is still live (pending / submitted / failed-but-retrying):
+ *     defer, it may yet be accepted;
+ *   - none exists at all: defer — the sale may not have been enqueued yet
+ *     (the reconciliation sweep adopts it);
+ *   - every one is terminal: `ParentReceiptNotAcceptedError`, permanent, so the
+ *     owner is told to correct the sale rather than the return waiting forever.
+ */
 async function loadParentUuid(tx: Tx, tenantId: string, row: EtaSubmission): Promise<string | null> {
   const orderId = await loadRefundOrderId(tx, tenantId, row);
-  const [parent] = await tx.select({ etaUuid: etaSubmissions.etaUuid, status: etaSubmissions.status })
+  const receipts = await tx.select({
+    etaUuid: etaSubmissions.etaUuid, status: etaSubmissions.status, attempts: etaSubmissions.attempts,
+  })
     .from(etaSubmissions)
     .where(and(
       eq(etaSubmissions.tenantId, tenantId),
       eq(etaSubmissions.docType, "e_receipt"),
       eq(etaSubmissions.orderId, orderId),
-      sql`${etaSubmissions.referenceOldUuid} is null`,
-    )).limit(1);
-  // ACCEPTED, not merely finalized. The uuid exists as soon as the sale is
-  // hashed, but a return referencing a receipt ETA has not accepted (or has
-  // rejected) would name a document that may never exist on ETA's side.
-  return parent?.status === "accepted" ? parent.etaUuid : null;
+    ))
+    .orderBy(desc(etaSubmissions.createdAt), desc(etaSubmissions.id));
+
+  const accepted = receipts.find((receipt) => receipt.status === "accepted" && receipt.etaUuid);
+  if (accepted) return accepted.etaUuid;
+  if (receipts.length === 0) return null;
+
+  const live = receipts.some((receipt) =>
+    receipt.status === "pending" || receipt.status === "submitted" ||
+    (receipt.status === "failed" && receipt.attempts < SUBMISSION_MAX_ATTEMPTS));
+  if (live) return null;
+
+  throw new ParentReceiptNotAcceptedError(
+    orderId,
+    receipts.map((receipt) => receipt.status === "failed" ? "failed permanently" : receipt.status).join(", "),
+  );
 }
 
 type ResolvedConfig = {
@@ -763,7 +885,7 @@ async function loadTenantConfig(tx: Tx, tenantId: string): Promise<ResolvedConfi
     registrationNumber: row.registrationNumber,
     environment: row.environment,
     wireContext: requireWireContext(row.wireContextJson),
-    signingKey: signingKeyThunk(row.signingKeyRef),
+    signingKey: signingKeyThunk(row.signingKeyRef, await loadTenantSlug(tx, tenantId)),
   };
 }
 
@@ -942,10 +1064,12 @@ async function resolveFullRefundLines(
     );
   }
 
+  // EARLIER refunds only — the state "when it was issued". A refund written
+  // after this one must not shrink what this one returned.
   const priorLines = await tx.select({ orderItemId: refundLines.orderItemId, quantity: refundLines.quantity })
     .from(refundLines)
     .innerJoin(refunds, eq(refundLines.refundId, refunds.id))
-    .where(and(eq(refunds.tenantId, tenantId), eq(refunds.orderId, refund.orderId)));
+    .where(and(eq(refunds.tenantId, tenantId), eq(refunds.orderId, refund.orderId), issuedBefore(refund)));
 
   const takenBack = new Map<string, number>();
   for (const line of priorLines) {
@@ -1010,17 +1134,23 @@ async function resolveFullRefundLines(
 async function outstandingNetPaid(tx: Tx, tenantId: string, refund: Refund): Promise<string> {
   const tenders = await tx.select({ amount: orderPayments.amount }).from(orderPayments)
     .where(and(eq(orderPayments.tenantId, tenantId), eq(orderPayments.orderId, refund.orderId)));
-  const priorPayments = await tx.select({ amount: refundPayments.amount, refundId: refundPayments.refundId })
+  const priorPayments = await tx.select({ amount: refundPayments.amount })
     .from(refundPayments)
     .innerJoin(refunds, eq(refundPayments.refundId, refunds.id))
-    .where(and(eq(refunds.tenantId, tenantId), eq(refunds.orderId, refund.orderId)));
+    .where(and(eq(refunds.tenantId, tenantId), eq(refunds.orderId, refund.orderId), issuedBefore(refund)));
 
   const paid = sumDecimal("order tenders", tenders.map((t) => t.amount));
-  const returned = sumDecimal(
-    "prior refund payments",
-    priorPayments.filter((p) => p.refundId !== refund.id).map((p) => p.amount),
-  );
+  const returned = sumDecimal("prior refund payments", priorPayments.map((p) => p.amount));
   return subtractDecimal("outstanding", paid, returned);
+}
+
+/** Refunds of the same order issued strictly BEFORE `refund` — the same
+ *  (createdAt, id) total order `returnReceiptNumber` numbers them by, so a tie
+ *  on the clock still has exactly one answer. Excludes `refund` itself. The
+ *  bound is read from the row in SQL rather than from the JS `Date`, which
+ *  would drop the timestamp's microseconds. */
+function issuedBefore(refund: Refund) {
+  return sql`(${refunds.createdAt}, ${refunds.id}) < (select b.created_at, b.id from refunds b where b.id = ${refund.id})`;
 }
 
 /**

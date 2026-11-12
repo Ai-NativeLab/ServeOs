@@ -485,7 +485,12 @@ export function buildSaleLines(input: SaleLineInput): FiscalDocLine[] {
     // have their allocated tax taken back out; exclusive prices pass through
     // untouched (F9).
     const netSale = mode === "inclusive" ? subtractDecimal("netSale", draft.base, vat) : draft.base;
-    const discountTotal = sumDecimal("line discounts", draft.discounts);
+    const grossDiscount = sumDecimal("line discounts", draft.discounts);
+    // The discount must be in netSale's terms or `totalSale = netSale +
+    // discounts` mixes a net figure with a gross one — see `netDiscount`.
+    const discountTotal = mode === "inclusive"
+      ? netDiscount(grossDiscount, draft.base, netSale, order.vatRateSnapshot)
+      : grossDiscount;
     // Main Calculations: "netSale = totalSale - Sum(commercialDiscountData.amount)".
     const totalSale = addDecimal("totalSale", netSale, discountTotal);
     // Main Calculations: "totalSale = quantity * unitPrice" — so the unit
@@ -515,6 +520,40 @@ export function buildSaleLines(input: SaleLineInput): FiscalDocLine[] {
       lineTotal: netSale,
     };
   });
+}
+
+/**
+ * A VAT-INCLUSIVE line's discounts, restated TAX-EXCLUSIVE.
+ *
+ * Under inclusive pricing every stored figure carries its VAT — `lineTotal`,
+ * the item discount, the order discount's share — while ETA's `netSale` is
+ * tax-exclusive by definition. Adding the stored (gross) discount to `netSale`
+ * produced a `totalSale` that was neither price: a 114.00 item with a 14.00
+ * discount at 14% reported a 101.72 unit price and a 14.00 discount, where the
+ * honest figures are a 100.00 net price and a 12.28 net discount (12.28 + the
+ * 87.72 netSale = 100.00 = 114.00 / 1.14).
+ *
+ * The line's OWN effective tax ratio does the netting — `netSale / base`, where
+ * `base` is the gross after-discount amount and `netSale` is what is left once
+ * this line's allocated VAT is taken out. So a discount is netted at exactly the
+ * rate its line was taxed at (including a line whose VAT share rounded to zero,
+ * whose ratio is 1), and every published equation holds by construction:
+ * `totalSale = netSale + discount` is how `totalSale` is DEFINED from this, and
+ * `unitPrice` is derived from that `totalSale`. A line whose gross base is zero
+ * (fully discounted) has no ratio to read and nets at the snapshot rate.
+ * 2dp half-up, matching every other money figure on the line.
+ */
+function netDiscount(grossDiscount: string, base: string, netSale: string, rate: string): string {
+  if (isZeroDecimal(grossDiscount)) return grossDiscount;
+  if (!isZeroDecimal(base)) {
+    return divideDecimal("net discount", multiplyDecimal("net discount", grossDiscount, netSale), base, 2);
+  }
+  return divideDecimal(
+    "net discount",
+    multiplyDecimal("net discount", grossDiscount, "100"),
+    addDecimal("net discount", "100", rate),
+    2,
+  );
 }
 
 /**

@@ -81,6 +81,14 @@ import type { EtaDocType } from "./schema";
 export const SUBMISSION_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * The worker's per-row attempt cap — see `MAX_ATTEMPTS` in `./worker`, which
+ * re-exports this and carries the full rationale. Defined HERE because
+ * `./finalize` (on the SALE path) also needs to tell a terminal `failed` row
+ * from a retrying one, and must not import the worker's ETA HTTP client to do it.
+ */
+export const SUBMISSION_MAX_ATTEMPTS = 6;
+
+/**
  * WHICH DOCUMENT FAMILIES `SUBMISSION_WINDOW_MS` ACTUALLY GOVERNS — and the
  * honest answer is "the ones ETA published a deadline for", which is the receipt
  * pair and not the invoice.

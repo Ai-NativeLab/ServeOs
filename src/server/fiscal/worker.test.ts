@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, afterAll } from "vitest";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
@@ -7,6 +7,8 @@ import { orders, orderItems } from "@/server/ordering/schema";
 import { placeOrder } from "@/server/ordering/service";
 import { createCategory, createProduct, updateProduct } from "@/server/catalog/service";
 import { auditEvents } from "@/server/audit/schema";
+import { recordAuditEvent } from "@/server/audit/service";
+import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { notifications } from "@/server/notifications/schema";
 import { FakeEmailProvider } from "@/server/email/fake-provider";
 import { seedPosContext, openShiftForCtx } from "@/server/pos/test-helpers";
@@ -21,12 +23,13 @@ import {
   type EtaWireContextConfig, type EtaDocType,
 } from "./schema";
 import { drainEtaSubmissions, MAX_ATTEMPTS } from "./worker";
+import { etaSecretKeyPrefix } from "./config";
 import { SUBMISSION_WINDOW_MS } from "./constants";
 import { getSubmissionById, listSubmissions } from "./read-model";
 import { finalizeSubmissionRow, reconcileMissingReceipts } from "./finalize";
 import { enqueueCorrectedResubmission } from "./enqueue";
 import { BuyerIdRequiredError } from "./errors";
-import { TestCertSigner } from "./sign-invoice";
+import { TestCertSigner } from "./test-support/test-cert-signer";
 import { stringifyWire } from "./serialize";
 import { EtaTransportError, EtaConfigError } from "./eta-transport-errors";
 import type {
@@ -41,22 +44,39 @@ import type {
  * `FiscalProvider` contract puts a network call behind.
  */
 
-const SECRET_KEYS = {
-  erp: "TEST_WORKER_ETA_ERP_SECRET",
-  secret1: "TEST_WORKER_ETA_SECRET_1",
-  secret2: "TEST_WORKER_ETA_SECRET_2",
-  psk: "TEST_WORKER_ETA_PSK",
+/**
+ * Credential refs are TENANT-BOUND (`etaSecretKeyPrefix`): each must name a key
+ * in its own tenant's `ETA_<SLUG>__` namespace. So the env keys are derived per
+ * tenant at seed time, set, and tracked for removal.
+ */
+const SECRET_VALUES = {
+  ERP_SECRET: "erp-secret",
+  SECRET_1: "device-secret-1",
+  SECRET_2: "device-secret-2",
+  PSK: "device-psk",
 } as const;
+const envKeysSet = new Set<string>();
 
-beforeAll(() => {
-  process.env[SECRET_KEYS.erp] = "erp-secret";
-  process.env[SECRET_KEYS.secret1] = "device-secret-1";
-  process.env[SECRET_KEYS.secret2] = "device-secret-2";
-  process.env[SECRET_KEYS.psk] = "device-psk";
-});
+/** Sets `name` = `value` in `tenantId`'s namespace; returns the env:// ref. */
+async function tenantSecretRef(tenantId: string, name: string, value: string): Promise<string> {
+  const [tenant] = await db.select({ slug: tenants.slug }).from(tenants).where(eq(tenants.id, tenantId));
+  const key = `${etaSecretKeyPrefix(tenant.slug)}${name}`;
+  process.env[key] = value;
+  envKeysSet.add(key);
+  return `env://${key}`;
+}
+
+async function tenantSecretRefs(tenantId: string) {
+  return {
+    erp: await tenantSecretRef(tenantId, "ERP_SECRET", SECRET_VALUES.ERP_SECRET),
+    secret1: await tenantSecretRef(tenantId, "SECRET_1", SECRET_VALUES.SECRET_1),
+    secret2: await tenantSecretRef(tenantId, "SECRET_2", SECRET_VALUES.SECRET_2),
+    psk: await tenantSecretRef(tenantId, "PSK", SECRET_VALUES.PSK),
+  };
+}
 
 afterAll(() => {
-  for (const key of Object.values(SECRET_KEYS)) delete process.env[key];
+  for (const key of envKeysSet) delete process.env[key];
 });
 
 const WIRE_CONTEXT: EtaWireContextConfig = {
@@ -159,6 +179,39 @@ function unwrap(outcomes: SubmitOutcome[], call: number, what: string): FiscalSu
 }
 
 /**
+ * A FakeEta that also answers `lookupReceipt` — the worker's "does ETA already
+ * hold this receipt?" question before re-POSTing a row that may have been sent.
+ * `null` scripts a 404. Over-calls fail exactly as `unwrap` does.
+ */
+class FakeEtaWithLookup extends FakeEta {
+  readonly looked: string[] = [];
+
+  constructor(
+    submitOutcomes: SubmitOutcome[],
+    pollOutcomes: SubmitOutcome[],
+    private readonly lookupOutcomes: (FiscalSubmitResult | null | Error)[],
+  ) {
+    super(submitOutcomes, pollOutcomes);
+  }
+
+  async lookupReceipt(uuid: string, _cfg: EtaConfig): Promise<FiscalSubmitResult | null> {
+    this.looked.push(uuid);
+    if (this.looked.length > this.lookupOutcomes.length) {
+      throw new Error(`FakeEta: call ${this.looked.length} exceeds ${this.lookupOutcomes.length} scripted outcomes for lookup`);
+    }
+    const outcome = this.lookupOutcomes[this.looked.length - 1];
+    if (outcome instanceof Error) throw outcome;
+    return outcome;
+  }
+}
+
+/** A per-document refusal whose text says the uuid is already on file. */
+const duplicateRejection = (): FiscalSubmitResult => ({
+  status: "rejected",
+  responseJson: { rejectedDocuments: [{ error: { message: "Duplicate receipt: a receipt with this uuid was already submitted" } }] },
+});
+
+/**
  * A provider that makes THIS drain the loser of the one race the claim lease
  * cannot rule out: the lease can expire while a submit is in flight, so a
  * second drain may finish the row while this one is still waiting on ETA.
@@ -217,11 +270,16 @@ async function seedFiscalConfig(
   tenantId: string,
   overrides: Partial<typeof etaTenantConfig.$inferInsert> = {},
 ) {
+  const refs = await tenantSecretRefs(tenantId);
   await withTenant(tenantId, (tx) => tx.insert(etaTenantConfig).values({
     tenantId,
+    // Configured well in the past by default: the reconciliation sweep is
+    // floored at the tenant's activation, and these fixtures backdate the orders
+    // they want swept. The activation-floor test sets its own.
+    createdAt: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000),
     registrationNumber: "200173707",
     clientId: "erp-client",
-    clientSecretRef: SECRET_KEYS.erp,
+    clientSecretRef: refs.erp,
     environment: "preprod",
     activationStatus: "active",
     wireContextJson: WIRE_CONTEXT,
@@ -230,10 +288,11 @@ async function seedFiscalConfig(
 }
 
 async function seedDeviceCredential(tenantId: string, deviceId: string, etaSerial = "POS-001") {
+  const refs = await tenantSecretRefs(tenantId);
   await withTenant(tenantId, (tx) => tx.insert(etaPosCredentials).values({
     tenantId, deviceId, etaSerial, clientId: "device-client",
-    clientSecret1Ref: SECRET_KEYS.secret1, clientSecret2Ref: SECRET_KEYS.secret2,
-    presharedKeyRef: SECRET_KEYS.psk, posOsVersion: "IOS", posModelFramework: "1", status: "active",
+    clientSecret1Ref: refs.secret1, clientSecret2Ref: refs.secret2,
+    presharedKeyRef: refs.psk, posOsVersion: "IOS", posModelFramework: "1", status: "active",
   }));
 }
 
@@ -252,11 +311,15 @@ type Fixture = Awaited<ReturnType<typeof seedPosContext>> & { receipt: Awaited<R
  * authoritative fallback.
  */
 async function seedSale(
-  opts: { configureFirst?: boolean; clientOrderId?: string; signingKeyRef?: string } = {},
+  opts: { configureFirst?: boolean; clientOrderId?: string; signingKey?: string } = {},
 ): Promise<Fixture> {
   const configureFirst = opts.configureFirst ?? true;
-  const fiscalConfig = opts.signingKeyRef ? { signingKeyRef: opts.signingKeyRef } : {};
   const s = await seedPosContext("owner");
+  // The e-seal material goes in the env key the tenant's `signing_key_ref`
+  // names, inside its own namespace — through the REAL seam.
+  const fiscalConfig = opts.signingKey
+    ? { signingKeyRef: await tenantSecretRef(s.tenantId, "SIGNING_KEY", opts.signingKey) }
+    : {};
   await openShiftForCtx(s.ctx);
   await seedTaxCode(s.tenantId, s.productId);
 
@@ -407,6 +470,33 @@ describe("finalization at enqueue time", () => {
   });
 });
 
+describe("finalization — the SAME row raced (double-finalize guard)", () => {
+  it("stamps one identity when the sale path and a worker claim finalize one row at once", async () => {
+    // Configured after the sale so the row is unfinalized, then finalized by
+    // several callers AT ONCE — the sale path's inline call and a cron claim can
+    // land together, because `next_attempt_at` defaults to now(). Before the
+    // locked re-check, each loser re-hashed against the head the winner had just
+    // advanced: a second uuid/QR over a printed receipt, and a forked chain.
+    const s = await seedSale({ configureFirst: false });
+    const [row] = await rowsFor(s.tenantId);
+    expect(row.etaUuid).toBeNull();
+
+    const outcomes = await Promise.all([1, 2, 3].map(() => finalizeSubmissionRow(s.tenantId, row.id)));
+
+    const statuses = outcomes.map((outcome) => outcome.status).sort();
+    expect(statuses).toEqual(["already-finalized", "already-finalized", "finalized"]);
+    const uuids = new Set(outcomes.map((outcome) => ("etaUuid" in outcome ? outcome.etaUuid : null)));
+    expect(uuids.size).toBe(1);
+
+    const [stored] = await rowsFor(s.tenantId);
+    expect(uuids.has(stored.etaUuid)).toBe(true);
+    // The chain advanced exactly once, from genesis, to the stored identity.
+    expect(header(stored.requestJson).previousUUID).toBe("");
+    const [chain] = await chainFor(s.tenantId);
+    expect(chain.lastUuid).toBe(stored.etaUuid);
+  });
+});
+
 describe("drainEtaSubmissions — accept path", () => {
   it("finalizes an unfinalized row, submits it, polls it, and accepts it with audits in the same tx", async () => {
     const s = await seedSale({ configureFirst: false });
@@ -514,6 +604,165 @@ describe("drainEtaSubmissions — accept path", () => {
     expect(row.status).toBe("submitted");
     expect(row.attempts).toBe(0); // a poll is not an attempt
     expect(row.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
+  });
+});
+
+describe("drainEtaSubmissions — maybe-sent receipts are looked up, never blindly re-POSTed", () => {
+  const timeout = () => new EtaTransportError("fiscal: ETA request timed out after 60000ms with no response (x)");
+
+  it("settles a timed-out submit from ETA's own record instead of sending it again", async () => {
+    const s = await seedSale();
+    const provider = new FakeEtaWithLookup(
+      [timeout()],
+      [],
+      [{ status: "accepted", submissionUuid: "sub-first", etaLongId: "LONG-FIRST", responseJson: { receipt: { status: "valid" } } }],
+    );
+
+    await drainEtaSubmissions({ provider, reconcile: false });
+    const [afterTimeout] = await rowsFor(s.tenantId);
+    expect(afterTimeout.status).toBe("failed");
+    // The dispatch marker: the POST left, so the document MAY be with ETA.
+    expect(afterTimeout.submittedAt).not.toBeNull();
+    expect(afterTimeout.submissionUuid).toBeNull();
+
+    await makeEligibleAll(s.tenantId);
+    await drainEtaSubmissions({ provider, reconcile: false });
+
+    expect(provider.submitted).toHaveLength(1);
+    expect(provider.looked).toEqual([afterTimeout.etaUuid]);
+    const [row] = await rowsFor(s.tenantId);
+    expect(row.status).toBe("accepted");
+    expect(row.submissionUuid).toBe("sub-first");
+    expect(row.etaLongId).toBe("LONG-FIRST");
+  });
+
+  it("does not look anything up for a row that was never dispatched", async () => {
+    const s = await seedSale();
+    const provider = new FakeEtaWithLookup([accepted202("sub-plain")], [], []);
+    await drainEtaSubmissions({ provider, reconcile: false });
+    expect(provider.looked).toEqual([]);
+    expect((await rowsFor(s.tenantId))[0].status).toBe("submitted");
+  });
+
+  it("never marks a duplicate-refused receipt rejected: it retries the lookup until ETA returns it", async () => {
+    const s = await seedSale();
+    const provider = new FakeEtaWithLookup(
+      // 1st POST times out (it DID reach ETA); 2nd is refused as a duplicate.
+      [timeout(), duplicateRejection()],
+      [],
+      // Pass 2: not retrievable yet (still validating) -> re-POST -> duplicate
+      // -> looked up again, still not retrievable. Pass 3: there it is.
+      [null, null, { status: "accepted", submissionUuid: "sub-first", etaLongId: "LONG-DUP", responseJson: {} }],
+    );
+
+    await drainEtaSubmissions({ provider, reconcile: false });
+    await makeEligibleAll(s.tenantId);
+    await drainEtaSubmissions({ provider, reconcile: false });
+
+    const [waiting] = await rowsFor(s.tenantId);
+    expect(waiting.status).toBe("failed");
+    expect(waiting.lastError).toMatch(/already filed/);
+
+    await makeEligibleAll(s.tenantId);
+    await drainEtaSubmissions({ provider, reconcile: false });
+
+    const [row] = await rowsFor(s.tenantId);
+    expect(row.status).toBe("accepted");
+    expect(row.etaLongId).toBe("LONG-DUP");
+    expect(provider.submitted).toHaveLength(2);
+    const audits = await auditsFor(s.tenantId);
+    expect(audits.map((a) => a.action)).not.toContain("eta.submission.rejected");
+  });
+
+  it("settles a poll that refuses a re-sent copy as a duplicate on the copy ETA accepted", async () => {
+    const s = await seedSale();
+    const provider = new FakeEtaWithLookup(
+      [accepted202("sub-second-copy")],
+      [{ status: "rejected", responseJson: { status: "Invalid", receipts: [{ status: "Invalid", errors: [{ errorCode: "DuplicateUUID", error: "uuid already exists" }] }] } }],
+      [{ status: "accepted", submissionUuid: "sub-first-copy", etaLongId: "LONG-ORIG", responseJson: {} }],
+    );
+
+    await drainEtaSubmissions({ provider, reconcile: false });
+    await makeEligibleAll(s.tenantId);
+    await drainEtaSubmissions({ provider, reconcile: false });
+
+    const [row] = await rowsFor(s.tenantId);
+    expect(row.status).toBe("accepted");
+    expect(row.submissionUuid).toBe("sub-first-copy");
+    expect(row.etaLongId).toBe("LONG-ORIG");
+  });
+
+  it("does not spend the attempt budget on a failed POLL — the document is already with ETA", async () => {
+    const s = await seedSale();
+    const provider = new FakeEta(
+      [accepted202("sub-held")],
+      [new EtaTransportError("gateway down", { status: 502 }), new EtaTransportError("gateway down", { status: 502 })],
+    );
+    await drainEtaSubmissions({ provider, reconcile: false });
+    for (let pass = 0; pass < 2; pass++) {
+      await makeEligibleAll(s.tenantId);
+      await drainEtaSubmissions({ provider, reconcile: false });
+    }
+    const [row] = await rowsFor(s.tenantId);
+    expect(row.submissionUuid).toBe("sub-held");
+    expect(row.attempts).toBe(0);
+    expect(row.lastError).toContain("gateway down");
+  });
+});
+
+describe("drainEtaSubmissions — the write fence", () => {
+  /** A provider whose submit lands a NEWER verdict on the row mid-flight — what
+   *  another drain does after this one's lease expired — then answers with a
+   *  stale rejection of its own. */
+  function staleDrain(tenantId: string, opts: { reclaim: boolean }): FiscalProvider {
+    return {
+      name: "stale-drain",
+      buildReceipt: () => { throw new Error("not used"); },
+      buildReturnReceipt: () => { throw new Error("not used"); },
+      buildInvoice: () => { throw new Error("not used"); },
+      poll: () => { throw new Error("not used"); },
+      submit: async () => {
+        await withTenant(tenantId, (tx) => tx.update(etaSubmissions)
+          .set({
+            status: "accepted", submissionUuid: "sub-winner", etaLongId: "LONG-WINNER",
+            ...(opts.reclaim ? { nextAttemptAt: sql`now() + interval '7 minutes'` } : {}),
+          })
+          .where(eq(etaSubmissions.tenantId, tenantId)));
+        return rejection();
+      },
+    };
+  }
+
+  for (const reclaim of [true, false]) {
+    it(`a stale drain cannot regress an ACCEPTED row to rejected (${reclaim ? "lease re-claimed" : "status fence alone"})`, async () => {
+      const s = await seedSale();
+      const result = await drainEtaSubmissions({ provider: staleDrain(s.tenantId, { reclaim }), reconcile: false });
+
+      expect(result.rejected).toBe(0);
+      const [row] = await rowsFor(s.tenantId);
+      expect(row.status).toBe("accepted");
+      expect(row.etaLongId).toBe("LONG-WINNER");
+      expect(row.lastError).toBeNull();
+      expect((await auditsFor(s.tenantId)).map((a) => a.action)).not.toContain("eta.submission.rejected");
+      expect(await notificationsFor(s.tenantId)).toHaveLength(0);
+    });
+  }
+
+  it("a stale drain whose lease was re-claimed cannot fail the row either", async () => {
+    const s = await seedSale();
+    const provider: FiscalProvider = {
+      ...staleDrain(s.tenantId, { reclaim: true }),
+      submit: async () => {
+        await withTenant(s.tenantId, (tx) => tx.update(etaSubmissions)
+          .set({ status: "accepted", nextAttemptAt: sql`now() + interval '7 minutes'` })
+          .where(eq(etaSubmissions.tenantId, s.tenantId)));
+        throw new EtaTransportError("late timeout");
+      },
+    };
+    await drainEtaSubmissions({ provider, reconcile: false });
+    const [row] = await rowsFor(s.tenantId);
+    expect(row.status).toBe("accepted");
+    expect(row.attempts).toBe(0);
   });
 });
 
@@ -664,8 +913,11 @@ describe("drainEtaSubmissions — the failure taxonomy", () => {
     // — but while resolveEtaConfig resolved it eagerly, this one unset env var
     // failed the whole tenant, and the worker turned that into a PERMANENT
     // failure on every receipt.
+    // In the tenant's namespace, so the ONLY thing wrong with it is that it is unset.
+    const [tenant] = await db.select({ slug: tenants.slug }).from(tenants).where(eq(tenants.id, s.tenantId));
+    const danglingRef = `env://${etaSecretKeyPrefix(tenant.slug)}SIGNING_KEY_NOT_SET`;
     await withTenant(s.tenantId, (tx) => tx.update(etaTenantConfig)
-      .set({ signingKeyRef: "TEST_WORKER_ETA_SIGNING_KEY_THAT_IS_NOT_SET" })
+      .set({ signingKeyRef: danglingRef })
       .where(eq(etaTenantConfig.tenantId, s.tenantId)));
     const provider = new FakeEta([accepted202("sub-unsigned")]);
 
@@ -872,6 +1124,29 @@ describe("drainEtaSubmissions — reconciliation sweep", () => {
     expect(rows.some((row) => row.orderId === ancient)).toBe(false);
   });
 
+  it("never adopts a sale made BEFORE the tenant was activated, even inside the horizon", async () => {
+    const s = await seedPosContext("owner");
+    await seedTaxCode(s.tenantId, s.productId);
+    const before = await placeWebOrder(s.tenantId, s.branchId, s.productId, { minutesAgo: 60 * 24 * 2 });
+    // The config ROW is old, but the tenant was ACTIVATED just now — audited
+    // the way the config service writes it (the audit log is append-only, so the
+    // activation is "now" and the sweep's age threshold is waived instead).
+    await seedFiscalConfig(s.tenantId, { onlineDeviceId: s.ctx.deviceId, createdAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) });
+    await seedDeviceCredential(s.tenantId, s.ctx.deviceId);
+    await withTenant(s.tenantId, (tx) => recordAuditEvent({ tenantId: s.tenantId, actorUserId: null, fingerprint: emptyFingerprint() }, {
+      action: "eta.config.updated", entityType: "eta_tenant_config", entityId: s.tenantId,
+      summary: "ETA configuration updated", metadata: { activationStatus: "active" }, actorType: "system",
+    }, tx));
+    const after = await placeWebOrder(s.tenantId, s.branchId, s.productId, { minutesAgo: 0 });
+
+    const res = await reconcileMissingReceipts({ tenantId: s.tenantId }, { olderThanMs: -60_000 });
+
+    expect(res.enqueued).toBe(1);
+    const rows = await rowsFor(s.tenantId);
+    expect(rows.map((row) => row.orderId)).toEqual([after]);
+    expect(rows.some((row) => row.orderId === before)).toBe(false);
+  });
+
   it("ignores an unpaid order — no sale, no receipt", async () => {
     const s = await seedPosContext("owner");
     await seedTaxCode(s.tenantId, s.productId);
@@ -891,6 +1166,55 @@ describe("drainEtaSubmissions — reconciliation sweep", () => {
 
     await drainEtaSubmissions({ provider: new FakeEta([]), limit: 10 });
     expect(await rowsFor(s.tenantId)).toHaveLength(0);
+  });
+});
+
+describe("drainEtaSubmissions — pass budgets and tenant rotation", () => {
+  async function ringAnother(s: Fixture, clientOrderId: string) {
+    await recordSale(s.ctx, {
+      clientOrderId,
+      lines: [{ productId: s.productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: s.total,
+      payments: [{ clientPaymentId: `p-${clientOrderId}`, method: "cash", amount: s.total, tenderedAmount: s.total }],
+    });
+  }
+
+  it("stops a tenant at its share and RELEASES the rows it did not reach", async () => {
+    const s = await seedSale();
+    await ringAnother(s, "sale-2");
+    await ringAnother(s, "sale-3");
+    const provider = new FakeEta([accepted202("sub-only")]);
+
+    const result = await drainEtaSubmissions({ provider, reconcile: false, tenantBudgetMs: 0 });
+
+    // The first row of a tenant always runs; the share is spent after it.
+    expect(result.processed).toBe(1);
+    expect(result.released).toBe(2);
+    const rows = await rowsFor(s.tenantId);
+    const untouched = rows.filter((row) => row.status === "pending");
+    expect(untouched).toHaveLength(2);
+    // Released, not left behind a 5-minute lease: claimable on the very next pass.
+    for (const row of untouched) expect(row.nextAttemptAt.getTime()).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("stops starting tenants when the pass budget is spent, and the next tick starts with another tenant", async () => {
+    const a = await seedSale({ clientOrderId: "a-1" });
+    const b = await seedSale({ clientOrderId: "b-1" });
+    const provider = new FakeEta([accepted202("sub-first-tick"), accepted202("sub-second-tick")]);
+    const tick = Date.now();
+
+    const first = await drainEtaSubmissions({ provider, reconcile: false, budgetMs: 0, now: () => new Date(tick) });
+    expect(first.processed).toBe(1);
+    expect(first.unvisitedTenants).toBe(1);
+
+    // Fifteen minutes on — one cron tick — the order has rotated by one place.
+    const second = await drainEtaSubmissions({
+      provider, reconcile: false, budgetMs: 0, now: () => new Date(tick + 15 * 60 * 1000),
+    });
+    expect(second.processed).toBe(1);
+
+    const statuses = [(await rowsFor(a.tenantId))[0].status, (await rowsFor(b.tenantId))[0].status];
+    expect(statuses).toEqual(["submitted", "submitted"]);
   });
 });
 
@@ -969,6 +1293,77 @@ describe("drainEtaSubmissions — return receipts", () => {
     expect(header(ret.requestJson).previousUUID).toBe(sale.etaUuid);
     expect(header(ret.requestJson).receiptNumber).toBe(`${s.receipt.orderNumber}-R1`);
     expect(((ret.requestJson.documentType as Record<string, unknown>).receiptType)).toBe("r");
+  });
+});
+
+describe("drainEtaSubmissions — return receipts on a corrected sale", () => {
+  async function refundOne(s: Fixture, clientRefundId: string) {
+    return issueRefund(actorFrom(s.ctx), {
+      orderId: s.receipt.orderId,
+      kind: "partial",
+      lines: [{ orderItemId: (await orderItemIds(s.tenantId, s.receipt.orderId))[0], quantity: 1, amount: 100, restock: false }],
+      payments: [{ method: "cash", amount: 100 }],
+      reasonCode: "other",
+      clientRefundId,
+    });
+  }
+
+  it("references the ACCEPTED correction, not the rejected original", async () => {
+    const s = await seedSale({ configureFirst: true });
+    const original = (await rowsFor(s.tenantId))[0];
+    await drainEtaSubmissions({ provider: new FakeEta([rejection()]), reconcile: false });
+
+    const correctionId = (await enqueueCorrectedResubmission({ tenantId: s.tenantId }, original.id))!;
+    const saleProvider = new FakeEta([accepted202("sub-fix")], [pollValid("LONG-FIX")]);
+    await drainEtaSubmissions({ provider: saleProvider, reconcile: false });
+    await makeEligible(s.tenantId, correctionId);
+    await drainEtaSubmissions({ provider: saleProvider, reconcile: false });
+    const correction = (await rowsFor(s.tenantId)).find((row) => row.id === correctionId)!;
+    expect(correction.status).toBe("accepted");
+
+    const refund = await refundOne(s, "r-corrected");
+    const returnProvider = new FakeEta([accepted202("sub-return")]);
+    await drainEtaSubmissions({ provider: returnProvider, reconcile: false });
+
+    const ret = (await rowsFor(s.tenantId)).find((row) => row.refundId === refund.refundId)!;
+    expect(ret.status).toBe("submitted");
+    expect(header(ret.requestJson).referenceUUID).toBe(correction.etaUuid);
+    expect(header(ret.requestJson).referenceUUID).not.toBe(original.etaUuid);
+  });
+
+  it("fails permanently, with an owner alert, when the sale was rejected and never corrected", async () => {
+    const s = await seedSale({ configureFirst: true });
+    await drainEtaSubmissions({ provider: new FakeEta([rejection()]), reconcile: false });
+    const refund = await refundOne(s, "r-orphan");
+
+    await drainEtaSubmissions({ provider: new FakeEta([]), reconcile: false });
+
+    const ret = (await rowsFor(s.tenantId)).find((row) => row.refundId === refund.refundId)!;
+    expect(ret.status).toBe("failed");
+    expect(ret.attempts).toBe(MAX_ATTEMPTS);
+    expect(ret.lastError).toMatch(/parent-receipt-not-accepted/);
+    const alerts = (await notificationsFor(s.tenantId)).filter((n) => n.entityId === ret.id);
+    expect(alerts).toHaveLength(1);
+  });
+
+  it("keeps deferring while a correction of the rejected sale is still in flight", async () => {
+    const s = await seedSale({ configureFirst: true });
+    const original = (await rowsFor(s.tenantId))[0];
+    await drainEtaSubmissions({ provider: new FakeEta([rejection()]), reconcile: false });
+    await enqueueCorrectedResubmission({ tenantId: s.tenantId }, original.id);
+    const refund = await refundOne(s, "r-waiting");
+
+    // Only the RETURN is eligible: the pending correction keeps the parent live.
+    const ret0 = (await rowsFor(s.tenantId)).find((row) => row.refundId === refund.refundId)!;
+    await withTenant(s.tenantId, (tx) => tx.update(etaSubmissions)
+      .set({ nextAttemptAt: sql`now() + interval '1 hour'` })
+      .where(and(eq(etaSubmissions.tenantId, s.tenantId), sql`${etaSubmissions.id} <> ${ret0.id}`)));
+    const result = await drainEtaSubmissions({ provider: new FakeEta([]), reconcile: false });
+
+    expect(result.deferred).toBe(1);
+    const ret = (await rowsFor(s.tenantId)).find((row) => row.refundId === refund.refundId)!;
+    expect(ret.status).toBe("pending");
+    expect(ret.attempts).toBe(0);
   });
 });
 
@@ -1327,10 +1722,6 @@ async function placeWebOrder(
 // row with the buyer in `request_json`, and nothing else.
 // ---------------------------------------------------------------------------
 
-/** The env key a signed tenant's `signing_key_ref` points at. Set and deleted
- *  per test, so no other case sees a configured seal. */
-const SIGNING_KEY_ENV = "TEST_WORKER_ETA_SIGNING_KEY";
-
 const B2B_BUYER: FiscalInvoiceBuyer = {
   rin: "313717919",
   name: "Receiver Company LLC",
@@ -1653,9 +2044,8 @@ describe("B2B e_invoice — the worker's submit/poll path", () => {
     // Through the REAL seam: the bundle goes in the env var the tenant's
     // `signing_key_ref` names, and `resolveInvoiceSigner` parses it back out.
     // Nothing is injected past the config layer.
-    process.env[SIGNING_KEY_ENV] = signer.pemBundle();
-    try {
-      const s = await seedSale({ clientOrderId: "b2b-signed", configureFirst: false, signingKeyRef: `env://${SIGNING_KEY_ENV}` });
+    {
+      const s = await seedSale({ clientOrderId: "b2b-signed", configureFirst: false, signingKey: signer.pemBundle() });
       await enqueueInvoice(s.tenantId, s.receipt.orderId);
       await finalizeSubmissionRow(s.tenantId, (await invoiceRowsFor(s.tenantId))[0].id);
 
@@ -1672,8 +2062,6 @@ describe("B2B e_invoice — the worker's submit/poll path", () => {
       // Still no local uuid and no QR — signing changes neither.
       expect(row.etaUuid).toBeNull();
       expect(row.qrPayload).toBeNull();
-    } finally {
-      delete process.env[SIGNING_KEY_ENV];
     }
 
     // ...and the unsigned control, same code path, no seal configured.
@@ -1686,10 +2074,22 @@ describe("B2B e_invoice — the worker's submit/poll path", () => {
     expect(Object.keys(unsigned.requestJson)).not.toContain("signatures");
   });
 
+  it("refuses to file an UNSIGNED v0.9 invoice in production — no seal, no prod invoice", async () => {
+    const s = await seedSale({ clientOrderId: "b2b-prod-unsigned", configureFirst: false });
+    await withTenant(s.tenantId, (tx) => tx.update(etaTenantConfig).set({ environment: "prod" })
+      .where(eq(etaTenantConfig.tenantId, s.tenantId)));
+    await enqueueInvoice(s.tenantId, s.receipt.orderId);
+
+    const error = await finalizeSubmissionRow(s.tenantId, (await invoiceRowsFor(s.tenantId))[0].id).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(EtaConfigError);
+    expect((error as EtaConfigError).code).toBe("invoice-signer-required");
+    const [row] = await invoiceRowsFor(s.tenantId);
+    expect(Object.keys(row.requestJson)).not.toContain("invoiceLines");
+  });
+
   it("fails a signed tenant permanently when the seal material is unusable, never downgrading to v0.9", async () => {
-    process.env[SIGNING_KEY_ENV] = "this is not a PEM bundle";
-    try {
-      const s = await seedSale({ clientOrderId: "b2b-badseal", configureFirst: false, signingKeyRef: `env://${SIGNING_KEY_ENV}` });
+    {
+      const s = await seedSale({ clientOrderId: "b2b-badseal", configureFirst: false, signingKey: "this is not a PEM bundle" });
       await enqueueInvoice(s.tenantId, s.receipt.orderId);
 
       const error = await finalizeSubmissionRow(s.tenantId, (await invoiceRowsFor(s.tenantId))[0].id).catch((e: unknown) => e);
@@ -1699,8 +2099,6 @@ describe("B2B e_invoice — the worker's submit/poll path", () => {
       // unsigned document the tenant did not ask for.
       const [row] = await invoiceRowsFor(s.tenantId);
       expect(Object.keys(row.requestJson)).not.toContain("invoiceLines");
-    } finally {
-      delete process.env[SIGNING_KEY_ENV];
     }
   });
 

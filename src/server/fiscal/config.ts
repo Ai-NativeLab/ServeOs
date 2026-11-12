@@ -1,8 +1,60 @@
 import { eq, and } from "drizzle-orm";
-import { withTenant } from "@/db/with-tenant";
+import { withTenant, type Tx } from "@/db/with-tenant";
+import { tenants } from "@/server/tenancy/schema";
 import { etaTenantConfig, etaPosCredentials } from "./schema";
 import { EtaConfigError } from "./eta-transport-errors";
 import type { EtaConfig, EtaDeviceCredentials } from "./provider";
+
+/**
+ * THE TENANT-BOUND REF NAMESPACE.
+ *
+ * A ref names an environment variable, and the process environment is shared by
+ * EVERY tenant and by the rest of the app — `DATABASE_URL`, `RESEND_API_KEY`,
+ * another tenant's ETA secrets. Unrestricted, a ref saved by one tenant's
+ * fiscal manager could point at any of those, and the worker would read it and
+ * send it to ETA as a client secret or pre-shared key. So a ref may only name a
+ * key in its OWN tenant's namespace:
+ *
+ *     env://ETA_<TENANT>__<NAME>
+ *
+ * `<TENANT>` is the tenant's slug upper-cased with `-` -> `_` (slugs are the
+ * immutable subdomain, `[a-z0-9-]`); `<NAME>` is one or more `[A-Z0-9]` words
+ * joined by SINGLE underscores, e.g. `CLIENT_SECRET`, `POS1_SECRET_1`.
+ *
+ * THE DOUBLE UNDERSCORE IS WHAT MAKES IT UNAMBIGUOUS. Slug `acme` owns
+ * `ETA_ACME__…`; slug `acme--x` owns `ETA_ACME__X__…`. Because `<NAME>` may not
+ * contain `__`, `ETA_ACME__X__CLIENT_SECRET` parses for `acme` only as NAME
+ * `X__CLIENT_SECRET`, which is refused — no tenant can name a key in another
+ * tenant's namespace, whichever slug is a prefix of which.
+ *
+ * Enforced on BOTH sides: the config service refuses to SAVE an out-of-namespace
+ * ref (a form error naming the required prefix), and `resolveSecretRef` refuses
+ * to RESOLVE one (a row written before this rule, or by some other path), so the
+ * secret is never read, let alone sent.
+ */
+export function etaSecretKeyPrefix(tenantSlug: string): string {
+  return `ETA_${tenantSlug.toUpperCase().replace(/-/g, "_")}__`;
+}
+
+/** The `env://` form of `etaSecretKeyPrefix` — what an operator types. */
+export function etaSecretRefPrefix(tenantSlug: string): string {
+  return `env://${etaSecretKeyPrefix(tenantSlug)}`;
+}
+
+const SECRET_NAME_RE = /^[A-Z0-9]+(?:_[A-Z0-9]+)*$/;
+
+/** The env KEY a ref names, with or without the `env://` scheme (legacy rows
+ *  were stored bare). */
+function refKey(ref: string): string {
+  return ref.startsWith("env://") ? ref.slice("env://".length) : ref;
+}
+
+/** Whether `ref` names a key inside `tenantSlug`'s namespace. */
+export function isTenantBoundSecretRef(ref: string, tenantSlug: string): boolean {
+  const key = refKey(ref);
+  const prefix = etaSecretKeyPrefix(tenantSlug);
+  return key.startsWith(prefix) && SECRET_NAME_RE.test(key.slice(prefix.length));
+}
 
 /**
  * Turns a secret REFERENCE into the secret.
@@ -14,22 +66,31 @@ import type { EtaConfig, EtaDeviceCredentials } from "./provider";
  * the secret lives; only this function ever holds the value.
  *
  * Two spellings are accepted, matching `src/server/whatsapp/secrets.ts`'s
- * `resolveToken`: `env://ETA_SECRET_ACME` and the bare `ETA_SECRET_ACME`. Both
- * resolve against `process.env`. The env-backed implementation is the
- * local/dev/deploy path; pointing this at a real secret manager is a change to
- * this one function.
+ * `resolveToken`: `env://ETA_ACME__CLIENT_SECRET` and the bare key. Both
+ * resolve against `process.env` — and only inside the tenant's own namespace
+ * (see `etaSecretKeyPrefix`): a ref naming anything else is refused BEFORE the
+ * environment is read. The env-backed implementation is the local/dev/deploy
+ * path; pointing this at a real secret manager is a change to this one
+ * function.
  *
  * A ref that is PRESENT but unresolvable is an `EtaConfigError`, never a
  * silent `null` secret: a config row that says "my secret is in
- * ETA_SECRET_ACME" while that variable is unset is a broken deployment, and
- * the failure that says so is worth vastly more than a token request that
+ * ETA_ACME__CLIENT_SECRET" while that variable is unset is a broken deployment,
+ * and the failure that says so is worth vastly more than a token request that
  * comes back `invalid_clientsecret` an hour later.
  *
  * The thrown message names the ENV KEY, which is not itself a secret, and
  * never the value.
  */
-function resolveSecretRef(ref: string, column: string): string {
-  const key = ref.startsWith("env://") ? ref.slice("env://".length) : ref;
+function resolveSecretRef(ref: string, column: string, tenantSlug: string): string {
+  const key = refKey(ref);
+  if (!isTenantBoundSecretRef(ref, tenantSlug)) {
+    throw new EtaConfigError(
+      "secret-ref-out-of-namespace",
+      `fiscal: ${column} names an env key outside this tenant's namespace — ETA credential refs must have the form ` +
+        `${etaSecretRefPrefix(tenantSlug)}<NAME>. It was not read. Re-save the credential under that prefix.`,
+    );
+  }
   const value = process.env[key];
   if (!value) {
     throw new EtaConfigError(
@@ -43,8 +104,8 @@ function resolveSecretRef(ref: string, column: string): string {
 
 /** `resolveSecretRef` for a nullable ref column: null in, null out. A ref that
  *  IS set still has to resolve. */
-function resolveOptionalSecretRef(ref: string | null, column: string): string | null {
-  return ref === null ? null : resolveSecretRef(ref, column);
+function resolveOptionalSecretRef(ref: string | null, column: string, tenantSlug: string): string | null {
+  return ref === null ? null : resolveSecretRef(ref, column, tenantSlug);
 }
 
 /**
@@ -61,8 +122,16 @@ function resolveOptionalSecretRef(ref: string | null, column: string): string | 
  * the receipt path reads it, so resolving eagerly let a stale B2B ref take a
  * tenant's RECEIPTS down with it.
  */
-export function signingKeyThunk(signingKeyRef: string | null): () => string | null {
-  return () => resolveOptionalSecretRef(signingKeyRef, "eta_tenant_config.signing_key_ref");
+export function signingKeyThunk(signingKeyRef: string | null, tenantSlug: string): () => string | null {
+  return () => resolveOptionalSecretRef(signingKeyRef, "eta_tenant_config.signing_key_ref", tenantSlug);
+}
+
+/** The tenant's slug — the root of its secret-ref namespace. `tenants` is a
+ *  control table (no RLS), readable on any tenant-scoped transaction. */
+export async function loadTenantSlug(tx: Tx, tenantId: string): Promise<string> {
+  const [tenant] = await tx.select({ slug: tenants.slug }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+  if (!tenant) throw new EtaConfigError("tenant-missing", `fiscal: tenant ${tenantId} does not exist`);
+  return tenant.slug;
 }
 
 /**
@@ -122,6 +191,7 @@ export function signingKeyThunk(signingKeyRef: string | null): () => string | nu
  */
 export async function resolveEtaConfig(tenantId: string, deviceId?: string): Promise<EtaConfig | null> {
   const rows = await withTenant(tenantId, async (tx) => {
+    const tenantSlug = await loadTenantSlug(tx, tenantId);
     const [tenantRow] = await tx
       .select()
       .from(etaTenantConfig)
@@ -130,8 +200,8 @@ export async function resolveEtaConfig(tenantId: string, deviceId?: string): Pro
 
     // Short-circuit before the second query: an inactive tenant has no ETA
     // path at all, so its device credentials are irrelevant.
-    if (!tenantRow || tenantRow.activationStatus !== "active") return { tenantRow: null, deviceRow: null };
-    if (!deviceId) return { tenantRow, deviceRow: null };
+    if (!tenantRow || tenantRow.activationStatus !== "active") return { tenantSlug, tenantRow: null, deviceRow: null };
+    if (!deviceId) return { tenantSlug, tenantRow, deviceRow: null };
 
     const [deviceRow] = await tx
       .select()
@@ -139,10 +209,10 @@ export async function resolveEtaConfig(tenantId: string, deviceId?: string): Pro
       .where(and(eq(etaPosCredentials.tenantId, tenantId), eq(etaPosCredentials.deviceId, deviceId)))
       .limit(1);
 
-    return { tenantRow, deviceRow: deviceRow ?? null };
+    return { tenantSlug, tenantRow, deviceRow: deviceRow ?? null };
   });
 
-  const { tenantRow, deviceRow } = rows;
+  const { tenantSlug, tenantRow, deviceRow } = rows;
   if (!tenantRow) return null;
   if (deviceId && (!deviceRow || deviceRow.status !== "active")) return null;
 
@@ -150,13 +220,13 @@ export async function resolveEtaConfig(tenantId: string, deviceId?: string): Pro
     ? {
         serial: deviceRow.etaSerial,
         clientId: deviceRow.clientId,
-        secret1: resolveSecretRef(deviceRow.clientSecret1Ref, "eta_pos_credentials.client_secret_1_ref"),
-        secret2: resolveSecretRef(deviceRow.clientSecret2Ref, "eta_pos_credentials.client_secret_2_ref"),
+        secret1: resolveSecretRef(deviceRow.clientSecret1Ref, "eta_pos_credentials.client_secret_1_ref", tenantSlug),
+        secret2: resolveSecretRef(deviceRow.clientSecret2Ref, "eta_pos_credentials.client_secret_2_ref", tenantSlug),
         // Nullable by design: how the ETA portal provisions a device's
         // pre-shared key is not publicly documented (see the column's JSDoc).
         // The provider decides what an absent key means at token time — it is
         // not this function's call to make.
-        presharedKey: resolveOptionalSecretRef(deviceRow.presharedKeyRef, "eta_pos_credentials.preshared_key_ref"),
+        presharedKey: resolveOptionalSecretRef(deviceRow.presharedKeyRef, "eta_pos_credentials.preshared_key_ref", tenantSlug),
         osVersion: deviceRow.posOsVersion,
         modelFramework: deviceRow.posModelFramework,
       }
@@ -196,7 +266,7 @@ export async function resolveEtaConfig(tenantId: string, deviceId?: string): Pro
        * resolved value must never be logged, persisted or returned to a
        * client.
        */
-      clientSecret: () => resolveSecretRef(clientSecretRef, "eta_tenant_config.client_secret_ref"),
+      clientSecret: () => resolveSecretRef(clientSecretRef, "eta_tenant_config.client_secret_ref", tenantSlug),
     },
     device,
     /**
@@ -212,6 +282,6 @@ export async function resolveEtaConfig(tenantId: string, deviceId?: string): Pro
      * `null` (no signing material configured) stays a value, not a throw: it is
      * the ordinary state of a receipt-only tenant.
      */
-    signingKey: signingKeyThunk(signingKeyRef),
+    signingKey: signingKeyThunk(signingKeyRef, tenantSlug),
   };
 }

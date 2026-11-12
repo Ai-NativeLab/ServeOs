@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { drainEtaSubmissions } from "@/server/fiscal/worker";
 
+/**
+ * Explicit, not the platform default: the drain's own pass budget
+ * (`DRAIN_BUDGET_MS`, 240s) is sized to stop starting work 60s — one ETA call's
+ * timeout — before this limit, so an in-flight submission finishes rather than
+ * being killed between ETA accepting it and the row recording that it did.
+ */
+export const maxDuration = 300;
+
 // The schedule this route is registered under in vercel.json. Written as a line
 // comment because the cron literal contains the characters that close a block
 // comment: */15 * * * *

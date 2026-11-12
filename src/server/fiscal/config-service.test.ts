@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
@@ -73,26 +73,34 @@ import {
 // Fixtures
 // ---------------------------------------------------------------------------
 
+/**
+ * Refs are TENANT-BOUND (`etaSecretKeyPrefix` in ./config): each must name a key
+ * in its own tenant's `ETA_<SLUG>__` namespace, on save and on resolve. So the
+ * tenant every test saves credentials for is given the slug `NAMESPACE_SLUG`
+ * (`claimNamespace`), which puts the sentinels below in its namespace.
+ */
+const NAMESPACE_SLUG = "zz-fiscal";
+
 /** The strings stored in the `*_ref` columns. Deliberately unlike any field
  *  NAME the service is allowed to emit ("clientSecretRef" in `changedFields` is
  *  fine; the value below is not), so the deep scan cannot false-positive. */
 const REFS = {
-  erp: "env://ZZ_ETA_ERP_SECRET_SENTINEL",
-  signing: "env://ZZ_ETA_SIGNING_SENTINEL",
-  secret1: "env://ZZ_ETA_DEVICE_S1_SENTINEL",
-  secret2: "env://ZZ_ETA_DEVICE_S2_SENTINEL",
-  psk: "env://ZZ_ETA_DEVICE_PSK_SENTINEL",
+  erp: "env://ETA_ZZ_FISCAL__ERP_SECRET_SENTINEL",
+  signing: "env://ETA_ZZ_FISCAL__SIGNING_SENTINEL",
+  secret1: "env://ETA_ZZ_FISCAL__DEVICE_S1_SENTINEL",
+  secret2: "env://ETA_ZZ_FISCAL__DEVICE_S2_SENTINEL",
+  psk: "env://ETA_ZZ_FISCAL__DEVICE_PSK_SENTINEL",
 } as const;
 
 /** The secrets those references resolve to. Present in `process.env` so
  *  `resolveEtaConfig` can be asked, at the end of this file, to prove the refs
  *  really do point at live credentials the masked views never showed. */
 const SECRET_VALUES = {
-  "ZZ_ETA_ERP_SECRET_SENTINEL": "erp-secret-value-zzz",
-  "ZZ_ETA_SIGNING_SENTINEL": "signing-key-value-zzz",
-  "ZZ_ETA_DEVICE_S1_SENTINEL": "device-secret-1-value-zzz",
-  "ZZ_ETA_DEVICE_S2_SENTINEL": "device-secret-2-value-zzz",
-  "ZZ_ETA_DEVICE_PSK_SENTINEL": "device-psk-value-zzz",
+  "ETA_ZZ_FISCAL__ERP_SECRET_SENTINEL": "erp-secret-value-zzz",
+  "ETA_ZZ_FISCAL__SIGNING_SENTINEL": "signing-key-value-zzz",
+  "ETA_ZZ_FISCAL__DEVICE_S1_SENTINEL": "device-secret-1-value-zzz",
+  "ETA_ZZ_FISCAL__DEVICE_S2_SENTINEL": "device-secret-2-value-zzz",
+  "ETA_ZZ_FISCAL__DEVICE_PSK_SENTINEL": "device-psk-value-zzz",
 } as const;
 
 /** Everything that must never appear in a response: the references AND the
@@ -104,8 +112,8 @@ const FORBIDDEN = [...Object.values(REFS), ...Object.values(SECRET_VALUES)];
  * difference between the two sets is the AUDIENCE, not an inconsistency.
  *
  * `FORBIDDEN` above deliberately excludes the bare env KEY name: a ref is stored
- * `env://KEY`, so `"env://ZZ_ETA_ERP_SECRET_SENTINEL"` does not substring-match
- * a message that says `"...points at env key ZZ_ETA_ERP_SECRET_SENTINEL..."`,
+ * `env://KEY`, so `"env://ETA_ZZ_FISCAL__ERP_SECRET_SENTINEL"` does not substring-match
+ * a message that says `"...points at env key ETA_ZZ_FISCAL__ERP_SECRET_SENTINEL..."`,
  * and that pass is intentional. `resolveSecretRef` names the key on purpose
  * ("the ENV KEY, which is not itself a secret, and never the value") because an
  * owner staring at a failed receipt needs to know which variable is unset. The
@@ -151,13 +159,29 @@ const WIRE_CONTEXT: EtaWireContextConfig = {
 };
 
 let n = 0;
+let namespaceClaimed = false;
+
+beforeEach(() => {
+  namespaceClaimed = false;
+});
+
+/** Renames the test's FIRST tenant to `NAMESPACE_SLUG`, so the sentinel refs
+ *  are inside its namespace. Later tenants in the same test keep their slugs —
+ *  and so cannot use those refs, which is the point of the namespace. */
+async function claimNamespace(tenantId: string) {
+  if (namespaceClaimed) return;
+  namespaceClaimed = true;
+  await db.update(tenants).set({ slug: NAMESPACE_SLUG }).where(eq(tenants.id, tenantId));
+}
 
 async function makeTenant(country = "EG") {
   const [tenant] = await db
     .insert(tenants)
     .values({ slug: `fiscal-cfg-${n++}`, name: "Fiscal Co", country })
     .returning();
-  return tenant;
+  await claimNamespace(tenant.id);
+  const [current] = await db.select().from(tenants).where(eq(tenants.id, tenant.id));
+  return current;
 }
 
 async function makeBranch(tenantId: string) {
@@ -489,7 +513,7 @@ describe("masking — no *Ref value ever leaves this service", () => {
     // (config.ts), verbatim in shape, which is what the worker actually parks
     // in `lastError` when a credential reference will not resolve.
     const realisticLastError =
-      "fiscal: eta_tenant_config.client_secret_ref points at env key ZZ_ETA_ERP_SECRET_SENTINEL, " +
+      "fiscal: eta_tenant_config.client_secret_ref points at env key ETA_ZZ_FISCAL__ERP_SECRET_SENTINEL, " +
       "which is unset or empty — the ETA credential cannot be assembled. " +
       "Set it in the deployment's environment.";
 
@@ -580,7 +604,7 @@ describe("masking — no *Ref value ever leaves this service", () => {
 
     /**
      * DELIBERATE SCOPE, stated so a later reader does not "tighten" it by
-     * accident. The message above names the env KEY (`ZZ_ETA_ERP_SECRET_SENTINEL`)
+     * accident. The message above names the env KEY (`ETA_ZZ_FISCAL__ERP_SECRET_SENTINEL`)
      * and the walk passes it. That is by design, not an oversight:
      * `resolveSecretRef` documents the stance explicitly — "The thrown message
      * names the ENV KEY, which is not itself a secret, and never the value" —
@@ -602,7 +626,7 @@ describe("masking — no *Ref value ever leaves this service", () => {
      * reason. That is what turns the assertion above from an accident of format
      * into a property of the data.
      */
-    expect(one!.lastError).toContain("ZZ_ETA_ERP_SECRET_SENTINEL");
+    expect(one!.lastError).toContain("ETA_ZZ_FISCAL__ERP_SECRET_SENTINEL");
 
     // NON-VACUITY FOR THE SIDE-EFFECT VIEW (round 2, Task 8). The seeded email
     // failure really does reach the walked payload, and it reaches it INSIDE the
@@ -620,7 +644,7 @@ describe("masking — no *Ref value ever leaves this service", () => {
       // The widened surface's own planted case: `etaLongId` is server-assigned
       // text and the one new string a B2B read can hand back.
       ["getSaleFiscalStatus (e_invoice)", { ...invoiceStatus, etaLongId: REFS.erp }],
-      ["getSubmissionById", { ...one, lastError: SECRET_VALUES.ZZ_ETA_DEVICE_S1_SENTINEL }],
+      ["getSubmissionById", { ...one, lastError: SECRET_VALUES.ETA_ZZ_FISCAL__DEVICE_S1_SENTINEL }],
       // The email failure text round 2 Task 7 added to this surface, now reached
       // through the named state round 2 Task 8 wrapped it in. It is worker-written
       // free text exactly as `lastError` is, so it is exactly as capable of
@@ -634,7 +658,7 @@ describe("masking — no *Ref value ever leaves this service", () => {
         rows: [{ ...submissions.rows[0], sideEffects: { ...submissions.rows[0].sideEffects, email: { kind: "failed", error: REFS.signing } } }],
       }],
       ["getSubmissionById (email state)", {
-        ...one, sideEffects: { ...one!.sideEffects, email: { kind: "failed", error: SECRET_VALUES.ZZ_ETA_SIGNING_SENTINEL } },
+        ...one, sideEffects: { ...one!.sideEffects, email: { kind: "failed", error: SECRET_VALUES.ETA_ZZ_FISCAL__SIGNING_SENTINEL } },
       }],
       ["listFiscalDevices", [{ ...fiscalDevices[0], label: REFS.psk }]],
     ];
@@ -645,7 +669,7 @@ describe("masking — no *Ref value ever leaves this service", () => {
     // The token surface's own liveness, on both families and under its own set.
     for (const [what, payload] of [
       ["getSaleFiscalStatusByToken", { ...tokenStatus, qrPayload: REFS.erp }],
-      ["getSaleFiscalStatusByToken (e_invoice)", { ...tokenInvoice, etaLongId: SECRET_VALUES.ZZ_ETA_SIGNING_SENTINEL }],
+      ["getSaleFiscalStatusByToken (e_invoice)", { ...tokenInvoice, etaLongId: SECRET_VALUES.ETA_ZZ_FISCAL__SIGNING_SENTINEL }],
     ] as [string, unknown][]) {
       expect(() => expectNoRefValues(payload, what, TOKEN_FORBIDDEN), `${what}'s walk did not catch a planted reference`).toThrow();
     }
@@ -656,7 +680,7 @@ describe("masking — no *Ref value ever leaves this service", () => {
     // rather than asserted in prose. If someone later folds the bare keys into
     // `FORBIDDEN` wholesale, the second line here fails and points at the
     // `resolveSecretRef` stance they would be overturning by accident.
-    const bareKeyLeak = { ...tokenStatus, etaLongId: "ZZ_ETA_ERP_SECRET_SENTINEL" };
+    const bareKeyLeak = { ...tokenStatus, etaLongId: "ETA_ZZ_FISCAL__ERP_SECRET_SENTINEL" };
     expect(
       () => expectNoRefValues(bareKeyLeak, "token surface", TOKEN_FORBIDDEN),
       "the token surface's stricter set did not catch a bare env key",
@@ -712,7 +736,7 @@ describe("masking — no *Ref value ever leaves this service", () => {
         { id: order.id, docType: "e_receipt", etaUuid: null, etaLongId: null, qrPayload: REFS.erp },
         orderView, tenantView)],
       ["email via etaLongId", renderFiscalDocumentEmail(
-        { id: order.id, docType: "e_invoice", etaUuid: null, etaLongId: SECRET_VALUES.ZZ_ETA_SIGNING_SENTINEL, qrPayload: null },
+        { id: order.id, docType: "e_invoice", etaUuid: null, etaLongId: SECRET_VALUES.ETA_ZZ_FISCAL__SIGNING_SENTINEL, qrPayload: null },
         orderView, tenantView)],
       ["email via subject", renderFiscalDocumentEmail(
         { id: order.id, docType: "e_receipt", etaUuid: null, etaLongId: null, qrPayload: null },
@@ -729,7 +753,7 @@ describe("masking — no *Ref value ever leaves this service", () => {
     // body fails this walk and PASSES the dashboard's. An email is forwarded; a
     // deployment's variable names must not ride along with it.
     const bareKeyMail = renderFiscalDocumentEmail(
-      { id: order.id, docType: "e_invoice", etaUuid: null, etaLongId: "ZZ_ETA_ERP_SECRET_SENTINEL", qrPayload: null },
+      { id: order.id, docType: "e_invoice", etaUuid: null, etaLongId: "ETA_ZZ_FISCAL__ERP_SECRET_SENTINEL", qrPayload: null },
       orderView, tenantView);
     expect(
       () => expectNoRefValues(bareKeyMail, "customer email", TOKEN_FORBIDDEN),
@@ -777,11 +801,33 @@ describe("masking — no *Ref value ever leaves this service", () => {
     // row would exist.
     await withTenant(t.id, (tx) =>
       tx.update(etaTenantConfig)
-        .set({ clientSecretRef: "ZZ_ETA_ERP_SECRET_SENTINEL", activationStatus: "active" })
+        .set({ clientSecretRef: "ETA_ZZ_FISCAL__ERP_SECRET_SENTINEL", activationStatus: "active" })
         .where(eq(etaTenantConfig.tenantId, t.id)),
     );
     const resolved = await resolveEtaConfig(t.id);
-    expect(resolved!.erp.clientSecret()).toBe(SECRET_VALUES.ZZ_ETA_ERP_SECRET_SENTINEL);
+    expect(resolved!.erp.clientSecret()).toBe(SECRET_VALUES.ETA_ZZ_FISCAL__ERP_SECRET_SENTINEL);
+  });
+
+  it("refuses, on save, a ref naming any env key outside the tenant's own namespace", async () => {
+    const t = await makeTenant();
+    const device = await makeDevice(t.id, "till");
+    const foreign = ["env://DATABASE_URL", "env://RESEND_API_KEY", "env://ETA_SOMEONE_ELSE__CLIENT_SECRET", "env://ETA_ZZ_FISCAL__X__NESTED"];
+    for (const ref of foreign) {
+      await expectRejected(() => updateFiscalConfig(t.id, validConfig({ clientSecretRef: ref })), {
+        path: "clientSecretRef", match: /env:\/\/ETA_ZZ_FISCAL__<NAME>/,
+      });
+      await expectRejected(() => updateFiscalConfig(t.id, validConfig({ signingKeyRef: ref })), { path: "signingKeyRef" });
+    }
+    await updateFiscalConfig(t.id, validConfig());
+    for (const field of ["clientSecret1Ref", "clientSecret2Ref", "presharedKeyRef"] as const) {
+      await expectRejected(
+        () => upsertDeviceCredential(t.id, device.id, validCredential({ [field]: "env://DATABASE_URL" })),
+        { path: field, match: /namespace/ },
+      );
+    }
+    // A second tenant cannot save the FIRST tenant's refs either.
+    const other = await makeTenant();
+    await expectRejected(() => updateFiscalConfig(other.id, validConfig()), { path: "clientSecretRef", match: /namespace/ });
   });
 
   it("stores the references verbatim — the masking is a read-side guarantee, not a lossy write", async () => {
@@ -794,11 +840,11 @@ describe("masking — no *Ref value ever leaves this service", () => {
     // live credentials for the submission path.
     const resolved = await resolveEtaConfig(t.id, device.id);
     expect(resolved).not.toBeNull();
-    expect(resolved!.erp.clientSecret()).toBe(SECRET_VALUES.ZZ_ETA_ERP_SECRET_SENTINEL);
-    expect(resolved!.signingKey()).toBe(SECRET_VALUES.ZZ_ETA_SIGNING_SENTINEL);
-    expect(resolved!.device!.secret1).toBe(SECRET_VALUES.ZZ_ETA_DEVICE_S1_SENTINEL);
-    expect(resolved!.device!.secret2).toBe(SECRET_VALUES.ZZ_ETA_DEVICE_S2_SENTINEL);
-    expect(resolved!.device!.presharedKey).toBe(SECRET_VALUES.ZZ_ETA_DEVICE_PSK_SENTINEL);
+    expect(resolved!.erp.clientSecret()).toBe(SECRET_VALUES.ETA_ZZ_FISCAL__ERP_SECRET_SENTINEL);
+    expect(resolved!.signingKey()).toBe(SECRET_VALUES.ETA_ZZ_FISCAL__SIGNING_SENTINEL);
+    expect(resolved!.device!.secret1).toBe(SECRET_VALUES.ETA_ZZ_FISCAL__DEVICE_S1_SENTINEL);
+    expect(resolved!.device!.secret2).toBe(SECRET_VALUES.ETA_ZZ_FISCAL__DEVICE_S2_SENTINEL);
+    expect(resolved!.device!.presharedKey).toBe(SECRET_VALUES.ETA_ZZ_FISCAL__DEVICE_PSK_SENTINEL);
   });
 });
 
@@ -812,7 +858,7 @@ describe("audit", () => {
     const device = await makeDevice(t.id, "till");
 
     await updateFiscalConfig(t.id, validConfig());
-    await updateFiscalConfig(t.id, validConfig({ clientSecretRef: "env://ZZ_ROTATED", environment: "prod" }));
+    await updateFiscalConfig(t.id, validConfig({ clientSecretRef: "env://ETA_ZZ_FISCAL__ROTATED", environment: "prod" }));
     await upsertDeviceCredential(t.id, device.id, validCredential());
     await upsertDeviceCredential(t.id, device.id, validCredential({ status: "active" }));
 
@@ -1110,6 +1156,7 @@ describe("RLS", () => {
  *  production path) or leaves it pending and unfinalized. */
 async function seedSale(opts: { configureFirst: boolean }) {
   const s = await seedPosContext("owner");
+  await claimNamespace(s.tenantId);
   await openShiftForCtx(s.ctx);
   await withTenant(s.tenantId, (tx) =>
     tx.insert(productTaxCodes).values({

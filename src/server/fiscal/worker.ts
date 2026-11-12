@@ -1,4 +1,4 @@
-import { and, eq, isNull, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, sql, type SQL } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { tenants } from "@/server/tenancy/schema";
@@ -9,11 +9,11 @@ import type { EtaDocType, EtaSubmissionStatus } from "./schema";
 import { resolveEtaConfig } from "./config";
 import { resolveFiscalProvider } from "./index";
 import type { EtaConfig, FinalizedFiscalDocument, FiscalProvider, FiscalSubmitResult } from "./provider";
-import { FiscalDocumentError } from "./errors";
+import { FiscalDocumentError, redactedErrorSummary } from "./errors";
 import { EtaConfigError, EtaTransportError } from "./eta-transport-errors";
 import type { EmailProvider } from "@/server/email/provider";
 import { FISCAL_AUDIT_ACTIONS, recordFiscalAudit, notifyFiscalFailure } from "./effects";
-import { SUBMISSION_WINDOW_MS, isReceiptSubmissionWindowFamily } from "./constants";
+import { SUBMISSION_MAX_ATTEMPTS, SUBMISSION_WINDOW_MS, isReceiptSubmissionWindowFamily } from "./constants";
 import { deliverFiscalDocumentEmail } from "./customer-email";
 import { finalizeSubmissionRow, reconcileMissingReceipts } from "./finalize";
 import { parseWire } from "./parse-wire";
@@ -36,14 +36,19 @@ import { parseWire } from "./parse-wire";
  * The attempt cap. Six retries on the schedule below span ~31 minutes (the 6th backoff is written but never served — the claim excludes attempts >= MAX_ATTEMPTS)
  * of transient failure before a row is parked for a human.
  *
- * It is also the guard on ONE genuinely non-idempotent retry: `submit` throws
- * when ETA returns a 202 it cannot parse, and re-POSTing that document is only
- * safe inside ETA's ~10-minute duplicate-submission window (see the long note
- * on that throw in `eta-provider.ts`). The cap plus the 422 `DuplicateSubmission`
- * response — which arrives as a retryable `EtaTransportError` carrying
- * `retryAfterSeconds` — is what keeps that bounded.
+ * A retry of a POST that MAY have reached ETA (a timeout after the send, a 202
+ * with no submissionUUID) is not left to ETA's ~10-minute payload dedupe, which
+ * every backoff past the first outlives: `markDispatched` stamps `submitted_at`
+ * before the request leaves, and a receipt carrying that stamp is looked up by
+ * its uuid before it is re-sent (`submitPhase`). A duplicate refusal is settled
+ * from ETA's record, never as a rejection. Invoices have no uuid to look up and
+ * still lean on the dedupe — see the note on the invoice-path throw.
+ *
+ * ONLY SUBMISSION failures count. A row ETA already holds (it has a
+ * submissionUuid) never spends an attempt on a failed poll — see
+ * `failTransiently`.
  */
-export const MAX_ATTEMPTS = 6;
+export const MAX_ATTEMPTS = SUBMISSION_MAX_ATTEMPTS;
 
 /** Same base and shape as the notifications outbox: `2 ** attempts * base`. */
 const BACKOFF_BASE_MS = 30 * 1000;
@@ -52,6 +57,12 @@ const BACKOFF_BASE_MS = 30 * 1000;
  *  Not a backoff — nothing failed — so it does not grow and does not consume
  *  an attempt. */
 const POLL_INTERVAL_MS = 60 * 1000;
+
+/** How long a row ETA already holds waits after a FAILED poll. Fixed rather
+ *  than exponential because it consumes no attempt (see `failTransiently`):
+ *  long enough not to hammer an ETA that is down, short enough that a verdict
+ *  is picked up within a few cron ticks of ETA recovering. */
+const POLL_RETRY_BACKOFF_MS = 5 * 60 * 1000;
 
 // ETA's 24-hour submission window lives in `./constants` as
 // `SUBMISSION_WINDOW_MS` rather than here, even though the retry arithmetic
@@ -115,7 +126,14 @@ const POLL_INTERVAL_MS = 60 * 1000;
  *
  * Push the lease (or the timeout) past ~10 minutes and that guarantee is gone:
  * the re-POST lands outside ETA's dedupe and files a SECOND legal document for
- * one sale. There is no cheap way to unfile one.
+ * one sale. There is no cheap way to unfile one. (For a receipt the dispatch
+ * stamp + lookup in `submitPhase` is a second line; for an invoice it is the
+ * only one.)
+ *
+ * THE LEASE IS ALSO A FENCING TOKEN. The claim returns the `next_attempt_at` it
+ * wrote, and every write the drain makes requires the row to still carry it
+ * (`heldBy`), so the drain that LOST the lease cannot write over the one that
+ * re-claimed the row — no re-submit, no accepted -> rejected regression.
  */
 const CLAIM_LEASE_MS = 5 * 60 * 1000;
 
@@ -160,6 +178,25 @@ type ClaimedRow = {
    *  `IS NULL` predicate is what decides. Same raw-path caveat as `createdAt`;
    *  never parsed, only tested for presence. */
   lateNotifiedAt: string | null;
+  /** The self-computed uuid, when the row was already finalized at claim time.
+   *  Read by the poll phase's already-filed check; never trusted for submit,
+   *  which re-reads the persisted document. */
+  etaUuid: string | null;
+  /**
+   * When a submission POST for this row was last DISPATCHED — written before the
+   * request leaves (see `markDispatched`). With `submissionUuid` still null it
+   * means "this document MAY be with ETA": a timeout after the send, or a 202
+   * that carried no submissionUUID. Same raw-path caveat as `createdAt`.
+   */
+  submittedAt: string | null;
+  /**
+   * THE LEASE TOKEN: the `next_attempt_at` this drain's claim wrote, as the
+   * database's own text (microseconds intact — a JS `Date` would truncate them
+   * and never compare equal). Every write this drain makes to the row requires
+   * the row to still carry it, so a drain whose lease expired and whose row was
+   * re-claimed by another pass matches nothing — see `heldBy`.
+   */
+  leaseUntil: string;
 };
 
 export type DrainOptions = {
@@ -186,7 +223,36 @@ export type DrainOptions = {
    * constructs one.
    */
   emailProvider?: EmailProvider;
+  /** The whole pass's wall-clock budget — see `DRAIN_BUDGET_MS`. */
+  budgetMs?: number;
+  /** One tenant's share of it — see `TENANT_BUDGET_MS`. */
+  tenantBudgetMs?: number;
+  /** Elapsed-time clock for the two budgets, in ms. Separate from `now`, which
+   *  stamps rows and which tests freeze. */
+  clockMs?: () => number;
 };
+
+/**
+ * THE PASS BUDGET. The route that runs this declares `maxDuration = 300`
+ * (`/api/fiscal/worker`); the pass stops STARTING work at 240s so the one call
+ * that may be in flight — up to `ETA_HTTP_TIMEOUT_MS` (60s) — still finishes
+ * inside the platform's limit instead of being killed mid-write. Rows not reached
+ * are released (`releaseUnprocessed`), never stranded behind a lease.
+ */
+export const DRAIN_BUDGET_MS = 240_000;
+
+/**
+ * ONE TENANT'S SHARE. Without it a single tenant with a slow ETA (each call can
+ * hang for the full 60s timeout) would spend the whole pass on its own 20 rows
+ * and every tenant after it in the list would wait — on every pass, since the
+ * order used to be fixed. With it, a stalled tenant costs at most this much, and
+ * the rotation in `rotateTenants` means the tenant that went last this pass goes
+ * earlier next time.
+ */
+export const TENANT_BUDGET_MS = 60_000;
+
+/** How often the tenant order rotates by one place: the cron cadence. */
+const ROTATION_BUCKET_MS = 15 * 60 * 1000;
 
 export type DrainResult = {
   processed: number;
@@ -206,6 +272,12 @@ export type DrainResult = {
   /** EG tenants passed over entirely because their ETA config is absent or not
    *  active — the onboarding backlog, not an error count. */
   skippedTenants: number;
+  /** Claimed rows handed back unprocessed because a budget ran out — eligible
+   *  again immediately, picked up by the next pass. */
+  released: number;
+  /** EG tenants not reached at all this pass because the pass budget ran out.
+   *  The rotation puts them earlier next pass. */
+  unvisitedTenants: number;
 };
 
 /**
@@ -225,14 +297,30 @@ export type DrainResult = {
 export async function drainEtaSubmissions(opts: DrainOptions = {}): Promise<DrainResult> {
   const limit = opts.limit ?? 20;
   const now = opts.now ?? (() => new Date());
+  const clockMs = opts.clockMs ?? (() => Date.now());
+  const budgetMs = opts.budgetMs ?? DRAIN_BUDGET_MS;
+  const tenantBudgetMs = opts.tenantBudgetMs ?? TENANT_BUDGET_MS;
+  const startedAt = clockMs();
   const result: DrainResult = {
     processed: 0, submitted: 0, accepted: 0, rejected: 0, failed: 0, deferred: 0, reconciled: 0, skippedTenants: 0,
+    released: 0, unvisitedTenants: 0,
   };
 
-  const egTenants = await db.select({ id: tenants.id, country: tenants.country })
-    .from(tenants).where(eq(tenants.country, "EG"));
+  const egTenants = rotateTenants(
+    await db.select({ id: tenants.id, country: tenants.country })
+      .from(tenants).where(eq(tenants.country, "EG")).orderBy(tenants.id),
+    now(),
+  );
 
-  for (const tenant of egTenants) {
+  for (const [index, tenant] of egTenants.entries()) {
+    // The PASS budget, checked before a tenant is started — never before the
+    // first, so every pass makes progress however small the budget.
+    if (index > 0 && clockMs() - startedAt >= budgetMs) {
+      result.unvisitedTenants = egTenants.length - index;
+      break;
+    }
+    const tenantStartedAt = clockMs();
+
     // THE TENANT GATE, hoisted above both the sweep and the claim. An
     // unconfigured or not-yet-activated tenant is not a failure — it is a
     // tenant part-way through ETA onboarding — and there is nothing useful to
@@ -241,9 +329,9 @@ export async function drainEtaSubmissions(opts: DrainOptions = {}): Promise<Drai
     // nobody can drain. One query, no rows claimed, no lease churn.
     //
     // Deliberately covers the reconciliation sweep too: enqueueing rows we then
-    // cannot finalize would log an EtaConfigError per order per pass. Nothing
-    // is lost by waiting — the sweep has no upper age bound, so the moment the
-    // tenant activates it adopts every order it skipped.
+    // cannot finalize would log an EtaConfigError per order per pass. Sales
+    // from BEFORE activation are deliberately not adopted later either — the
+    // sweep is floored at the activation (see `reconcileMissingReceipts`).
     if ((await resolveEtaConfig(tenant.id)) === null) {
       result.skippedTenants++;
       continue;
@@ -256,7 +344,17 @@ export async function drainEtaSubmissions(opts: DrainOptions = {}): Promise<Drai
       result.reconciled += swept.enqueued;
     }
 
-    for (const row of await claim(tenant.id, limit)) {
+    const claimed = await claim(tenant.id, limit);
+    for (const [rowIndex, row] of claimed.entries()) {
+      // THE BUDGETS, per row: this tenant's share and the pass as a whole. The
+      // first row of a tenant always runs, so a tenant reached is a tenant that
+      // moves. Rows not reached are released rather than left to sit out the
+      // lease.
+      const elapsedAt = clockMs();
+      if (rowIndex > 0 && (elapsedAt - tenantStartedAt >= tenantBudgetMs || elapsedAt - startedAt >= budgetMs)) {
+        result.released += await releaseUnprocessed(tenant.id, claimed.slice(rowIndex));
+        break;
+      }
       // BEFORE the row is driven, and OUTSIDE `processRow`'s try/catch, which is
       // the whole placement argument — see `noteLateSubmission`. Whatever it
       // does or fails to do, the row is submitted next exactly as it would have
@@ -273,6 +371,39 @@ export async function drainEtaSubmissions(opts: DrainOptions = {}): Promise<Drai
   }
 
   return result;
+}
+
+/**
+ * The EG tenants in this pass's order: the stable id order, rotated by one place
+ * per cron tick (`ROTATION_BUCKET_MS`). A fixed order meant the same tenants
+ * always went last and were always the ones a budget cut off; rotating spreads
+ * that across every tenant in turn. Deterministic in `now`, so a test can drive
+ * two consecutive ticks and see the order move.
+ */
+function rotateTenants<T>(ordered: T[], at: Date): T[] {
+  if (ordered.length < 2) return ordered;
+  const offset = Math.floor(at.getTime() / ROTATION_BUCKET_MS) % ordered.length;
+  return [...ordered.slice(offset), ...ordered.slice(0, offset)];
+}
+
+/**
+ * Hands claimed-but-unprocessed rows back: their lease is cleared to now(), so
+ * the next pass can claim them at once instead of waiting `CLAIM_LEASE_MS`.
+ * Fenced on each row's own lease, so a row that has since been re-claimed or
+ * written is left alone.
+ */
+async function releaseUnprocessed(tenantId: string, rows: ClaimedRow[]): Promise<number> {
+  let released = 0;
+  await withTenant(tenantId, async (tx) => {
+    for (const row of rows) {
+      const back = await tx.update(etaSubmissions)
+        .set({ nextAttemptAt: sql`now()` })
+        .where(heldBy(tenantId, row, LIVE_STATUSES))
+        .returning({ id: etaSubmissions.id });
+      released += back.length;
+    }
+  });
+  return released;
 }
 
 /**
@@ -325,7 +456,9 @@ async function claim(tenantId: string, limit: number): Promise<ClaimedRow[]> {
           LIMIT ${limit}
        )
       RETURNING id, doc_type AS "docType", status, attempts, submission_uuid AS "submissionUuid",
-                created_at AS "createdAt", late_notified_at AS "lateNotifiedAt"
+                created_at AS "createdAt", late_notified_at AS "lateNotifiedAt",
+                eta_uuid AS "etaUuid", submitted_at AS "submittedAt",
+                next_attempt_at::text AS "leaseUntil"
     `);
     return rows;
   });
@@ -525,20 +658,67 @@ async function submitPhase(
   emailProvider?: EmailProvider,
 ): Promise<RowOutcome> {
   const finalized = await loadFinalized(tenantId, row.id);
+  const receiptUuid = finalized.docType === "e_invoice" ? null : finalized.uuid;
+
+  // MAYBE-SENT: an earlier POST of this row was dispatched and never answered
+  // with a submissionUUID (a timeout after the send, a 202 with no handle). ETA
+  // may hold the document already, and this retry is very likely OUTSIDE its
+  // ~10-minute payload dedupe — so ask before re-POSTing. Receipts only: their
+  // uuid is ours and deterministic, so ETA can be asked about it; an invoice's
+  // uuid is ETA's and does not exist until ETA answers.
+  if (receiptUuid && row.submittedAt && provider.lookupReceipt) {
+    const found = await provider.lookupReceipt(receiptUuid, cfg);
+    if (found) return settleFound(tenantId, row, found, receiptUuid, now, emailProvider);
+  }
+
+  // Recorded BEFORE the request leaves, because after it there may be no
+  // answer to record anything against. Fenced like every other write: a row
+  // another drain has moved on from is not ours to submit.
+  if (!(await markDispatched(tenantId, row, now))) return "deferred";
+
   const result = await provider.submit(finalized, cfg);
 
-  // The plan asked for `submissionUuid` + `submitted` to be written BEFORE the
-  // network call resolved, for crash safety. That ordering is not achievable:
-  // the submissionUUID only exists in ETA's 202 response. The crash window is
-  // instead closed from the other side — `submit` throws on a 202 it cannot
-  // parse, and the retry is idempotent inside ETA's duplicate window; see
-  // MAX_ATTEMPTS above and the long note on that throw in `eta-provider.ts`.
-  if (result.status === "rejected") return persistRejected(tenantId, row, result, now);
+  if (result.status === "rejected") {
+    // A receipt refused as a DUPLICATE was filed — by an earlier attempt of
+    // ours. Never "rejected": that would mark a document ETA holds as refused.
+    if (receiptUuid && looksLikeAlreadyFiled(result.responseJson)) {
+      return settleAlreadyFiled(tenantId, row, provider, cfg, receiptUuid, now, emailProvider);
+    }
+    return persistRejected(tenantId, row, result, now);
+  }
   if (result.status === "accepted") return persistAccepted(tenantId, row, result, now, emailProvider);
   if (result.status !== "submitted") return "deferred"; // "skipped" — a no-op provider wrote nothing.
 
-  await withTenant(tenantId, async (tx) => {
-    await tx.update(etaSubmissions).set({
+  return persistSubmitted(tenantId, row, result, finalized.uuid, now);
+}
+
+/**
+ * Stamps `submitted_at` as the row's DISPATCH marker, before the POST. Returns
+ * false — and the caller sends nothing — when the row is no longer this
+ * drain's to submit (lease lost, status moved, or a handle already recorded).
+ */
+async function markDispatched(tenantId: string, row: ClaimedRow, now: () => Date): Promise<boolean> {
+  const marked = await withTenant(tenantId, (tx) => tx.update(etaSubmissions)
+    .set({ submittedAt: now() })
+    .where(and(heldBy(tenantId, row, SUBMITTABLE), isNull(etaSubmissions.submissionUuid)))
+    .returning({ id: etaSubmissions.id }));
+  return marked.length > 0;
+}
+
+/**
+ * The document is with ETA and has a handle: record it and wait for the poll.
+ *
+ * The plan asked for `submissionUuid` + `submitted` to be written BEFORE the
+ * network call resolved, for crash safety. That ordering is not achievable:
+ * the submissionUUID only exists in ETA's 202 response. The crash window is
+ * instead closed from the other side — `markDispatched` records that a POST
+ * left, and the next attempt looks the receipt up before re-sending it.
+ */
+async function persistSubmitted(
+  tenantId: string, row: ClaimedRow, result: FiscalSubmitResult, documentUuid: string | null, now: () => Date,
+): Promise<RowOutcome> {
+  return withTenant(tenantId, async (tx) => {
+    const written = await tx.update(etaSubmissions).set({
       status: "submitted",
       submissionUuid: result.submissionUuid ?? null,
       submittedAt: now(),
@@ -547,9 +727,7 @@ async function submitPhase(
       // answer arrives in the 202 rather than in the poll; persisting it here is
       // what stops a document that never reaches a terminal verdict from being a
       // row that cannot name what it filed. Spread conditionally so a receipt,
-      // whose uuid was written at finalization and must never move, is untouched
-      // (the receipt path returns its own uuid, so this would be a no-op write
-      // either way — the guard makes that a property rather than a coincidence).
+      // whose uuid was written at finalization and must never move, is untouched.
       ...(row.docType === "e_invoice" && result.etaUuid ? { etaUuid: result.etaUuid } : {}),
       ...(row.docType === "e_invoice" && result.etaLongId ? { etaLongId: result.etaLongId } : {}),
       responseJson: result.responseJson,
@@ -557,18 +735,81 @@ async function submitPhase(
       // Not a backoff — the document is with ETA and the poll phase is simply
       // the next step, so this consumes no attempt.
       nextAttemptAt: new Date(now().getTime() + POLL_INTERVAL_MS),
-    }).where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, row.id)));
+    }).where(and(heldBy(tenantId, row, SUBMITTABLE), isNull(etaSubmissions.submissionUuid)))
+      .returning({ id: etaSubmissions.id });
+
+    // Another drain owns the row now (or recorded a handle first): nothing of
+    // ours to audit.
+    if (written.length === 0) return "deferred" as const;
 
     await recordFiscalAudit(auditActor(tenantId), {
       action: FISCAL_AUDIT_ACTIONS.submitted,
       entityId: row.id,
       summary: `Fiscal ${row.docType} submitted to ETA (submission ${result.submissionUuid})`,
-      metadata: { docType: row.docType, submissionUuid: result.submissionUuid, etaUuid: finalized.uuid },
+      metadata: { docType: row.docType, submissionUuid: result.submissionUuid, etaUuid: documentUuid },
       actorType: "system",
     }, tx);
+    return "submitted" as const; // Not terminal: the verdict comes from a later poll.
   });
+}
 
-  return "submitted"; // Not terminal: the verdict comes from a later poll.
+/**
+ * ETA answered a lookup by uuid with what it holds: settle the row on THAT
+ * answer, never re-POST it. A held document with a handle but no verdict yet
+ * is adopted as submitted, and the poll phase takes it from there.
+ */
+async function settleFound(
+  tenantId: string, row: ClaimedRow, found: FiscalSubmitResult, receiptUuid: string, now: () => Date,
+  emailProvider?: EmailProvider,
+): Promise<RowOutcome> {
+  if (found.status === "accepted") return persistAccepted(tenantId, row, found, now, emailProvider);
+  if (found.status === "rejected") return persistRejected(tenantId, row, found, now);
+  if (found.status === "submitted" && found.submissionUuid) {
+    return persistSubmitted(tenantId, row, found, receiptUuid, now);
+  }
+  throw new EtaTransportError("fiscal: ETA holds this receipt but returned no verdict and no submission handle — looking it up again");
+}
+
+/**
+ * ETA refused a receipt as ALREADY FILED. Look up what it holds and settle on
+ * that; if it is not retrievable yet (ETA lets an issuer read a receipt back
+ * only once it is valid or cancelled, so one still in validation reads as not
+ * found), this is a TRANSIENT failure — the next attempt looks again, and after
+ * the cap a human is told. Never a rejection.
+ */
+async function settleAlreadyFiled(
+  tenantId: string, row: ClaimedRow, provider: FiscalProvider, cfg: EtaConfig, receiptUuid: string,
+  now: () => Date, emailProvider?: EmailProvider,
+): Promise<RowOutcome> {
+  const found = provider.lookupReceipt ? await provider.lookupReceipt(receiptUuid, cfg) : null;
+  if (found && found.status !== "rejected") return settleFound(tenantId, row, found, receiptUuid, now, emailProvider);
+  throw new EtaTransportError(
+    "fiscal: ETA reports this receipt as already filed, but cannot return it yet — it is not marked rejected; " +
+      "the next attempt looks it up again",
+  );
+}
+
+/**
+ * Whether ETA's refusal says the document already EXISTS rather than that it is
+ * wrong. ETA documents no per-document code for this (its 422
+ * `DuplicateSubmission` is the payload-level dedupe and arrives as a transport
+ * error), so this reads the error text conservatively: a false positive only
+ * delays a genuine rejection by a lookup and a retry, while a false negative
+ * would mark a filed receipt rejected.
+ */
+function looksLikeAlreadyFiled(responseJson: Record<string, unknown>): boolean {
+  const texts: string[] = [];
+  const walk = (value: unknown, depth: number): void => {
+    if (depth > 6 || value === null) return;
+    if (Array.isArray(value)) { for (const el of value) walk(el, depth + 1); return; }
+    if (typeof value !== "object") return;
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof child === "string" && /^(code|errorcode|error|message|statusreason|reason)$/i.test(key)) texts.push(child);
+      else walk(child, depth + 1);
+    }
+  };
+  walk(responseJson.rejectedDocuments ?? responseJson.receipts ?? responseJson, 0);
+  return texts.some((text) => /duplicat|already\s+(been\s+)?(submitted|exists?|issued|filed|registered)/i.test(text));
 }
 
 /**
@@ -593,7 +834,15 @@ async function pollPhase(
   const result = await provider.poll(row.submissionUuid!, cfg, row.docType);
 
   if (result.status === "accepted") return persistAccepted(tenantId, row, result, now, emailProvider);
-  if (result.status === "rejected") return persistRejected(tenantId, row, result, now);
+  if (result.status === "rejected") {
+    // A re-POSTed receipt can be refused in async validation precisely BECAUSE
+    // an earlier copy was filed. That is the earlier copy's success, not this
+    // document's rejection — see `settleAlreadyFiled`.
+    if (row.docType !== "e_invoice" && row.etaUuid && looksLikeAlreadyFiled(result.responseJson)) {
+      return settleAlreadyFiled(tenantId, row, provider, cfg, row.etaUuid, now, emailProvider);
+    }
+    return persistRejected(tenantId, row, result, now);
+  }
 
   if (result.status === "submitted") {
     await withTenant(tenantId, (tx) =>
@@ -606,7 +855,7 @@ async function pollPhase(
           responseJson: result.responseJson,
           nextAttemptAt: new Date(now().getTime() + POLL_INTERVAL_MS),
         })
-        .where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, row.id))));
+        .where(heldBy(tenantId, row, LIVE_STATUSES)));
   }
   return "deferred";
 }
@@ -615,8 +864,8 @@ async function persistAccepted(
   tenantId: string, row: ClaimedRow, result: FiscalSubmitResult, now: () => Date,
   emailProvider?: EmailProvider,
 ): Promise<RowOutcome> {
-  await withTenant(tenantId, async (tx) => {
-    await tx.update(etaSubmissions).set({
+  const won = await withTenant(tenantId, async (tx) => {
+    const written = await tx.update(etaSubmissions).set({
       status: "accepted",
       acceptedAt: now(),
       // ETA's own identifier for the accepted document; for the RECEIPT family
@@ -629,7 +878,11 @@ async function persistAccepted(
       ...(result.submissionUuid ? { submissionUuid: result.submissionUuid } : {}),
       responseJson: result.responseJson,
       lastError: null,
-    }).where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, row.id)));
+    }).where(heldBy(tenantId, row, LIVE_STATUSES)).returning({ id: etaSubmissions.id });
+
+    // FENCED: a stale drain (lease lost) or a row already terminal writes
+    // nothing — and then audits nothing and emails nobody.
+    if (written.length === 0) return false;
 
     await recordFiscalAudit(auditActor(tenantId), {
       action: FISCAL_AUDIT_ACTIONS.accepted,
@@ -638,7 +891,9 @@ async function persistAccepted(
       metadata: { docType: row.docType, etaLongId: result.etaLongId ?? null },
       actorType: "system",
     }, tx);
+    return true;
   });
+  if (!won) return "deferred";
 
   // ------------------------------------------------------------------------
   // THE CUSTOMER'S COPY — AFTER the transaction has COMMITTED, and the position
@@ -691,8 +946,8 @@ async function persistRejected(
   tenantId: string, row: ClaimedRow, result: FiscalSubmitResult, now: () => Date,
 ): Promise<RowOutcome> {
   const detail = describeRejection(result.responseJson);
-  await withTenant(tenantId, async (tx) => {
-    await tx.update(etaSubmissions).set({
+  const won = await withTenant(tenantId, async (tx) => {
+    const written = await tx.update(etaSubmissions).set({
       status: "rejected",
       responseJson: result.responseJson,
       lastError: `rejected: ${detail}`,
@@ -703,7 +958,11 @@ async function persistRejected(
       // `accepted` row keeps whatever lease residue it had: harmless, because
       // the claim query filters on status before it ever looks at the clock.)
       nextAttemptAt: now(),
-    }).where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.id, row.id)));
+    }).where(heldBy(tenantId, row, LIVE_STATUSES)).returning({ id: etaSubmissions.id });
+
+    // FENCED — the regression this guards is accepted -> rejected: a stale
+    // drain still holding an old verdict must not overwrite a newer one.
+    if (written.length === 0) return false;
 
     await recordFiscalAudit(auditActor(tenantId), {
       action: FISCAL_AUDIT_ACTIONS.rejected,
@@ -722,8 +981,9 @@ async function persistRejected(
       targets: [{ role: "owner" }],
       channels: ["in_app"],
     }, tx);
+    return true;
   });
-  return "rejected";
+  return won ? "rejected" : "deferred";
 }
 
 /**
@@ -775,8 +1035,7 @@ async function failPermanently(
       // nextAttemptAt: a terminal row waits for nothing — see persistRejected.
       .set({ status: "failed", attempts: MAX_ATTEMPTS, lastError, nextAttemptAt: now() })
       .where(and(
-        eq(etaSubmissions.tenantId, tenantId),
-        eq(etaSubmissions.id, row.id),
+        heldBy(tenantId, row, LIVE_STATUSES),
         lt(etaSubmissions.attempts, MAX_ATTEMPTS),
       ))
       .returning({ id: etaSubmissions.id });
@@ -806,39 +1065,41 @@ async function failPermanently(
   return "failed";
 }
 
-/** `attempts++` and back off, honouring ETA's `Retry-After` as a FLOOR
- *  (APIs Governance: the wait "should be larger then the value returned").
- *  The alert fires on the attempt that reaches the cap — once, because the
- *  claim query then excludes the row. */
+/**
+ * `attempts++` and back off, honouring ETA's `Retry-After` as a FLOOR (APIs
+ * Governance: the wait "should be larger then the value returned"). The alert
+ * fires on the attempt that reaches the cap — once, because the claim query
+ * then excludes the row.
+ *
+ * EXCEPT FOR A ROW ETA ALREADY HOLDS. A row with a `submissionUuid` is in the
+ * poll phase: the document is filed and only the VERDICT is outstanding, so a
+ * transport failure there says nothing about the document and must not walk it
+ * toward a terminal "could not be submitted" alert. It keeps its attempts,
+ * backs off by `POLL_RETRY_BACKOFF_MS` (or longer, if ETA asked), and keeps
+ * polling; the read layer's `overdue` flag is what surfaces one that never
+ * resolves.
+ */
 async function failTransiently(tenantId: string, row: ClaimedRow, err: unknown, now: () => Date): Promise<RowOutcome> {
-  const attempts = row.attempts + 1;
-  const exhausted = attempts >= MAX_ATTEMPTS;
+  const polling = row.submissionUuid !== null;
+  const attempts = polling ? row.attempts : row.attempts + 1;
+  const exhausted = !polling && attempts >= MAX_ATTEMPTS;
   const retryAfterMs = err instanceof EtaTransportError && err.retryAfterSeconds ? err.retryAfterSeconds * 1000 : 0;
-  const backoffMs = Math.max(2 ** attempts * BACKOFF_BASE_MS, retryAfterMs);
-  // UNCAPPED, DELIBERATELY, and the reason is whose text this is. Everything
-  // that reaches here is one of this codebase's own error classes
-  // (`FiscalDocumentError`, `EtaConfigError`, `EtaTransportError`, or a bare
-  // `Error` thrown a few lines from where it is caught), so the message is
-  // bounded by construction and truncating it would be arithmetic nobody needs.
-  // IF A PROVIDER-SHAPED ERROR EVER LANDS IN THIS COLUMN — a raw HTTP client
-  // error, whose message can carry a page-sized HTML body or an echoed request
-  // — cap it the way `customer-email.ts`'s `EMAIL_ERROR_MAX` does, and for the
-  // same reason: that column takes a third party's text, this one does not.
-  const lastError = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  const backoffMs = Math.max(polling ? POLL_RETRY_BACKOFF_MS : 2 ** attempts * BACKOFF_BASE_MS, retryAfterMs);
+  // REDACTED, not raw. This codebase's own error classes keep their (bounded)
+  // text; anything else — a Drizzle error whose message carries the failing
+  // query's parameters, a raw HTTP client error — is reduced to its class name.
+  const lastError = redactedErrorSummary(err);
 
   await withTenant(tenantId, async (tx) => {
-    // Compare-and-set on the attempt count we READ at claim time. Two drains
-    // holding one row (an expired lease) must not both increment it, and at the
-    // cap they must not both alert: whichever writes first moves `attempts` off
-    // the value both read, so the loser's UPDATE matches nothing. Stronger than
-    // guarding the notify alone — it makes the counter itself race-safe, so
-    // "failed 6 times" means six real attempts.
+    // Compare-and-set on the attempt count we READ at claim time, AND on the
+    // lease. Two drains holding one row (an expired lease) must not both
+    // increment it, and at the cap they must not both alert; nor may a stale
+    // drain turn a row another drain has since accepted back into `failed`.
     const advanced = await tx.update(etaSubmissions).set({
       status: "failed", attempts, lastError,
       nextAttemptAt: new Date(now().getTime() + backoffMs),
     }).where(and(
-      eq(etaSubmissions.tenantId, tenantId),
-      eq(etaSubmissions.id, row.id),
+      heldBy(tenantId, row, LIVE_STATUSES),
       eq(etaSubmissions.attempts, row.attempts),
     )).returning({ id: etaSubmissions.id });
 
@@ -866,6 +1127,35 @@ async function failTransiently(tenantId: string, row: ClaimedRow, err: unknown, 
     }
   });
   return "failed";
+}
+
+/** Statuses a drain may still write over: the non-terminal ones. */
+const LIVE_STATUSES: readonly EtaSubmissionStatus[] = ["pending", "failed", "submitted"];
+
+/** Statuses from which a row may be (re)submitted. `submitted` is not one: a
+ *  row with a handle is polled, never re-sent. */
+const SUBMITTABLE: readonly EtaSubmissionStatus[] = ["pending", "failed"];
+
+/**
+ * THE WRITE FENCE every worker write carries: this row, in one of `statuses`,
+ * and STILL CARRYING THIS DRAIN'S LEASE.
+ *
+ * The claim lease is `next_attempt_at`, and it can expire while a call is in
+ * flight (see `CLAIM_LEASE_MS`); another pass then claims the row and writes a
+ * NEW `next_attempt_at`. Requiring the value this drain's claim wrote makes the
+ * stale drain's writes match nothing — it cannot re-submit, cannot regress an
+ * accepted row to rejected or failed, and does not audit or alert. The status
+ * predicate is the second wall: even with the lease intact, a terminal row is
+ * never rewritten. Callers use `.returning()` and treat zero rows as "not
+ * ours any more".
+ */
+function heldBy(tenantId: string, row: ClaimedRow, statuses: readonly EtaSubmissionStatus[]): SQL {
+  return and(
+    eq(etaSubmissions.tenantId, tenantId),
+    eq(etaSubmissions.id, row.id),
+    sql`${etaSubmissions.nextAttemptAt} = ${row.leaseUntil}::timestamptz`,
+    inArray(etaSubmissions.status, [...statuses]),
+  )!;
 }
 
 /**

@@ -45,6 +45,9 @@ const TOKEN_PATH = "/connect/token";
 /** `POST {apiBase}/api/v1/receiptsubmissions` — Submit Receipt Documents. */
 const SUBMIT_PATH = "/api/v1/receiptsubmissions";
 
+/** `GET {apiBase}/api/v1/receipts/{uuid}/details` — Get Receipt Details. */
+const RECEIPTS_PATH = "/api/v1/receipts";
+
 /**
  * `POST {apiBase}/api/v1.0/documentsubmissions/` — Submit Documents, the B2B
  * (eInvoicing) sibling of the receipt endpoint above.
@@ -230,19 +233,13 @@ export class EtaFiscalProvider implements FiscalProvider {
       // Without it there is nothing to poll, so the document would be stranded
       // in "submitted" forever. Treat it as a transport failure and retry.
       //
-      // KNOWN TRADE, and the reason this throw is worth reading twice: a 202
-      // means ETA ACCEPTED the submission. Throwing here loses our handle on
-      // something ETA is already processing, and the retry re-POSTs it. Inside
-      // ETA's duplicate window that is harmless — "identical submission
-      // detected based on the previous submissions sent by the same taxpayer
-      // within the past 10 minutes" comes back as 422 DuplicateSubmission —
-      // but a retry that lands OUTSIDE that ~10-minute window can file a
-      // second copy of a receipt ETA already holds. Task 5 must therefore
-      // choose its attempt cap and backoff knowing that retries of THIS
-      // failure stop being idempotent after roughly ten minutes; the
-      // alternative (swallowing the failure) strands the receipt permanently,
-      // which is worse, so the failure is raised and the caveat documented
-      // rather than silently traded away.
+      // A 202 means ETA ACCEPTED the submission, so throwing here loses our
+      // handle on something ETA is already processing. The retry does NOT
+      // blindly re-POST it: the worker stamped `submitted_at` before this
+      // request left, and a row carrying that stamp with no submissionUUID is
+      // looked up by its uuid (`lookupReceipt`) before anything is re-sent —
+      // ETA's ~10-minute payload dedupe is far shorter than the retry backoff,
+      // so the lookup, not the dedupe, is what keeps this idempotent.
       throw new EtaTransportError("fiscal: ETA returned 202 for a receipt submission with no submissionUUID", {
         status: res.status,
         correlationId: correlationIdOf(res),
@@ -351,6 +348,63 @@ export class EtaFiscalProvider implements FiscalProvider {
   }
 
   /**
+   * Looks one receipt-family document up by its self-computed uuid.
+   *
+   * `GET {apiBase}/api/v1/receipts/{uuid}/details` — Get Receipt Details
+   * (https://sdk.invoicing.eta.gov.eg/ereceiptapi/03-get-receipt-details/). The
+   * uuid is the only input; the 200 body is a `ReceiptDetails` object carrying
+   * `submissionUUID` and a `receipt` summary (`uuid`, `longId`, `status`). The
+   * page enumerates no status values (its example is `valid`) and says "Issuer of
+   * the receipt can retrieve receipt in valid and cancelled status", so:
+   *
+   *   404 (Standard Error Response `NotFound`) -> null: ETA does not hold it
+   *   status valid / cancelled                 -> accepted (see `poll` on why
+   *                                               cancelled is not rejected)
+   *   status invalid                           -> rejected
+   *   anything else WITH a submissionUUID       -> submitted: poll that
+   *   anything else without one                 -> EtaTransportError, never a guess
+   *
+   * Under the DEVICE credential, as every receipt-family call is.
+   */
+  async lookupReceipt(uuid: string, cfg: EtaConfig): Promise<FiscalSubmitResult | null> {
+    const url = `${getEtaEnv(cfg.environment).apiBase}${RECEIPTS_PATH}/${encodeURIComponent(uuid)}/details`;
+    const res = await this.#authedRequest(cfg, url, { method: "GET", headers: {} });
+
+    const body = await readJsonBody(res);
+    if (res.status === 404) return null;
+    if (!res.ok) throw transportErrorFor(res, body, "receipt lookup");
+
+    const json = body.json;
+    if (!json) {
+      throw new EtaTransportError("fiscal: ETA returned 200 for a receipt lookup with no JSON body", {
+        status: res.status,
+        correlationId: correlationIdOf(res),
+      });
+    }
+
+    const responseJson = redactAuthMaterial(json);
+    const receipt = asRecord(json.receipt);
+    const submissionUuid = typeof json.submissionUUID === "string"
+      ? json.submissionUUID
+      : typeof json.submissionUuid === "string" ? json.submissionUuid : null;
+    const status = receipt ? lowerOf(receipt.status) : null;
+    const ids = {
+      ...(submissionUuid ? { submissionUuid } : {}),
+      ...(receipt ? uuidOf(receipt) : {}),
+      ...(receipt && typeof receipt.longId === "string" ? { etaLongId: receipt.longId } : {}),
+    };
+
+    if (status === "valid" || status === "cancelled") return { status: "accepted", ...ids, responseJson };
+    if (status === "invalid") return { status: "rejected", ...ids, responseJson };
+    if (submissionUuid) return { status: "submitted", ...ids, responseJson };
+    throw new EtaTransportError(
+      `fiscal: ETA's receipt lookup returned status ${JSON.stringify(receipt?.status ?? null)} with no submissionUUID — ` +
+        "not mapped rather than guessed",
+      { status: res.status, correlationId: correlationIdOf(res), body: responseJson },
+    );
+  }
+
+  /**
    * Submits ONE B2B invoice through the eInvoicing (ERP) API.
    *
    * Body: `{"documents":[<document>]}` — Submit Documents describes the array as
@@ -415,12 +469,14 @@ export class EtaFiscalProvider implements FiscalProvider {
 
     const submissionUuid = typeof json.submissionUUID === "string" ? json.submissionUUID : null;
     if (!submissionUuid) {
-      // Same trade as the receipt path's identical throw, and MORE acute here:
-      // without a submissionUUID an invoice has no identity at all — not even a
-      // self-computed one — so a stranded row could never be reconciled against
-      // ETA by any means. Raising it keeps the document in the retry loop; see
-      // the long note on the receipt-path throw for the ~10-minute duplicate
-      // window that bounds how long that stays idempotent.
+      // Same throw as the receipt path, but WITHOUT its safety net: a receipt
+      // that may have been sent is looked up by its own uuid before a retry
+      // re-POSTs it, and an invoice has no uuid of its own to look up (ETA
+      // assigns it). So for an invoice the retry still relies on ETA's
+      // ~10-minute payload dedupe, and one landing outside it can file a second
+      // copy. KNOWN GAP: closing it needs a search by internalID, which this
+      // provider does not implement yet. Raising is still better than
+      // swallowing — a stranded invoice row could never be reconciled at all.
       throw new EtaTransportError("fiscal: ETA returned 202 for an invoice submission with no submissionUUID", {
         status: res.status,
         correlationId: correlationIdOf(res),

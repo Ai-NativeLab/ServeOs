@@ -467,6 +467,58 @@ describe("buildReceipt — VAT-inclusive pricing", () => {
   });
 });
 
+describe("buildReceipt — VAT-inclusive DISCOUNTS are netted", () => {
+  // 114.00 VAT-inclusive item, 14.00 (inclusive) item discount, 14% VAT:
+  //   gross after discount 100.00 -> VAT 100 * 14/114 = 12.28 -> netSale 87.72
+  //   net pre-discount price 114.00 / 1.14 = 100.00 -> net discount 12.28
+  const single: Order = {
+    ...order, discountAmount: "0.00", discountReason: null, subtotal: "100.00", serviceChargeAmount: null,
+    deliveryFee: "0.00", vatAmount: "12.28", total: "100.00",
+  };
+  const singleItems = [item({ id: "5a5a5a5a-5a5a-4a5a-8a5a-5a5a5a5a5a5a", productId: PRODUCT_A, unitBasePrice: "114.00", lineTotal: "100.00", discountAmount: "14.00" })];
+  const input = { ...saleInput, order: single, items: singleItems, payments: [payment({ id: "pi", method: "cash", amount: "100.00" })] };
+
+  it("reports a 100.00 net unit price and a 12.28 net discount for a 114.00 item discounted by 14.00", () => {
+    const [line] = buildReceipt(input).lines;
+    expect(line.lineTotal).toBe("87.72");
+    expect(line.discountAmount).toBe("12.28");
+    expect(line.unitPrice).toBe("100.00000");
+  });
+
+  it("unitPrice x quantity equals the NET pre-discount price, with an order discount spread too", () => {
+    // Two lines, qty 2 and 1, item discount on one, plus an order discount —
+    // all VAT-inclusive. Figures as computeOrderTotals would store them.
+    //   A: 114.00 x 2 = 228.00, item discount 28.00 -> lineTotal 200.00
+    //   B:  57.00 x 1 =  57.00                     -> lineTotal  57.00
+    //   order discount 17.13 -> subtotal 239.87; VAT 239.87 * 14/114 = 29.46
+    const spread: Order = {
+      ...order, discountAmount: "17.13", subtotal: "239.87", serviceChargeAmount: null,
+      deliveryFee: "0.00", vatAmount: "29.46", total: "239.87",
+    };
+    const spreadItems = [
+      item({ id: "6a6a6a6a-6a6a-4a6a-8a6a-6a6a6a6a6a6a", productId: PRODUCT_A, unitBasePrice: "114.00", quantity: 2, lineTotal: "200.00", discountAmount: "28.00" }),
+      item({ id: "6b6b6b6b-6b6b-4b6b-8b6b-6b6b6b6b6b6b", productId: PRODUCT_B, unitBasePrice: "57.00", quantity: 1, lineTotal: "57.00" }),
+    ];
+    const doc = buildReceipt({ ...saleInput, order: spread, items: spreadItems, payments: [payment({ id: "ps", method: "cash", amount: "239.87" })] });
+
+    const grossPreDiscount = ["228.00", "57.00"];
+    doc.lines.forEach((line, index) => {
+      const extended = Number(line.unitPrice) * line.quantity;
+      // The net price of what was sold before any discount, to rounding.
+      expect(Math.abs(extended - Number(grossPreDiscount[index]) / 1.14)).toBeLessThanOrEqual(0.011);
+      // And the receipt equation the wire re-checks, exactly.
+      expect(addDecimal("totalSale", line.lineTotal, line.discountAmount)).toBe((Number(line.unitPrice) * line.quantity).toFixed(2));
+    });
+    // Every ETA equation still holds on the wire (toWireReceipt throws if not).
+    expect(stringifyWire(toWireReceipt(doc, wireCtx))).toContain('"totalAmount":239.87');
+  });
+
+  it("leaves an exclusive-priced discount untouched — it is already net", () => {
+    // Item discount 20.00 + its 180/230 share of the 30.00 order discount.
+    expect(buildReceipt(saleInput).lines[0].discountAmount).toBe("43.48");
+  });
+});
+
 describe("buildReceipt — payment method", () => {
   it("maps a cash tender to ETA's 'C'", () => {
     expect(buildReceipt(saleInput).paymentMethodCode).toBe("C");
