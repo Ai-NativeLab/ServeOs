@@ -112,3 +112,31 @@ export function computeEffectivePrice(
     hasDiscount: false,
   };
 }
+
+export type DiscountFields = {
+  salePrice?: number | string | null;
+  discountPercent?: number | null;
+  discountStartsAt?: Date | string | null;
+  discountEndsAt?: Date | string | null;
+};
+
+/** Why these discount fields can't be stored, or null if they can. Mirrors
+ * the products CHECK constraints so the service fails with a readable error
+ * before Postgres does. */
+export function discountFieldsError(f: DiscountFields): string | null {
+  if (f.discountPercent !== null && f.discountPercent !== undefined) {
+    if (!Number.isInteger(f.discountPercent) || f.discountPercent <= 0 || f.discountPercent >= 100) {
+      return "discount percent must be a whole number from 1 to 99";
+    }
+  }
+  if (f.salePrice !== null && f.salePrice !== undefined && f.salePrice !== "") {
+    const sale = Number(f.salePrice);
+    if (!Number.isFinite(sale) || sale <= 0) return "sale price must be greater than 0";
+  }
+  if (f.discountStartsAt && f.discountEndsAt) {
+    const start = new Date(f.discountStartsAt).getTime();
+    const end = new Date(f.discountEndsAt).getTime();
+    if (!(end > start)) return "discount end must be after its start";
+  }
+  return null;
+}
