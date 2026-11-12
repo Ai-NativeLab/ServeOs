@@ -5,7 +5,11 @@ import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { bumpCatalogVersion } from "@/server/catalog/version";
 import { tenants, tenantSettings } from "./schema";
-import { InvalidWhatsappNumberError } from "./errors";
+import { InvalidWhatsappNumberError, InvalidCatalogDisplaySettingsError } from "./errors";
+import {
+  DEFAULT_CATALOG_DISPLAY_MODE, DEFAULT_ITEMS_PER_PAGE, isCatalogDisplayMode, isCatalogItemsPerPage,
+  type CatalogDisplayMode, type CatalogItemsPerPage,
+} from "./catalog-display-values";
 import { getCapabilities } from "@/server/verticals/registry";
 import type { VerticalId } from "@/server/verticals/types";
 import type { CheckoutPricing } from "@/lib/order-totals";
@@ -29,6 +33,11 @@ export type ShiftPolicy = {
   varianceThreshold: number;
 };
 
+export {
+  CATALOG_DISPLAY_MODES, CATALOG_ITEMS_PER_PAGE, isCatalogDisplayMode, isCatalogItemsPerPage,
+  type CatalogDisplayMode, type CatalogItemsPerPage,
+} from "./catalog-display-values";
+
 export type TenantSettingsData = {
   vatRate?: number;
   vatEnabled?: boolean;
@@ -38,6 +47,8 @@ export type TenantSettingsData = {
   upgradeRequest?: { planKey: string; requestedAt: string };
   shiftPolicy?: Partial<ShiftPolicy>;
   allowNegativeStock?: boolean;
+  catalogDisplayMode?: CatalogDisplayMode;
+  itemsPerPage?: number;
 };
 
 const E164_RE = /^\+[1-9]\d{6,14}$/;
@@ -233,4 +244,55 @@ export async function getAllowNegativeStock(tenantId: string): Promise<boolean> 
 /** Pass `null` to clear the override and revert to the vertical default. */
 export async function setAllowNegativeStock(tenantId: string, value: boolean | null): Promise<void> {
   await patchTenantSettings(tenantId, { allowNegativeStock: value ?? undefined });
+}
+
+export type CatalogDisplaySettings = { catalogDisplayMode: CatalogDisplayMode; itemsPerPage: CatalogItemsPerPage };
+
+/** Validated display settings from an already-loaded settings bag. Anything
+ * stored outside the allowed set (a hand-edited row, an old value) falls back
+ * to the default rather than reaching the storefront's pager. */
+export function catalogDisplayFrom(s: TenantSettingsData): CatalogDisplaySettings {
+  return {
+    catalogDisplayMode: isCatalogDisplayMode(s.catalogDisplayMode) ? s.catalogDisplayMode : DEFAULT_CATALOG_DISPLAY_MODE,
+    itemsPerPage: isCatalogItemsPerPage(s.itemsPerPage) ? s.itemsPerPage : DEFAULT_ITEMS_PER_PAGE,
+  };
+}
+
+export async function getCatalogDisplaySettings(tenantId: string): Promise<CatalogDisplaySettings> {
+  return catalogDisplayFrom(await getTenantSettings(tenantId));
+}
+
+export async function setCatalogDisplaySettings(
+  tenantId: string,
+  settings: { catalogDisplayMode?: CatalogDisplayMode; itemsPerPage?: number },
+  audit?: AuditActorInput,
+): Promise<void> {
+  if (settings.catalogDisplayMode !== undefined && !isCatalogDisplayMode(settings.catalogDisplayMode)) {
+    throw new InvalidCatalogDisplaySettingsError(`unknown display mode ${String(settings.catalogDisplayMode)}`);
+  }
+  if (settings.itemsPerPage !== undefined && !isCatalogItemsPerPage(settings.itemsPerPage)) {
+    throw new InvalidCatalogDisplaySettingsError(`items per page must be one of 12, 24, 48`);
+  }
+  await withTenant(tenantId, async (tx) => {
+    const patch = {
+      ...(settings.catalogDisplayMode !== undefined ? { catalogDisplayMode: settings.catalogDisplayMode } : {}),
+      ...(settings.itemsPerPage !== undefined ? { itemsPerPage: settings.itemsPerPage } : {}),
+    };
+    const before = catalogDisplayFrom(await applySettingsPatch(tx, tenantId, patch));
+    const after = catalogDisplayFrom({ ...before, ...patch });
+    if (audit) {
+      await recordAuditEvent(
+        auditCtx(tenantId, audit),
+        {
+          action: "settings.catalog_display_changed",
+          entityType: "settings",
+          entityId: "catalog_display",
+          summary: `Catalog display: ${before.catalogDisplayMode} → ${after.catalogDisplayMode}, ${before.itemsPerPage} → ${after.itemsPerPage} per page`,
+          metadata: { before, after, roleKey: audit.roleKey ?? null },
+          actorType: audit.actorType,
+        },
+        tx,
+      );
+    }
+  });
 }

@@ -17,6 +17,9 @@ export function PharmacyStorefront(props: Omit<StorefrontTemplateProps, "accent"
           preorderOnly={props.openState !== null && !props.openState.open && !props.paused}
           branches={props.branchSummaries}
           currency={props.tenant.currency}
+          catalogDisplayMode={props.catalogDisplayMode}
+          itemsPerPage={props.itemsPerPage}
+          initialSearch={props.catalogSearch}
         />
       }
     />

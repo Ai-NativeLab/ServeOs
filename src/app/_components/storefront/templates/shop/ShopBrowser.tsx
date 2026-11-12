@@ -23,9 +23,13 @@ import { ShopProductCard } from "./ShopProductCard";
 import { CartAnnouncer, quantityAnnouncement } from "@/app/_components/storefront/QuickAddControl";
 import { RetailProductSheet } from "./RetailProductSheet";
 import { filterCatalog } from "./shop-search";
+import { CategoryGridView } from "@/app/_components/storefront/templates/CategoryGridView";
+import { PaginatedCatalogView } from "@/app/_components/storefront/templates/PaginatedCatalogView";
+import type { CatalogDisplayMode } from "@/server/tenancy/settings";
 
 export function ShopBrowser({
   menu, branchId, slug, orderingEnabled, branches, currency, preorderOnly,
+  catalogDisplayMode = "sections", itemsPerPage = 12, initialSearch = "",
 }: {
   menu: PublishedMenu;
   branchId: string | null;
@@ -34,6 +38,10 @@ export function ShopBrowser({
   preorderOnly: boolean;
   branches: { id: string; name: string; open: boolean }[];
   currency: string;
+  catalogDisplayMode?: CatalogDisplayMode;
+  itemsPerPage?: number;
+  /** The request's ?category=/?page=, so the server render matches the URL. */
+  initialSearch?: string;
 }) {
   const [cart, setCart] = useState<Cart>({ branchId: null, lines: [] });
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -89,46 +97,53 @@ export function ShopBrowser({
   const itemCount = cart.lines.reduce((s, l) => s + l.quantity, 0);
   const visible = filterCatalog(menu.categories, query);
 
+  const renderProductCard = (p: MenuProduct) => (
+    <ShopProductCard
+      key={p.id}
+      product={p}
+      interactive={orderingEnabled}
+      onOpen={() => (needsBranchPick ? setBranchPickFor(p.id) : setActiveProduct(p))}
+      currency={currency}
+      quantity={getSimpleProductQuantity(cart, p.id, branchId)}
+      onQuickAdd={() => changeSimpleQuantity(p, 1)}
+      onIncrement={() => changeSimpleQuantity(p, 1)}
+      onDecrement={() => changeSimpleQuantity(p, -1)}
+    />
+  );
+
   return (
     <>
-      <div className="sticky top-0 z-20 -mx-4 bg-background/90 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
-        <input
-          type="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search products or brands…"
-          aria-label="Search products"
-          className="w-full rounded-full border border-border bg-card px-4 py-2.5 text-base text-ink outline-none transition-colors focus:border-primary/60 sm:text-sm"
-        />
-      </div>
-
-      {visible.length === 0 && (
-        <p className="py-12 text-center text-sm text-muted-foreground">No products match “{query}”.</p>
-      )}
-
-      {visible.map((cat) => (
-        <div key={cat.id} id={`category-${cat.id}`} className="scroll-mt-32 py-6">
-          <SectionHeader eyebrow={cat.nameAr} title={cat.nameEn} count={cat.products.length} />
-          <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-            {cat.products.map((p) => {
-              const simpleQty = getSimpleProductQuantity(cart, p.id, branchId);
-              return (
-                <ShopProductCard
-                  key={p.id}
-                  product={p}
-                  interactive={orderingEnabled}
-                  onOpen={() => (needsBranchPick ? setBranchPickFor(p.id) : setActiveProduct(p))}
-                  currency={currency}
-                  quantity={simpleQty}
-                  onQuickAdd={() => changeSimpleQuantity(p, 1)}
-                  onIncrement={() => changeSimpleQuantity(p, 1)}
-                  onDecrement={() => changeSimpleQuantity(p, -1)}
-                />
-              );
-            })}
+      {catalogDisplayMode === "category_grid" ? (
+        <CategoryGridView menu={menu} initialSearch={initialSearch} renderProductCard={renderProductCard} />
+      ) : catalogDisplayMode === "paginated" ? (
+        <PaginatedCatalogView menu={menu} itemsPerPage={itemsPerPage} initialSearch={initialSearch} renderProductCard={renderProductCard} />
+      ) : (
+        <>
+          <div className="sticky top-0 z-20 -mx-4 bg-background/90 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search products or brands…"
+              aria-label="Search products"
+              className="w-full rounded-full border border-border bg-card px-4 py-2.5 text-base text-ink outline-none transition-colors focus:border-primary/60 sm:text-sm"
+            />
           </div>
-        </div>
-      ))}
+
+          {visible.length === 0 && (
+            <p className="py-12 text-center text-sm text-muted-foreground">No products match “{query}”.</p>
+          )}
+
+          {visible.map((cat) => (
+            <div key={cat.id} id={`category-${cat.id}`} className="scroll-mt-32 py-6">
+              <SectionHeader eyebrow={cat.nameAr} title={cat.nameEn} count={cat.products.length} />
+              <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+                {cat.products.map(renderProductCard)}
+              </div>
+            </div>
+          ))}
+        </>
+      )}
 
       {orderingEnabled && (
         <>

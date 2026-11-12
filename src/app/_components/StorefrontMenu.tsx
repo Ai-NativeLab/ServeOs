@@ -21,9 +21,13 @@ import { CartDrawer } from "./storefront/CartDrawer";
 import { SectionHeader } from "./storefront/SectionHeader";
 import { FeaturedCard } from "./storefront/FeaturedCard";
 import { isNewProduct } from "@/lib/product-badges";
+import { CategoryGridView } from "./storefront/templates/CategoryGridView";
+import { PaginatedCatalogView } from "./storefront/templates/PaginatedCatalogView";
+import type { CatalogDisplayMode } from "@/server/tenancy/settings";
 
 export function StorefrontMenu({
   menu, branchId, slug, orderingEnabled, branches, currency, preorderOnly, popularIds,
+  catalogDisplayMode = "sections", itemsPerPage = 12, initialSearch = "",
 }: {
   menu: PublishedMenu;
   branchId: string | null;
@@ -33,6 +37,10 @@ export function StorefrontMenu({
   branches: { id: string; name: string; open: boolean }[];
   currency: string;
   popularIds: string[];
+  catalogDisplayMode?: CatalogDisplayMode;
+  itemsPerPage?: number;
+  /** The request's ?category=/?page=, so the server render matches the URL. */
+  initialSearch?: string;
 }) {
   const [cart, setCart] = useState<Cart>({ branchId: null, lines: [] });
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -88,48 +96,57 @@ export function StorefrontMenu({
 
   const itemCount = cart.lines.reduce((s, l) => s + l.quantity, 0);
 
+  const openProduct = (p: MenuProduct) => (needsBranchPick ? setBranchPickFor(p.id) : setActiveProduct(p));
+
+  const renderProductCard = (p: MenuProduct) => (
+    <ProductCard
+      key={p.id}
+      product={p}
+      interactive={orderingEnabled}
+      onOpen={() => openProduct(p)}
+      currency={currency}
+      badge={popularIds.includes(p.id) ? "popular" : isNewProduct(p.createdAt) ? "new" : null}
+      quantity={getSimpleProductQuantity(cart, p.id, branchId)}
+      onQuickAdd={() => changeSimpleQuantity(p, 1)}
+      onIncrement={() => changeSimpleQuantity(p, 1)}
+      onDecrement={() => changeSimpleQuantity(p, -1)}
+    />
+  );
+
+  const renderFeaturedCard = (p: MenuProduct) => (
+    <FeaturedCard product={p} currency={currency} interactive={orderingEnabled} onOpen={() => openProduct(p)} />
+  );
+
   return (
     <>
-      <CategoryNav categories={menu.categories.map((c) => ({ id: c.id, nameEn: c.nameEn }))} />
+      {catalogDisplayMode === "category_grid" ? (
+        <CategoryGridView
+          menu={menu}
+          initialSearch={initialSearch}
+          renderProductCard={renderProductCard}
+          renderFeaturedCard={renderFeaturedCard}
+        />
+      ) : catalogDisplayMode === "paginated" ? (
+        <PaginatedCatalogView menu={menu} itemsPerPage={itemsPerPage} initialSearch={initialSearch} renderProductCard={renderProductCard} />
+      ) : (
+        <>
+          <CategoryNav categories={menu.categories.map((c) => ({ id: c.id, nameEn: c.nameEn }))} />
 
-      {menu.categories.map((cat) => {
-        const featured = cat.products.find((p) => p.isFeatured) ?? null;
-        const rest = cat.products.filter((p) => p.id !== featured?.id);
-        return (
-          <div key={cat.id} id={`category-${cat.id}`} className="scroll-mt-32 py-6">
-            <SectionHeader eyebrow={cat.nameAr} title={cat.nameEn} count={cat.products.length} />
-            {featured && (
-              <div className="mt-4">
-                <FeaturedCard
-                  product={featured}
-                  currency={currency}
-                  interactive={orderingEnabled}
-                  onOpen={() => (needsBranchPick ? setBranchPickFor(featured.id) : setActiveProduct(featured))}
-                />
+          {menu.categories.map((cat) => {
+            const featured = cat.products.find((p) => p.isFeatured) ?? null;
+            const rest = cat.products.filter((p) => p.id !== featured?.id);
+            return (
+              <div key={cat.id} id={`category-${cat.id}`} className="scroll-mt-32 py-6">
+                <SectionHeader eyebrow={cat.nameAr} title={cat.nameEn} count={cat.products.length} />
+                {featured && <div className="mt-4">{renderFeaturedCard(featured)}</div>}
+                <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+                  {rest.map(renderProductCard)}
+                </div>
               </div>
-            )}
-            <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-              {rest.map((p) => {
-                const simpleQty = getSimpleProductQuantity(cart, p.id, branchId);
-                return (
-                  <ProductCard
-                    key={p.id}
-                    product={p}
-                    interactive={orderingEnabled}
-                    onOpen={() => (needsBranchPick ? setBranchPickFor(p.id) : setActiveProduct(p))}
-                    currency={currency}
-                    badge={popularIds.includes(p.id) ? "popular" : isNewProduct(p.createdAt) ? "new" : null}
-                    quantity={simpleQty}
-                    onQuickAdd={() => changeSimpleQuantity(p, 1)}
-                    onIncrement={() => changeSimpleQuantity(p, 1)}
-                    onDecrement={() => changeSimpleQuantity(p, -1)}
-                  />
-                );
-              })}
-            </div>
-          </div>
-        );
-      })}
+            );
+          })}
+        </>
+      )}
 
       {orderingEnabled && (
         <>
