@@ -1,125 +1,69 @@
 # Testing Strategy & Known Gaps
 
-This document details the test pyramid, execution rules, test harnesses, and the authoritative catalog of known gaps, parked tracks, and technical debt in ServeOS.
+## 1. Test tiers
 
-## 1. Testing Philosophy & Architecture
+| Tier | Command | Config | Scope |
+|---|---|---|---|
+| Unit + integration | `npm test` | `vitest.config.ts` (`src/**/*.test.ts`) | services, RLS isolation, route handlers, migrations — against a real Postgres (`serveos_test`) |
+| Unit only | `npm run test:unit` | `vitest.unit.config.ts` | the subset that needs no database |
+| POS app | `npm run pos:test`, `npm run pos:typecheck` | `apps/pos/vitest.config.ts` | Electron main process, offline store, renderer logic |
+| End-to-end | `npm run test:e2e` | `playwright.config.ts` | 13 Playwright specs in `tests/e2e/`: admin, dashboard, marketing, menu, offline payment, onboarding, ordering, pricing, purchasing, responsive, scheduling, shop, storefront-responsive |
 
-ServeOS utilizes a comprehensive testing strategy combining unit tests, database integration tests, Electron specific tests, and end-to-end browser specifications to ensure platform reliability.
+### Why the database role matters
+`FORCE ROW LEVEL SECURITY` binds every role except superusers and `BYPASSRLS` roles. A superuser **bypasses** RLS and sees all tenants' rows, so tests run as one would pass vacuously. Locally the tests connect as `serveos_app` and in CI as `serveos_ci`, both `NOSUPERUSER NOBYPASSRLS`.
 
-### The RLS Testing Imperative
-Row-Level Security (RLS) is the foundation of multi-tenancy in ServeOS. It is critical that tests verifying RLS logic do not run under a PostgreSQL superuser account. 
+### Serial execution
+- `fileParallelism: false` — every file shares one database.
+- `src/db/test-global-setup.ts` migrates the test DB once; `src/db/test-setup.ts` calls `truncateAll()` (`src/db/test-harness.ts`) before each test.
+- Timeouts are 60 s per test and hook.
 
-> [!WARNING]
-> Why RLS makes superuser testing dangerous: If the testing database user is a superuser, RLS policies are silently bypassed. The `serveos_app` role MUST have `NOSUPERUSER NOBYPASSRLS`. Tests running against RLS logic while authenticated as a superuser are vacuous and provide a false sense of security.
+## 2. Fixtures
 
-### Serial Execution & Test Isolation
-Tests that interact with the database must be carefully isolated. Vitest tests share the migrated `serveos_test` PostgreSQL database.
-- Tests run serially (`fileParallelism: false`).
-- Database tables are truncated between tests via `src/db/test-setup.ts`.
-- This ensures clean state and prevents race conditions between parallel tests interacting with shared RLS and schema states.
+POS (`src/server/pos/test-helpers.ts`):
 
-### Multi-Tier Test Pyramid
+```ts
+// Seeds a tenant (default vertical restaurant), branch and product, a user with the given
+// role plus a manager, pairs a device through the real pairing code flow and signs the
+// first user in as the cashier. Returns the PosCashierContext and ids.
+seedPosContext(
+  role?: "owner" | "manager" | "staff",
+  opts?: { vertical?: VerticalId; trackStock?: boolean; stockQuantity?: number | null },
+): Promise<{ ctx: PosCashierContext; tenantId; branchId; productId; managerId; total }>
 
-1. **Unit Tests** (`npm run test:unit`, `vitest.unit.config.ts`)
-   - **Scope:** Pure functions, order mathematics (`order-totals.ts`), money formatting (`money.ts`), regular expressions, state reducers.
-   - **Execution:** Extremely fast, requires no database connection.
-
-2. **Database Integration Tests** (`npm run test`, `vitest.config.ts`)
-   - **Scope:** Domain services, RLS isolation, transactions, and mutations.
-   - **Execution:** Runs against a real PostgreSQL DB test instance (`serveos_test`).
-
-3. **POS Electron Suite** (`npm run pos:test`, `npm run pos:typecheck`)
-   - **Scope:** Electron app renderer & main-process IPC bridge.
-   - **Execution:** Verifies the native-feeling Point of Sale behaviors.
-
-4. **Playwright E2E Browser Suite** (`npm run test:e2e`, `tests/e2e/`)
-   - **Scope:** 11 end-to-end browser specifications covering admin approvals, dashboard management, customer checkout, offline payments, order tracking, and responsive layouts.
-   - **Execution:** Simulates real user browser interactions.
-
----
-
-## 2. Test Harnesses & Fixtures Reference
-
-To accelerate test authoring and ensure consistency, ServeOS provides several key test harnesses and fixtures.
-
-### POS Fixtures
-The POS module includes dedicated helpers for establishing test state:
-
-```typescript
-// src/server/pos/test-helpers.ts
-
-/**
- * Authoritative fixture helper for POS tests.
- * Seeds a tenant, branch, and necessary context for POS operations.
- */
-export async function seedPosContext(tenantId: string, branchId: string) { ... }
-
-/**
- * Opens a shift for the given context, returning shift details.
- */
-export async function openShiftForCtx(ctx: PosContext) { ... }
-
-/**
- * Helper for ringing sales without manual table wiring.
- */
-export async function recordSale(...) { ... }
+// Opens a shift on ctx's device (default float 200).
+openShiftForCtx(ctx: PosCashierContext, openingFloat = 200): Promise<PosShift>
 ```
 
-### RLS Isolation
-Testing tenant data isolation requires simulating queries executed as specific tenants.
+Ring sales with the real `recordSale` (`src/server/pos/record-sale.ts`) rather than inserting orders by hand. WhatsApp has its own `src/server/whatsapp/test-helpers.ts`; inventory has `src/server/inventory/test-helpers.ts`.
 
-```typescript
-/**
- * Testing RLS tenant isolation across transactions.
- * Executes the callback within a transaction setting the `tenant.id` local variable.
- */
-export async function withTenant(tenantId: string, callback: (tx: any) => Promise<void>) { ... }
-```
+Tenant scoping in tests uses the production helper `withTenant(tenantId, tx => …)` from `src/db/with-tenant.ts` (sets `app.tenant_id` with `set_config(…, true)`).
 
-### Global Setup & Teardown
-- `test-global-setup.ts`: Responsible for database migration before the test suite runs.
-- `test-setup.ts`: Responsible for per-test truncation of tables to ensure a pristine database state.
+## 3. CI (`.github/workflows/ci.yml`)
 
----
+Runs on pull requests and on pushes to `main` and `qa`:
 
-## 3. CI/CD Quality Gates
+1. **typecheck** — `npx next typegen` then `npx tsc --noEmit`.
+2. **test** — Postgres 16 service; `scripts/ci-db-bootstrap.sql` creates the `serveos_ci` role (`NOSUPERUSER NOBYPASSRLS`); `npm run db:migrate:test`; `npm run db:check:test` (fails if a migration on disk was not applied); `npm test`.
+3. **e2e** — Postgres 16 service, migrate, seed (roma, nobio, the pharmacy demo tenant), then **`npm run build`** (this is where the production build is verified) and `npm run test:e2e`.
 
-Continuous Integration ensures that tests run automatically and code quality is maintained on every Pull Request.
-Configuration is located at `.github/workflows/ci.yml`.
+`apps/pos` releases are built by `pos-release.yml`.
 
-> [!IMPORTANT]
-> Steps executed on every PR:
-> 1. **TypeScript Typechecking:** `tsc --noEmit` verifies strict type correctness.
-> 2. **Drizzle Migration Drift Check:** Verifies that the codebase schema definition matches the current `drizzle/` migrations.
-> 3. **Vitest Test Suite:** Executes database integration tests on a non-superuser PostgreSQL container to ensure RLS policies are strictly evaluated.
-> 4. **Build Verification:** `next build` ensures the application can be compiled successfully.
+## 4. Known gaps
 
----
+| Gap | Status |
+|---|---|
+| **Card payment gateway / settlement** (Specs 6–7) | Parked (roadmap D3). No `PaymentGateway` implementation exists; card tenders at the POS are record-only. |
+| **Fiscal e-invoicing** (ETA — Spec 11; ZATCA) | Not implemented. Specified only. |
+| **Dine-in & table management** | Not built. POS sales are walk-in pickup; held tickets are a partial stand-in. |
+| **Kitchen display & peripherals** | Not built. Orders show in the POS order queue and the dashboard; no ESC/POS printing, cash-drawer kick, scanner or scale integration. |
+| **Refund restock vs. inventory core** | `restockRefundedLines` still increments the legacy `products.stock_quantity` / `product_variants.stock_quantity` counters instead of writing lots and a `refund_restock` ledger row (flagged in `src/server/pos/refund.ts`). |
+| **`pos:void` unused** | The permission exists and is granted to owners/managers, but nothing checks it. |
+| **Subscription lifecycle automation** | `past_due` / `suspended` are never set automatically (no trial-expiry or dunning job); `transition()` in `src/server/subscription/service.ts` is only used by tests. |
+| **Media backups** | Supabase Storage (`media`, `prescriptions` buckets) is not included in the nightly database backups. |
+| **Concurrent queries on one transaction** | `src/server/analytics/service.ts` and `pos-reports.ts` run `Promise.all` over several queries on the same transaction client; node-postgres serializes these, so they run sequentially rather than in parallel. |
 
-## 4. Authoritative Known Gaps & Technical Debt Catalog
+Offline POS is **not** a gap any more: the SQLite event log, offline sign-in and batched sync shipped in #138 (`apps/pos/electron/_offline/`, `POST /api/pos/v1/sync/events`).
 
-This section formalizes the known gaps and parked tracks extracted from `ROADMAP.md` and codebase analysis.
+## 5. Roadmap pointers
 
-| Gap ID | Description | Status / Impact |
-| :--- | :--- | :--- |
-| **Gap 1: Offline POS Queue & Two-Way Sync** | Electron POS offline cache (`apps/pos/electron/_offline/`) is currently parked WIP. The POS currently requires an active connection to `/api/pos/v1/*`. | **Parked**. Critical for unreliable network environments. |
-| **Gap 2: Payment Gateway Live Settlement** | Specifications 6 & 7. The `PaymentGateway` interface is drafted with a Paymob-first abstraction, but live processor settlement is PARKED pending merchant business signoff. | **Parked**. Blocks live credit card processing integration. |
-| **Gap 3: Dine-In & Table Management** | The POS currently supports walk-in counter sales and pickup only. There are no visual table maps, seat management, or bill splitting capabilities built yet. | **Gap**. Limits usability for full-service restaurants. |
-| **Gap 4: Kitchen Display System (KDS) & Printing** | Kitchen orders rely on dashboard live queue polling. Direct hardware ESC/POS thermal printing and station bump-bars are unbuilt. | **Gap**. Essential for high-volume kitchen operations. |
-| **Gap 5: Advanced Analytics Entitlement Enforcement** | The `advanced_analytics` plan flag exists in subscription schemas but is not currently enforced on analytics API endpoints. | **Tech Debt**. Revenue leakage risk if left unenforced in production. |
-| **Gap 6: Fiscal Compliance Engine** | ETA & ZATCA compliance PRDs are drafted (`PRD-003`, Spec 11) and schema tax codes specified. However, the direct ETA / ZATCA REST API submission worker is pending implementation. | **Gap**. Blocks deployment in compliant regions. |
-| **Gap 7: DB Connection Query Serialization Warning** | Analytics services run `Promise.all` over queries sharing a single transaction client (e.g., `src/server/analytics/service.ts`, `pos-reports.ts`), emitting node-postgres deprecation warnings in test logs. | **Tech Debt**. Should be refactored to run queries sequentially or utilize independent connections. |
-
----
-
-## 5. Future Iterations Roadmap
-
-High-level sequencing for future developments:
-
-1. **Spec 1-5 Finalization:** Harden core inventory, multi-tenant RBAC, and basic POS flows.
-2. **Spec 6-7 (Payment Integration):** Unpark Payment Gateway Live Settlement once merchant accounts are provisioned.
-3. **POS Backlog: Promotions & Loyalty:** Implement promotions engine, loyalty programs, and gift card support.
-4. **POS Backlog: Staff Management:** Add staff time clock and tips tracking to the POS.
-5. **POS Backlog: Hardware Integration:** ESC/POS thermal printing and KDS integration (addressing Gap 4).
-6. **Spec 11 (Fiscal Compliance):** Implement ETA & ZATCA submission workers (addressing Gap 6).
-7. **Delivery Dispatch:** Build out delivery driver dispatch and routing management.
+Sequencing lives in [docs/ROADMAP.md](../ROADMAP.md) (Specs 1–11 and the POS backlog). Don't duplicate it here.
