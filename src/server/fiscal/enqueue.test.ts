@@ -311,4 +311,53 @@ describe("enqueueCorrectedResubmission", () => {
     await expect(enqueueCorrectedResubmission({ tenantId: s.tenantId }, row.id))
       .rejects.toThrow(/rejected without an etaUuid/);
   });
+
+  describe("a corrected e_invoice keeps its buyer", () => {
+    const BUYER = {
+      rin: "313717919",
+      name: "Receiver Company LLC",
+      address: { country: "EG", governate: "Cairo", regionCity: "Nasr City", street: "580 Clementina Key", buildingNumber: "0" },
+    };
+
+    /** A rejected e_invoice for a sale — staged with BUYER, as the trigger does. */
+    async function rejectedInvoice(tenantId: string, orderId: string) {
+      // The sale's own e_receipt is out of the way: one sale, one document family.
+      await withTenant(tenantId, (tx) => tx.delete(etaSubmissions).where(eq(etaSubmissions.orderId, orderId)));
+      await enqueueFiscalDocument({ tenantId }, { docType: "e_invoice", orderId, buyerJson: BUYER });
+      const [row] = await withTenant(tenantId, (tx) => tx.update(etaSubmissions)
+        .set({ status: "rejected", etaUuid: "INV-ETA-UUID" })
+        .where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.orderId, orderId)))
+        .returning());
+      return row;
+    }
+
+    it("copies the rejected invoice's buyer onto the correction", async () => {
+      const s = await seedPaidSale();
+      const original = await rejectedInvoice(s.tenantId, s.receipt.orderId);
+
+      const correctionId = await enqueueCorrectedResubmission({ tenantId: s.tenantId }, original.id);
+      const correction = (await submissionsByOrder(s.tenantId, s.receipt.orderId)).find((row) => row.id === correctionId)!;
+      expect(correction.docType).toBe("e_invoice");
+      expect(correction.buyerJson).toEqual(BUYER);
+    });
+
+    it("takes CORRECTED buyer details when the correction is the buyer", async () => {
+      const s = await seedPaidSale();
+      const original = await rejectedInvoice(s.tenantId, s.receipt.orderId);
+      const fixed = { ...BUYER, rin: "100200300" };
+
+      const correctionId = await enqueueCorrectedResubmission({ tenantId: s.tenantId }, original.id, { buyerJson: fixed });
+      const correction = (await submissionsByOrder(s.tenantId, s.receipt.orderId)).find((row) => row.id === correctionId)!;
+      expect(correction.buyerJson).toEqual(fixed);
+      // The rejected original keeps what was filed.
+      expect((await submissionsByOrder(s.tenantId, s.receipt.orderId)).find((row) => row.id === original.id)!.buyerJson).toEqual(BUYER);
+    });
+
+    it("refuses a buyer on a receipt correction — a receipt has no buyer block", async () => {
+      const s = await seedPaidSale();
+      const original = await rejectOriginal(s.tenantId, s.receipt.orderId);
+      await expect(enqueueCorrectedResubmission({ tenantId: s.tenantId }, original.id, { buyerJson: BUYER }))
+        .rejects.toThrow(/only an e_invoice carries a buyer/);
+    });
+  });
 });

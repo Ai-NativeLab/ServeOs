@@ -197,11 +197,20 @@ export async function enqueueFiscalDocument(ctx: { tenantId: string }, input: En
  * 6) owns the trigger. Auto-correcting on rejection would resubmit the same
  * bad data on a loop.
  *
+ * THE BUYER TRAVELS WITH A CORRECTED INVOICE. An `e_invoice`'s receiver lives
+ * in `buyer_json` (ServeOS stores it nowhere else), and the finalizer fails a
+ * row without one permanently — so a correction that did not carry it would
+ * swap one rejection for a `missing-buyer` failure. The original's buyer is
+ * copied; `opts.buyerJson` replaces it when the correction IS the buyer (a
+ * mistyped RIN being the commonest reason ETA refuses an invoice). Refused on
+ * any other docType: a receipt has no buyer block at all.
+ *
  * @returns the new row's id, or `null` when a live document already exists.
  */
 export async function enqueueCorrectedResubmission(
   ctx: { tenantId: string },
   originalSubmissionId: string,
+  opts: { buyerJson?: EtaSubmissionBuyer } = {},
 ): Promise<string | null> {
   return withTenant(ctx.tenantId, async (tx) => {
     const [original] = await tx.select().from(etaSubmissions)
@@ -224,6 +233,13 @@ export async function enqueueCorrectedResubmission(
       );
     }
 
+    if (opts.buyerJson && original.docType !== "e_invoice") {
+      throw new Error(
+        `fiscal: submission ${originalSubmissionId} is ${original.docType} — only an e_invoice carries a buyer, so a ` +
+          "corrected buyer cannot be attached to it",
+      );
+    }
+
     const values = {
       tenantId: ctx.tenantId,
       docType: original.docType,
@@ -233,6 +249,7 @@ export async function enqueueCorrectedResubmission(
       status: "pending" as const,
       attempts: 0,
       requestJson: {},
+      buyerJson: original.docType === "e_invoice" ? opts.buyerJson ?? original.buyerJson : null,
     };
 
     // Same shape-narrowing rule as `enqueueFiscalDocument`: which parent column
