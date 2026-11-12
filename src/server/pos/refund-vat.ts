@@ -41,6 +41,8 @@
  *        │       MAY NOT run for a partial, nor for a goodwill full refund.
  *   [5] FLOOR    clip negatives to 0.00, re-spread onto lines still holding VAT
  *        │       MAY move cents BETWEEN lines; MAY NOT change their sum.
+ *   [6] CEILING  Σ lines > remaining order VAT → scale the lines down to it
+ *        │       MAY lower lines (never raise, never below 0); MAY NOT refuse.
  *        ▼
  *   refunds.vatAmount  ==  Σ refund_lines.vatAmount   (itemised refunds, exactly)
  *
@@ -83,6 +85,19 @@
  * `refund_lines.vatAmount` would be an invented input tax credit on the return
  * document, so the order's declared VAT is enforced as a ceiling PER LINE and
  * not only on the header.
+ *
+ * THE CEILING (stage [6]) — CAPPED, NEVER REFUSED. The order's VAT may be
+ * reversed at most once in total, but the two paths can overlap: a goodwill
+ * full refund takes a scaled share of the remaining VAT without naming items,
+ * and itemising those same units afterwards would claim their VAT a second
+ * time. Such a refund is capped — its line VATs are scaled down,
+ * largest-remainder over what each line already holds, until they total the
+ * VAT not yet reversed (possibly 0.00) — instead of being refused. Refusing
+ * would block a refund over a tax figure, which this module must never do: the
+ * VAT split runs for EVERY tenant (country-blind, it is stored refund data), so
+ * a refusal here also refused refunds for tenants that file nothing at all,
+ * which had always succeeded. Capping errs on the safe side — never reversing
+ * VAT that was not charged — and the money side of the refund is untouched.
  *
  * EXACTNESS, AND WHAT IS AND IS NOT FLOAT-FREE. Every split is
  * `allocateLargestRemainder`, so the parts sum to the whole to the cent, and
@@ -147,8 +162,10 @@ export type RefundVatInput = {
 };
 
 /**
- * The whole pipeline. Throws `PosRefundError` when the result would breach the
- * order's declared VAT — see the INVARIANT comment below.
+ * The whole pipeline. Never refuses a refund over VAT: a result that would
+ * breach the order's declared VAT is capped (stage [6]). Throws only
+ * `PosRefundError`, and only for an internal inconsistency that the stages
+ * below make unreachable — never a bare `Error` (which a route maps to a 500).
  */
 export function computeRefundVat(input: RefundVatInput): RefundVat {
   const { order, kind, lines, items, alreadyReturned, thisTotal, outstanding } = input;
@@ -156,30 +173,30 @@ export function computeRefundVat(input: RefundVatInput): RefundVat {
   const unreversed = subtractDecimal("remaining order VAT", order.vatAmount, priorVat);
   // Data that ALREADY breaches the ceiling (earlier refunds summing past the
   // order's VAT) reads as "nothing left to reverse" rather than a negative
-  // target the stages below cannot honour — the invariant then refuses this
-  // refund by name, which is a legible 400 instead of an internal crash.
+  // target the stages below cannot honour — this refund then reverses 0.00.
   const remaining = compareDecimal(unreversed, "0") < 0 ? "0.00" : unreversed;
   // A full refund that clears the balance takes the rest of the VAT with it,
   // lines or no lines — see THE ITEMISED-FULL TOP-UP in the module header.
   const clearsBalance = kind === "full" && compareDecimal(thisTotal, outstanding) >= 0;
 
   const lineVats = lines.length
-    ? topUpToRemaining(itemisedLineVat(order, lines, items, alreadyReturned), lines, clearsBalance ? remaining : null)
+    ? capAtRemaining(
+        topUpToRemaining(itemisedLineVat(order, lines, items, alreadyReturned), lines, clearsBalance ? remaining : null),
+        remaining,
+      )
     : [];
   const headerVat = lines.length
     ? sumDecimal("refund VAT", lineVats)
     : headerlessRefundVat(remaining, thisTotal, outstanding);
 
-  // INVARIANT: an order's refunds may never reverse more VAT than the order
-  // charged. It holds by construction within either path on its own, but not
-  // ACROSS them: a goodwill full refund takes a scaled share of the remaining
-  // VAT without naming items, and itemising those same units afterwards would
-  // claim their VAT a second time. Fail closed — a refund that cannot be
-  // accounted for honestly is refused, not silently clamped.
-  if (compareDecimal(addDecimal("refund VAT", priorVat, headerVat), order.vatAmount) > 0) {
+  // INVARIANT: this refund never reverses more than the VAT not yet reversed.
+  // Both paths now hold it by construction — the itemised one through the
+  // ceiling stage, the headerless one because it scales `remaining` by a share
+  // <= 1 — so this is a tripwire for a future edit, and it trips as a
+  // `PosRefundError` (a 400 naming the figures), never a bare 500.
+  if (compareDecimal(headerVat, remaining) > 0) {
     throw new PosRefundError(
-      `This refund would reverse ${headerVat} of VAT on top of ${priorVat} already returned, above the ${order.vatAmount} the order charged` +
-        " — this order's items were already covered by an earlier goodwill refund; issue this as a full refund without item lines instead",
+      `refund VAT ${headerVat} exceeds the ${remaining} of the order's ${order.vatAmount} VAT not yet reversed — please report this`,
     );
   }
 
@@ -253,6 +270,20 @@ export function topUpToRemaining(lineVats: string[], lines: RefundVatLine[], rem
 }
 
 /**
+ * Stage [6]: scales line VATs DOWN so they total at most `remaining` — the VAT
+ * not yet reversed. Untouched when they already fit. The scale-down is
+ * largest-remainder over what each line holds, so it is exact to the cent, no
+ * line goes up, and none goes below zero (the inputs are all >= 0 and their sum
+ * exceeds `remaining` >= 0, so the weights are never all zero).
+ *
+ * Exported for direct unit tests.
+ */
+export function capAtRemaining(lineVats: string[], remaining: string): string[] {
+  if (compareDecimal(sumDecimal("refund VAT", lineVats), remaining) <= 0) return lineVats;
+  return allocateLargestRemainder("refund VAT ceiling", remaining, lineVats);
+}
+
+/**
  * Stage [5]: clips negative line VATs to zero and pushes the shortfall onto the
  * lines that can still absorb it, weighted by what they currently hold, until Σ
  * parts is `target` again with nothing below zero.
@@ -279,7 +310,7 @@ export function floorLineVatsAt0(parts: string[], target: string): string[] {
     const absorbing = clipped.map((p, i) => ({ p, i })).filter(({ p }) => compareDecimal(p, "0") > 0);
     if (absorbing.length === 0) {
       if (!isZeroDecimal(target)) {
-        throw new Error(`refund: cannot floor refund line VAT at 0 and still total ${target}`);
+        throw new PosRefundError(`refund: cannot floor refund line VAT at 0 and still total ${target}`);
       }
       return clipped;
     }
@@ -287,7 +318,7 @@ export function floorLineVatsAt0(parts: string[], target: string): string[] {
     const share = new Map(absorbing.map(({ i }, k) => [i, shares[k]]));
     current = clipped.map((p, i) => addDecimal("refund line VAT", p, share.get(i) ?? "0.00"));
   }
-  throw new Error("refund: refund line VAT flooring did not converge");
+  throw new PosRefundError("refund: refund line VAT flooring did not converge");
 }
 
 /**

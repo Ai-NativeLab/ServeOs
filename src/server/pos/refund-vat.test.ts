@@ -18,6 +18,7 @@ import { describe, it, expect } from "vitest";
 import { compareDecimal, sumDecimal } from "@/server/fiscal/decimal";
 import { PosRefundError } from "./errors";
 import {
+  capAtRemaining,
   computeRefundVat,
   floorLineVatsAt0,
   headerlessRefundVat,
@@ -123,9 +124,27 @@ describe("floorLineVatsAt0 — stage 5", () => {
     expect(floorLineVatsAt0(["5.00", "5.00", "-4.00"], "6.00")).toEqual(["3.00", "3.00", "0.00"]);
   });
 
-  it("floors everything only when the target is zero, and says so loudly otherwise", () => {
+  it("floors everything only when the target is zero, and says so loudly otherwise — as a PosRefundError, never a bare 500", () => {
     expect(floorLineVatsAt0(["-1.00", "-2.00"], "0.00")).toEqual(["0.00", "0.00"]);
     expect(() => floorLineVatsAt0(["-1.00", "-2.00"], "1.00")).toThrow(/refund: cannot floor/);
+    expect(() => floorLineVatsAt0(["-1.00", "-2.00"], "1.00")).toThrow(PosRefundError);
+  });
+});
+
+describe("capAtRemaining — stage 6 (the ceiling)", () => {
+  it("leaves lines that already fit untouched", () => {
+    expect(capAtRemaining(["5.00", "7.00"], "12.00")).toEqual(["5.00", "7.00"]);
+    expect(capAtRemaining(["5.00", "7.00"], "20.00")).toEqual(["5.00", "7.00"]);
+  });
+
+  it("scales lines down to exactly what is left, proportionally and to the cent", () => {
+    expect(capAtRemaining(["12.28", "12.28"], "12.28")).toEqual(["6.14", "6.14"]);
+    expect(capAtRemaining(["10.00", "0.00", "5.00"], "3.00")).toEqual(["2.00", "0.00", "1.00"]);
+    expect(sumDecimal("capped", capAtRemaining(["3.33", "3.33", "3.34"], "1.01"))).toBe("1.01");
+  });
+
+  it("caps to zero when nothing is left to reverse", () => {
+    expect(capAtRemaining(["4.10", "4.09"], "0.00")).toEqual(["0.00", "0.00"]);
   });
 });
 
@@ -147,29 +166,39 @@ describe("headerlessRefundVat", () => {
 });
 
 describe("computeRefundVat", () => {
-  it("refuses, by name and with the remedy, a refund that would breach the order's VAT", () => {
-    const err = (() => {
-      try {
-        computeRefundVat({
-          order: order("24.56", "200.00"),
-          kind: "partial",
-          lines: [line("a", 2, "100.00")],
-          items: [item("a", 2, "200.00")],
-          alreadyReturned: new Map(),
-          priorVatAmounts: ["12.28"],
-          thisTotal: "100.00",
-          outstanding: "100.00",
-        });
-        return null;
-      } catch (e) { return e; }
-    })();
-    expect(err).toBeInstanceOf(PosRefundError);
-    expect((err as Error).message).toContain("24.56 the order charged");
-    expect((err as Error).message).toContain("issue this as a full refund without item lines instead");
+  it("CAPS, rather than refuses, a refund that would breach the order's VAT", () => {
+    // An earlier goodwill refund already took 12.28 of the 24.56 without naming
+    // items; itemising both units now would claim their 24.56 a second time.
+    // The refund goes through, reversing only the 12.28 still unreversed.
+    const result = computeRefundVat({
+      order: order("24.56", "200.00"),
+      kind: "partial",
+      lines: [line("a", 2, "100.00")],
+      items: [item("a", 2, "200.00")],
+      alreadyReturned: new Map(),
+      priorVatAmounts: ["12.28"],
+      thisTotal: "100.00",
+      outstanding: "100.00",
+    });
+    expect(result).toEqual({ headerVat: "12.28", lineVats: ["12.28"] });
   });
 
-  it("reads already-breached prior data as nothing left to reverse, and refuses it as a 400", () => {
-    expect(() => computeRefundVat({
+  it("caps several lines proportionally, and to zero once every cent is reversed", () => {
+    const base = {
+      order: order("24.56", "200.00"),
+      kind: "partial" as const,
+      lines: [line("a", 1, "100.00"), line("b", 1, "100.00")],
+      items: [item("a", 1, "100.00"), item("b", 1, "100.00")],
+      alreadyReturned: new Map<string, number>(),
+      thisTotal: "200.00",
+      outstanding: "200.00",
+    };
+    expect(computeRefundVat({ ...base, priorVatAmounts: ["20.00"] })).toEqual({ headerVat: "4.56", lineVats: ["2.28", "2.28"] });
+    expect(computeRefundVat({ ...base, priorVatAmounts: ["24.56"] })).toEqual({ headerVat: "0.00", lineVats: ["0.00", "0.00"] });
+  });
+
+  it("reads already-breached prior data as nothing left to reverse — the refund goes through at 0.00 VAT", () => {
+    expect(computeRefundVat({
       order: order("10.00", "100.00"),
       kind: "full",
       lines: [line("a", 1, "100.00")],
@@ -178,7 +207,7 @@ describe("computeRefundVat", () => {
       priorVatAmounts: ["99.00"], // corrupt: already past the order's own VAT
       thisTotal: "100.00",
       outstanding: "100.00",
-    })).toThrow(PosRefundError);
+    })).toEqual({ headerVat: "0.00", lineVats: ["0.00"] });
   });
 });
 
@@ -278,7 +307,7 @@ function generateCase(rnd: () => number): RefundVatInput {
 describe(`refund VAT property hammer (LCG seed ${SEED}, deterministic)`, () => {
   it(`holds every invariant over ${PIPELINE_CASES.toLocaleString()} admissible pathological cases`, () => {
     const rnd = lcg(SEED);
-    const seen = { threw: 0, headerless: 0, toppedUp: 0, scaledDown: 0, zeroVat: 0, exhausted: 0 };
+    const seen = { headerless: 0, toppedUp: 0, scaledDown: 0, capped: 0, zeroVat: 0, exhausted: 0 };
 
     for (let n = 0; n < PIPELINE_CASES; n++) {
       const input = generateCase(rnd);
@@ -287,16 +316,9 @@ describe(`refund VAT property hammer (LCG seed ${SEED}, deterministic)`, () => {
         ? "0.00"
         : sumDecimal("remaining", [input.order.vatAmount, `-${priorVat}`]);
 
-      let result;
-      try {
-        result = computeRefundVat(input);
-      } catch (e) {
-        // The ONLY tolerated failure is the invariant refusal: a bare Error
-        // would mean a stage could not converge or could not honour its target.
-        expect(e, `case ${n}: ${JSON.stringify(input, replacer)}`).toBeInstanceOf(PosRefundError);
-        seen.threw++;
-        continue;
-      }
+      // NO failure is tolerated: a refund is never refused over VAT (the
+      // ceiling caps instead), so any throw here is a bug.
+      const result = computeRefundVat(input);
 
       const where = `case ${n}: ${JSON.stringify(input, replacer)} → ${JSON.stringify(result)}`;
 
@@ -314,9 +336,14 @@ describe(`refund VAT property hammer (LCG seed ${SEED}, deterministic)`, () => {
         seen.headerless++;
       }
 
-      // 4. The order's declared VAT is the ceiling for the whole order.
-      expect(compareDecimal(sumDecimal("all", [priorVat, result.headerVat]), input.order.vatAmount), where)
-        .toBeLessThanOrEqual(0);
+      // 4. The order's declared VAT is the ceiling: this refund never reverses
+      //    more than is left (and with sane prior data, the whole order never
+      //    reverses more than it charged).
+      expect(compareDecimal(result.headerVat, unreversed), where).toBeLessThanOrEqual(0);
+      if (compareDecimal(priorVat, input.order.vatAmount) <= 0) {
+        expect(compareDecimal(sumDecimal("all", [priorVat, result.headerVat]), input.order.vatAmount), where)
+          .toBeLessThanOrEqual(0);
+      }
 
       // 5. A full refund that clears the balance takes exactly what is left.
       const clears = input.kind === "full" && compareDecimal(input.thisTotal, input.outstanding) >= 0;
@@ -329,6 +356,7 @@ describe(`refund VAT property hammer (LCG seed ${SEED}, deterministic)`, () => {
         const raw = sumDecimal("raw", itemisedLineVat(input.order, input.lines, input.items, input.alreadyReturned));
         if (clears && compareDecimal(unreversed, raw) > 0) seen.toppedUp++;
         if (clears && compareDecimal(unreversed, raw) < 0) seen.scaledDown++;
+        if (!clears && compareDecimal(raw, unreversed) > 0) seen.capped++;
       }
       if (compareDecimal(input.order.vatAmount, "0.00") === 0) seen.zeroVat++;
       if ([...input.alreadyReturned.entries()].some(([id, q]) => q >= (input.items.find((i) => i.id === id)?.quantity ?? 0))) {
@@ -337,7 +365,7 @@ describe(`refund VAT property hammer (LCG seed ${SEED}, deterministic)`, () => {
     }
 
     // The hammer is only worth committing if it actually reaches the corners.
-    expect(seen.threw).toBeGreaterThan(100);
+    expect(seen.capped).toBeGreaterThan(100);
     expect(seen.headerless).toBeGreaterThan(100);
     expect(seen.toppedUp).toBeGreaterThan(100);
     expect(seen.scaledDown).toBeGreaterThan(100);
