@@ -201,9 +201,30 @@ export async function updateProduct(tenantId: string, productId: string, input: 
         metadata: auditMeta(audit, { before: before.basePrice, after: row.basePrice }), actorType: audit?.actorType,
       }, tx);
     }
+    // Same idea for promotions: "who put this on sale, and when?"
+    if (before && JSON.stringify(discountSnapshot(before)) !== JSON.stringify(discountSnapshot(row))) {
+      const after = discountSnapshot(row);
+      await recordAuditEvent(auditCtx(tenantId, audit), {
+        action: "catalog.product.discount_changed", entityType: "product", entityId: row.id,
+        summary: after.discountActive
+          ? `Discount set: ${after.discountPercent !== null ? `${after.discountPercent}%` : `sale price ${after.salePrice}`}`
+          : "Discount removed",
+        metadata: auditMeta(audit, { before: discountSnapshot(before), after }), actorType: audit?.actorType,
+      }, tx);
+    }
     await bumpCatalogVersion(tenantId, tx);
     return row;
   });
+}
+
+function discountSnapshot(p: Product) {
+  return {
+    discountActive: p.discountActive,
+    discountPercent: p.discountPercent,
+    salePrice: p.salePrice,
+    discountStartsAt: p.discountStartsAt?.toISOString() ?? null,
+    discountEndsAt: p.discountEndsAt?.toISOString() ?? null,
+  };
 }
 
 export async function deleteProduct(tenantId: string, productId: string, audit?: AuditActorInput): Promise<void> {
