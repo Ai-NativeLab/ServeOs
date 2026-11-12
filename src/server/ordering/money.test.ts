@@ -50,6 +50,19 @@ describe("money", () => {
     expect(money(8.345)).toBe("8.35");
   });
 
+  it("refuses a numeric string — callers must convert a stored numeric with Number() first", () => {
+    // Before the floor, money("12.50") coerced through `* 100` and returned
+    // "12.50". Number.isFinite does not coerce, so it now throws. The parameter
+    // is typed `number` and no caller passes a string (tsc enforces it); this
+    // pins the behaviour so a cast that sneaks one through fails loudly.
+    expect(() => money("12.50" as unknown as number)).toThrow(NonFiniteAmountError);
+  });
+
+  it("formats negative zero, and a negative amount that rounds to zero, as 0.00", () => {
+    expect(money(-0)).toBe("0.00");
+    expect(money(-0.001)).toBe("0.00");
+  });
+
   it("still accepts a legitimately huge but finite total", () => {
     // The floor is about finiteness, not magnitude. A large order must not be
     // rejected just because it is large.

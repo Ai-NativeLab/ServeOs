@@ -144,6 +144,10 @@ export type PlaceOrderResult = {
  * now fails loudly instead of writing permanent poison: review found two such
  * misses in purchasing alone after the last round of per-caller fixes, which is
  * why the invariant moved to the one function they all pass through.
+ *
+ * Takes a `number` only: a numeric STRING (a column read straight from the
+ * DB) is rejected too, since `Number.isFinite` does not coerce. Convert with
+ * `Number()` first. `-0` formats as "0.00".
  */
 export function money(n: number): string {
   assertFinite(n, "money");
