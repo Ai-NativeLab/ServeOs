@@ -1651,7 +1651,7 @@ describe("requestB2bInvoice — buyer validation", () => {
     const s = await seedInvoiceableSale();
     // A document naming a 9-digit issuer and an 8-digit receiver is not well
     // formed — ETA's Registration Identification Number is one kind of value.
-    for (const rin of ["12345678", "1234567890", "20017370x", "200 173 707", ""]) {
+    for (const rin of ["12345678", "1234567890", "20017370x", "200.173.707", ""]) {
       await expectRejected(
         () => requestB2bInvoice(s.tenantId, s.receipt.orderId, { ...B2B_BUYER(), rin }),
         { path: "rin", match: /9 digits/ },
@@ -1662,6 +1662,27 @@ describe("requestB2bInvoice — buyer validation", () => {
     expect(ok.ok).toBe(true);
     const [row] = await invoiceRows(s.tenantId);
     expect(row.buyerJson!.rin).toBe("313717919");
+  });
+
+  it("accepts a RIN typed with the separators printed on a tax card, and stores the bare digits", async () => {
+    const s = await seedInvoiceableSale();
+    expect((await requestB2bInvoice(s.tenantId, s.receipt.orderId, { ...B2B_BUYER(), rin: "313-717 919" })).ok).toBe(true);
+    const [row] = await invoiceRows(s.tenantId);
+    expect(row.buyerJson!.rin).toBe("313717919");
+  });
+
+  it("locks a type-B receiver's country to EG (case-insensitive, stored upper-case)", async () => {
+    const s = await seedInvoiceableSale();
+    for (const country of ["SA", "Egypt", "US"]) {
+      await expectRejected(
+        () => requestB2bInvoice(s.tenantId, s.receipt.orderId, { ...B2B_BUYER(), address: { ...B2B_BUYER().address, country } }),
+        { path: "address.country", match: /must be EG/ },
+      );
+    }
+    const ok = await requestB2bInvoice(s.tenantId, s.receipt.orderId, { ...B2B_BUYER(), address: { ...B2B_BUYER().address, country: "eg" } });
+    expect(ok.ok).toBe(true);
+    const [row] = await invoiceRows(s.tenantId);
+    expect(row.buyerJson!.address.country).toBe("EG");
   });
 
   it("validates the buyer BEFORE the order lookup — the operator's own typing comes first", async () => {

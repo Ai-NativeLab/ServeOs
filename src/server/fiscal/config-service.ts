@@ -128,8 +128,11 @@ function parseOrThrow<T extends z.ZodType>(schema: T, value: unknown): z.infer<T
 }
 
 /** ETA's Registration Identification Number: exactly 9 digits (Main
- *  Calculations). Anything else is refused rather than filed. */
-const rinSchema = z.string().trim().regex(/^\d{9}$/, "must be exactly 9 digits — ETA's Registration Identification Number");
+ *  Calculations). Anything else is refused rather than filed. Spaces and `-`
+ *  are stripped first — a TRN is commonly printed `123-456-789` — and the
+ *  stored value is the bare nine digits (the till's `normalizeRin` mirrors
+ *  this). */
+const rinSchema = z.string().transform((v) => v.replace(/[\s-]/g, "")).pipe(z.string().regex(/^\d{9}$/, "must be exactly 9 digits — ETA's Registration Identification Number"));
 
 /** The serial the device is registered under at pos.eta.gov.eg. ETA caps it at
  *  100 characters, and it is part of every hashed receipt that device issues. */
@@ -279,7 +282,10 @@ const buyerSchema = z.object({
   rin: rinSchema,
   name: requiredText("the buyer's registered name"),
   address: z.object({
-    country: requiredText("a country code"),
+    // Locked to EG: a type-`B` receiver is an Egyptian business by definition
+    // (a foreign buyer is receiver type `F`, which ServeOS does not file).
+    // Case-insensitive on input, stored upper-case. Mirrored by the till.
+    country: z.string().trim().toUpperCase().refine((v) => v === "EG", "must be EG — a B2B tax invoice names an Egyptian business"),
     governate: requiredText("a governate"),
     regionCity: requiredText("a region/city"),
     street: requiredText("a street"),
