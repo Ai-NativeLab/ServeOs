@@ -35,7 +35,7 @@
 ## Catalog & Products
 
 - **Product**: A sellable item in a tenant's catalog. Has bilingual names (EN/AR), base price, and optional UoM.
-- **Variant**: A discrete purchasable variation of a product with its own price (e.g. "500ml" vs "1L"). Used in retail.
+- **Variant**: A discrete purchasable variation of a product with its own price (e.g. "500ml" vs "1L"). Enabled for retail, pharmacy and timber.
 - **Modifier Group**: A set of options attached to a product (e.g. "Size", "Crust Type"). Used in restaurants. Has min/max selection bounds.
 - **Modifier Option**: A choice within a modifier group (e.g. "Large +35 EGP"). Has a price delta.
 - **Category**: A classification for organizing products in the catalog (e.g. "Pizza", "Hinges").
