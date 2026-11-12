@@ -1,177 +1,87 @@
-# Inventory API Reference
+# Inventory API Reference (`/api/inventory/*`)
 
-This document provides a reference for the ServeOS Inventory API, which manages items, stock levels, warehouses, and stock movements.
+Route handlers in `src/app/api/inventory/`. Services live in `src/server/inventory/` (`service.ts`, `read.ts`, `recipes.ts`) and, for reorder, `src/server/purchasing/reorder.ts`.
 
-## Authentication & Authorization
+## Authentication & permissions
 
-All Inventory API routes authenticate via a dashboard session cookie and require specific RBAC (Role-Based Access Control) permissions.
+These are **staff** routes. The caller is identified by the self-hosted `serveos_session` cookie (an opaque token in the `sessions` table — there is no NextAuth). Every handler starts with `resolveInventoryContext("<permission>")` (`src/app/dashboard/inventory-permission.ts`), which:
 
-- **Context Resolver**: `resolveInventoryContext(permission)`
-- **Session**: Standard Next.js / NextAuth session cookie.
-- **Permissions**: Defined per endpoint (e.g., `inventory.read`, `inventory.write`, `stock.adjust`).
+- returns **401** `{ error: "Unauthorized" }` when there is no valid session, and
+- returns **403** when the user's roles lack the permission (`authorize` in `src/server/rbac/authorize.ts`).
 
-> [!NOTE]
-> All endpoints expect standard `application/json` payloads unless otherwise specified.
+| Permission | Granted to (see `src/server/rbac/permissions.ts`) | Used for |
+| :--- | :--- | :--- |
+| `inventory:view` | owner, manager, staff | reads |
+| `inventory:count` | owner, manager, staff | opening counts, adding count lines, committing counts |
+| `inventory:manage` | owner, manager | items, receipts, adjustments, transfers, recipes, product links |
+| `purchasing:manage` | owner, manager | `reorder-rules` and `reorder/check` (these use `resolvePurchasingContext`) |
 
----
+All writes run inside `withTenant(tenantId, …)`, so RLS scopes them to the caller's tenant. Error responses are `{ error: string }`; `DimensionalUomError` / `InventoryConfigError` map to 400 and `CapabilityNotEnabledError` (e.g. recipes on a non-restaurant vertical) to 409.
 
-## Items & Catalog
+## Endpoints
 
-### GET /api/inventory/items
+### Items
 
-Lists all inventory items with pagination and filtering.
+#### GET /api/inventory/items — `inventory:view`
+Query: `kind` (`ingredient` | `finished_good` | `raw_material`), `isActive` (`true`/`false`), `limit`. Returns an array of `inventory_items` rows.
 
-- **Auth**: `inventory.read`
-- **Query Params**: `limit`, `offset`, `search`, `categoryId`
-- **Response**: 
-  ```typescript
-  {
-    items: InventoryItem[];
-    total: number;
-  }
-  ```
+#### POST /api/inventory/items — `inventory:manage`
+Body: `{ nameEn, nameAr, kind, baseUom, sku?, stockUom?, stockToBase?, purchaseUom?, purchaseToBase?, recipeUom?, recipeToBase?, isPerishable?, defaultUnitCost? }`. `nameEn`, `nameAr`, `kind`, `baseUom` are required. Units default to `baseUom` and factors to `"1"`; every unit must be a stockable unit and in the same dimension as `baseUom`. **201** with the created row.
 
-### POST /api/inventory/items
+#### PATCH /api/inventory/items/[id] — `inventory:manage`
+Any of `nameEn`, `nameAr`, `sku`, `kind`, `isPerishable`, `isActive`, `defaultUnitCost`, `stockUom`, `purchaseUom`, `recipeUom`, `stockToBase`, `purchaseToBase`, `recipeToBase`. `baseUom` cannot be changed (400) because ledger rows are stored in it. 404 if the item is not visible to the tenant.
 
-Creates a new inventory item.
+### Stock movements
 
-- **Auth**: `inventory.write`
-- **Request Body**:
-  ```typescript
-  {
-    sku: string;
-    name: string;
-    categoryId: string;
-    unitOfMeasure: string;
-    costPrice: number;
-  }
-  ```
-- **Response**: `{ item: InventoryItem }`
+#### POST /api/inventory/receipts — `inventory:manage`
+Goods in without a purchase order. Body: `{ itemId, locationId, uom, qty, unitCost?, lotCode?, expiryAt?, lengthMm?, byPurchaseUnit?, note? }`. `qty` must be positive; `unitCost` must be finite and ≥ 0. Creates an `inventory_lots` row and a `receive` ledger row, and records an `inventory.received` audit event. **201** `{ ok: true, lotId }`.
 
-### GET /api/inventory/items/[id]
+#### POST /api/inventory/adjustments — `inventory:manage`
+Body: `{ itemId, locationId, uom, baseQty: number, type?: "adjustment" | "waste", lotId?, note? }`. **201** `{ ok: true }`.
 
-Retrieves details for a specific item.
+#### POST /api/inventory/transfers — `inventory:manage`
+Body: `{ itemId, fromLocationId, toLocationId, uom, baseQty: number, note? }`. Both legs commit in one transaction; source and destination must differ. **201** `{ ok: true }`.
 
-- **Auth**: `inventory.read`
-- **Response**: `{ item: InventoryItem }`
+#### GET /api/inventory/on-hand — `inventory:view`
+Query: `itemId?`, `locationId?`. Returns `{ onHand, lots }`; `lots` is only populated when `itemId` is given.
 
-### PUT /api/inventory/items/[id]
+### Stock counts
 
-Updates an existing item.
+#### GET /api/inventory/counts — `inventory:view`
+Query: `status` (`open` | `committed` | `cancelled`), `limit`.
 
-- **Auth**: `inventory.write`
-- **Request Body**: Partial `<InventoryItem>`
-- **Response**: `{ item: InventoryItem }`
+#### POST /api/inventory/counts — `inventory:count`
+Body: `{ branchId, locationId, lines?: { itemId, countedQty }[] }`. Snapshots each line's system quantity at open time. **201** with the count.
 
-### DELETE /api/inventory/items/[id]
+#### POST /api/inventory/counts/[id]/lines — `inventory:count`
+Body: `{ lines: { itemId, countedQty }[] }` (non-empty). Re-submitting an item corrects it. **201** `{ ok: true, added }`.
 
-Soft deletes an inventory item.
+#### POST /api/inventory/counts/[id]/commit — `inventory:count`
+Writes one `count` ledger row per discrepant line and closes the count; committing twice is rejected. **200** `{ ok: true }`.
 
-- **Auth**: `inventory.delete`
-- **Response**: `{ success: true }`
+### Recipes (restaurant vertical)
 
----
+#### GET /api/inventory/recipes — `inventory:view`
+#### POST /api/inventory/recipes — `inventory:manage`
+Body: `{ nameEn, nameAr, yieldQty?, yieldUom?, components? }`. **201** with the recipe.
+#### GET /api/inventory/recipes/[id] — `inventory:view`
+404 if not found.
+#### PATCH /api/inventory/recipes/[id] — `inventory:manage`
+Any of `nameEn`, `nameAr`, `yieldQty`, `yieldUom`, `isActive`; and/or `components`, which **replaces** the whole component list. Returns the updated recipe.
 
-## Categories
+### Product links
 
-### GET /api/inventory/categories
+#### GET /api/inventory/product-links — `inventory:view`
+#### POST /api/inventory/product-links — `inventory:manage`
+Body: `{ productId, variantId?, linkType: "recipe", recipeId }` or `{ productId, variantId?, linkType: "finished_good", itemId }`. This is the row `placeOrder` resolves to deduct stock; a product with no link sells without touching inventory. **201** with the link.
+#### DELETE /api/inventory/product-links — `inventory:manage`
+Query: `productId` (required), `variantId?`. **200** `{ ok: true }`.
 
-Lists inventory categories.
+### Reorder
 
-- **Auth**: `inventory.read`
-- **Response**: `{ categories: Category[] }`
-
-### POST /api/inventory/categories
-
-Creates a category.
-
-- **Auth**: `inventory.write`
-- **Request Body**: `{ name: string, parentId?: string }`
-- **Response**: `{ category: Category }`
-
----
-
-## Warehouses & Locations
-
-### GET /api/inventory/warehouses
-
-Lists all warehouses or stock locations for the tenant.
-
-- **Auth**: `inventory.read`
-- **Response**: `{ warehouses: Warehouse[] }`
-
-### POST /api/inventory/warehouses
-
-Creates a new warehouse.
-
-- **Auth**: `inventory.write`
-- **Request Body**: `{ name: string, address?: string, isActive: boolean }`
-- **Response**: `{ warehouse: Warehouse }`
-
----
-
-## Stock & Movements
-
-### GET /api/inventory/stock
-
-Retrieves current stock levels across all locations or filtered by warehouse.
-
-- **Auth**: `inventory.read`
-- **Query Params**: `warehouseId`, `itemId`
-- **Response**: 
-  ```typescript
-  {
-    stockLevels: Array<{
-      itemId: string;
-      warehouseId: string;
-      quantity: number;
-    }>
-  }
-  ```
-
-### POST /api/inventory/stock/adjustments
-
-Records a manual stock adjustment (shrinkage, damage, audit correction).
-
-- **Auth**: `stock.adjust`
-- **Request Body**:
-  ```typescript
-  {
-    itemId: string;
-    warehouseId: string;
-    quantityDelta: number;
-    reason: "damage" | "loss" | "audit" | "other";
-    notes?: string;
-  }
-  ```
-- **Response**: `{ adjustment: StockAdjustment }`
-
-### GET /api/inventory/stock/adjustments
-
-Lists historical stock adjustments.
-
-- **Auth**: `inventory.read`
-- **Query Params**: `limit`, `offset`, `warehouseId`
-- **Response**: `{ adjustments: StockAdjustment[], total: number }`
-
-### POST /api/inventory/stock/transfers
-
-Initiates a stock transfer between two warehouses.
-
-- **Auth**: `stock.transfer`
-- **Request Body**:
-  ```typescript
-  {
-    sourceWarehouseId: string;
-    targetWarehouseId: string;
-    items: Array<{ itemId: string, quantity: number }>;
-  }
-  ```
-- **Response**: `{ transfer: StockTransfer }`
-
-### POST /api/inventory/stock/transfers/[id]/receive
-
-Marks a stock transfer as received at the destination.
-
-- **Auth**: `stock.transfer`
-- **Response**: `{ transfer: StockTransfer }`
+#### GET /api/inventory/reorder-rules — `purchasing:manage`
+Returns `{ rules }`.
+#### PUT /api/inventory/reorder-rules — `purchasing:manage`
+Body: `{ itemId, locationId, reorderPoint ≥ 0, reorderQty > 0, preferredSupplierId? }`. **201** `{ ok: true }`.
+#### POST /api/inventory/reorder/check — `purchasing:manage`
+Runs the reorder sweep now (the same function `.github/workflows/reorder-check.yml` runs daily via `scripts/reorder-check.ts`). Returns the run result.

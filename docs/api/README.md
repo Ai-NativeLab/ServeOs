@@ -1,175 +1,390 @@
-# Master API Reference Index
+# API Reference Index
 
-Welcome to the ServeOS Master API Reference Index. This document serves as the unified navigation hub and authentication guide for the ServeOS API surface, covering both RESTful endpoints (`/api/*`) and Next.js Server Actions.
+ServeOS exposes two kinds of server entry points:
 
-ServeOS leverages a hybrid approach for its communication layer:
-- **Client-to-Server**: RESTful API endpoints for external integrations, POS desktop applications, and specific client-side features.
-- **Dashboard/Admin**: Next.js Server Actions for seamless, type-safe RPC-style mutations and data fetching within the App Router.
+- **Route handlers** (`src/app/api/**/route.ts`): JSON over HTTP, used by the Electron POS, the storefront, the dashboard's client components, cron jobs and third-party webhooks.
+- **Server Actions** (`"use server"` files under `src/app/`): form/RPC mutations called from the dashboard, admin console, storefront account pages, login/register and the marketing enquiry form.
 
-## 1. API Architecture Overview
+The catalogs below are **generated from source** (route files and their exported HTTP methods, plus the `authorize`/`assertPermission`/`resolve*Context` calls inside each handler). If you add or change a route, regenerate rather than hand-edit.
 
-### RESTful API Design
-All RESTful endpoints are served under the `/api/*` path using Next.js 16 App Router Route Handlers (`route.ts`). The API adheres to standard REST principles:
-- **GET**: Retrieve resources.
-- **POST**: Create new resources or perform complex operations.
-- **PUT / PATCH**: Update existing resources.
-- **DELETE**: Remove resources.
+## 1. Conventions that actually hold
 
-### Standard Conventions
-- **Request/Response Format**: Standard JSON (`application/json`) is used for all requests and responses unless specified otherwise (e.g., multipart forms for media uploads).
-- **Date/Time**: All timestamps are formatted as ISO 8601 strings in UTC.
-- **Pagination**: List endpoints support `limit` and `cursor` (or `offset`) query parameters.
+- **Body format:** JSON, except `POST /api/media-upload` and `POST /api/prescriptions`, which take `multipart/form-data`.
+- **Errors:** handlers return `{ "error": string }` with the status code. Domain errors from the ordering service (`DomainError`) additionally carry a machine-readable `code` and are returned as **422** (`POST /api/orders`, `POST /api/orders/[token]/cancel`). There is no shared `details` field.
+- **Auth failures:** staff routes built on `resolveInventoryContext` / `resolvePurchasingContext` return **401** with no session and **403** without the permission. `requireAuditPermission` routes return 403 on a missing permission; an unauthenticated caller gets the `/login` redirect thrown by `requireDashboardUser`. POS routes return **401** for a bad device or cashier token and **403** (`PosForbiddenError`) for a missing permission.
+- **Dynamic params:** `params` is a `Promise` in this Next.js version and is awaited in every handler.
+- **Pagination:** there is no global pagination convention. A few list endpoints take a `limit` (inventory items/counts, audit events) and the POS sales search takes `page`.
 
-### Error Response Schema
-All non-2xx responses follow a standardized error format to ensure predictable client-side error handling:
+## 2. Authentication schemes
 
-```typescript
-{
-  "error": string, // Human-readable error message
-  "code"?: string, // Machine-readable error code (e.g., "VALIDATION_FAILED", "UNAUTHORIZED")
-  "details"?: unknown // Optional structured data containing specific validation or error details
-}
-```
-
----
-
-## 2. Authentication & Authorization Models
-
-ServeOS employs multiple authentication schemes tailored to the specific client and security requirements. 
-
-| Auth Scheme | Description | Header / Cookie Example | Scope / Usage |
+| Scheme | How it is presented | Verified by | Used by |
 | :--- | :--- | :--- | :--- |
-| **1. POS Device Bearer Token** | Device-level token authenticating a specific POS terminal to the backend. | `Authorization: Bearer <device_token>` | All `/api/pos/*` routes. Required for basic device connectivity. |
-| **2. POS Cashier Token** | User-level token authenticating the specific employee operating the POS. | `X-POS-Cashier: <cashier_token>` | Specific `/api/pos/*` operations requiring user audit (e.g., refunds, shifts). |
-| **3. Dashboard / Admin Cookie** | Standard HTTP-only, secure session cookie for web users. | `Cookie: serveos_session=<jwt>` <br> `serveos_admin_session=<jwt>` | Server Actions and dashboard API endpoints. Multi-tenant context encoded in token. |
-| **4. Customer Session Cookie / Token** | Temporary tokens/cookies for public storefront and order tracking. | `Cookie: CUSTOMER_COOKIE=<token>` <br> `?token=<order_tracking_token>` | Customer-facing storefront and order status routes. |
-| **5. Webhook Signatures** | Cryptographic verification for incoming third-party webhooks. | `svix-signature: <sig>` <br> `X-Hub-Signature-256: <hmac>` | `/api/webhooks/*` (Resend, WhatsApp). |
-| **6. Public / Unauthenticated** | No authentication required. | *None* | Health checks, public menus, and delivery areas. |
+| **Staff session** | `serveos_session` cookie: an opaque random token looked up in the `sessions` table (not a JWT). The same cookie serves the dashboard and the admin console; admin pages additionally require the `super_admin` role. | `requireDashboardUser` (`src/server/auth/dashboard-context.ts`), `requireSuperAdmin` (`src/server/auth/admin-context.ts`) | Dashboard routes, dashboard/admin Server Actions |
+| **Customer session** | `serveos_customer` cookie (`CUSTOMER_COOKIE`), validated against the storefront's tenant | `validateCustomerSession`, `currentCustomer` (`src/server/customers/`) | `POST /api/orders` (optional), `POST /api/prescriptions` (required), account Server Actions |
+| **POS device** | `Authorization: Bearer <deviceToken>` (64 hex chars, from pairing) | `requirePosDevice` (`src/server/pos/require-device.ts`) | POS routes that act as the terminal |
+| **POS device + cashier** | The device bearer **plus** `X-POS-Cashier: <cashierToken>` (12-hour cashier session, stored hashed in `pos_cashier_sessions`). Optional `X-POS-App-Version` goes into the audit fingerprint. | `requirePosCashier` (`src/server/pos/require-cashier.ts`) | POS routes that act for a human |
+| **Status token** | Path segment `/api/orders/[token]/…` plus the tenant slug (`x-tenant-slug` header set by the proxy, or `?slug=`) | `getOrderByToken` / `cancelOrderByToken` | Customer order tracking |
+| **Cron secret** | `Authorization: Bearer $CRON_SECRET` | inline check | `GET /api/notifications/worker` (Vercel Cron) |
+| **Webhook signatures** | Resend: `svix-id` / `svix-timestamp` / `svix-signature` over the raw body. Meta: `x-hub-signature-256` HMAC over the raw body; `GET` handshake checks `hub.verify_token` against `WHATSAPP_VERIFY_TOKEN`. | `parseResendWebhook`, `ingestWebhook` | `/api/notifications/webhook/resend`, `/api/whatsapp/webhook` |
+| **Public** | none | — | `/api/health`, `/api/menu`, `/api/delivery-areas`, `/api/pos/v1/pair`, `/api/pos/v1/login`, `/api/demo/login` |
 
----
+Permission strings are defined in `src/server/rbac/permissions.ts`; the role → permission matrix is in [functional.md §4](../requirements/functional.md#4-roles-and-permissions).
 
-## 3. Master Route Catalog (All 64 Endpoints)
+## 3. Route catalog
 
-The ServeOS API surface consists of 64 REST endpoints grouped by domain. 
-For detailed schemas, request/response examples, and error codes, follow the links to the dedicated documentation files.
+"Staff session" + a permission means the handler calls `authorize(roleKeys, "<perm>")` (directly or through a `require*Permission` / `resolve*Context` helper). "Staff session" with no permission means any signed-in tenant user. POS routes marked "POS device + cashier" with no permission accept any signed-in cashier (cashier sign-in itself requires `pos:sell`).
 
-### [POS API Reference (`pos-api.md`)](./pos-api.md) — 24 Endpoints
-| Method | Path | Auth Scheme | Permissions | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| **POST** | `/api/pos/auth/register` | Device Token | None | Register a new POS terminal |
-| **POST** | `/api/pos/auth/login` | Device Token | None | Authenticate POS terminal |
-| **POST** | `/api/pos/cashier/login` | Device Token | PIN required | Authenticate cashier via PIN |
-| **POST** | `/api/pos/cashier/logout` | Cashier Token | None | End cashier session |
-| **GET** | `/api/pos/sync/menu` | Device Token | Menu:Read | Sync full menu data |
-| **GET** | `/api/pos/sync/taxes` | Device Token | Tax:Read | Sync tax rates and rules |
-| **GET** | `/api/pos/sync/discounts` | Device Token | Discount:Read | Sync applicable discounts |
-| **POST** | `/api/pos/sync/offline-orders` | Device Token | Order:Write | Batch sync offline POS orders |
-| **POST** | `/api/pos/orders` | Device/Cashier Token | Order:Write | Create a new POS order |
-| **GET** | `/api/pos/orders/:id` | Device Token | Order:Read | Retrieve a specific order |
-| **PUT** | `/api/pos/orders/:id` | Device/Cashier Token | Order:Write | Update an existing order |
-| **POST** | `/api/pos/orders/:id/void` | Cashier Token | Order:Void | Void an order |
-| **POST** | `/api/pos/orders/:id/refund` | Cashier Token | Order:Refund | Process a full/partial refund |
-| **GET** | `/api/pos/payments/methods` | Device Token | Payment:Read | List accepted payment methods |
-| **POST** | `/api/pos/payments/process` | Device/Cashier Token | Payment:Write | Process a payment transaction |
-| **POST** | `/api/pos/shifts/open` | Cashier Token | Shift:Write | Open a cash register shift |
-| **POST** | `/api/pos/shifts/close` | Cashier Token | Shift:Write | Close a cash register shift |
-| **POST** | `/api/pos/shifts/cash-drop` | Cashier Token | Shift:Manage | Record a cash drop/payout |
-| **GET** | `/api/pos/shifts/current` | Device Token | Shift:Read | Get current active shift info |
-| **GET** | `/api/pos/customers` | Device Token | Customer:Read | Search/list customers |
-| **POST** | `/api/pos/customers` | Device Token | Customer:Write | Create a new customer |
-| **GET** | `/api/pos/hardware/printers` | Device Token | Hardware:Read | List configured network printers |
-| **POST** | `/api/pos/hardware/print-job` | Device Token | Hardware:Write | Dispatch a receipt/kitchen ticket |
-| **POST** | `/api/pos/logs` | Device Token | None | Ingest POS client error logs |
+**66 route files, 81 method handlers.**
 
-### [Inventory API Reference (`inventory-api.md`)](./inventory-api.md) — 14 Endpoints
-| Method | Path | Auth Scheme | Permissions | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| **GET** | `/api/inventory/items` | Session/Device | Inv:Read | List all inventory items |
-| **POST** | `/api/inventory/items` | Session | Inv:Write | Create a new inventory item |
-| **GET** | `/api/inventory/items/:id` | Session/Device | Inv:Read | Get specific item details |
-| **PUT** | `/api/inventory/items/:id` | Session | Inv:Write | Update inventory item |
-| **DELETE** | `/api/inventory/items/:id` | Session | Inv:Delete | Delete/archive an item |
-| **GET** | `/api/inventory/locations` | Session | Inv:Read | List inventory storage locations |
-| **POST** | `/api/inventory/adjustments` | Session | Inv:Write | Record stock adjustments |
-| **GET** | `/api/inventory/adjustments` | Session | Inv:Read | List historical stock adjustments |
-| **POST** | `/api/inventory/counts` | Session | Inv:Write | Start a physical inventory count |
-| **PUT** | `/api/inventory/counts/:id` | Session | Inv:Write | Update/commit inventory count |
-| **GET** | `/api/inventory/stock-levels` | Session/Device | Inv:Read | Get current stock levels |
-| **POST** | `/api/inventory/transfers` | Session | Inv:Write | Transfer stock between locations |
-| **GET** | `/api/inventory/transfers` | Session | Inv:Read | List stock transfers |
-| **GET** | `/api/inventory/alerts` | Session | Inv:Read | Get low stock/expiry alerts |
+### POS (`/api/pos/v1/*`) — 24 route files, 27 handlers ([pos-api.md](./pos-api.md))
 
-### [Purchasing & Supplier API Reference (`purchasing-api.md`)](./purchasing-api.md) — 11 Endpoints
-| Method | Path | Auth Scheme | Permissions | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| **GET** | `/api/purchasing/suppliers` | Session | Supplier:Read | List all suppliers |
-| **POST** | `/api/purchasing/suppliers` | Session | Supplier:Write | Add a new supplier |
-| **GET** | `/api/purchasing/suppliers/:id` | Session | Supplier:Read | Get supplier details |
-| **PUT** | `/api/purchasing/suppliers/:id` | Session | Supplier:Write | Update supplier details |
-| **GET** | `/api/purchasing/purchase-orders` | Session | PO:Read | List purchase orders |
-| **POST** | `/api/purchasing/purchase-orders` | Session | PO:Write | Create a purchase order |
-| **GET** | `/api/purchasing/purchase-orders/:id` | Session | PO:Read | Get purchase order details |
-| **PUT** | `/api/purchasing/purchase-orders/:id` | Session | PO:Write | Update purchase order |
-| **POST** | `/api/purchasing/purchase-orders/:id/receive` | Session | PO:Write | Receive items against PO |
-| **POST** | `/api/purchasing/purchase-orders/:id/cancel` | Session | PO:Write | Cancel a purchase order |
-| **GET** | `/api/purchasing/invoices` | Session | Invoice:Read | List supplier invoices |
+| Method | Path | Auth | Permission | What it does |
+|---|---|---|---|---|
+| POST | `/api/pos/v1/authorize` | POS device + cashier | — | Manager override: verifies a manager's email/password and issues a short-lived grant |
+| POST | `/api/pos/v1/cashier/login` | POS device | — | Cashier sign-in with email + password |
+| GET | `/api/pos/v1/catalog` | POS device | — | Menu, checkout pricing, catalog version and shift policy for the device's branch |
+| DELETE | `/api/pos/v1/held-tickets/[id]` | POS device + cashier | — | Discard a held ticket |
+| GET | `/api/pos/v1/held-tickets` | POS device + cashier | — | List held tickets |
+| POST | `/api/pos/v1/held-tickets` | POS device + cashier | — | Hold (park) a cart draft |
+| POST | `/api/pos/v1/login` | Public | — | Owner/manager pairs a device with slug + email + password |
+| GET | `/api/pos/v1/orders/list` | POS device | — | Live order queue for the device's branch (50 latest) |
+| POST | `/api/pos/v1/orders/status` | POS device | — | Advance an order's status from the till |
+| POST | `/api/pos/v1/pair` | Public | — | Redeem a pairing code for a device token |
+| GET | `/api/pos/v1/ping` | POS device | — | Connectivity probe `{ ok, serverTime }` |
+| GET | `/api/pos/v1/realtime` | POS device | — | Realtime topic config for the device's tenant, or `{ enabled: false }` |
+| GET | `/api/pos/v1/reports/x` | POS device + cashier | `pos:sell` | X report |
+| GET | `/api/pos/v1/reports/z` | POS device + cashier | `pos:sell` | Z report (`shiftId` optional) |
+| POST | `/api/pos/v1/sales/[id]/payments` | POS device + cashier | `pos:sell` | Add a tender to a sale |
+| POST | `/api/pos/v1/sales/[id]/refund` | POS device + cashier | `pos:sell` | Refund a sale (`pos:refund` or a manager grant resolved inside `issueRefund`) |
+| POST | `/api/pos/v1/sales/[id]/reprint` | POS device + cashier | `pos:sell` | Receipt data for a reprint |
+| GET | `/api/pos/v1/sales/[id]` | POS device + cashier | `pos:sell` | Sale detail |
+| GET | `/api/pos/v1/sales` | POS device + cashier | `pos:sell` | Sales-history search |
+| POST | `/api/pos/v1/sales` | POS device + cashier | `pos:sell` | Record a sale (idempotent on `clientOrderId`) |
+| POST | `/api/pos/v1/shifts/close` | POS device + cashier | `pos:sell` | Close a shift with a final count; returns the Z report |
+| GET | `/api/pos/v1/shifts/current` | POS device + cashier | `pos:sell` | Open shift on this device + live X report |
+| POST | `/api/pos/v1/shifts/current` | POS device + cashier | `pos:sell` | Record a mid-shift count |
+| POST | `/api/pos/v1/shifts/movements` | POS device + cashier | `pos:sell` | Pay-in / pay-out / safe drop / no-sale |
+| POST | `/api/pos/v1/shifts/open` | POS device + cashier | `pos:sell` | Open a shift with an opening float |
+| GET | `/api/pos/v1/sync/auth` | POS device + cashier | — | Offline sign-in roster (scrypt hashes) for POS-capable users |
+| POST | `/api/pos/v1/sync/events` | POS device | — | Ingest a batch (≤ 50) of offline events |
 
-### [Platform API Reference (`platform-api.md`)](./platform-api.md) — 15 Endpoints
-| Method | Path | Auth Scheme | Permissions | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| **GET** | `/api/health` | Public | None | System health check |
-| **GET** | `/api/menu` | Public | None | Public menu catalog for storefront |
-| **GET** | `/api/delivery-areas` | Public | None | Supported delivery zones |
-| **POST** | `/api/orders` | Customer Session | None | Customer order placement |
-| **GET** | `/api/orders/:id/status` | Token (QS) | None | Public order status polling |
-| **GET** | `/api/dashboard/metrics` | Session | Dash:Read | High-level business metrics |
-| **GET** | `/api/admin/tenants` | Admin Session | Admin:Read | Superadmin: List tenants |
-| **POST** | `/api/admin/tenants` | Admin Session | Admin:Write | Superadmin: Create tenant |
-| **GET** | `/api/audit/logs` | Session | Audit:Read | Retrieve system audit logs |
-| **POST** | `/api/media/upload` | Session | Media:Write | Request presigned upload URL |
-| **POST** | `/api/webhooks/resend` | Webhook (Svix) | None | Email delivery status updates |
-| **POST** | `/api/webhooks/whatsapp` | Webhook (HMAC) | None | WhatsApp message status |
-| **POST** | `/api/notifications/push` | Session | Notif:Write | Send internal push notification |
-| **GET** | `/api/notifications` | Session | Notif:Read | List unread notifications |
-| **PUT** | `/api/notifications/read` | Session | Notif:Write | Mark notifications as read |
+### Inventory (`/api/inventory/*`) — 14 route files, 21 handlers ([inventory-api.md](./inventory-api.md))
 
----
+| Method | Path | Auth | Permission | What it does |
+|---|---|---|---|---|
+| POST | `/api/inventory/adjustments` | Staff session | `inventory:manage` | Adjustment or waste ledger entry |
+| POST | `/api/inventory/counts/[id]/commit` | Staff session | `inventory:count` | Commit a stock count (one `count` ledger row per discrepant line) |
+| POST | `/api/inventory/counts/[id]/lines` | Staff session | `inventory:count` | Add/correct counted lines on an open count |
+| GET | `/api/inventory/counts` | Staff session | `inventory:view` | List stock counts (`status`, `limit`) |
+| POST | `/api/inventory/counts` | Staff session | `inventory:count` | Open a stock count (optionally with lines) |
+| PATCH | `/api/inventory/items/[id]` | Staff session | `inventory:manage` | Edit an inventory item (not `baseUom`) |
+| GET | `/api/inventory/items` | Staff session | `inventory:view` | List inventory items (`kind`, `isActive`, `limit`) |
+| POST | `/api/inventory/items` | Staff session | `inventory:manage` | Create an inventory item |
+| GET | `/api/inventory/on-hand` | Staff session | `inventory:view` | On-hand by item/location (+ lots when `itemId` given) |
+| GET | `/api/inventory/product-links` | Staff session | `inventory:view` | List product → inventory links |
+| POST | `/api/inventory/product-links` | Staff session | `inventory:manage` | Link a product/variant to a recipe or finished-good item |
+| DELETE | `/api/inventory/product-links` | Staff session | `inventory:manage` | Unlink (`productId`, optional `variantId`) |
+| POST | `/api/inventory/receipts` | Staff session | `inventory:manage` | Receive stock outside a PO (creates a lot + `receive` ledger row) |
+| GET | `/api/inventory/recipes/[id]` | Staff session | `inventory:view` | Get a recipe with components |
+| PATCH | `/api/inventory/recipes/[id]` | Staff session | `inventory:manage` | Edit recipe header and/or replace components |
+| GET | `/api/inventory/recipes` | Staff session | `inventory:view` | List recipes |
+| POST | `/api/inventory/recipes` | Staff session | `inventory:manage` | Create a recipe (BOM) |
+| GET | `/api/inventory/reorder-rules` | Staff session | `purchasing:manage` | List reorder rules |
+| PUT | `/api/inventory/reorder-rules` | Staff session | `purchasing:manage` | Upsert a reorder rule |
+| POST | `/api/inventory/reorder/check` | Staff session | `purchasing:manage` | Run the reorder sweep now (same function as `reorder-check.yml`) |
+| POST | `/api/inventory/transfers` | Staff session | `inventory:manage` | Move stock between two locations |
 
-## 4. Server Actions Catalog (All 31 Files)
+### Purchasing & suppliers — 11 route files, 15 handlers ([purchasing-api.md](./purchasing-api.md))
 
-Server Actions are located across `src/app/**/actions.ts`. They provide type-safe data mutations directly from React Server Components and Client Components in the dashboard.
-*Note: All dashboard server actions inherently require a valid Dashboard Session Cookie (`serveos_session`) and appropriate role-based permissions (RLS).*
+| Method | Path | Auth | Permission | What it does |
+|---|---|---|---|---|
+| POST | `/api/purchase-orders/[id]/cancel` | Staff session | `purchasing:manage` | Cancel a PO |
+| POST | `/api/purchase-orders/[id]/close` | Staff session | `purchasing:manage` | Close a received PO |
+| PATCH | `/api/purchase-orders/[id]/invoice` | Staff session | `purchasing:manage` | Record the supplier invoice total |
+| POST | `/api/purchase-orders/[id]/receipts` | Staff session | `purchasing:manage` | Post a goods receipt against PO lines |
+| GET | `/api/purchase-orders/[id]` | Staff session | `purchasing:manage` | PO detail |
+| PATCH | `/api/purchase-orders/[id]` | Staff session | `purchasing:manage` | Replace a draft PO's supplier/branch/lines |
+| POST | `/api/purchase-orders/[id]/send` | Staff session | `purchasing:manage` | Email the PO to the supplier and mark it `sent` |
+| GET | `/api/purchase-orders/[id]/variance` | Staff session | `purchasing:manage` | Ordered vs received vs invoiced variance |
+| GET | `/api/purchase-orders` | Staff session | `purchasing:manage` | List POs (`status`) |
+| POST | `/api/purchase-orders` | Staff session | `purchasing:manage` | Create a draft PO |
+| GET | `/api/suppliers/[id]/items` | Staff session | `suppliers:manage` | Supplier's item catalog |
+| POST | `/api/suppliers/[id]/items` | Staff session | `suppliers:manage` | Upsert a supplier item (SKU, last cost, pack UoM) |
+| PATCH | `/api/suppliers/[id]` | Staff session | `suppliers:manage` | Update a supplier |
+| GET | `/api/suppliers` | Staff session | `suppliers:manage` | List suppliers |
+| POST | `/api/suppliers` | Staff session | `suppliers:manage` | Create a supplier |
 
-| Domain | Module Path | Exported Actions (Examples) | Auth Context |
-| :--- | :--- | :--- | :--- |
-| **Auth** | `src/app/auth/actions.ts` | `login`, `logout`, `resetPassword` | Public / Session |
-| **Tenants** | `src/app/(admin)/tenants/actions.ts` | `createTenant`, `updateTenantStatus` | Admin Session |
-| **Users** | `src/app/settings/users/actions.ts` | `inviteUser`, `updateRole`, `revokeAccess` | Session |
-| **Roles** | `src/app/settings/roles/actions.ts` | `createRole`, `updatePermissions` | Session |
-| **Menu Items** | `src/app/menu/items/actions.ts` | `createMenuItem`, `updateMenuItem`, `archiveItem` | Session |
-| **Categories** | `src/app/menu/categories/actions.ts` | `createCategory`, `reorderCategories` | Session |
-| **Modifiers** | `src/app/menu/modifiers/actions.ts` | `createModifierGroup`, `linkModifierToItem` | Session |
-| **Inventory** | `src/app/inventory/actions.ts` | `updateStockLevel`, `submitCount` | Session |
-| **Suppliers** | `src/app/purchasing/suppliers/actions.ts` | `addSupplier`, `updateSupplier` | Session |
-| **Purchase Orders** | `src/app/purchasing/orders/actions.ts` | `draftPO`, `approvePO`, `markReceived` | Session |
-| **POS Devices** | `src/app/settings/devices/actions.ts` | `registerDevice`, `revokeDeviceToken` | Session |
-| **Orders** | `src/app/orders/actions.ts` | `updateOrderStatus`, `refundOrder` | Session |
-| **Customers** | `src/app/customers/actions.ts` | `updateCustomerProfile`, `addNote` | Session |
-| **Promotions** | `src/app/marketing/promos/actions.ts` | `createDiscountCode`, `togglePromo` | Session |
-| **Loyalty** | `src/app/marketing/loyalty/actions.ts` | `adjustPoints`, `updateLoyaltyTiers` | Session |
-| **Reports** | `src/app/reports/actions.ts` | `generateSalesReport`, `exportCSV` | Session |
-| **Taxes** | `src/app/settings/taxes/actions.ts` | `updateTaxRates`, `setTaxRules` | Session |
-| **Locations** | `src/app/settings/locations/actions.ts` | `addLocation`, `updateOperatingHours` | Session |
-| **Printers** | `src/app/settings/printers/actions.ts` | `configurePrinter`, `testPrint` | Session |
-| **Webhooks** | `src/app/settings/integrations/actions.ts` | `addWebhookEndpoint`, `rotateSecret` | Session |
-| **Billing** | `src/app/settings/billing/actions.ts` | `updateSubscription`, `addPaymentMethod` | Session |
-| **Shifts** | `src/app/staff/shifts/actions.ts` | `approveShift`, `editTimecard` | Session |
-| **Payroll** | `src/app/staff/payroll/actions.ts` | `generatePayrollReport` | Session |
-| **Storefront** | `src/app/storefront/settings/actions.ts` | `updateTheme`, `updateStorefrontSEO` | Session |
-| **Delivery** | `src/app/delivery/zones/actions.ts` | `createDeliveryZone`, `updateFees` | Session |
-| **Drivers** | `src/app/delivery/drivers/actions.ts` | `registerDriver`, `assignOrderToDriver` | Session |
-| **Feedback** | `src/app/feedback/actions.ts` | `respondToReview`, `flagReview` | Session |
-| **Audit** | `src/app/settings/audit/actions.ts` | `exportAuditLogs` | Session |
-| **WhatsApp** | `src/app/marketing/whatsapp/actions.ts` | `sendBroadcastTemplate`, `updateWhatsAppConfig` | Session |
-| **Media** | `src/app/media/actions.ts` | `deleteMediaAsset`, `organizeMediaFolder` | Session |
-| **Onboarding** | `src/app/onboarding/actions.ts` | `completeSetupStep`, `skipSetup` | Session |
+### Platform, storefront, dashboard & webhooks — 17 route files, 18 handlers ([platform-api.md](./platform-api.md))
+
+| Method | Path | Auth | Permission | What it does |
+|---|---|---|---|---|
+| GET | `/api/audit/chain/status` | Staff session | `audit:view` | Verify the tenant's audit hash chain (`getChainStatus`) |
+| GET | `/api/audit/events` | Staff session | `audit:view` | Filtered audit-event list (`action`, `entityType`, `entityId`, `actorUserId`, `actorType`, `from`, `to`, `limit`) |
+| POST | `/api/dashboard/notifications/mark-read` | Staff session | — | Mark the caller's notifications read (`ids` optional = all) |
+| GET | `/api/dashboard/notifications` | Staff session | — | Caller's notifications (`unread=1`, `type`, `severity`) |
+| GET | `/api/dashboard/orders` | Staff session | `orders:manage` | Latest 100 orders as dashboard rows (live-queue polling) |
+| GET | `/api/delivery-areas` | Public | — | Active delivery areas for `slug` + `branch` |
+| GET | `/api/demo/login` | Public | — | Signs the visitor into the `demo-<trade>` tenant, sets `serveos_session`, 303 → `/dashboard` |
+| GET | `/api/health` | Public | — | `{ ok, sha }` — DB-free liveness probe used by deploy-watch |
+| POST | `/api/media-upload` | Staff session | — | Multipart image upload to the Supabase Storage `media` bucket (max 5 MB) |
+| GET | `/api/menu` | Public | — | Published menu for `slug` (optional `branch`) |
+| POST | `/api/notifications/webhook/[provider]` | Resend (Svix) signature | — | Email delivery events; only `resend` is accepted |
+| GET | `/api/notifications/worker` | Cron secret | — | Drains the notification outbox and WhatsApp status queue (Vercel Cron) |
+| POST | `/api/orders/[token]/cancel` | Public | — | Customer cancels an order by status token |
+| GET | `/api/orders/[token]/status` | Public | — | Order status by status token |
+| POST | `/api/orders` | Public | — | Storefront checkout (`placeOrder`); attaches the signed-in customer if any |
+| POST | `/api/prescriptions` | Customer session | — | Customer uploads a prescription image (pharmacy storefronts only) |
+| GET | `/api/whatsapp/webhook` | Meta verify token | — | Meta subscription handshake (`hub.verify_token`) |
+| POST | `/api/whatsapp/webhook` | Meta HMAC signature | — | Inbound WhatsApp messages/statuses |
+
+
+## 4. Server Actions catalog
+
+Every exported function in these files is a Server Action. "Guard" is the auth helper the action calls; "Permission" is what that helper (or a direct `authorize` call) enforces. Actions listed with "no guard" are sign-in/sign-up/sign-out or the public marketing enquiry form.
+
+**32 `"use server"` files, 84 exported actions.**
+
+
+#### `src/app/account/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `customerRegisterAction` | no guard | — |
+| `customerLoginAction` | no guard | — |
+| `customerSignOutAction` | no guard | — |
+| `customerUpdateProfileAction` | `currentCustomer` | — |
+
+#### `src/app/admin/(console)/approvals/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `approveAction` | `requireSuperAdmin` | super_admin role |
+| `rejectAction` | `requireSuperAdmin` | super_admin role |
+
+#### `src/app/admin/(console)/billing/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `confirmInvoiceAction` | `requireSuperAdmin` | super_admin role |
+| `rejectInvoiceAction` | `requireSuperAdmin` | super_admin role |
+
+#### `src/app/admin/(console)/tenants/[id]/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `cancelSubscriptionAction` | `requireSuperAdmin` | super_admin role |
+| `forceActiveAction` | `requireSuperAdmin` | super_admin role |
+| `markPaidAction` | `requireSuperAdmin` | super_admin role |
+| `suspendTenantAction` | `requireSuperAdmin` | super_admin role |
+| `activateTenantAction` | `requireSuperAdmin` | super_admin role |
+
+#### `src/app/admin/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `adminSignOutAction` | no guard | — |
+
+#### `src/app/admin/login/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `adminLoginAction` | no guard | — |
+
+#### `src/app/dashboard/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `signOutAction` | no guard | — |
+
+#### `src/app/dashboard/banners/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `createBannerAction` | `requireMenuPermission` | `menu:manage` |
+| `toggleBannerAction` | `requireMenuPermission` | `menu:manage` |
+| `deleteBannerAction` | `requireMenuPermission` | `menu:manage` |
+
+#### `src/app/dashboard/branches/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `createBranchAction` | `requireMenuPermission` | `menu:manage` |
+| `updateBranchAction` | `requireMenuPermission` | `menu:manage` |
+| `deleteBranchAction` | `requireMenuPermission` | `menu:manage` |
+
+#### `src/app/dashboard/customers/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `setTradeApprovalAction` | `requireCustomersPermission` | `customers:manage` |
+
+#### `src/app/dashboard/inventory/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `createItemAction` | `requireInventoryPermission` | `inventory:manage` |
+| `receiveStockAction` | `requireInventoryPermission` | `inventory:manage` |
+| `adjustStockAction` | `requireInventoryPermission` | `inventory:manage` |
+| `transferStockAction` | `requireInventoryPermission` | `inventory:manage` |
+| `createRecipeAction` | `requireInventoryPermission` | `inventory:manage` |
+| `setRecipeComponentsAction` | `requireInventoryPermission` | `inventory:manage` |
+| `linkProductAction` | `requireInventoryPermission` | `inventory:manage` |
+| `unlinkProductAction` | `requireInventoryPermission` | `inventory:manage` |
+
+#### `src/app/dashboard/menu/categories/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `createCategoryAction` | `requireMenuPermission` | `menu:manage` |
+| `updateCategoryAction` | `requireMenuPermission` | `menu:manage` |
+| `deleteCategoryAction` | `requireMenuPermission` | `menu:manage` |
+
+#### `src/app/dashboard/menu/products/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `createProductAction` | `requireMenuPermission` | `menu:manage` |
+| `updateProductAction` | `requireMenuPermission` | `menu:manage` |
+| `deleteProductAction` | `requireMenuPermission` | `menu:manage` |
+| `upsertModifierGroupAction` | `requireMenuPermission` | `menu:manage` |
+| `deleteModifierGroupAction` | `requireMenuPermission` | `menu:manage` |
+| `upsertModifierOptionAction` | `requireMenuPermission` | `menu:manage` |
+| `deleteModifierOptionAction` | `requireMenuPermission` | `menu:manage` |
+| `setBranchAvailabilityAction` | `requireMenuPermission` | `menu:manage` |
+| `upsertVariantAction` | `requireMenuPermission` | `menu:manage` |
+| `deleteVariantAction` | `requireMenuPermission` | `menu:manage` |
+| `setProductStockAction` | `requireMenuPermission` | `menu:manage` |
+
+#### `src/app/dashboard/orders/[id]/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `transitionOrderAction` | `requireOrdersPermission` | `orders:manage` |
+| `markPaidAction` | `requireOrdersPermission` | `orders:manage` |
+
+#### `src/app/dashboard/orders/[id]/refund-actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `issueRefundAction` | `requireOrdersPermission`, `authorize` | `pos:refund`, `orders:manage` |
+
+#### `src/app/dashboard/payments/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `confirmOrderPaymentAction` | `requireDashboardUser`, `authorize` | `payments:confirm` |
+| `rejectOrderPaymentAction` | `requireDashboardUser`, `authorize` | `payments:confirm` |
+
+#### `src/app/dashboard/prescriptions/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `reviewPrescriptionAction` | `requireRxReviewPermission` | `rx:review` |
+
+#### `src/app/dashboard/purchase-orders/[id]/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `sendPoAction` | `requirePurchasingPermission` | `purchasing:manage` |
+| `cancelPoAction` | `requirePurchasingPermission` | `purchasing:manage` |
+| `closePoAction` | `requirePurchasingPermission` | `purchasing:manage` |
+| `enterInvoiceAction` | `requirePurchasingPermission` | `purchasing:manage` |
+| `postReceiptAction` | `requirePurchasingPermission` | `purchasing:manage` |
+
+#### `src/app/dashboard/purchase-orders/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `createDraftPoAction` | `requirePurchasingPermission` | `purchasing:manage` |
+| `updateDraftPoAction` | `requirePurchasingPermission` | `purchasing:manage` |
+
+#### `src/app/dashboard/purchase-orders/reorder-rules/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `upsertReorderRuleAction` | `requirePurchasingPermission` | `purchasing:manage` |
+| `runReorderCheckAction` | `requirePurchasingPermission` | `purchasing:manage` |
+
+#### `src/app/dashboard/settings/billing/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `requestUpgradeAction` | `requireBillingPermission` | `billing:manage` |
+| `subscribeToPlanAction` | `requireBillingPermission` | `billing:manage` |
+| `submitInvoiceProofAction` | `requireBillingPermission` | `billing:manage` |
+
+#### `src/app/dashboard/settings/fulfillment/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `setAcceptingOrdersAction` | `requireFulfillmentPermission` | `fulfillment:manage` |
+| `setOpeningHoursAction` | `requireFulfillmentPermission` | `fulfillment:manage` |
+| `addAreaAction` | `requireFulfillmentPermission` | `fulfillment:manage` |
+| `deleteAreaAction` | `requireFulfillmentPermission` | `fulfillment:manage` |
+| `setVatAction` | `requireFulfillmentPermission` | `fulfillment:manage` |
+
+#### `src/app/dashboard/settings/payment-methods/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `saveOfflineMethodAction` | `requireDashboardUser`, `authorize` | `fulfillment:manage` |
+| `deleteOfflineMethodAction` | `requireDashboardUser`, `authorize` | `fulfillment:manage` |
+
+#### `src/app/dashboard/settings/pos-devices/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `generatePairingCodeAction` | `requireTenantManagePermission` | `tenant:manage` |
+| `revokeDeviceAction` | `requireTenantManagePermission` | `tenant:manage` |
+
+#### `src/app/dashboard/settings/profile/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `updateTenantProfileAction` | `requireTenantManagePermission` | `tenant:manage` |
+
+#### `src/app/dashboard/settings/staff/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `createStaffAction` | `requireStaffPermission` | `staff:invite` |
+| `setStaffRoleAction` | `requireStaffPermission` | `staff:invite` |
+| `deactivateStaffAction` | `requireStaffPermission` | `staff:invite` |
+
+#### `src/app/dashboard/settings/taxes/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `saveTaxSettingsAction` | `requireDashboardUser`, `authorize` | `fulfillment:manage` |
+
+#### `src/app/dashboard/settings/whatsapp/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `setWhatsappNumberAction` | `requireFulfillmentPermission` | `fulfillment:manage` |
+
+#### `src/app/dashboard/suppliers/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `createSupplierAction` | `requirePurchasingPermission` | `suppliers:manage` |
+| `updateSupplierAction` | `requirePurchasingPermission` | `suppliers:manage` |
+| `upsertSupplierItemAction` | `requirePurchasingPermission` | `suppliers:manage` |
+
+#### `src/app/login/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `loginAction` | no guard | — |
+
+#### `src/app/register/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `registerAction` | no guard | — |
+
+#### `src/app/subscribe/actions.ts`
+
+| Action | Guard | Permission |
+|---|---|---|
+| `submitEnquiryAction` | no guard | — |
