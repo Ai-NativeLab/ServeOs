@@ -90,7 +90,7 @@ export function StorefrontMenu({
             )}
             <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
               {rest.map((p) => {
-                const simpleQty = getSimpleProductQuantity(cart, p.id);
+                const simpleQty = getSimpleProductQuantity(cart, p.id, branchId);
                 return (
                   <ProductCard
                     key={p.id}

@@ -91,7 +91,7 @@ export function ShopBrowser({
           <SectionHeader eyebrow={cat.nameAr} title={cat.nameEn} count={cat.products.length} />
           <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
             {cat.products.map((p) => {
-              const simpleQty = getSimpleProductQuantity(cart, p.id);
+              const simpleQty = getSimpleProductQuantity(cart, p.id, branchId);
               return (
                 <ShopProductCard
                   key={p.id}

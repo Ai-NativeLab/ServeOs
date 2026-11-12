@@ -1,3 +1,5 @@
+import { isDimensionalUom, type UnitOfMeasure } from "@/server/catalog/uom-values";
+
 export type CartLine = {
   productId: string;
   variantId?: string;
@@ -102,19 +104,22 @@ export function removeLine(index: number): Cart {
   return setLineQuantity(index, 0);
 }
 
-/** Total quantity of a product across all variants, cuts, and modifier configurations. */
-export function getProductQuantity(cart: Cart, productId: string): number {
-  return cart.lines
-    .filter((l) => l.productId === productId)
-    .reduce((sum, l) => sum + l.quantity, 0);
+/** A cart belonging to another branch is reset by the next add (see
+ * mergeLine), so from this branch's point of view it holds nothing. */
+function isOtherBranchCart(cart: Cart, branchId: string | null): boolean {
+  return cart.branchId !== null && cart.branchId !== branchId;
 }
 
-/** Quantity of the simple (unconfigured) line for a product in the cart. */
-export function getSimpleProductQuantity(cart: Cart, productId: string): number {
-  const line = cart.lines.find(
-    (l) => l.productId === productId && !l.variantId && l.selectedOptionIds.length === 0 && !l.dimensions,
-  );
-  return line ? line.quantity : 0;
+function isSimpleLineOf(productId: string) {
+  return (l: CartLine) =>
+    l.productId === productId && !l.variantId && l.selectedOptionIds.length === 0 && !l.dimensions;
+}
+
+/** Quantity of the simple (unconfigured) line for a product in the cart, as
+ * seen from `branchId`. A cart for a different branch counts as empty. */
+export function getSimpleProductQuantity(cart: Cart, productId: string, branchId: string | null): number {
+  if (isOtherBranchCart(cart, branchId)) return 0;
+  return cart.lines.find(isSimpleLineOf(productId))?.quantity ?? 0;
 }
 
 /** Returns true if a product requires configuration (modifiers, retail variants, or cut dimensions). */
@@ -125,27 +130,20 @@ export function isProductConfigurable(product: {
 }): boolean {
   if (product.modifierGroups && product.modifierGroups.length > 0) return true;
   if (product.variants && product.variants.length > 0) return true;
-  if (product.unitOfMeasure && (product.unitOfMeasure === "m" || product.unitOfMeasure === "m2" || product.unitOfMeasure === "bf")) {
-    return true;
-  }
-  return false;
+  return !!product.unitOfMeasure && isDimensionalUom(product.unitOfMeasure as UnitOfMeasure);
 }
 
-/** Pure function to increment or decrement a simple product's quantity in the cart. */
+/** Pure function to increment or decrement a simple product's quantity in the
+ * cart. Increments go through mergeLine so a branch change resets the cart
+ * exactly as the sheet's "Add" does; a decrement never touches another
+ * branch's cart. */
 export function changeSimpleProductQuantity(
   current: Cart,
   branchId: string | null,
   product: { id: string; nameEn: string; nameAr: string; effectivePrice: number },
   delta: number,
 ): Cart {
-  const idx = current.lines.findIndex(
-    (l) => l.productId === product.id && !l.variantId && l.selectedOptionIds.length === 0 && !l.dimensions,
-  );
-
   if (delta > 0) {
-    if (idx >= 0) {
-      return withLineQuantity(current, idx, current.lines[idx].quantity + delta);
-    }
     return mergeLine(current, branchId, {
       productId: product.id,
       nameEn: product.nameEn,
@@ -157,8 +155,9 @@ export function changeSimpleProductQuantity(
     });
   }
 
-  if (delta < 0 && idx >= 0) {
-    return withLineQuantity(current, idx, current.lines[idx].quantity + delta);
+  if (delta < 0 && !isOtherBranchCart(current, branchId)) {
+    const idx = current.lines.findIndex(isSimpleLineOf(product.id));
+    if (idx >= 0) return withLineQuantity(current, idx, current.lines[idx].quantity + delta);
   }
 
   return current;
