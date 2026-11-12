@@ -104,6 +104,20 @@ export function removeLine(index: number): Cart {
   return setLineQuantity(index, 0);
 }
 
+/** Applies the live unit prices a "price_changed" checkout answer carried
+ * (index-aligned with the lines that were sent). Anything malformed or out
+ * of range is ignored — this only updates what the customer is shown; the
+ * server never charges the cart's prices. */
+export function repriceCart(cart: Cart, changes: Array<{ index: unknown; unitPrice: unknown }>): Cart {
+  const lines = [...cart.lines];
+  for (const c of changes) {
+    if (typeof c.index !== "number" || typeof c.unitPrice !== "number" || !Number.isFinite(c.unitPrice)) continue;
+    if (!lines[c.index]) continue;
+    lines[c.index] = { ...lines[c.index], unitPrice: c.unitPrice };
+  }
+  return { ...cart, lines };
+}
+
 /** A cart belonging to another branch is reset by the next add (see
  * mergeLine), so from this branch's point of view it holds nothing. */
 function isOtherBranchCart(cart: Cart, branchId: string | null): boolean {

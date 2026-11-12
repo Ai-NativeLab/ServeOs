@@ -5,6 +5,7 @@ import {
   withLineQuantity,
   getSimpleProductQuantity,
   isProductConfigurable,
+  repriceCart,
   changeSimpleProductQuantity,
   type Cart,
   type CartLine,
@@ -263,5 +264,20 @@ describe("changeSimpleProductQuantity", () => {
     expect(next.lines[0].quantity).toBe(3);
     expect(next.lines[1]).toMatchObject({ productId: "p1", quantity: 1 });
     expect(next.lines[1].variantId).toBeUndefined();
+  });
+});
+
+describe("repriceCart", () => {
+  it("updates only the reported lines' unit prices", () => {
+    const cart: Cart = { branchId: "b1", lines: [line({ productId: "p1", unitPrice: 75 }), line({ productId: "p2", unitPrice: 20 })] };
+    const next = repriceCart(cart, [{ index: 0, unitPrice: 100 }]);
+    expect(next.lines.map((l) => l.unitPrice)).toEqual([100, 20]);
+    expect(cart.lines[0].unitPrice).toBe(75); // pure
+  });
+
+  it("ignores malformed or out-of-range entries", () => {
+    const cart: Cart = { branchId: "b1", lines: [line({ unitPrice: 75 })] };
+    const next = repriceCart(cart, [{ index: 5, unitPrice: 1 }, { index: "0", unitPrice: 1 }, { index: 0, unitPrice: Number.NaN }]);
+    expect(next.lines[0].unitPrice).toBe(75);
   });
 });
