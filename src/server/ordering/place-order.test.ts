@@ -30,6 +30,19 @@ async function setup(slug: string) {
 }
 
 describe("placeOrder", () => {
+  // #187 review: the validator normalises before it checks, so the row must
+  // hold that same canonical form — not whatever spacing/digits were typed.
+  it("persists the normalised customer phone", async () => {
+    const { t, branch, pizza } = await setup("po-phone");
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup",
+      customerName: "Ahmed", customerPhone: " \u200f٠١٠ 1234-5678 ",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+    const { getOrder } = await import("./service");
+    expect((await getOrder(t.id, res.orderId)).customerPhone).toBe("01012345678");
+  });
+
   it("creates a delivery order and returns number + token", async () => {
     const { t, branch, pizza, cheese, area } = await setup("po1");
     const res = await placeOrder(t.id, {

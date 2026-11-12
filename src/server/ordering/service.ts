@@ -24,7 +24,7 @@ import { canTransition } from "./state-machine";
 // below refuses before totals/inserts (better errors, no wasted work), and the
 // inventory FIFO deduction re-checks inside this same transaction as a backstop
 // against stock changing between menu render and checkout.
-import { isValidCustomerPhone } from "@/lib/phone";
+import { isValidCustomerPhone, normalizePhone } from "@/lib/phone";
 import { OrderValidationError, PrescriptionRequiredError, InvalidPhoneError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, TotalMismatchError, PaymentNotVerifiedError, OutOfStockError } from "./errors";
 import { recordAuditEvent, type AuditFingerprint } from "@/server/audit/service";
 import { publishTenantEvent } from "@/server/realtime/publish";
@@ -547,7 +547,10 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       channel: input.channel ?? "web",
       cashierUserId: input.cashierUserId ?? null,
       customerId: input.customerId ?? null,
-      customerName: input.customerName.trim(), customerPhone: input.customerPhone.trim(), notes: input.notes?.trim() || null,
+      customerName: input.customerName.trim(),
+      // The canonical form the validator above checked (#187 review) — spacing,
+      // bidi marks and Arabic-Indic digits are presentation, not the number.
+      customerPhone: normalizePhone(input.customerPhone), notes: input.notes?.trim() || null,
       deliveryAreaId, deliveryAreaNameSnapshot: deliveryAreaName, deliveryAddressText: deliveryAddress,
       subtotal: money(totals.subtotal),
       vatRateSnapshot: money(totals.vatRate),
