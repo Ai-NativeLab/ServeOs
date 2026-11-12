@@ -1,3 +1,6 @@
+// Server-only: this module uses node:crypto (the uuid hash). Next.js resolves the marker
+// itself (no package needed); vitest aliases it to an empty module.
+import "server-only";
 import { createHash } from "node:crypto";
 import { WireDecimal } from "./decimal";
 

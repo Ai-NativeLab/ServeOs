@@ -1,3 +1,6 @@
+// Server-only: this module uses node:crypto + pkijs/asn1js and handles e-seal private keys. Next.js resolves the marker
+// itself (no package needed); vitest aliases it to an empty module.
+import "server-only";
 import {
   createHash, createPrivateKey, privateEncrypt, webcrypto, constants,
   type KeyObject,
