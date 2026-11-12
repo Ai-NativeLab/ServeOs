@@ -1140,6 +1140,55 @@ describe("drainEtaSubmissions — reconciliation sweep", () => {
   });
 });
 
+describe("drainEtaSubmissions — pass budgets and tenant rotation", () => {
+  async function ringAnother(s: Fixture, clientOrderId: string) {
+    await recordSale(s.ctx, {
+      clientOrderId,
+      lines: [{ productId: s.productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: s.total,
+      payments: [{ clientPaymentId: `p-${clientOrderId}`, method: "cash", amount: s.total, tenderedAmount: s.total }],
+    });
+  }
+
+  it("stops a tenant at its share and RELEASES the rows it did not reach", async () => {
+    const s = await seedSale();
+    await ringAnother(s, "sale-2");
+    await ringAnother(s, "sale-3");
+    const provider = new FakeEta([accepted202("sub-only")]);
+
+    const result = await drainEtaSubmissions({ provider, reconcile: false, tenantBudgetMs: 0 });
+
+    // The first row of a tenant always runs; the share is spent after it.
+    expect(result.processed).toBe(1);
+    expect(result.released).toBe(2);
+    const rows = await rowsFor(s.tenantId);
+    const untouched = rows.filter((row) => row.status === "pending");
+    expect(untouched).toHaveLength(2);
+    // Released, not left behind a 5-minute lease: claimable on the very next pass.
+    for (const row of untouched) expect(row.nextAttemptAt.getTime()).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("stops starting tenants when the pass budget is spent, and the next tick starts with another tenant", async () => {
+    const a = await seedSale({ clientOrderId: "a-1" });
+    const b = await seedSale({ clientOrderId: "b-1" });
+    const provider = new FakeEta([accepted202("sub-first-tick"), accepted202("sub-second-tick")]);
+    const tick = Date.now();
+
+    const first = await drainEtaSubmissions({ provider, reconcile: false, budgetMs: 0, now: () => new Date(tick) });
+    expect(first.processed).toBe(1);
+    expect(first.unvisitedTenants).toBe(1);
+
+    // Fifteen minutes on — one cron tick — the order has rotated by one place.
+    const second = await drainEtaSubmissions({
+      provider, reconcile: false, budgetMs: 0, now: () => new Date(tick + 15 * 60 * 1000),
+    });
+    expect(second.processed).toBe(1);
+
+    const statuses = [(await rowsFor(a.tenantId))[0].status, (await rowsFor(b.tenantId))[0].status];
+    expect(statuses).toEqual(["submitted", "submitted"]);
+  });
+});
+
 describe("drainEtaSubmissions — return receipts", () => {
   it("defers a return until its parent sale is accepted, then references the parent uuid", async () => {
     const s = await seedSale({ configureFirst: true });

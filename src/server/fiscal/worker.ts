@@ -223,7 +223,36 @@ export type DrainOptions = {
    * constructs one.
    */
   emailProvider?: EmailProvider;
+  /** The whole pass's wall-clock budget — see `DRAIN_BUDGET_MS`. */
+  budgetMs?: number;
+  /** One tenant's share of it — see `TENANT_BUDGET_MS`. */
+  tenantBudgetMs?: number;
+  /** Elapsed-time clock for the two budgets, in ms. Separate from `now`, which
+   *  stamps rows and which tests freeze. */
+  clockMs?: () => number;
 };
+
+/**
+ * THE PASS BUDGET. The route that runs this declares `maxDuration = 300`
+ * (`/api/fiscal/worker`); the pass stops STARTING work at 240s so the one call
+ * that may be in flight — up to `ETA_HTTP_TIMEOUT_MS` (60s) — still finishes
+ * inside the platform's limit instead of being killed mid-write. Rows not reached
+ * are released (`releaseUnprocessed`), never stranded behind a lease.
+ */
+export const DRAIN_BUDGET_MS = 240_000;
+
+/**
+ * ONE TENANT'S SHARE. Without it a single tenant with a slow ETA (each call can
+ * hang for the full 60s timeout) would spend the whole pass on its own 20 rows
+ * and every tenant after it in the list would wait — on every pass, since the
+ * order used to be fixed. With it, a stalled tenant costs at most this much, and
+ * the rotation in `rotateTenants` means the tenant that went last this pass goes
+ * earlier next time.
+ */
+export const TENANT_BUDGET_MS = 60_000;
+
+/** How often the tenant order rotates by one place: the cron cadence. */
+const ROTATION_BUCKET_MS = 15 * 60 * 1000;
 
 export type DrainResult = {
   processed: number;
@@ -243,6 +272,12 @@ export type DrainResult = {
   /** EG tenants passed over entirely because their ETA config is absent or not
    *  active — the onboarding backlog, not an error count. */
   skippedTenants: number;
+  /** Claimed rows handed back unprocessed because a budget ran out — eligible
+   *  again immediately, picked up by the next pass. */
+  released: number;
+  /** EG tenants not reached at all this pass because the pass budget ran out.
+   *  The rotation puts them earlier next pass. */
+  unvisitedTenants: number;
 };
 
 /**
@@ -262,14 +297,30 @@ export type DrainResult = {
 export async function drainEtaSubmissions(opts: DrainOptions = {}): Promise<DrainResult> {
   const limit = opts.limit ?? 20;
   const now = opts.now ?? (() => new Date());
+  const clockMs = opts.clockMs ?? (() => Date.now());
+  const budgetMs = opts.budgetMs ?? DRAIN_BUDGET_MS;
+  const tenantBudgetMs = opts.tenantBudgetMs ?? TENANT_BUDGET_MS;
+  const startedAt = clockMs();
   const result: DrainResult = {
     processed: 0, submitted: 0, accepted: 0, rejected: 0, failed: 0, deferred: 0, reconciled: 0, skippedTenants: 0,
+    released: 0, unvisitedTenants: 0,
   };
 
-  const egTenants = await db.select({ id: tenants.id, country: tenants.country })
-    .from(tenants).where(eq(tenants.country, "EG"));
+  const egTenants = rotateTenants(
+    await db.select({ id: tenants.id, country: tenants.country })
+      .from(tenants).where(eq(tenants.country, "EG")).orderBy(tenants.id),
+    now(),
+  );
 
-  for (const tenant of egTenants) {
+  for (const [index, tenant] of egTenants.entries()) {
+    // The PASS budget, checked before a tenant is started — never before the
+    // first, so every pass makes progress however small the budget.
+    if (index > 0 && clockMs() - startedAt >= budgetMs) {
+      result.unvisitedTenants = egTenants.length - index;
+      break;
+    }
+    const tenantStartedAt = clockMs();
+
     // THE TENANT GATE, hoisted above both the sweep and the claim. An
     // unconfigured or not-yet-activated tenant is not a failure — it is a
     // tenant part-way through ETA onboarding — and there is nothing useful to
@@ -278,9 +329,9 @@ export async function drainEtaSubmissions(opts: DrainOptions = {}): Promise<Drai
     // nobody can drain. One query, no rows claimed, no lease churn.
     //
     // Deliberately covers the reconciliation sweep too: enqueueing rows we then
-    // cannot finalize would log an EtaConfigError per order per pass. Nothing
-    // is lost by waiting — the sweep has no upper age bound, so the moment the
-    // tenant activates it adopts every order it skipped.
+    // cannot finalize would log an EtaConfigError per order per pass. Sales
+    // from BEFORE activation are deliberately not adopted later either — the
+    // sweep is floored at the activation (see `reconcileMissingReceipts`).
     if ((await resolveEtaConfig(tenant.id)) === null) {
       result.skippedTenants++;
       continue;
@@ -293,7 +344,17 @@ export async function drainEtaSubmissions(opts: DrainOptions = {}): Promise<Drai
       result.reconciled += swept.enqueued;
     }
 
-    for (const row of await claim(tenant.id, limit)) {
+    const claimed = await claim(tenant.id, limit);
+    for (const [rowIndex, row] of claimed.entries()) {
+      // THE BUDGETS, per row: this tenant's share and the pass as a whole. The
+      // first row of a tenant always runs, so a tenant reached is a tenant that
+      // moves. Rows not reached are released rather than left to sit out the
+      // lease.
+      const elapsedAt = clockMs();
+      if (rowIndex > 0 && (elapsedAt - tenantStartedAt >= tenantBudgetMs || elapsedAt - startedAt >= budgetMs)) {
+        result.released += await releaseUnprocessed(tenant.id, claimed.slice(rowIndex));
+        break;
+      }
       // BEFORE the row is driven, and OUTSIDE `processRow`'s try/catch, which is
       // the whole placement argument — see `noteLateSubmission`. Whatever it
       // does or fails to do, the row is submitted next exactly as it would have
@@ -310,6 +371,39 @@ export async function drainEtaSubmissions(opts: DrainOptions = {}): Promise<Drai
   }
 
   return result;
+}
+
+/**
+ * The EG tenants in this pass's order: the stable id order, rotated by one place
+ * per cron tick (`ROTATION_BUCKET_MS`). A fixed order meant the same tenants
+ * always went last and were always the ones a budget cut off; rotating spreads
+ * that across every tenant in turn. Deterministic in `now`, so a test can drive
+ * two consecutive ticks and see the order move.
+ */
+function rotateTenants<T>(ordered: T[], at: Date): T[] {
+  if (ordered.length < 2) return ordered;
+  const offset = Math.floor(at.getTime() / ROTATION_BUCKET_MS) % ordered.length;
+  return [...ordered.slice(offset), ...ordered.slice(0, offset)];
+}
+
+/**
+ * Hands claimed-but-unprocessed rows back: their lease is cleared to now(), so
+ * the next pass can claim them at once instead of waiting `CLAIM_LEASE_MS`.
+ * Fenced on each row's own lease, so a row that has since been re-claimed or
+ * written is left alone.
+ */
+async function releaseUnprocessed(tenantId: string, rows: ClaimedRow[]): Promise<number> {
+  let released = 0;
+  await withTenant(tenantId, async (tx) => {
+    for (const row of rows) {
+      const back = await tx.update(etaSubmissions)
+        .set({ nextAttemptAt: sql`now()` })
+        .where(heldBy(tenantId, row, LIVE_STATUSES))
+        .returning({ id: etaSubmissions.id });
+      released += back.length;
+    }
+  });
+  return released;
 }
 
 /**
