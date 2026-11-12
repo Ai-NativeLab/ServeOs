@@ -1,3 +1,4 @@
+import { redactedCause } from "@/lib/redacted-cause";
 import { EtaConfigError, EtaTransportError } from "./eta-transport-errors";
 
 /**
@@ -259,7 +260,7 @@ const ERROR_SUMMARY_MAX = 500;
 
 /**
  * A storable, loggable summary of a failure on a fiscal path — the server-side
- * twin of the dashboard routes' `redactedCause`, and for the same reason.
+ * twin of `redactedCause` (`@/lib/redacted-cause`), and for the same reason.
  *
  * Drizzle puts a failing query's PARAMETERS into `error.message` (`Failed
  * query: … params: <tenant>,<rin>,<client_secret_ref>,…`), so writing a raw
@@ -277,11 +278,11 @@ export function redactedErrorSummary(e: unknown): string {
   if (own) {
     raw = `${(e as Error).name}: ${(e as Error).message}`;
   } else {
-    const pg = e as { code?: unknown; constraint?: unknown } | null;
+    const cause = redactedCause(e);
     raw = [
-      e instanceof Error ? e.name : typeof e,
-      typeof pg?.code === "string" ? `SQLSTATE ${pg.code}` : null,
-      typeof pg?.constraint === "string" ? `constraint ${pg.constraint}` : null,
+      cause.errorName,
+      cause.pgCode !== undefined ? `SQLSTATE ${cause.pgCode}` : null,
+      cause.pgConstraint !== undefined ? `constraint ${cause.pgConstraint}` : null,
     ].filter(Boolean).join(" ");
     raw = `${raw} (details withheld: an unclassified error's message can carry query parameters)`;
   }

@@ -15,7 +15,9 @@
  * the error's class name, and for a Postgres error its SQLSTATE and the
  * constraint it violated.
  */
-export function redactedCause(e: unknown): Record<string, unknown> {
+export type RedactedCause = { errorName: string; pgCode?: string; pgConstraint?: string };
+
+export function redactedCause(e: unknown): RedactedCause {
   const pg = e as { code?: unknown; constraint?: unknown } | null;
   return {
     errorName: e instanceof Error ? e.name : typeof e,
