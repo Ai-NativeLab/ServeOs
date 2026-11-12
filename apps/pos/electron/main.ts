@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import path from "node:path";
 import { PosMain, type RecordSaleInput, type CashMovementInput } from "./pos-main";
+import { initAutoUpdate } from "./updater";
 
 const isDev = !!process.env.VITE_DEV_SERVER_URL;
 
@@ -73,6 +74,7 @@ app.whenReady().then(() => {
   // Started after the window exists so the first state push has somewhere to
   // land; nothing here blocks the first render either way.
   posMain.start();
+  initAutoUpdate();
 });
 
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });

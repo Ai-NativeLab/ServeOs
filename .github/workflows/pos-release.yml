@@ -3,6 +3,12 @@ name: POS Release
 # Cutting a release is a deliberate act: tag `pos-v<version>` and push it.
 #   npm version --workspace pos <new-version> && git tag pos-v<new-version> && git push --tags
 #
+# The tag produces a DRAFT release, never a published one. Publishing is what
+# ships the version to every till — they auto-update from the latest published
+# release — so a person smoke-tests the draft's installers and then promotes it:
+#   gh release edit pos-v<new-version> --repo Ai-NativeLab/ServeOs --draft=false --latest
+# See "Releasing" in docs/pos-code-signing.md for the checklist.
+#
 # workflow_dispatch builds the identical artifacts and uploads them to the run
 # WITHOUT publishing a release, so the pipeline can be exercised (or a one-off
 # build handed to someone) without burning a version number.
@@ -71,20 +77,32 @@ jobs:
           name: pos-${{ matrix.artifact }}
           path: |
             apps/pos/release/*.dmg
+            apps/pos/release/*.zip
             apps/pos/release/*.exe
+            apps/pos/release/latest*.yml
+            apps/pos/release/*.blockmap
+          # The latest*.yml, .zip and .blockmap files are not incidental build
+          # litter — they ARE the update feed. electron-updater reads
+          # latest-mac.yml / latest.yml from the release to discover a new
+          # version, MacUpdater installs from the .zip (never the .dmg), and the
+          # blockmaps let it fetch only the changed chunks. A release carrying
+          # just the installers installs fine and then never updates again.
+          # `latest*.yml`, not `*.yml`: the release dir also holds
+          # builder-debug.yml, a local build log with no business in a release.
+          #
           # A silently empty artifact would publish a release with nothing to
           # download, which is worse than a red run.
           if-no-files-found: error
           retention-days: 7
 
   release:
-    name: publish release
+    name: draft release
     needs: build
     # Gated on the event, not just the ref: GitHub's "Run workflow" dropdown
     # lists tags as well as branches, so a dispatch from `pos-v0.1.0` — exactly
     # what someone reading the header comment would try in order to rehearse a
-    # release — arrives with github.ref = refs/tags/pos-v0.1.0 and would publish
-    # a real one.
+    # release — arrives with github.ref = refs/tags/pos-v0.1.0 and would create
+    # a real release for it.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -97,7 +115,7 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Publish release
+      - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -120,6 +138,19 @@ jobs:
           Signing removes both warnings and needs an Apple Developer account
           ($99/yr) plus a Windows OV code-signing certificate.
 
+          ## Updates
+
+          **Windows** installs update themselves. The terminal checks on launch
+          and every six hours, downloads in the background, and swaps the new
+          version in the next time the app is quit — never mid-shift, and never
+          with a prompt. Closing the till at the end of the day is all anyone
+          has to do.
+
+          **macOS** does not update itself yet: Apple requires a Developer ID
+          signature before an update can be applied, and these builds are
+          ad-hoc signed. Until that is in place, replace the app from the
+          latest `.dmg` by hand.
+
           ## Connecting
 
           The app talks to `https://app.serveos.tech` by default. Point it
@@ -129,15 +160,27 @@ jobs:
           branch this terminal belongs to.
           NOTES
 
-          # Create-if-absent, upload, then promote — rather than one
-          # `gh release create` with the assets attached. That form fails
-          # outright when a release already exists for the tag, so a job that
-          # died between the first and second asset could not be re-run: the
-          # retry aborts at step one and the half-populated release stays up
-          # until someone deletes it by hand. Splitting it makes the job
-          # idempotent, and the draft window means an incomplete release is
-          # never public — the tag only goes live once every asset is attached.
-          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          # Create-if-absent, then upload — rather than one `gh release
+          # create` with the assets attached. That form fails outright when a
+          # release already exists for the tag, so a job that died between the
+          # first and second asset could not be re-run: the retry aborts at step
+          # one. Splitting it makes the job idempotent.
+          #
+          # It stops at a draft on purpose. Drafts are invisible to
+          # electron-updater (it follows /releases/latest, which skips them), so
+          # nothing reaches a till until a person has installed the build and
+          # promoted it by hand. Unsigned Windows updates are checked against
+          # nothing but the SHA-512 in latest.yml, and a staged update installs
+          # on the next quit with no rollback — publishing straight from CI
+          # would put a crashing build on every till by the next morning.
+          if state="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            # Re-running against a release someone already promoted would
+            # --clobber assets tills are downloading right now.
+            if [ "$state" != "true" ]; then
+              echo "::error::$GITHUB_REF_NAME is already published; refusing to replace its assets. Cut a new version instead."
+              exit 1
+            fi
+          else
             gh release create "$GITHUB_REF_NAME" \
               --repo "$GITHUB_REPOSITORY" \
               --title "ServeOS POS $version" \
@@ -149,6 +192,12 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --clobber
 
-          gh release edit "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --draft=false
+          {
+            echo "### Draft release ready: $GITHUB_REF_NAME"
+            echo
+            echo "Nothing has shipped yet. Install the draft's installers on a test machine, then promote:"
+            echo
+            echo '```'
+            echo "gh release edit $GITHUB_REF_NAME --repo $GITHUB_REPOSITORY --draft=false --latest"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
