@@ -22,8 +22,9 @@ const MAX_LOG_BYTES = 1024 * 1024;
  * Failures are logged and swallowed. An unreachable update server, a rate
  * limit, or a malformed feed must not take the till down; selling is the job,
  * updating is a convenience. The log is a file — `updater.log` in Electron's
- * logs directory (~/Library/Logs/<app>/ on macOS, %APPDATA%\<app>\logs\ on
- * Windows) — because a packaged GUI app has no console anyone reads.
+ * logs directory, ~/Library/Logs/pos/ on macOS and %APPDATA%\pos\logs\ on
+ * Windows (named after the package `name`) — because a packaged GUI app has no
+ * console anyone reads.
  *
  * **macOS does not update yet, and needs more than a certificate to start.**
  * Squirrel.Mac refuses to apply an update unless the running app carries a
