@@ -8,6 +8,9 @@ import { SubmitButton } from "@/components/dashboard/SubmitButton";
 import { ImageInput } from "@/components/dashboard/ImageInput";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { PromotionalPricingSection } from "../[id]/PromotionalPricingSection";
+import { ProductForm } from "../ProductForm";
+import { getTenantById } from "@/server/tenancy";
 import { Label } from "@/components/ui/label";
 
 const selectClass =
@@ -16,7 +19,7 @@ const selectClass =
 export default async function NewProductPage({ searchParams }: { searchParams: Promise<{ categoryId?: string }> }) {
   const { categoryId } = await searchParams;
   const ctx = await requireMenuPermission();
-  const cats = await listCategories(ctx.tenantId);
+  const [cats, tenant] = await Promise.all([listCategories(ctx.tenantId), getTenantById(ctx.tenantId)]);
 
   return (
     <>
@@ -25,7 +28,7 @@ export default async function NewProductPage({ searchParams }: { searchParams: P
       </Link>
       <PageHeader eyebrow="Catalog" title="New product" />
       <Card className="p-5 max-w-2xl">
-        <form action={createProductAction} className="grid gap-4">
+        <ProductForm action={createProductAction} className="grid gap-4">
           <div className="grid gap-1.5">
             <Label htmlFor="categoryId">Category</Label>
             <select id="categoryId" name="categoryId" defaultValue={categoryId ?? ""} required className={selectClass}>
@@ -55,12 +58,13 @@ export default async function NewProductPage({ searchParams }: { searchParams: P
             <Label htmlFor="basePrice">Base price</Label>
             <Input id="basePrice" name="basePrice" type="number" step="0.01" min="0" required />
           </div>
+          <PromotionalPricingSection currency={tenant?.currency ?? "EGP"} />
           <div className="grid gap-1.5">
             <Label>Product image</Label>
             <ImageInput name="imageUrl" type="product" aspect="square" />
           </div>
           <div><SubmitButton>Create product</SubmitButton></div>
-        </form>
+        </ProductForm>
       </Card>
     </>
   );

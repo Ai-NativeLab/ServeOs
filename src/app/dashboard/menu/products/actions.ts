@@ -14,48 +14,71 @@ import {
 } from "@/server/catalog/service";
 import { upsertVariant, deleteVariant, setProductStock } from "@/server/catalog/variants";
 import { actionAudit } from "@/server/audit/action-context";
+import { parseDiscountFormData } from "./discount-form";
+import { domainErrorValue } from "../../action-errors";
 
-export async function createProductAction(formData: FormData) {
+export type ProductFormState = { error: string } | undefined;
+
+/** Returns `{ error }` (and writes nothing) when the input is invalid, so the
+ * form can show it with the merchant's values intact; redirects on success. */
+export async function createProductAction(_prev: ProductFormState, formData: FormData): Promise<ProductFormState> {
   const ctx = await requireMenuPermission();
-  await createProduct(ctx.tenantId, {
-    categoryId: String(formData.get("categoryId")),
-    nameEn: String(formData.get("nameEn")),
-    nameAr: String(formData.get("nameAr")),
-    basePrice: String(formData.get("basePrice")),
-    descriptionEn: formData.get("descriptionEn") ? String(formData.get("descriptionEn")) : undefined,
-    descriptionAr: formData.get("descriptionAr") ? String(formData.get("descriptionAr")) : undefined,
-    imageUrl: formData.get("imageUrl") ? String(formData.get("imageUrl")) : undefined,
-  }, await actionAudit(ctx));
+  const discount = parseDiscountFormData(formData, Number(formData.get("basePrice")));
+  if (!discount.ok) return { error: discount.error };
+  try {
+    await createProduct(ctx.tenantId, {
+      categoryId: String(formData.get("categoryId")),
+      nameEn: String(formData.get("nameEn")),
+      nameAr: String(formData.get("nameAr")),
+      basePrice: String(formData.get("basePrice")),
+      descriptionEn: formData.get("descriptionEn") ? String(formData.get("descriptionEn")) : undefined,
+      descriptionAr: formData.get("descriptionAr") ? String(formData.get("descriptionAr")) : undefined,
+      imageUrl: formData.get("imageUrl") ? String(formData.get("imageUrl")) : undefined,
+      ...discount.value,
+    }, await actionAudit(ctx));
+  } catch (e) {
+    return domainErrorValue(e);
+  }
   revalidatePath("/dashboard/menu");
   redirect("/dashboard/menu");
 }
 
-export async function updateProductAction(productId: string, formData: FormData) {
+export async function updateProductAction(productId: string, _prev: ProductFormState, formData: FormData): Promise<ProductFormState> {
   const ctx = await requireMenuPermission();
   const isPublished = formData.get("isPublished") === "true";
   const isFeatured = formData.get("isFeatured") === "true";
   const hasRetailFields = formData.has("retailFields");
   const trackStock = formData.get("trackStock") === "true";
-  await updateProduct(ctx.tenantId, productId, {
-    nameEn: String(formData.get("nameEn")),
-    nameAr: String(formData.get("nameAr")),
-    basePrice: String(formData.get("basePrice")),
-    descriptionEn: formData.get("descriptionEn") ? String(formData.get("descriptionEn")) : undefined,
-    descriptionAr: formData.get("descriptionAr") ? String(formData.get("descriptionAr")) : undefined,
-    imageUrl: formData.get("imageUrl") ? String(formData.get("imageUrl")) : null,
-    isPublished,
-    isFeatured,
-    ...(hasRetailFields
-      ? {
-          brand: formData.get("brand") ? String(formData.get("brand")) : null,
-          sku: formData.get("sku") ? String(formData.get("sku")) : null,
-          trackStock,
-          stockQuantity: trackStock && formData.get("stockQuantity") !== null && formData.get("stockQuantity") !== ""
-            ? Number(formData.get("stockQuantity"))
-            : null,
-        }
-      : {}),
-  }, await actionAudit(ctx));
+  // Validate before writing anything: an invalid discount must not clear the
+  // stored one (or save the rest of the form) and then report success.
+  const discount = parseDiscountFormData(formData, Number(formData.get("basePrice")));
+  if (!discount.ok) return { error: discount.error };
+
+  try {
+    await updateProduct(ctx.tenantId, productId, {
+      nameEn: String(formData.get("nameEn")),
+      nameAr: String(formData.get("nameAr")),
+      basePrice: String(formData.get("basePrice")),
+      descriptionEn: formData.get("descriptionEn") ? String(formData.get("descriptionEn")) : undefined,
+      descriptionAr: formData.get("descriptionAr") ? String(formData.get("descriptionAr")) : undefined,
+      imageUrl: formData.get("imageUrl") ? String(formData.get("imageUrl")) : null,
+      isPublished,
+      isFeatured,
+      ...discount.value,
+      ...(hasRetailFields
+        ? {
+            brand: formData.get("brand") ? String(formData.get("brand")) : null,
+            sku: formData.get("sku") ? String(formData.get("sku")) : null,
+            trackStock,
+            stockQuantity: trackStock && formData.get("stockQuantity") !== null && formData.get("stockQuantity") !== ""
+              ? Number(formData.get("stockQuantity"))
+              : null,
+          }
+        : {}),
+    }, await actionAudit(ctx));
+  } catch (e) {
+    return domainErrorValue(e);
+  }
   revalidatePath("/dashboard/menu");
   redirect(`/dashboard/menu/products/${productId}`);
 }
