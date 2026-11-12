@@ -1,7 +1,17 @@
 "use client";
 import { useEffect, useState } from "react";
 import type { PublishedMenu } from "@/server/catalog/schema";
-import { addLine, loadCart, setLineQuantity, cartSubtotal, type Cart, type CartLine } from "@/app/_components/cart";
+import {
+  addLine,
+  loadCart,
+  setLineQuantity,
+  clearCart,
+  cartSubtotal,
+  getSimpleProductQuantity,
+  updateSimpleProductQuantity,
+  type Cart,
+  type CartLine,
+} from "@/app/_components/cart";
 import { computeDimensionalUnitPrice } from "@/server/catalog/dimensional-pricing";
 import { isDimensionalUom } from "@/server/catalog/uom-values";
 import { type MenuProduct } from "@/app/_components/storefront/ProductCard";
@@ -10,6 +20,7 @@ import { BranchPickSheet } from "@/app/_components/storefront/BranchPickSheet";
 import { CartDrawer } from "@/app/_components/storefront/CartDrawer";
 import { SectionHeader } from "@/app/_components/storefront/SectionHeader";
 import { ShopProductCard } from "./ShopProductCard";
+import { CartAnnouncer, quantityAnnouncement } from "@/app/_components/storefront/QuickAddControl";
 import { RetailProductSheet } from "./RetailProductSheet";
 import { filterCatalog } from "./shop-search";
 
@@ -28,6 +39,7 @@ export function ShopBrowser({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [activeProduct, setActiveProduct] = useState<MenuProduct | null>(null);
   const [branchPickFor, setBranchPickFor] = useState<string | null>(null);
+  const [announcement, setAnnouncement] = useState("");
   const [query, setQuery] = useState("");
   const needsBranchPick = branchId === null && branches.length > 1;
 
@@ -58,6 +70,22 @@ export function ShopBrowser({
     }));
   }
 
+  /** Card quick-add / stepper. Increments need a branch first (same as the
+   * sheet); decrements only ever touch lines already in this branch's cart. */
+  function changeSimpleQuantity(p: MenuProduct, delta: 1 | -1) {
+    if (delta > 0 && needsBranchPick) {
+      setBranchPickFor(p.id);
+      return;
+    }
+    const next = updateSimpleProductQuantity(
+      branchId,
+      { id: p.id, nameEn: p.nameEn, nameAr: p.nameAr, effectivePrice: p.effectivePrice },
+      delta,
+    );
+    setCart(next);
+    setAnnouncement(quantityAnnouncement(p.nameEn, getSimpleProductQuantity(next, p.id, branchId)));
+  }
+
   const itemCount = cart.lines.reduce((s, l) => s + l.quantity, 0);
   const visible = filterCatalog(menu.categories, query);
 
@@ -82,15 +110,22 @@ export function ShopBrowser({
         <div key={cat.id} id={`category-${cat.id}`} className="scroll-mt-32 py-6">
           <SectionHeader eyebrow={cat.nameAr} title={cat.nameEn} count={cat.products.length} />
           <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-            {cat.products.map((p) => (
-              <ShopProductCard
-                key={p.id}
-                product={p}
-                interactive={orderingEnabled}
-                onOpen={() => (needsBranchPick ? setBranchPickFor(p.id) : setActiveProduct(p))}
-                currency={currency}
-              />
-            ))}
+            {cat.products.map((p) => {
+              const simpleQty = getSimpleProductQuantity(cart, p.id, branchId);
+              return (
+                <ShopProductCard
+                  key={p.id}
+                  product={p}
+                  interactive={orderingEnabled}
+                  onOpen={() => (needsBranchPick ? setBranchPickFor(p.id) : setActiveProduct(p))}
+                  currency={currency}
+                  quantity={simpleQty}
+                  onQuickAdd={() => changeSimpleQuantity(p, 1)}
+                  onIncrement={() => changeSimpleQuantity(p, 1)}
+                  onDecrement={() => changeSimpleQuantity(p, -1)}
+                />
+              );
+            })}
           </div>
         </div>
       ))}
@@ -119,7 +154,12 @@ export function ShopBrowser({
             open={drawerOpen}
             onOpenChange={setDrawerOpen}
             onSetQuantity={(i, q) => setCart(setLineQuantity(i, q))}
+            onClear={() => {
+              clearCart();
+              setCart({ branchId: null, lines: [] });
+            }}
           />
+          <CartAnnouncer message={announcement} />
         </>
       )}
     </>

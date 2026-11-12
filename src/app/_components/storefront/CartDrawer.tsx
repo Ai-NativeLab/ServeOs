@@ -1,11 +1,12 @@
 "use client";
+import { useState } from "react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { formatMoney } from "@/lib/money";
 import { cartSubtotal, type Cart } from "../cart";
 import { Trash2 } from "lucide-react";
 
 export function CartDrawer({
-  cart, slug, currency, preorderOnly, open, onOpenChange, onSetQuantity,
+  cart, slug, currency, preorderOnly, open, onOpenChange, onSetQuantity, onClear,
 }: {
   cart: Cart;
   slug: string;
@@ -14,30 +15,54 @@ export function CartDrawer({
   open: boolean;
   onOpenChange: (o: boolean) => void;
   onSetQuantity: (index: number, quantity: number) => void;
+  onClear: () => void;
 }) {
   const subtotal = cartSubtotal(cart.lines);
+  // "Clear all" is destructive, so it takes a second, explicit tap.
+  const [confirmingClear, setConfirmingClear] = useState(false);
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
+    <Sheet
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) setConfirmingClear(false);
+        onOpenChange(o);
+      }}
+    >
       <SheetContent className="flex flex-col gap-0">
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <SheetHeader>
-            <div className="flex items-center justify-between pr-6">
-              <SheetTitle>Your cart</SheetTitle>
-              {cart.lines.length > 1 && (
+          <SheetHeader className="flex flex-row items-center justify-between pr-6">
+            <SheetTitle>Your cart</SheetTitle>
+            {cart.lines.length > 1 && !confirmingClear && (
+              <button
+                type="button"
+                onClick={() => setConfirmingClear(true)}
+                className="px-2 py-1 text-xs text-muted-foreground transition-colors hover:text-destructive"
+              >
+                Clear all
+              </button>
+            )}
+            {cart.lines.length > 1 && confirmingClear && (
+              <div role="group" aria-label="Confirm clearing the cart" className="flex items-center gap-1 text-xs">
+                <span className="text-muted-foreground">Remove all items?</span>
                 <button
                   type="button"
                   onClick={() => {
-                    for (let idx = cart.lines.length - 1; idx >= 0; idx--) {
-                      onSetQuantity(idx, 0);
-                    }
+                    setConfirmingClear(false);
+                    onClear();
                   }}
-                  className="text-xs font-medium text-muted-foreground transition-colors hover:text-destructive"
-                  aria-label="Clear cart"
+                  className="rounded-full px-2 py-1 font-semibold text-destructive hover:bg-destructive/10"
                 >
-                  Clear cart
+                  Clear
                 </button>
-              )}
-            </div>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingClear(false)}
+                  className="rounded-full px-2 py-1 text-muted-foreground hover:text-ink"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
           </SheetHeader>
 
           {cart.lines.length === 0 && (

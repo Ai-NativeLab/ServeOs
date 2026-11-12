@@ -35,8 +35,10 @@ describe("ProductCard — out-of-stock treatment (Issue #167)", () => {
     expect(html).toContain("+");
     // Targeted: the CARD button itself must NOT be disabled (a blanket
     // "disabled" string-absence check would break the moment any other
-    // element earns one).
-    expect(html).not.toMatch(/<button[^>]*\bdisabled\b/);
+    // element earns one). Match the attribute, not the `disabled:` Tailwind
+    // variant in the button's class list.
+    expect(html).not.toMatch(/<button[^>]*\sdisabled=""/);
+    expect(html).toContain('aria-label="Add Chicken Shawarma to cart"');
     expect(html).not.toContain("grayscale");
   });
 
@@ -52,9 +54,9 @@ describe("ProductCard — out-of-stock treatment (Issue #167)", () => {
     );
     expect(html).toContain("Out of stock");
     // Targeted: the CARD button itself is disabled for out-of-stock dishes.
-    expect(html).toMatch(/<button[^>]*\bdisabled\b/);
+    expect(html).toMatch(/<button[^>]*\sdisabled=""/);
     expect(html).toContain("grayscale");
-    // Should NOT have the '+' add button
-    expect(html).not.toContain("grid size-8 place-items-center rounded-full bg-primary");
+    // Should NOT have the quick-add button
+    expect(html).not.toContain("to cart");
   });
 });
