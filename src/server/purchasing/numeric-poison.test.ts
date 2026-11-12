@@ -1,15 +1,17 @@
 import { describe, it, expect } from "vitest";
 import { pool } from "@/db/client";
+import { NUMERIC_RULES } from "./numeric-audit";
+import { seedPurchasingTenant, rowIdFor } from "./test-helpers";
 
 /**
- * Pins the Postgres `numeric` NaN semantics that `scripts/audit-purchasing-numerics.ts`
- * depends on. This exists because the obvious test is WRONG and the wrong version
- * looks completely reasonable in review.
+ * Pins the Postgres NaN semantics that `./numeric-audit.ts` depends on. This
+ * exists because the obvious test is WRONG and the wrong version looks
+ * completely reasonable in review.
  *
  * IEEE 754 says NaN != NaN, so `NOT (x = x)` is the canonical NaN test in most
- * languages and for Postgres `float8`. Postgres `numeric` deliberately breaks
- * that — it defines NaN as EQUAL to NaN and greater than every non-NaN value,
- * so the type can be sorted and B-tree indexed.
+ * languages. Postgres breaks that for BOTH `numeric` and `float8`: it defines
+ * NaN as EQUAL to NaN and greater than every non-NaN value, so the types can
+ * be sorted and B-tree indexed.
  *
  * The consequence is severe and silent: an audit written with `NOT (x = x)`
  * returns zero rows against a database full of NaN and reads as a clean bill of
@@ -20,12 +22,15 @@ describe("postgres numeric poison predicates", () => {
   const POISON = ["NaN", "Infinity", "-Infinity"] as const;
 
   it.each(POISON)("treats '%s' as equal to itself, so the IEEE NaN test never fires", async (v) => {
-    const { rows: [r] } = await pool.query<{ eq: boolean; ieee: boolean }>(
-      `SELECT ($1::numeric = $1::numeric) AS eq, NOT ($1::numeric = $1::numeric) AS ieee`, [v],
+    const { rows: [r] } = await pool.query<{ eq: boolean; ieee: boolean; floatIeee: boolean }>(
+      `SELECT ($1::numeric = $1::numeric) AS eq, NOT ($1::numeric = $1::numeric) AS ieee,
+              NOT ($1::float8 = $1::float8) AS "floatIeee"`, [v],
     );
     expect(r.eq).toBe(true);
     // The trap: this is the test that "obviously" finds NaN, and it finds nothing.
     expect(r.ieee).toBe(false);
+    // Not a `numeric` quirk: float8 behaves the same way.
+    expect(r.floatIeee).toBe(false);
   });
 
   it("the literal-set predicate catches every poison value and no legitimate one", async () => {
@@ -41,15 +46,29 @@ describe("postgres numeric poison predicates", () => {
     expect(clean.sort()).toEqual(["-4", "0", "0.0035", "1.5", "99999999.99"]);
   });
 
-  it("accepts all three poison literals into a numeric column at all", async () => {
-    // The premise of the whole audit: these are storable, not rejected by the
-    // type. If a future migration adds a CHECK constraint that makes them
-    // unstorable, this fails and the audit can be retired.
-    for (const v of POISON) {
-      const { rows: [r] } = await pool.query<{ stored: string }>(
-        `SELECT $1::numeric::text AS stored`, [v],
-      );
-      expect(r.stored).toBe(v);
+  it("stores all three poison literals in every audited purchasing column", async () => {
+    // The premise of the whole audit: these are storable in the REAL columns,
+    // not rejected by the type or a constraint. Each write is made as the app
+    // role under RLS and rolled back. If a future migration adds a CHECK that
+    // makes them unstorable, this fails and that column's non-finite check can
+    // be retired.
+    const { tenantId, rowSets: [set] } = await seedPurchasingTenant(1);
+    for (const rule of NUMERIC_RULES) {
+      for (const v of POISON) {
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+          const { rows } = await client.query<{ stored: string }>(
+            `UPDATE ${rule.table} SET ${rule.column} = $1::numeric WHERE id = $2 RETURNING ${rule.column}::text AS stored`,
+            [v, rowIdFor(set, rule.table)],
+          );
+          expect(rows, `${rule.table}.${rule.column} = ${v}`).toEqual([{ stored: v }]);
+        } finally {
+          await client.query("ROLLBACK");
+          client.release();
+        }
+      }
     }
   });
 });
