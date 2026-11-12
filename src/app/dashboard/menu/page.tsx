@@ -34,9 +34,14 @@ export default async function MenuPage() {
         title="Menu"
         description="Categories and products your customers can order."
         action={
-          <Button asChild>
-            <Link href="/dashboard/menu/categories/new"><Plus className="size-4" />New category</Link>
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" asChild>
+              <Link href="/dashboard/menu/display">Display layout</Link>
+            </Button>
+            <Button asChild>
+              <Link href="/dashboard/menu/categories/new"><Plus className="size-4" />New category</Link>
+            </Button>
+          </div>
         }
       />
 
