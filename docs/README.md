@@ -1,138 +1,88 @@
-# ServeOS: Project Overview & Vision
+# ServeOS Documentation
 
-ServeOS is a **multi-tenant SaaS commerce & operations platform** designed for SMBs in **Egypt** (primary) and **Saudi Arabia** (expansion). 
+ServeOS is a **multi-tenant commerce and operations platform** for small businesses, built for Egypt first (EGP pricing, Arabic-first marketing). Storefront orders, counter POS sales and WhatsApp orders are stored and processed as the same kind of order in one tenant-isolated Postgres database.
 
-It bridges walk-in counter POS and online ordering into a **single unified tenant-isolated data store**. Whether a sale originates at the counter POS or as an online order, it is stored and processed identically. 
+Each tenant runs one **vertical**:
+- **Restaurant** — modifiers, recipes (ingredient deduction), service charge
+- **Retail** — variants, finished-goods stock
+- **Pharmacy** — variants, prescription upload and pharmacist review
+- **Timber** — dimensional products (m / m² / board feet), cut-to-size stock with kerf, trade accounts
 
-The platform features a **multi-vertical engine** supporting:
-- **Restaurant**: Modifiers, recipes, dine-in/pickup/delivery
-- **Retail**: Variants, barcodes, finished-goods stock
-- **Pharmacy**: Prescription upload/review
-- **Timber**: Dimensional cut-lists (m/m2/bf), kerf calculations
+Fulfillment is pickup or delivery for all verticals.
 
-## Five Connected Surfaces
-
-ServeOS operates across 5 interconnected applications, routing via a unified host-based proxy:
+## Surfaces
 
 ```mermaid
 flowchart TD
-    User([End Customer]) --> PWA["Storefront PWA\n{slug}.serveos.tech"]
-    Merchant([Merchant/Staff]) --> Dash["Merchant Dashboard\napp.serveos.tech"]
-    Merchant --> POS["Desktop POS\nElectron App"]
-    Admin([Platform Admin]) --> Console["Admin Console\nadmin.serveos.tech"]
-    Visitor([Public Visitor]) --> Mkt["Marketing Site\nwww.serveos.tech"]
-    
-    PWA -.-> Core
-    Dash -.-> Core
-    POS -.->|Offline Sync & API| Core
-    Console -.-> Core
-    
-    subgraph Core ["Unified Tenant-Isolated Data Store (PostgreSQL)"]
-        DB[(Core DB + RLS)]
-    end
+    Customer([Customer]) --> SF["Storefront PWA<br/>{slug}.serveos.tech"]
+    Customer --> WA["WhatsApp ordering"]
+    Staff([Tenant staff]) --> Dash["Merchant dashboard<br/>app.serveos.tech"]
+    Staff --> POS["Desktop POS<br/>apps/pos (Electron)"]
+    Admin([Platform admin]) --> Console["Admin console<br/>admin.serveos.tech"]
+    Visitor([Visitor]) --> Mkt["Marketing site<br/>serveos.tech / www"]
+
+    SF --> App
+    WA --> App
+    Dash --> App
+    Console --> App
+    Mkt --> App
+    POS -->|/api/pos/v1/*, offline sync| App
+    App["Next.js 16 app (src/proxy.ts host routing)"] --> DB[("PostgreSQL + FORCE RLS")]
 ```
 
-1. **Storefront PWA** (`{slug}.serveos.tech`): Customer-facing installable web store per tenant.
-2. **Merchant Dashboard** (`app.serveos.tech`): Back-office for catalog, orders, inventory, staff, and analytics.
-3. **Platform Admin Console** (`admin.serveos.tech`): Super-admin for tenant approvals, billing audit, and system health.
-4. **Marketing Site** (`www.serveos.tech`): Public landing, pricing, and plan enquiry forms (bilingual EN/AR).
-5. **Desktop POS** (`apps/pos`): Electron app for counter sales, shifts, cash drawer, and X/Z reports.
+## Tech stack
 
-## Tech Stack Summary
+- **Web:** Next.js 16 (App Router, Proxy), React 19, Tailwind CSS v4, Radix UI, lucide-react, Recharts
+- **Data:** PostgreSQL (Supabase) + Drizzle ORM, Row-Level Security per tenant
+- **POS:** Electron + Vite + React, `better-sqlite3` offline event store
+- **Integrations:** Resend (email), WhatsApp Cloud API, Supabase Storage + Realtime
+- **Testing:** Vitest (DB-backed), Playwright
+- **Ops:** Vercel (prod + QA projects), GitHub Actions (CI, deploy watch, backups to Cloudflare R2)
 
-> [!WARNING]
-> We use **Next.js 16 (App Router)**. Be aware of breaking changes from Next.js 14/15, particularly around caching, Server Actions, and data fetching.
+## Business model
 
-- **Framework:** Next.js 16 (App Router, Turbopack)
-- **Frontend:** React 19, Tailwind CSS v4, Radix UI, Lucide, Recharts
-- **Database:** PostgreSQL + Drizzle ORM, Row-Level Security (RLS) for tenant isolation
-- **POS Desktop:** Electron + Vite + React + Better-SQLite3 (offline event log)
-- **Testing:** Vitest (unit + DB integration) + Playwright (E2E)
-- **Deployment:** Vercel (Web), Supabase (Production DB), Cloudflare R2 (Backups)
+Tenants subscribe; their customers use the storefront. Four plans, EGP per month (`src/server/subscription/plans.seed.ts`):
 
-## Business Model
+| Plan | Price | Branches | Staff | Products |
+|---|---|---|---|---|
+| Free (`basic`) | 0 | 1 | 2 | 50 |
+| Starter (`pro`) | 499 | 3 | 10 | 500 |
+| Growth (`growth`) | 699 | 5 | 25 | 2000 |
+| Professional (`enterprise`) | 1099 | 50 | 200 | 100000 |
 
-ServeOS operates as a **B2B2C SaaS**. Tenants (businesses) subscribe to the platform, and their customers use the storefront.
+Billing is manual (payment proof, admin confirmation) behind the `BillingProvider` interface; no card payment gateway is integrated.
 
-- **3-tier subscription in EGP:**
-  - **Basic**: Free, 1 branch
-  - **Pro**: 499 EGP/month, up to 3 branches
-  - **Enterprise**: Custom pricing
-- **Billing**: Manual billing implemented behind a `BillingProvider` interface (payment gateway integration is pending).
+## Locked decisions (from [ROADMAP.md](./ROADMAP.md))
 
-## Key Architectural Decisions
+- **D1** hash-chained, fingerprinted, system-wide audit log — implemented
+- **D2** reconciliation: daily close + cash drawer + external settlement — drawer/close implemented; settlement waits on D3
+- **D3** Paymob-first payment gateway — **parked**
+- **D4** recipe/BOM auto-deduction with FIFO lots — implemented
+- **D5** full PO lifecycle — implemented
+- **D6** cross-channel, dual-surface reporting — implemented
+- **D7** Resend for email — implemented
+- **D8** ETA e-invoicing & e-receipts (Spec 11) — **in scope, not implemented**
+- **D9** recipe or finished-goods stock per product — implemented
 
-These 9 locked decisions from the roadmap govern our architectural constraints:
+## Documentation map
 
-- **D1:** Append-only hash-chained tamper-evident audit log
-- **D2:** Daily close + cash drawer reconciliation
-- **D3:** Paymob-first payment gateway (PARKED)
-- **D4:** Recipe/BOM auto-deduction (FIFO lots)
-- **D5:** Full PO lifecycle purchasing
-- **D6:** Cross-channel dual-surface reporting
-- **D7:** Resend email provider
-- **D8:** ETA e-invoicing & e-receipts (Egypt)
-- **D9:** Both recipe and finished-goods stock per product
+| Document | What it covers |
+|---|---|
+| [CONTEXT.md](../CONTEXT.md) | Domain glossary |
+| [requirements/functional.md](./requirements/functional.md) | Verticals, modules, roles & permissions (generated matrices) |
+| [requirements/non-functional.md](./requirements/non-functional.md) | Performance targets, security, concurrency, reliability, compliance status |
+| [architecture/overview.md](./architecture/overview.md) | Context/containers, routing, modules, tenancy, POS, deployment |
+| [flows/sequence-diagrams.md](./flows/sequence-diagrams.md) | 10 end-to-end flows |
+| [flows/state-machines.md](./flows/state-machines.md) | Every status enum and its real transitions |
+| [getting-started/onboarding.md](./getting-started/onboarding.md) | Where to start (setup lives in [NEW-LAPTOP-SETUP.md](./NEW-LAPTOP-SETUP.md)) |
+| [getting-started/codebase-conventions.md](./getting-started/codebase-conventions.md) | Layout, modules, naming, patterns |
+| [database/erd.md](./database/erd.md) | ERD (generated from foreign keys), tables by schema file |
+| [database/tables.md](./database/tables.md) | Every table, column and enum (generated) |
+| [api/README.md](./api/README.md) | Route catalog (66 route files, 81 handlers) and Server Actions (32 files, 84 actions), generated |
+| [testing/testing-strategy-and-gaps.md](./testing/testing-strategy-and-gaps.md) | Test tiers, fixtures, CI, known gaps |
+| [ROADMAP.md](./ROADMAP.md) | Spec sequencing and decisions |
+| [prds/](./prds/) | PRDs (MASTER-PRD, PRD-002 cross-channel reporting, high-level product and ZATCA PRDs) |
+| [references/](./references/) | Operational truth: environments, QA setup, backup/restore, realtime, providers |
+| `docs/{ailab,superpowers,moai,adham-ai}/` | Per-agent design specs and plans; each feature's `*-design.md` is its spec of record |
 
-## Documentation Map
-
-This README is the main entry point to all ServeOS documentation.
-
-| Document | Path | Description |
-|----------|------|-------------|
-| Domain Glossary | [CONTEXT.md](../CONTEXT.md) | Every domain term defined |
-| Functional Requirements | [docs/requirements/functional.md](./requirements/functional.md) | Multi-vertical engine & functional module workflows |
-| Non-Functional Requirements | [docs/requirements/non-functional.md](./requirements/non-functional.md) | Latency budgets, security, RLS, scalability & compliance |
-| Architecture Overview | [docs/architecture/overview.md](./architecture/overview.md) | System architecture with C4 diagrams |
-| Sequence & Flow Diagrams | [docs/flows/sequence-diagrams.md](./flows/sequence-diagrams.md) | 10 critical end-to-end Mermaid sequence diagrams |
-| State Machines | [docs/flows/state-machines.md](./flows/state-machines.md) | 9 finite state machines & transition matrices |
-| Developer Onboarding | [docs/getting-started/onboarding.md](./getting-started/onboarding.md) | New developer → productive in < 1 day |
-| Codebase Conventions | [docs/getting-started/codebase-conventions.md](./getting-started/codebase-conventions.md) | Directory structure, naming rules & patterns |
-| Database Design & ERD | [docs/database/erd.md](./database/erd.md) | Complete data model & Mermaid ERD |
-| Database Tables Reference | [docs/database/tables.md](./database/tables.md) | Exhaustive reference of all 72 tables from Drizzle schema |
-| Master API Reference | [docs/api/README.md](./api/README.md) | Master API index (64 endpoints & 31 Server Actions) |
-| Testing Strategy & Gaps | [docs/testing/testing-strategy-and-gaps.md](./testing/testing-strategy-and-gaps.md) | Multi-tier test pyramid, harnesses & roadmap debt |
-| Roadmap | [docs/ROADMAP.md](./ROADMAP.md) | Spec sequencing + locked decisions (D1–D9) |
-| PRDs | [docs/prds/MASTER-PRD.md](./prds/MASTER-PRD.md) | Product requirements registry |
-| Environments | [docs/references/environments.md](./references/environments.md) | Infrastructure map |
-
-## Quick Start
-
-For the full setup, see the [Developer Onboarding](./getting-started/onboarding.md) guide.
-
-1. Ensure Postgres has a `NOBYPASSRLS` role and two databases (`serveos`, `serveos_test`).
-2. Set up `.env.local` and `.env.test` with `DATABASE_URL` and `ROOT_DOMAIN=serveos.localhost`.
-3. `npm ci`
-4. `npm run db:migrate` (dev DB) and `npm run db:migrate:test` (test DB)
-5. `npm run db:seed`
-6. `npm run dev` — runs the web app on `serveos.localhost:3000`
-
-## Testing
-
-For comprehensive testing strategies, refer to the testing documentation.
-
-- `npm run test` — unit + integration (Vitest, DB-backed, runs serially)
-- `npm run pos:test` — Electron app's own test suite
-- `npm run test:e2e` — Playwright E2E suite
-- CI runs typecheck, migration-drift check, and the full test suite as a non-superuser on every PR.
-
-## Environments & Deployment
-
-> [!NOTE]
-> Deploys are handled by Vercel and run migrations during the build. See [Environments](./references/environments.md) for full details.
-
-| Env | URL | Deploys on | Database |
-|---|---|---|---|
-| Production | `www.serveos.tech` | push to `main` | Supabase prod (aws-1 pooler) |
-| QA | `qa.serveos.tech` | push to `qa` | Supabase `ServeOs-qa` (aws-0 pooler) |
-
-## Local Test Users
-
-Seeded by `npm run db:seed`. These are non-secret local dev accounts:
-
-| Surface | URL | Credentials |
-|---|---|---|
-| Platform admin | `admin.serveos.localhost:3000/admin/login` | `admin@serveos.com` / `admin1234` |
-| Roma owner | `app.serveos.localhost:3000/login` (slug `roma`) | `owner@roma.com` / `owner1234` |
-| Roma manager | same | `manager@roma.com` / `manager1234` |
-| Roma staff | same | `staff@roma.com` / `staff1234` |
+Setup, environments, test users and the POS run loop are in the [root README](../README.md) and [NEW-LAPTOP-SETUP.md](./NEW-LAPTOP-SETUP.md).
