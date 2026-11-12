@@ -9,19 +9,23 @@ import { isValidCustomerPhone, getPhoneFormatHint } from "@/lib/phone";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { checkoutEmailError, checkoutEmailPayload } from "./checkout-email";
 
 export type SlotOption = { iso: string; label: string; day: "Today" | "Tomorrow" };
 type Area = { id: string; nameEn: string; nameAr: string; deliveryFee: string; minOrderAmount: string; etaMinutes: number | null };
 
 const CUSTOMER_KEY = "serveos.customer";
-type SavedCustomer = { name: string; phone: string; address: string };
+type SavedCustomer = { name: string; phone: string; address: string; email: string };
 
 function loadCustomer(): SavedCustomer {
   try {
     const raw = window.localStorage.getItem(CUSTOMER_KEY);
-    return raw ? (JSON.parse(raw) as SavedCustomer) : { name: "", phone: "", address: "" };
+    // `email` is read with a fallback rather than trusted: this key predates
+    // the field, so an existing browser has a two-field object in it.
+    const saved = raw ? (JSON.parse(raw) as Partial<SavedCustomer>) : {};
+    return { name: saved.name ?? "", phone: saved.phone ?? "", address: saved.address ?? "", email: saved.email ?? "" };
   } catch {
-    return { name: "", phone: "", address: "" };
+    return { name: "", phone: "", address: "", email: "" };
   }
 }
 
@@ -30,7 +34,8 @@ export type OfflineMethodOption = { type: string; label: string; payToDetail: st
 export function CheckoutForm({
   slug, branchId, branchName, pricing, currency, openNow, slots, methods,
   country = "EG",
-  initialName = "", initialPhone = "", initialAddress = "",
+  initialName = "", initialPhone = "", initialAddress = "", initialEmail = "",
+  fiscalEnabled = false,
   customer = null,
   initialCart,
   rxProductIds = [],
@@ -47,6 +52,10 @@ export function CheckoutForm({
   initialName?: string;
   initialPhone?: string;
   initialAddress?: string;
+  initialEmail?: string;
+  /** EG AND ETA activation `active`. Only then is the tax-receipt email field
+   *  shown or sent — every other tenant's checkout is what it was before ETA. */
+  fiscalEnabled?: boolean;
   customer?: { id: string; name: string; email: string } | null;
   /** Test seam only: production hydrates the cart from localStorage inside the
    *  form (see the sync effect below). Passing it from the server is impossible
@@ -67,6 +76,7 @@ export function CheckoutForm({
   const [name, setName] = useState(initialName);
   const [phone, setPhone] = useState(initialPhone);
   const [address, setAddress] = useState(initialAddress);
+  const [email, setEmail] = useState(initialEmail);
   const [notes, setNotes] = useState("");
   const [payMethod, setPayMethod] = useState<string>("cash");
   const [payRef, setPayRef] = useState("");
@@ -87,6 +97,7 @@ export function CheckoutForm({
     setName((prev) => prev || saved.name);
     setPhone((prev) => prev || saved.phone);
     setAddress((prev) => prev || saved.address);
+    setEmail((prev) => prev || saved.email);
     window.addEventListener("serveos-cart-changed", sync);
     return () => window.removeEventListener("serveos-cart-changed", sync);
   }, [initialCart]);
@@ -152,6 +163,17 @@ export function CheckoutForm({
       setError("Please enter your payment reference.");
       return;
     }
+    // A PRE-CHECK, exactly like the stale-slot one above, and for the same
+    // reason: `placeOrder` refuses a malformed address too, but its
+    // `OrderValidationError` renders as the generic "please review your cart" —
+    // which for a mistyped email points the customer at the wrong field
+    // entirely. The server check stays (this route is public and the form is
+    // not the only caller); this one is what makes the message actionable.
+    const emailError = checkoutEmailError(fiscalEnabled, email);
+    if (emailError) {
+      setError(emailError);
+      return;
+    }
     setSubmitting(true);
     try {
       // The upload's id is threaded through as a local value inside
@@ -163,6 +185,7 @@ export function CheckoutForm({
         body: {
           slug, branchId, fulfillmentType: fulfillment,
           customerName: name, customerPhone: phone, notes,
+          ...checkoutEmailPayload(fiscalEnabled, email),
           areaId: fulfillment === "delivery" ? areaId : undefined,
           addressText: fulfillment === "delivery" ? address : undefined,
           scheduledFor: when === "scheduled" ? slotIso : undefined,
@@ -197,7 +220,7 @@ export function CheckoutForm({
         return;
       }
       try {
-        window.localStorage.setItem(CUSTOMER_KEY, JSON.stringify({ name, phone, address }));
+        window.localStorage.setItem(CUSTOMER_KEY, JSON.stringify({ name, phone, address, email }));
       } catch { /* best-effort */ }
       // A 201 from /api/orders always carries both (placeOrder's result).
       const placed = data as { statusToken: string; orderNumber: number };
@@ -430,6 +453,23 @@ export function CheckoutForm({
             onChange={(e) => setPhone(e.target.value)}
           />
         </div>
+        {/* OPTIONAL, and the label says what it is FOR rather than just what it
+            is. An address asked for with no stated purpose reads as a mailing
+            list, which is both why people decline and why the column it lands
+            in carries a purpose-limitation contract (`orders.customerEmail`).
+            The only thing sent to it is this order's own tax document.
+
+            Not in the submit-disabled guard below, deliberately: name and phone
+            gate the order because the restaurant cannot deliver without them; a
+            tax receipt is the seller's obligation to FILE, not the buyer's to
+            receive, so a blank here costs the customer their emailed copy and
+            nothing else. */}
+        {fiscalEnabled && (
+          <div className="grid gap-1.5">
+            <Label htmlFor="co-email">Email (optional) — for your tax receipt</Label>
+            <Input id="co-email" placeholder="you@example.com" type="email" inputMode="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          </div>
+        )}
         {fulfillment === "delivery" && (
           <>
             <div className="grid gap-1.5">

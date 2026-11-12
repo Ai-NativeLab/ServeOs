@@ -19,6 +19,7 @@ import type {
   RefundSaleInput,
   RefundSaleResult,
   ReprintReceipt,
+  SaleFiscalStatus,
   SyncStatus,
   PosRealtimeMessage,
 } from "./pos-main";
@@ -48,6 +49,10 @@ export type {
   RefundSaleInput,
   RefundSaleResult,
   ReprintReceipt,
+  SaleFiscalStatus,
+  /** The B2B receiver a renderer may attach to `RecordSaleInput` — re-exported
+   *  so the payment screen names the same shape main will queue. */
+  SaleBuyer,
   SyncStatus,
   PosRealtimeMessage,
 } from "./pos-main";
@@ -63,6 +68,17 @@ export interface PosBridge {
   listSales(search?: SalesSearch): Promise<SalesRow[]>;
   getSale(orderId: string): Promise<SaleDetail>;
   reprintReceipt(orderId: string): Promise<ReprintReceipt>;
+  /** The sale's ETA fiscal state for the receipt footer — an e-receipt's QR and
+   *  uuid, or a tax invoice's ETA long id. `null` = no fiscal
+   *  record (non-EG tenant, enqueue not landed yet) OR the read did not get
+   *  through — both print the receipt unchanged. Never rejects. Telling those
+   *  apart needs a wider return type, not a reading of `null`: see
+   *  `PosMain.saleFiscalStatus`. */
+  saleFiscalStatus(orderId: string): Promise<SaleFiscalStatus | null>;
+  /** Whether this tenant files with ETA (country EG and activation `active`),
+   *  as of the last catalog sync. `false` until the first sync. Gates every
+   *  fiscal affordance in the renderer. */
+  fiscalEnabled(): Promise<boolean>;
   refundSale(input: RefundSaleInput): Promise<RefundSaleResult>;
   signInCashier(email: string, password: string): Promise<CashierInfo>;
   cashier(): Promise<CashierInfo | null>;
@@ -104,6 +120,8 @@ contextBridge.exposeInMainWorld("pos", {
   listSales: (search?: SalesSearch) => ipcRenderer.invoke("pos:listSales", search),
   getSale: (orderId: string) => ipcRenderer.invoke("pos:getSale", orderId),
   reprintReceipt: (orderId: string) => ipcRenderer.invoke("pos:reprintReceipt", orderId),
+  saleFiscalStatus: (orderId: string) => ipcRenderer.invoke("pos:saleFiscalStatus", orderId),
+  fiscalEnabled: () => ipcRenderer.invoke("pos:fiscalEnabled"),
   refundSale: (input: RefundSaleInput) => ipcRenderer.invoke("pos:refundSale", input),
   signInCashier: (email: string, password: string) => ipcRenderer.invoke("pos:signInCashier", email, password),
   cashier: () => ipcRenderer.invoke("pos:cashier"),

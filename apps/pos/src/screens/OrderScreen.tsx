@@ -15,8 +15,10 @@ import {
   removeLine,
   type CartLine,
 } from "../order/cart";
+import { useFiscalEnabled, useSaleFiscal } from "../fiscal/sale-fiscal";
 import { Receipt, type ReceiptData } from "./Receipt";
 import { PaymentScreen, changeFor, type TenderDraft } from "./PaymentScreen";
+import type { PosSaleBuyer } from "../fiscal/buyer";
 import { ManagerAuthModal } from "./ManagerAuthModal";
 
 type Cashier = { name: string; permissions: string[] };
@@ -59,6 +61,13 @@ export function OrderScreen({
   const [cart, setCart] = useState<CartLine[]>(() => recalled?.lines ?? []);
   const [cartError, setCartError] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<ReceiptData | null>(null);
+  // The SERVER order id of the receipt on screen, or null when there is nothing
+  // to ask ETA about (no receipt, or a sale the server has not confirmed yet).
+  // Set only AFTER the sale is committed and the receipt rendered — the fiscal
+  // read is never on the checkout path.
+  const [fiscalOrderId, setFiscalOrderId] = useState<string | null>(null);
+  const { fiscal, fetching: fiscalFetching } = useSaleFiscal(fiscalOrderId);
+  const fiscalEnabled = useFiscalEnabled();
 
   const [view, setView] = useState<"cart" | "payment">("cart");
   const [saleId, setSaleId] = useState<string | null>(null);
@@ -224,7 +233,7 @@ export function OrderScreen({
     setView("payment");
   }
 
-  async function completeSale(tenders: TenderDraft[]) {
+  async function completeSale(tenders: TenderDraft[], buyer?: PosSaleBuyer) {
     if (!totals || !saleId) return;
     try {
       const receiptData = await window.pos.recordSale({
@@ -241,6 +250,12 @@ export function OrderScreen({
         expectedTotal: totals.total,
         payments: tenders.map((t, i) => ({ ...t, clientPaymentId: `${saleId}-${i}` })),
         grants: discountGrant ? [{ permission: "pos:discount", token: discountGrant }] : undefined,
+        // Undefined for every ordinary sale — the payment screen's business
+        // section left collapsed — so the recorded event is unchanged. Present
+        // ⇒ the sale is filed as a tax invoice INSTEAD of an e-receipt, and it
+        // travels inside the sale event itself, so an outage cannot turn it
+        // back into a consumer sale (see `PosMain.recordSale`).
+        buyer,
       });
       const change = Math.round(tenders.reduce((s, t) => s + changeFor(t), 0) * 100) / 100;
       setReceipt({
@@ -257,6 +272,14 @@ export function OrderScreen({
         timestamp: new Date().toISOString(),
         synced: receiptData.synced ?? false,
       });
+      // An unsynced sale has no server order yet, so there is nothing to look a
+      // fiscal record up by — it stays null and the receipt prints with no
+      // footer, the code arriving only on a reprint after sync. Whether that
+      // QR-less customer copy is acceptable at issuance is an OPEN ETA question
+      // (VERIFY 10 in the plan / the addendum's §5 ledger), not a settled one.
+      // Nothing below is awaited: the poll starts from an effect once the
+      // receipt is on screen.
+      setFiscalOrderId(receiptData.synced ? receiptData.orderId : null);
       resetSale();
       setView("cart");
     } catch (e) {
@@ -275,8 +298,10 @@ export function OrderScreen({
     return (
       <Receipt
         data={receipt}
+        fiscal={fiscal}
+        fiscalFetching={fiscalEnabled && fiscalFetching}
         onPrint={() => window.print()}
-        onNewOrder={() => { setReceipt(null); setCartError(null); }}
+        onNewOrder={() => { setReceipt(null); setFiscalOrderId(null); setCartError(null); }}
       />
     );
   }
@@ -286,6 +311,7 @@ export function OrderScreen({
       <PaymentScreen
         total={totals.total}
         cashierName={cashier.name}
+        fiscalEnabled={fiscalEnabled}
         hasOpenShift={hasOpenShift}
         onNeedDrawer={onNeedDrawer}
         onCancel={() => setView("cart")}

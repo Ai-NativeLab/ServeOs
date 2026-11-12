@@ -14,6 +14,10 @@ import { openShift } from "./shifts";
 import type { PosShift } from "./shift-schema";
 import type { PosCashierContext } from "./require-cashier";
 import type { VerticalId } from "@/server/verticals";
+import { withTenant } from "@/db/with-tenant";
+import { etaTenantConfig } from "@/server/fiscal/schema";
+import { etaSecretRefPrefix } from "@/server/fiscal/config";
+import { eq } from "drizzle-orm";
 
 /**
  * Opens a drawer for a fixture. Cash cannot be taken without one, so any test
@@ -115,4 +119,36 @@ export async function seedPosContext(
     deviceToken,
     cashierToken: session.cashierToken,
   };
+}
+
+/**
+ * Turns ETA on for a seeded tenant: an `eta_tenant_config` row with
+ * `activation_status = 'active'` — the second half of `isFiscalEnabled` (the
+ * first, country EG, is `seedPosContext`'s default). Without it an EG tenant is
+ * still onboarding and NOTHING fiscal happens: no enqueue at sale or refund
+ * time, no storefront block, no B2B section on the till.
+ *
+ * Minimal on purpose (no wire context, no device credentials): enough for the
+ * gate and for rows to be queued; a test that needs a row FINALIZED seeds the
+ * rest itself. Upserts, so calling it on a tenant that already has a config
+ * row only flips the status.
+ *
+ * The (never-resolved) client secret ref still sits inside the tenant's own
+ * `env://ETA_<SLUG>__` namespace, so the fixture is a row the config service
+ * would have accepted rather than one `resolveSecretRef` refuses on sight.
+ */
+export async function activateFiscal(
+  tenantId: string,
+  status: "not_configured" | "pending" | "active" | "suspended" = "active",
+): Promise<void> {
+  const [tenant] = await db.select({ slug: tenants.slug }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+  await withTenant(tenantId, (tx) =>
+    tx.insert(etaTenantConfig).values({
+      tenantId,
+      registrationNumber: "200173707",
+      clientId: "test-client",
+      clientSecretRef: `${etaSecretRefPrefix(tenant.slug)}UNUSED_SECRET`,
+      activationStatus: status,
+    }).onConflictDoUpdate({ target: etaTenantConfig.tenantId, set: { activationStatus: status } }),
+  );
 }

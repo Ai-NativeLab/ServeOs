@@ -4,6 +4,7 @@ import { posAuthResponse } from "@/server/pos/errors";
 import { getPublishedMenu } from "@/server/catalog/service";
 import { getCatalogVersion } from "@/server/catalog/version";
 import { getCheckoutPricing, getShiftPolicy } from "@/server/tenancy/settings";
+import { isFiscalEnabled } from "@/server/fiscal/enqueue";
 
 export async function GET(req: NextRequest) {
   let device;
@@ -19,11 +20,20 @@ export async function GET(req: NextRequest) {
   // (Task 10) — it's the till's only way to learn payoutThreshold/blindClose,
   // which otherwise leaves cash-movement gating stuck on the offline-safe
   // "always ask for a manager" default (see pos-main.ts's cashMovement).
-  const [menu, pricing, catalogVersion, shiftPolicy] = await Promise.all([
+  //
+  // fiscalEnabled rides along for the same reason: it is the till's only way to
+  // know whether this tenant files with ETA (country EG AND activation
+  // `active` — the exact gate the sale path enqueues on), which decides whether
+  // the payment screen offers the business-buyer section at all. Cached by the
+  // till so it survives an outage.
+  const [menu, pricing, catalogVersion, shiftPolicy, fiscalEnabled] = await Promise.all([
     getPublishedMenu(device.tenantId, device.branchId),
     getCheckoutPricing(device.tenantId),
     getCatalogVersion(device.tenantId),
     getShiftPolicy(device.tenantId),
+    isFiscalEnabled(device.tenantId),
   ]);
-  return NextResponse.json({ menu, pricing, catalogVersion, shiftPolicy, syncedAt: new Date().toISOString() });
+  return NextResponse.json({
+    menu, pricing, catalogVersion, shiftPolicy, fiscalEnabled, syncedAt: new Date().toISOString(),
+  });
 }

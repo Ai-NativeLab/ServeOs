@@ -10,7 +10,7 @@ import {
 } from "./_offline/offline-auth";
 import { EMPTY_TILL_STATE, reduce, type TillState } from "./_offline/reducer";
 import { createApiClient, type PosApi } from "./_offline/api";
-import { SyncEngine, type SyncStatus } from "./_offline/sync";
+import { FISCAL_ENABLED_KEY, SyncEngine, type SyncStatus } from "./_offline/sync";
 import { TenantSignal, type RealtimeEvent, type TenantEventType } from "./_offline/realtime";
 import { createRealtimeTransport } from "./_offline/realtime-transport";
 import {
@@ -145,6 +145,31 @@ export type SaleLine = {
   discountAmount?: number;
   discountReason?: string;
 };
+/**
+ * The B2B buyer, as the renderer captured it. Structurally identical to
+ * `PosSaleBuyer` in `../src/fiscal/buyer.ts` and to `EtaSubmissionBuyer` in
+ * `src/server/fiscal/schema.ts`, and — like `SaleFiscalStatus` below — linked to
+ * neither by anything a compiler checks. Main and the renderer are separate
+ * bundles with separate tsconfigs, so the type is written out here rather than
+ * imported across that boundary.
+ */
+export type SaleBuyer = {
+  rin: string;
+  name: string;
+  address: {
+    country: string;
+    governate: string;
+    regionCity: string;
+    street: string;
+    buildingNumber: string;
+    postalCode?: string;
+    floor?: string;
+    room?: string;
+    landmark?: string;
+    additionalInformation?: string;
+  };
+};
+
 export type RecordSaleInput = {
   lines: SaleLine[];
   orderDiscountAmount?: number;
@@ -153,6 +178,10 @@ export type RecordSaleInput = {
   payments: TenderInput[];
   grants?: { permission: string; token: string }[];
   notes?: string;
+  /** Present ⇒ this sale is filed with ETA as a tax invoice instead of an
+   *  e-receipt. Absent on every ordinary sale, and its absence leaves the
+   *  appended event byte-identical to what it was before B2B capture existed. */
+  buyer?: SaleBuyer;
 };
 export type SaleReceipt = {
   orderId: string;
@@ -306,6 +335,49 @@ export type ReprintReceipt = {
     lines: { orderItemId: string; quantity: number; amount: string; restock: boolean }[];
     payments: { method: string; amount: string }[];
   }[];
+};
+
+/**
+ * One sale's ETA fiscal state, as `GET /api/pos/v1/sales/:id/fiscal` returns it.
+ *
+ * ---------------------------------------------------------------------------
+ * A HAND-WRITTEN MIRROR OF `SaleFiscalStatus` IN
+ * `src/server/fiscal/read-model.ts`, AND NOTHING COMPILER-CHECKS THE LINK.
+ *
+ * This is not a stylistic duplication — main is a separate bundle with its own
+ * tsconfig and no path into the Next.js server tree, and the value arrives here
+ * through `res.json()` behind a bare `as SaleFiscalStatus` cast, so a server
+ * field this type does not know about is simply invisible and a field this type
+ * INVENTS reads as `undefined` at runtime with no complaint from anywhere.
+ *
+ * WHEN THE SERVER TYPE CHANGES, EDIT THIS ONE IN THE SAME COMMIT. The failure
+ * mode is not a crash: it is a receipt footer that renders the wrong thing, or
+ * nothing at all, on a document ETA holds — which is exactly what happened to
+ * B2B sales before round 2 Task 5, where the server's `docType = 'e_receipt'`
+ * filter made every business sale read as `null` here and print no fiscal block
+ * whatsoever, silently, with no failing row and no log line anywhere to find it
+ * by. Assume the next drift will be as quiet as that one was.
+ *
+ * The whole block is `null` when the order has no submission row — the ORDINARY
+ * state of a non-EG tenant and of an EG sale in the moment before its enqueue
+ * lands. Never an error, and never a footer: see `saleFiscalStatus` below.
+ */
+export type SaleFiscalStatus = {
+  /** Which family this sale was declared as. An `e_invoice` (a B2B sale, buyer
+   *  captured at the till) never has a QR and shows `etaLongId` instead; an
+   *  `e_receipt` prints the QR. Not inferrable from the absence of a QR — an
+   *  unfinalized receipt has none either. */
+  docType: "e_receipt" | "e_invoice";
+  status: "pending" | "submitted" | "accepted" | "rejected" | "failed";
+  etaUuid: string | null;
+  /** ETA's own document number, assigned by ETA. This IS the B2B footer: an
+   *  invoice has no QR and no self-computed uuid, so until ETA answers there is
+   *  nothing to print but "pending". */
+  etaLongId: string | null;
+  qrPayload: string | null;
+  /** `data:image/png;base64,…`, re-rendered server-side on every call from an
+   *  immutable payload — so it is byte-identical each time. Render it once. */
+  qrImageDataUrl: string | null;
 };
 
 export type PosShiftSummary = {
@@ -857,6 +929,17 @@ export class PosMain {
       expectedTotal: input.expectedTotal,
       payments: input.payments,
       notes: input.notes,
+      // THE BUYER RIDES THE EVENT, which is what makes an offline B2B sale still
+      // a B2B sale when it syncs. Every sale is appended here before it is
+      // flushed — this log is not the exceptional path, it is the ONLY path a
+      // POS sale takes — so a buyer omitted from this object would be discarded
+      // before it ever reached the queue, and the sale would come back from an
+      // outage as a consumer e-receipt with the details already gone.
+      //
+      // Spread-omitted so an ordinary sale's payload is byte-identical to what
+      // it was before this field existed (the queue hashes and replays these
+      // objects; an extra `"buyer": undefined` is not the same JSON).
+      ...(input.buyer ? { buyer: input.buyer } : {}),
       // Wire contract rule 1: name the drawer on EVERY sale, card-only
       // included — a sale that replays after its shift closed would otherwise
       // drop out of that shift's Z-report entirely.
@@ -978,6 +1061,48 @@ export class PosMain {
     });
     if (!res.ok) throw new Error(`Could not reprint (${res.status})`);
     return (await res.json()) as ReprintReceipt;
+  }
+
+  /**
+   * The ETA fiscal state of one finalized sale, for the receipt footer (Task 7).
+   * Read-only and `pos:sell`-gated server-side — it never submits anything, so a
+   * reprint may call it as freely as the sale that minted the receipt.
+   *
+   * NEVER THROWS, and answers `null` for every "we do not have one": no server
+   * order id yet (an offline sale), no pairing, no cashier, an unreachable
+   * backend, a refused request, or the endpoint's own literal `null` body — a
+   * non-EG tenant, and every EG sale until its enqueue lands. All of them mean
+   * the same thing to the receipt: print it exactly as a non-fiscal till would.
+   * Mirrors `getOrders`, which swallows for the same reason — the till is
+   * offline-first and no fiscal read may cost a cashier a printed receipt.
+   *
+   * THE COLLAPSE IS DELIBERATE BUT NOT FREE: a future consumer that needs to
+   * tell non-EG from not-yet from transport-failure must WIDEN THIS RETURN TYPE
+   * — never infer meaning from `null`, which says only "nothing to print".
+   */
+  /**
+   * Whether this tenant files with ETA (EG + activation `active`), as of the
+   * last catalog pull — the server's `isFiscalEnabled`, cached in local_state so
+   * it survives an outage. `false` until the first pull (and on an unpaired
+   * till): every fiscal affordance — the B2B buyer section, the "fetching
+   * fiscal code" line — stays hidden rather than guessing "on".
+   */
+  fiscalEnabled(): boolean {
+    if (!this.device) return false;
+    return this.store.getState<boolean>(FISCAL_ENABLED_KEY) === true;
+  }
+
+  async saleFiscalStatus(orderId: string): Promise<SaleFiscalStatus | null> {
+    if (!this.device || !this.cashier) return null;
+    try {
+      const res = await fetch(`${this.baseUrl}/api/pos/v1/sales/${orderId}/fiscal`, {
+        headers: this.authHeaders(),
+      });
+      if (!res.ok) return null;
+      return (await res.json()) as SaleFiscalStatus | null;
+    } catch {
+      return null;
+    }
   }
 
   /** Full or partial refund. A 403 (missing pos:refund) is surfaced with a

@@ -7,6 +7,7 @@ import { nextStatuses } from "@/server/ordering/state-machine";
 import type { OrderStatus } from "@/server/ordering/schema";
 import { transitionOrderAction, markPaidAction } from "./actions";
 import { RefundForm } from "./RefundForm";
+import { B2bInvoiceForm } from "./B2bInvoiceForm";
 import { can } from "@/server/rbac/authorize";
 import { recordCustomerPiiView } from "@/server/audit/read-events";
 import { actionAudit } from "@/server/audit/action-context";
@@ -19,6 +20,8 @@ import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { formatDayTime } from "@/lib/datetime";
 import { getTenantById } from "@/server/tenancy";
+import { isFiscalEnabled } from "@/server/fiscal/enqueue";
+import { getSaleFiscalStatus } from "@/server/fiscal/read-model";
 
 const STATUS_LABEL: Record<string, string> = {
   confirmed: "Confirm", preparing: "Start preparing", ready: "Mark ready",
@@ -54,6 +57,30 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
     r.lines.map((l) => ({ orderItemId: l.orderItemId, quantity: l.quantity })),
   );
   const canRefund = can(ctx.roleKeys, "pos:refund");
+  // Same shape as `canRefund`: this page hosts actions from several domains, and
+  // each is gated by its OWN permission rather than by the page's. `fiscal:manage`
+  // is owner-only — deliberately narrower than the orders screen itself.
+  //
+  // Fiscal-gated too — `isFiscalEnabled` (country EG AND ETA activation
+  // `active`): offering the button to any other tenant would only earn a 409.
+  // `requestB2bInvoice` enforces every one of these rules itself; this gate is
+  // the affordance, so the form is not offered where it can only be refused:
+  //   - only a PAID sale is invoiced (unpaid / pending_verification refused);
+  //   - one sale, one document family: a sale that already has a LIVE fiscal
+  //     document (a receipt or an invoice, anything not rejected) cannot take
+  //     an invoice. `getSaleFiscalStatus` reads both families, newest live row
+  //     first. The one permitted switch — a REJECTED receipt with no correction
+  //     queued — keeps the form, matching the ladder.
+  const fiscalEnabled =
+    can(ctx.roleKeys, "fiscal:manage") && tenant?.country === "EG" && (await isFiscalEnabled(tenantId));
+  const saleFiscal = fiscalEnabled ? await getSaleFiscalStatus(tenantId, id) : null;
+  const canInvoice =
+    fiscalEnabled &&
+    order.status !== "cancelled" &&
+    order.status !== "rejected" &&
+    order.paymentStatus !== "unpaid" &&
+    order.paymentStatus !== "pending_verification" &&
+    (saleFiscal === null || (saleFiscal.docType === "e_receipt" && saleFiscal.status === "rejected"));
 
   return (
     <>
@@ -232,6 +259,8 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
           netPaidRemaining={netPaidRemaining}
         />
       )}
+
+      {canInvoice && <B2bInvoiceForm orderId={id} />}
 
       <h2 className="eyebrow text-primary mb-2 mt-6">History</h2>
       <ul className="text-sm text-muted-foreground space-y-1">

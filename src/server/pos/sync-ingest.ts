@@ -24,6 +24,8 @@ import { openShift, closeShift, recordMidShiftCount } from "./shifts";
 import { recordCashMovement } from "./cash-movements";
 import { holdTicket, recallHeldTicket, discardHeldTicket } from "./held-tickets";
 import { recordSale, type TenderInput, type ReasonCode } from "./record-sale";
+// Type-only — nothing from the fiscal module reaches this dispatcher's runtime.
+import type { EtaSubmissionBuyer } from "@/server/fiscal/schema";
 import {
   NoOpenShiftError, PosForbiddenError, PosSaleError, ShiftAlreadyOpenError, ShiftClosedError,
   CashMovementError, CashCountMismatchError,
@@ -259,6 +261,27 @@ type SaleRecordedPayload = {
   clientShiftId?: string;
   shiftId?: string;
   catalogVersion?: number;
+  /**
+   * The business buyer captured at the till, forwarded verbatim (round 2, Task
+   * 5). Present ⇒ the replayed sale is declared to ETA as an `e_invoice`
+   * instead of an `e_receipt` — see `RecordSaleInput.buyer`.
+   *
+   * THIS IS WHAT CARRIES A B2B SALE THROUGH AN OUTAGE. Every POS sale is
+   * appended to the till's event log before it is flushed, so this replay path
+   * is not the exceptional one — it is the ONLY path a POS sale takes. Omitting
+   * the field here would make an offline B2B sale come back as a B2C receipt,
+   * silently and with the buyer's details already thrown away.
+   *
+   * NOT shape-checked below, deliberately, and the reason is the iron rule
+   * rather than laziness: every other guard in `asSaleRecordedPayload` refuses
+   * an event that could not become a sale at all, whereas a malformed buyer
+   * still describes a completed sale the customer has paid for. Throwing here
+   * would refuse the event, halt the queue behind it and leave that sale
+   * unrecorded — fiscal logic blocking a sale, which is precisely what is
+   * forbidden. It travels on, and `buildInvoice` refuses it by name into a
+   * visible `failed` row instead.
+   */
+  buyer?: EtaSubmissionBuyer;
 };
 
 function asSaleRecordedPayload(payload: Record<string, unknown>): SaleRecordedPayload {
@@ -304,6 +327,8 @@ async function handleSaleRecorded(
     notes: p.notes,
     clientShiftId: p.clientShiftId,
     shiftId: p.shiftId,
+    // Verbatim. A B2B sale rung offline is still a B2B sale when it replays.
+    buyer: p.buyer,
     replay: { occurredAt: receipt.occurredAt, lineSnapshots: p.lineSnapshots, catalogVersion: p.catalogVersion },
     authorizedByUserId: e.authorizedByUserId,
     syncReceipt: receipt,

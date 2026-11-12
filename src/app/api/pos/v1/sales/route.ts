@@ -95,6 +95,14 @@ export async function POST(req: NextRequest) {
       payments: body.payments ?? [],
       grants: body.grants,
       notes: body.notes,
+      // ADMITTED, unlike the replay-only fields this re-pick exists to strip
+      // (`authorizedByUserId`, `replay`, `syncReceipt`, `shiftId`). Those are
+      // things a client must not be able to assert about itself; a buyer is the
+      // client TELLING us the customer is a business, which is the only way that
+      // fact can ever be known and exactly what the till is asking for. It
+      // selects a document family, grants nothing, and is refused by name at the
+      // builder if it is malformed. See `RecordSaleInput.buyer`.
+      buyer: body.buyer,
     });
     return NextResponse.json(receipt);
   } catch (e) {

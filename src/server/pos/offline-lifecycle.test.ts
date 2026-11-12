@@ -482,7 +482,7 @@ describe("offline shift lifecycle — adversarial variants", () => {
    * and having applyEvent/ingestEvents derive `status` from that instead of
    * from the pre-apply findSyncReceipt check alone.
    */
-  it("a second concurrent ingest of the same batch is reported as all duplicates", async () => {
+  it("reports every event of a second concurrent ingest as a duplicate, never as a second apply", async () => {
     const seed = await seedLifecycle();
     const batch = buildBatch(seed, new Date(Date.now() - OUTAGE_START_MS));
 
@@ -492,11 +492,24 @@ describe("offline shift lifecycle — adversarial variants", () => {
     ]);
 
     const runs = (settled as PromiseFulfilledResult<SyncResult[]>[]).map((s) => s.value);
-    // Whichever run saw an already-committed event is the one that lost the
-    // race — named by what it observed, not by launch order.
-    const loser = runs.find((r) => r.some((x) => x.status === "duplicate"));
-    expect(loser).toBeDefined();
-    expect(statuses(loser!)).toEqual(Array(8).fill("duplicate"));
+    // PER EVENT, not per run: exactly one of the two ingests applies it and the
+    // other reports it as a duplicate. That is the property the `idempotent`
+    // return value bought — a service that absorbed the replay silently would
+    // show up here as a second "applied".
+    //
+    // Asserted this way rather than as "the losing RUN is uniformly duplicate",
+    // which the earlier version of this test used: that form assumed both runs
+    // advance through the batch at the same rate, so the lead never changes
+    // hands. It stopped holding once EG tenants began finalizing a sale's
+    // fiscal receipt inline (Spec 11 Task 5) — sale events now cost visibly
+    // more than the rest, so whichever run wins them falls behind on the
+    // others and the two interleave. The per-event form is both stronger (it
+    // checks all 8 events in both runs) and independent of scheduling.
+    for (const event of batch.events) {
+      const reported = runs.map((run) => run.find((r) => r.eventId === event.eventId)?.status);
+      expect(reported.filter((s) => s === "applied"), `event ${event.eventId} (${event.type})`).toHaveLength(1);
+      expect(reported.filter((s) => s === "duplicate"), `event ${event.eventId} (${event.type})`).toHaveLength(1);
+    }
   });
 
   it("halts at a malformed 2nd event, leaves events 3+ untouched, and resumes on a corrected retry", async () => {

@@ -11,6 +11,7 @@ import { validatePayToDetail } from "@/server/payments/offline/validation";
 import type { OfflineMethodType } from "@/server/payments/offline/types";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { CheckoutForm, type SlotOption } from "./CheckoutForm";
+import { isEtaActivated } from "@/server/fiscal/enqueue";
 
 export default async function CheckoutPage({
   searchParams,
@@ -39,7 +40,7 @@ export default async function CheckoutPage({
   }
 
   const caps = getCapabilities(tenant.vertical as VerticalId);
-  const [branches, pricing, offlineMethods, me, rxProductIds] = await Promise.all([
+  const [branches, pricing, offlineMethods, me, rxProductIds, fiscalEnabled] = await Promise.all([
     listBranches(tenant.id),
     getCheckoutPricing(tenant.id),
     // #174 last AC: a stored row that fails validation is warned about in
@@ -54,6 +55,9 @@ export default async function CheckoutPage({
     // requiresPrescription flag existed must still get the upload field.
     // Capability-gated to mirror placeOrder's requiresRxReview.
     caps.pharmacistReview ? listRxProductIds(tenant.id) : Promise.resolve([]),
+    // The tax-receipt email field is an ETA feature: only a tenant that files
+    // (EG AND activation `active`) asks for it. A non-EG tenant pays no query.
+    tenant.country === "EG" ? isEtaActivated(tenant.id) : false,
   ]);
   // No silent fallback: resolve only an explicit ?branch= or the single branch.
   const branch =
@@ -98,6 +102,8 @@ export default async function CheckoutPage({
           initialName={me?.name ?? ""}
           initialPhone={me?.phone ?? ""}
           initialAddress={me?.defaultAddressText ?? ""}
+          initialEmail={fiscalEnabled ? (me?.email ?? "") : ""}
+          fiscalEnabled={fiscalEnabled}
           branchId={branch.id}
           branchName={branch.name}
           pricing={pricing}

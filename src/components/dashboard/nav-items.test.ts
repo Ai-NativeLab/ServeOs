@@ -51,6 +51,26 @@ describe("dashboardNavItems", () => {
   });
 });
 
+describe("fiscal nav (Spec 11)", () => {
+  it("is hidden unless the tenant is Egyptian AND the user is the owner", () => {
+    const hrefs = (roles: Parameters<typeof dashboardNavItems>[0], country?: string | null) =>
+      dashboardNavItems(roles, "Menu", country).map((i) => i.href);
+
+    // Owner of an EG tenant: the only combination that shows it.
+    expect(hrefs(["owner"], "EG")).toContain("/dashboard/fiscal");
+    // fiscal:manage is owner-only, so no other role sees it even in Egypt.
+    expect(hrefs(["manager"], "EG")).not.toContain("/dashboard/fiscal");
+    expect(hrefs(["staff"], "EG")).not.toContain("/dashboard/fiscal");
+    // ETA e-invoicing is an Egypt-specific obligation — an owner elsewhere
+    // would get a setup screen that can never submit anything.
+    expect(hrefs(["owner"], "AE")).not.toContain("/dashboard/fiscal");
+    expect(hrefs(["owner"], null)).not.toContain("/dashboard/fiscal");
+    // And a caller with no tenant in hand gets the pre-fiscal nav unchanged,
+    // which is what keeps the exact-array owner assertion above honest.
+    expect(hrefs(["owner"])).not.toContain("/dashboard/fiscal");
+  });
+});
+
 describe("prescriptions nav (P3)", () => {
   it("shows Prescriptions to a pharmacist and to owners, never manager or staff", () => {
     expect(dashboardNavItems(["pharmacist"]).map((i) => i.href)).toContain("/dashboard/prescriptions");

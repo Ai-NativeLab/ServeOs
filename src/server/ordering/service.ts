@@ -88,6 +88,14 @@ export type PlaceOrderInput = {
   fulfillmentType: "pickup" | "delivery";
   customerName: string;
   customerPhone: string;
+  /**
+   * OPTIONAL, and for ONE purpose: sending the customer their own ETA fiscal
+   * document for this order (`@/server/fiscal/customer-email`). The column it
+   * lands in carries the full contract — `orders.customerEmail` — and that
+   * contract forbids every other use, because no consent flag exists to refuse
+   * one on its behalf. Read it before adding a second caller.
+   */
+  customerEmail?: string;
   notes?: string;
   areaId?: string;
   addressText?: string;
@@ -173,6 +181,20 @@ export function money(n: number): string {
  * per the manual-payments spec, never authoritative. */
 const sanitizeProofUrl = sanitizeHttpUrl;
 
+/**
+ * The same deliberately-loose test `@/app/subscribe/enquiry-input` uses, and
+ * loose for the same stated reason: it validates just enough to keep the mail
+ * provider from rejecting the send, not enough to adjudicate RFC 5322. Copied
+ * rather than imported — that module is a public marketing form's input parser
+ * and this is the ordering domain; a shared "email rules" module is worth
+ * having the moment a third caller appears, and not before.
+ *
+ * 254 is the addressable maximum, matching that module's `FIELD_LIMITS.email`.
+ */
+function isEmailShaped(email: string): boolean {
+  return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email);
+}
+
 export async function placeOrder(tenantId: string, input: PlaceOrderInput): Promise<PlaceOrderResult> {
   if (!input.lines || input.lines.length === 0) throw new OrderValidationError("empty cart");
   if (!input.customerName.trim() || !input.customerPhone.trim()) throw new OrderValidationError("missing customer details");
@@ -210,6 +232,20 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
   const now = input.replay?.occurredAt ?? input.now ?? new Date();
 
   if (!tenant) throw new OrderValidationError("unknown tenant");
+  // EG ONLY. The address exists for one purpose — the customer's own ETA
+  // document (see `orders.customerEmail`) — so any other tenant neither stores
+  // nor validates it: a stray field from an old form or a hand-written client
+  // is dropped, and the order behaves exactly as it did before the field
+  // existed. (Country, not activation: an EG tenant mid-onboarding still files
+  // these orders once active — the sweep adopts them — and the copy goes here.)
+  //
+  // SHAPE ONLY, and only when one was given — an absent email is the normal
+  // case, not an error (a tax receipt is the seller's obligation to FILE, not
+  // the buyer's to receive). The check exists so a typo becomes a 422 the
+  // customer can still fix at checkout rather than a provider rejection
+  // recorded on a fiscal row hours later, where nobody can act on it.
+  const customerEmail = tenant.country === "EG" ? input.customerEmail?.trim() || null : null;
+  if (customerEmail && !isEmailShaped(customerEmail)) throw new OrderValidationError("invalid email");
   const tz = tenant.timezone;
   const caps = getCapabilities(tenant.vertical as VerticalId);
   // Resolved outside the transaction: it is a tenant policy, not per-line state.
@@ -571,7 +607,7 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       customerName: input.customerName.trim(),
       // The canonical form the validator above checked (#187 review) — spacing,
       // bidi marks and Arabic-Indic digits are presentation, not the number.
-      customerPhone: normalizePhone(input.customerPhone), notes: input.notes?.trim() || null,
+      customerPhone: normalizePhone(input.customerPhone), customerEmail, notes: input.notes?.trim() || null,
       deliveryAreaId, deliveryAreaNameSnapshot: deliveryAreaName, deliveryAddressText: deliveryAddress,
       subtotal: money(totals.subtotal),
       vatRateSnapshot: money(totals.vatRate),
@@ -732,6 +768,24 @@ async function restockOrderItems(
 }
 
 /**
+ * Whether this tenant's vertical tracks stock at all — the one input
+ * `restockRefundedLines` needs and the one it must NOT read for itself.
+ *
+ * IT EXISTS TO BE CALLED BEFORE A TRANSACTION OPENS. `getTenantById` goes
+ * through the global `db`, i.e. a pool connection of its own, so resolving this
+ * inside a `withTenant` block makes one request hold two connections at once —
+ * the deadlock shape documented at `issueRefund`'s hoists. Extracting it as a
+ * named function rather than leaving the caller to spell `getTenantById` +
+ * `getCapabilities` itself keeps the derivation in ONE place: a second caller
+ * deriving "does this vertical restock?" differently is how the restock path and
+ * the capability that gates it drift apart.
+ */
+export async function resolveRestockCapabilities(tenantId: string): Promise<{ stockTracking: boolean }> {
+  const tenant = await getTenantById(tenantId);
+  return getCapabilities((tenant?.vertical ?? "restaurant") as VerticalId);
+}
+
+/**
  * Returns specific order-item quantities to stock for a refund. Line- and
  * quantity-scoped (unlike restockOrderItems, which restocks a whole order).
  * FORWARD DEP (Spec 8): when the stock_ledger exists, replace the integer
@@ -739,16 +793,30 @@ async function restockOrderItems(
  * sale_deduction on the same lot (per the inventory spec's restock-on-refund
  * path). Until then this is the integer fallback; a no-op for verticals with
  * stockTracking off (e.g. restaurant).
+ *
+ * `caps` IS A PARAMETER BECAUSE THIS RUNS INSIDE SOMEONE ELSE'S TRANSACTION.
+ * It used to call `getTenantById` itself, which reads through the global `db` —
+ * a SECOND pool connection taken while the caller's `withTenant` still holds its
+ * own. That is the exact pool-deadlock class round 1 fixed for `isFiscalEnabled`
+ * (see `issueRefund`), and it was reachable here through a narrower gate: only a
+ * refund carrying at least one restockable line got that far, which is why it
+ * survived the first sweep. The caller resolves it with
+ * `resolveRestockCapabilities` BEFORE opening the transaction. DO NOT read the
+ * tenant in here again — the parameter is the fix, not a convenience, and
+ * `restockOrderItems` above takes its `caps` the same way for the same reason.
  */
+// `tenantId` is GONE from the signature rather than left unused: it was only
+// ever there to feed the `getTenantById` call this change removed. Row scoping
+// never depended on it — every statement below runs on the caller's `tx`, so
+// RLS scopes them, which is the same reason a stray tenant predicate here would
+// be restating a database guarantee.
 export async function restockRefundedLines(
   tx: Parameters<Parameters<typeof withTenant>[1]>[0],
-  tenantId: string,
   lines: { orderItemId: string; quantity: number; restock: boolean }[],
+  caps: { stockTracking: boolean },
 ): Promise<void> {
   const toRestock = lines.filter((l) => l.restock && l.quantity > 0);
   if (toRestock.length === 0) return;
-  const tenant = await getTenantById(tenantId);
-  const caps = getCapabilities((tenant?.vertical ?? "restaurant") as VerticalId);
   if (!caps.stockTracking) return;
   for (const l of toRestock) {
     const [item] = await tx.select().from(orderItems).where(eq(orderItems.id, l.orderItemId)).limit(1);
