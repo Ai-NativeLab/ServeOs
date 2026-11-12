@@ -689,6 +689,47 @@ describe("EtaFiscalProvider.poll", () => {
   });
 });
 
+describe("EtaFiscalProvider.lookupReceipt (Get Receipt Details)", () => {
+  const lookupUrl = `${PREPROD.apiBase}/api/v1/receipts/${finalized.uuid}/details`;
+
+  it("GETs /api/v1/receipts/{uuid}/details under the device token", async () => {
+    const { http, calls } = makeHttp({
+      api: [() => jsonResponse(200, { submissionUUID: "SUB-1", receipt: { uuid: finalized.uuid, longId: "L-1", status: "valid" } })],
+    });
+    await new EtaFiscalProvider(http).lookupReceipt(finalized.uuid!, cfg);
+    expect(calls[1].url).toBe(lookupUrl);
+    expect(calls[1].init.method).toBe("GET");
+    expect(headersOf(calls[1]).Authorization).toBe(`Bearer ${ACCESS_TOKEN}`);
+    // The POS login, not the ERP one.
+    expect(headersOf(calls[0]).posserial).toBe("POS-001");
+  });
+
+  it("returns null on a 404 — ETA does not hold the receipt, so it is safe to send", async () => {
+    const { http } = makeHttp({ api: [() => jsonResponse(404, { error: { code: "NotFound", message: "not found" } })] });
+    expect(await new EtaFiscalProvider(http).lookupReceipt(finalized.uuid!, cfg)).toBeNull();
+  });
+
+  it("maps a held valid receipt to accepted, with its submission handle and longId", async () => {
+    const { http } = makeHttp({
+      api: [() => jsonResponse(200, { submissionUUID: "SUB-9", receipt: { uuid: finalized.uuid, longId: "L-9", status: "Valid" } })],
+    });
+    const result = await new EtaFiscalProvider(http).lookupReceipt(finalized.uuid!, cfg);
+    expect(result).toMatchObject({ status: "accepted", submissionUuid: "SUB-9", etaUuid: finalized.uuid, etaLongId: "L-9" });
+    expectNoAuthMaterial(result!.responseJson);
+  });
+
+  it("maps a held receipt with no verdict yet to submitted so the worker polls its handle", async () => {
+    const { http } = makeHttp({ api: [() => jsonResponse(200, { submissionUUID: "SUB-2", receipt: { uuid: finalized.uuid, status: "Submitted" } })] });
+    const result = await new EtaFiscalProvider(http).lookupReceipt(finalized.uuid!, cfg);
+    expect(result).toMatchObject({ status: "submitted", submissionUuid: "SUB-2" });
+  });
+
+  it("throws a retryable EtaTransportError on a 500 rather than reading it as not-found", async () => {
+    const { http } = makeHttp({ api: [() => jsonResponse(500, { error: { code: "InternalError" } })] });
+    await expect(new EtaFiscalProvider(http).lookupReceipt(finalized.uuid!, cfg)).rejects.toBeInstanceOf(EtaTransportError);
+  });
+});
+
 describe("buildSubmissionBody", () => {
   it("omits signatures entirely when none is supplied, matching ETA's own samples", () => {
     expect(buildSubmissionBody(finalized.wire)).toBe(`{"receipts":[${stringifyWire(finalized.wire)}]}`);
