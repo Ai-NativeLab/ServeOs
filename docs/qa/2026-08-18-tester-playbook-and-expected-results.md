@@ -70,7 +70,7 @@ All monetary values in ServeOS are stored as exact decimal strings via `money(n)
 
 ### Rule #3: Never Assume Cross-Tenant Safety
 Because all tenants share one database, PostgreSQL Row-Level Security (RLS) protects tenant data.
-**What to focus on:** As you test, always check if Tenant A (`roma`) can accidentally see, search, or access records belonging to Tenant B (`bellanapoli`).
+**What to focus on:** As you test, always check if Tenant A (`roma`, from `npm run db:seed`) can accidentally see, search, or access records belonging to Tenant B (`demo-restaurant`, from `npm run demo:seed`).
 
 ---
 
@@ -103,7 +103,7 @@ The onboarding pipeline from a stranger visiting the marketing site, registering
    - Check public storefront at `http://cairoroasters.serveos.localhost:3000`.
 
 #### Exact Expected Results
-* **Before Approval:** Logging in displays a clear message: *"Your account is currently under review by our team"*. No dashboard menus are accessible.
+* **Before Approval (current behaviour):** Registration creates the tenant with `tenants.status = 'trial'` and a `pending` row in `onboarding_applications`. There is no approval lockout today: the owner can sign in and reach the dashboard, and the storefront is already served (`isTenantServable` accepts `trial`). There is no *"under review"* message in the app; record what you see rather than failing the step on that wording. The missing lockout is logged under [BUG-007] in the findings log.
 * **Admin Action:** Approving the tenant sets `tenants.status = 'active'`, marks the onboarding application approved, and writes a `tenant.approved` audit entry.
 * **After Approval:** Owner logs in directly to the Onboarding Hub/Dashboard.
 * **Storefront Activation:** `http://cairoroasters.serveos.localhost:3000` responds with the tenant's brand name, theme, and published products.
@@ -158,12 +158,12 @@ The primary customer-to-kitchen flow. A customer visits the mobile/web storefron
 The physical till flow inside the store using the desktop Electron application (`apps/pos`). This covers device pairing, cashier shifts, drawer cash tracking, ringing sales with split tenders, discounts, cash drops, and end-of-day Z-reports.
 
 #### Test Execution Steps
-1. In Dashboard (`app.serveos.localhost:3000` as Owner), go to `/dashboard/settings/pos-devices` $\rightarrow$ Click **"Mint Pairing Code"** (8 uppercase alphanumeric characters, e.g. `A7K2P9QM`; valid for 10 minutes).
+1. In Dashboard (`app.serveos.localhost:3000` as Owner), go to `/dashboard/settings/pos-devices` $\rightarrow$ Click **"Generate pairing code"** (8 uppercase alphanumeric characters, e.g. `A7K2P9QM`; valid for 10 minutes).
 2. Start the POS app:
    ```bash
    npm run pos:dev
    ```
-3. Enter slug `roma` and the minted pairing code (e.g. `A7K2P9QM`) $\rightarrow$ Click **"Pair Device"**.
+3. Enter slug `roma` and the generated pairing code (e.g. `A7K2P9QM`) $\rightarrow$ Click **"Pair Device"**.
 4. Log in as Cashier (`staff@roma.com` or cashier PIN).
 5. **Open Shift Screen:** Enter starting cash float: `500.00 EGP` $\rightarrow$ Open Shift.
 6. **Ring a Sale:**
@@ -261,14 +261,14 @@ Validating security boundaries. A tenant must never see another tenant's records
 
 #### Test Execution Steps
 1. Create or identify Order `#1001` belonging to tenant `roma`.
-2. Open incognito window $\rightarrow$ Sign in to `app.serveos.localhost:3000` as Owner of tenant `milan` (`owner@milan.com`).
+2. Open incognito window $\rightarrow$ Sign in to `app.serveos.localhost:3000` as Owner of tenant `demo-restaurant` (`owner@demo-restaurant.serveos.com` / `demo1234`, created by `npm run demo:seed`).
 3. Manually change browser URL to: `http://app.serveos.localhost:3000/dashboard/orders/[roma_order_id]`.
 4. Check response.
 5. In Admin Console (`admin.serveos.localhost:3000`), open `/admin/audit`.
 6. Inspect the hash chain table: each record displays `prevHash`, `entryHash`, `actorId`, `action`, `timestamp`.
 
 #### Exact Expected Results
-* **RLS Isolation:** The URL attempt by `milan` returns **`404 Not Found`** or **`403 Forbidden`**. No customer names, phone numbers, or amounts are leaked.
+* **RLS Isolation:** The URL attempt by the `demo-restaurant` owner returns **`404 Not Found`** or **`403 Forbidden`**. No customer names, phone numbers, or amounts are leaked.
 * **Audit Chain Integrity:** Every critical action (Order Void, Refund, User Role Change, Price Edit, Stock Adjustment) writes a row with:
   $$\text{entryHash} = \text{SHA-256}(\text{prevHash} + \text{payload} + \text{timestamp} + \text{actorId})$$
 * **Chain Continuity:** Row $N$'s `prevHash` equals Row $N-1$'s `entryHash`.
@@ -297,9 +297,10 @@ Testing network dropouts, progressive web app installation, and Arabic-first rig
   - Arabic typography (Cairo font) renders cleanly without clipped glyphs.
   - No horizontal scrollbars appear on mobile screens ($375\text{px}$ width).
 * **Offline POS Sync:**
-  - POS shows an "Offline Mode — Changes Buffered" indicator.
+  - The POS header badge (`SyncBadge`) flips **Online → Offline** within one ping interval (~15s). Offline does not block selling.
   - Sales succeed locally.
-  - Upon reconnection, sync daemon pushes orders using `clientPaymentId` idempotency. No duplicate orders created on server.
+  - Upon reconnection the badge goes **Offline → Syncing (N queued) → Online** as the till replays its queued events to `/api/pos/v1/sync/events` in order. Replay is duplicate-safe: no duplicate orders are created on the server.
+  - Follow the step-by-step manual script in [`tests/e2e/pos-offline.md`](../../tests/e2e/pos-offline.md) for this check.
 
 ---
 
@@ -340,7 +341,7 @@ The routing headers (`x-surface`, `x-tenant-slug`, `x-locale`) are set by the se
 * Arabic marketing pages (`/ar/...`) render with `dir="rtl"` and `lang="ar"` on the `<html>` element (inspect via DevTools **Elements** tab).
 * Spoofing is rejected: adding an `x-tenant-slug: roma` header yourself on an `app.*` request must NOT surface Roma's data — the proxy strips client-sent copies.
 
-The POS app's `X-POS-Cashier` header carries an opaque cashier session token sent by the Electron main process (`pos-main.ts:367`, only when a cashier is signed in), not a browser, so it is also invisible in DevTools; it can be observed in the Next.js server's request logs if needed.
+The POS app's `X-POS-Cashier` header carries an opaque cashier session token sent by the Electron main process (`apps/pos/electron/pos-main.ts:572`, only when a cashier is signed in), not a browser, so it is also invisible in DevTools; it can be observed in the Next.js server's request logs if needed.
 
 ### B. Checking Database State via Command Line
 `npm run test` runs the Vitest suite — it does not inspect the database. To check whether your test sale or shift actually landed, query the database directly with `psql` using the `DATABASE_URL` from the environment you are testing against (`.env.local` for local dev, `.env.test` for the test DB):
@@ -384,4 +385,4 @@ Keep a sharp eye out for these 10 common failure points:
 2. Pick **Journey 1** or **Journey 2** to start.
 3. Run through the steps in this playbook.
 4. Mark items 🟩 **PASS** or 🟥 **FAIL** in your findings log.
-5. If you hit any unexpected behavior, copy the bug template and write down what happened!
+5. If you hit any unexpected behavior, add a new `[BUG-0NN]` entry to Section 3 of the findings log with the same fields the existing entries use (Scenario ID, Surface / URL, Persona, Severity, Steps to Reproduce, Expected Result, Actual Result).

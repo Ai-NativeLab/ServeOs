@@ -97,13 +97,13 @@ ServeOS is a multi-tenant commerce and operations operating system serving resta
 **Primary Surfaces:** Marketing (`S1`) $\rightarrow$ Dashboard (`S3`) $\rightarrow$ Admin Console (`S4`)
 
 1. **Visitor** lands on `www.serveos.tech`, explores vertical solutions, and clicks **"Start Free Trial"**.
-2. **Visitor** is routed to `app.serveos.tech/register`, provides Business Name (`Bella Napoli`), unique slug (`bellanapoli`), vertical (`restaurant`), email, and password.
-3. Upon registration, tenant status is set to `pending_approval`.
-4. **Tenant Owner** attempts to log in to `app.serveos.tech`; the system displays an informative "Account Pending Admin Approval" screen preventing unauthorized dashboard operations.
+2. **Visitor** is routed to `app.serveos.tech/register`, provides Business Name (`Cairo Roasters`), unique slug (`cairoroasters`), vertical (`restaurant`), email, and password.
+3. Upon registration, the tenant is created with `tenants.status = 'trial'` and a `pending` row in `onboarding_applications`.
+4. **Tenant Owner** attempts to log in to `app.serveos.tech`; the system should display an informative "Account Pending Admin Approval" screen preventing unauthorized dashboard operations. *(Target behaviour: no such lockout exists today and a `trial` tenant reaches the dashboard; see BUG-007 in the findings log.)*
 5. **Platform Super Admin** logs into `admin.serveos.tech/admin/approvals`, reviews the pending application, and clicks **"Approve"** (approval activates the tenant; plan management is separate).
 6. **Tenant Owner** refreshes/logs in:
    - Guided onboarding checklist launches (Setup Branch $\rightarrow$ Add Bank/Payment Account $\rightarrow$ Create First Category & Products $\rightarrow$ Generate POS Pairing Code).
-7. Tenant storefront (`bellanapoli.serveos.tech`) becomes reachable publicly.
+7. Tenant storefront (`cairoroasters.serveos.tech`) becomes reachable publicly.
 
 ---
 
@@ -126,7 +126,7 @@ ServeOS is a multi-tenant commerce and operations operating system serving resta
 ### Journey 3: In-Store POS Register, Shift Management & Cash Reconciliation
 **Primary Surfaces:** Merchant Dashboard (`S3`) $\rightarrow$ Electron POS Desktop App (`S5`)
 
-1. **Manager** opens `app.serveos.tech/dashboard/settings/pos-devices` and clicks **"Mint Pairing Code"**.
+1. **Manager** opens `app.serveos.tech/dashboard/settings/pos-devices` and clicks **"Generate pairing code"**.
 2. **Cashier** launches Electron POS desktop app (`apps/pos`). First screen prompts for Tenant Slug and Pairing Code (or Owner login).
 3. POS pairs with server; securely stores minted device Bearer token in encrypted local storage.
 4. **Cashier** signs in using Cashier PIN/Code (`X-POS-Cashier`).
@@ -176,7 +176,7 @@ ServeOS is a multi-tenant commerce and operations operating system serving resta
 **Primary Surfaces:** All Surfaces & API (`S6`)
 
 1. **RLS Guarantee:** Database connection executes under `NOBYPASSRLS` role wrapped with `withTenant(tenantId)`.
-2. **Cross-Tenant Attack Simulation:** Authenticated user of `roma` attempts direct HTTP `GET /api/orders/[id]` where `id` belongs to `bellanapoli`.
+2. **Cross-Tenant Attack Simulation:** Authenticated user of `roma` attempts direct HTTP `GET /api/orders/[id]` where `id` belongs to `demo-restaurant` (seeded by `npm run demo:seed`).
 3. System returns `404 Not Found` or `403 Forbidden`, preventing any cross-tenant data leakage.
 4. **Audit Integrity:** Critical mutations (e.g. price change, refund, manual inventory adjustment, role change) generate an append-only row in `audit_events` containing `{prev_hash, entry_hash, device_id, user_agent, actor_id}`.
 5. System audit verification tool validates the unbroken cryptographic hash chain.
@@ -203,8 +203,8 @@ ServeOS is a multi-tenant commerce and operations operating system serving resta
 
 | Test ID | Surface | Persona | Scenario Title | Preconditions | Action Steps | Expected Outcome | Verification Tier |
 |---|---|---|---|---|---|---|---|
-| `TC-AUTH-001` | `S3` | Anonymous | Tenant Registration Validations | Unique email & slug available | 1. Go to `/register`.<br>2. Submit invalid email, short password.<br>3. Submit already taken slug (`roma`).<br>4. Submit valid unique details. | Invalid inputs show inline errors; duplicate slug is rejected; valid submission creates tenant in `pending_approval` state. | Playwright (`onboarding.spec.ts`) |
-| `TC-AUTH-002` | `S3` | Owner | Unapproved Tenant Login Lockout | Tenant registered, status `pending_approval` | 1. Navigate to `/login`.<br>2. Enter credentials of unapproved tenant. | User is authenticated but redirected to `/pending-approval` explanation page; cannot reach dashboard. | Playwright |
+| `TC-AUTH-001` | `S3` | Anonymous | Tenant Registration Validations | Unique email & slug available | 1. Go to `/register`.<br>2. Submit invalid email, short password.<br>3. Submit already taken slug (`roma`).<br>4. Submit valid unique details. | Invalid inputs show inline errors; duplicate slug is rejected; valid submission creates the tenant in `trial` status with a `pending` onboarding application. | Playwright (`onboarding.spec.ts`) |
+| `TC-AUTH-002` | `S3` | Owner | Unapproved Tenant Login Lockout | Tenant registered, status `trial` with a `pending` onboarding application (or a tenant set to `suspended`) | 1. Navigate to `/login`.<br>2. Enter credentials of unapproved tenant. | User is authenticated but redirected to `/pending-approval` explanation page; cannot reach dashboard. | Playwright |
 | `TC-AUTH-003` | `S3` | Owner / Staff | Role-Based Access Control (RBAC) Redirection | Active tenant with Owner, Manager, Staff users | 1. Log in as `staff@roma.com`.<br>2. Attempt navigation to `/dashboard/settings` and `/dashboard/analytics`. | Staff is blocked with 403 Forbidden or redirected to allowed `/dashboard/orders` page. | Playwright (`dashboard.spec.ts`) |
 | `TC-AUTH-004` | `S3` | All | Session Logout & Invalidation | Active authenticated session | 1. Click "Sign Out".<br>2. Use browser back button.<br>3. Attempt to fetch protected API route. | Session cookie cleared; redirected to login; API returns 401 Unauthorized. | Playwright (`dashboard.spec.ts`) |
 
@@ -256,7 +256,7 @@ ServeOS is a multi-tenant commerce and operations operating system serving resta
 | Test ID | Surface | Persona | Scenario Title | Preconditions | Action Steps | Expected Outcome | Verification Tier |
 |---|---|---|---|---|---|---|---|
 | `TC-ADMIN-001` | `S4` | Super Admin | Super Admin Authentication & MFA | Platform Admin account | 1. Navigate to `admin.serveos.localhost:3000/admin/login`.<br>2. Log in with `admin@serveos.com`. | Reaches Admin Console; non-admin users attempting access receive 403 Forbidden with clear reason. | Playwright (`admin.spec.ts`) |
-| `TC-ADMIN-002` | `S4` | Super Admin | Tenant Review & Approval Workflow | Tenant in `pending_approval` status | 1. Open `/admin/approvals`.<br>2. Find the pending tenant.<br>3. Review details, click "Approve". | Tenant status becomes `ACTIVE`; tenant owner can now access full dashboard; storefront goes live. | Playwright (`admin.spec.ts`) |
+| `TC-ADMIN-002` | `S4` | Super Admin | Tenant Review & Approval Workflow | Tenant with a `pending` onboarding application (tenant status `trial`) | 1. Open `/admin/approvals`.<br>2. Find the pending tenant.<br>3. Review details, click "Approve". | Tenant status becomes `ACTIVE`; tenant owner can now access full dashboard; storefront goes live. | Playwright (`admin.spec.ts`) |
 | `TC-ADMIN-003` | `S4` | Super Admin | Plan Entitlement Override & Feature Gating | Active tenant on `STARTER` plan | 1. Open Tenant Details.<br>2. Override entitlement `advanced_analytics: true`.<br>3. Save. | Tenant immediately gains access to Analytics without full plan upgrade; change logged in platform audit. | Vitest / Playwright |
 | `TC-ADMIN-004` | `S4` | Super Admin | Tenant Suspension & Re-activation | Active tenant | 1. Click "Suspend Tenant" with reason "Billing Overdue".<br>2. Attempt to access tenant Storefront and Dashboard.<br>3. Click "Reactivate Tenant". | While suspended, Storefront shows maintenance/suspended page; dashboard blocked; reactivating restores full functionality. | Vitest / Playwright |
 
@@ -266,7 +266,7 @@ ServeOS is a multi-tenant commerce and operations operating system serving resta
 
 | Test ID | Surface | Persona | Scenario Title | Preconditions | Action Steps | Expected Outcome | Verification Tier |
 |---|---|---|---|---|---|---|---|
-| `TC-SEC-001` | `S6` | Attacker | Cross-Tenant Direct Object Reference (RLS Isolation) | Two active tenants (`roma`, `milan`) | 1. Authenticate as `roma` user.<br>2. Execute API request `GET /api/orders/{milan_order_id}`.<br>3. Execute `POST /api/products` attempting to insert `tenant_id = milan`. | `withTenant` wrapper and PostgreSQL FORCE RLS enforce strict isolation: returns `404 Not Found` or `403`; cross-tenant write fails. | Vitest DB Integration |
+| `TC-SEC-001` | `S6` | Attacker | Cross-Tenant Direct Object Reference (RLS Isolation) | Two active tenants (`roma` from `npm run db:seed`, `demo-restaurant` from `npm run demo:seed`) | 1. Authenticate as `roma` user.<br>2. Execute API request `GET /api/orders/{demo_restaurant_order_id}`.<br>3. Execute `POST /api/products` attempting to insert `tenant_id` of `demo-restaurant`. | `withTenant` wrapper and PostgreSQL FORCE RLS enforce strict isolation: returns `404 Not Found` or `403`; cross-tenant write fails. | Vitest DB Integration |
 | `TC-SEC-002` | `S6` | System | Hash-Chained Audit Log Tamper Evidence | Audit trail exists with sequential hashes | 1. Query `audit_events` for tenant.<br>2. Verify each row `prev_hash` matches previous row `entry_hash`.<br>3. Simulate database row modification. | Verification algorithm detects hash mismatch immediately if any row or sequence is altered. | Vitest Integration |
 | `TC-SEC-003` | `S6` | System | Host Header Spoofing Prevention | Storefront request | 1. Send HTTP request to `app.serveos.localhost` with header `x-tenant-slug: roma`. | Middleware (`src/proxy.ts`) strips spoofed `x-tenant-slug` on non-storefront hosts; rejects invalid routing. | Playwright (`onboarding.spec.ts`) |
 
