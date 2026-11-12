@@ -3,6 +3,7 @@ import { formatMoney } from "@/lib/money";
 import type { MenuProduct } from "@/app/_components/storefront/ProductCard";
 import { isProductConfigurable } from "@/app/_components/cart";
 import { QuickAddControl } from "@/app/_components/storefront/QuickAddControl";
+import { Badge, discountLabel } from "@/app/_components/storefront/Badge";
 
 /** Dense retail card: brand eyebrow, image, name, price (or "From X" with variants), stock state. */
 export function ShopProductCard({
@@ -31,6 +32,10 @@ export function ShopProductCard({
   const configurable = isProductConfigurable(product);
 
   const clickable = interactive && inStock;
+  // Variant prices are absolute and never discounted (the server charges
+  // variant.price as-is), so a variant product shows no promotion at all —
+  // same rule as RetailProductSheet's !needsVariant.
+  const discount = product.variants.length === 0 ? discountLabel(product) : null;
 
   // Real <button> for the card body with the add/stepper controls BESIDE it,
   // so their Enter/Space never open the sheet. The button's ::after covers
@@ -56,6 +61,11 @@ export function ShopProductCard({
           ) : (
             <div className="sf-img h-full w-full" />
           )}
+          {discount ? (
+            <span className="absolute start-2 top-2">
+              <Badge kind="discount" label={discount} />
+            </span>
+          ) : null}
           {!inStock && (
             <span className="absolute start-2 top-2 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
               Out of stock
@@ -76,9 +86,16 @@ export function ShopProductCard({
         </div>
       </button>
       <div className="flex flex-wrap items-center justify-between gap-2 px-3 pb-3 pt-2.5">
-        <span className="font-display font-bold text-ink">
-          {hasRange ? `From ${formatMoney(min, currency)}` : formatMoney(min, currency)}
-        </span>
+        <div className="flex items-baseline gap-1.5">
+          <span className="font-display font-bold text-ink">
+            {hasRange ? `From ${formatMoney(min, currency)}` : formatMoney(min, currency)}
+          </span>
+          {discount && (
+            <span className="text-xs text-muted-foreground line-through font-sans">
+              {formatMoney(product.originalPrice, currency)}
+            </span>
+          )}
+        </div>
         {clickable && (
           <div className="relative z-10">
             <QuickAddControl

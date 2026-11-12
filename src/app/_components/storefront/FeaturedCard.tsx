@@ -1,6 +1,7 @@
 import { formatMoney } from "@/lib/money";
 import { arabicDescription } from "./bilingual";
 import type { MenuProduct } from "./ProductCard";
+import { discountLabel } from "./Badge";
 
 export function FeaturedCard({ product, currency, interactive, onOpen }: {
   product: MenuProduct; currency: string; interactive: boolean; onOpen: () => void;
@@ -23,6 +24,10 @@ export function FeaturedCard({ product, currency, interactive, onOpen }: {
       <div className="absolute inset-y-0 left-0 flex max-w-[75%] flex-col justify-end p-4 sm:p-5">
         {!inStock ? (
           <span className="sf-badge-soft mb-2 self-start">Out of stock</span>
+        ) : discountLabel(product) ? (
+          <span className="sf-badge bg-destructive text-destructive-foreground font-bold mb-2 self-start shadow-sm">
+            {discountLabel(product)}
+          </span>
         ) : (
           <span className="sf-badge-soft mb-2 self-start">Featured</span>
         )}
@@ -34,7 +39,14 @@ export function FeaturedCard({ product, currency, interactive, onOpen }: {
             {arabicDescription(product.descriptionEn, product.descriptionAr)}
           </p>
         )}
-        <span className="mt-2 font-display text-lg font-bold text-white">{formatMoney(product.effectivePrice, currency)}</span>
+        <div className="mt-2 flex items-baseline gap-2">
+          <span className="font-display text-lg font-bold text-white">{formatMoney(product.effectivePrice, currency)}</span>
+          {product.hasDiscount && (
+            <span className="text-sm text-white/70 line-through font-sans">
+              {formatMoney(product.originalPrice, currency)}
+            </span>
+          )}
+        </div>
       </div>
     </button>
   );
