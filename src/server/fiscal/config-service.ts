@@ -203,27 +203,6 @@ const wireContextSchema = z.object({
 });
 
 /**
- * A `*Ref` input: WHERE the credential lives, never the credential. Optional on
- * every update so the owner can change the RIN or the environment without
- * re-typing a reference the form cannot show them; `undefined` means "leave
- * whatever is stored", and the required-on-create check below is what stops a
- * first save from landing without one.
- *
- * THE `env://` SCHEME IS REQUIRED ON SAVE, and that is a masking decision, not
- * a formatting preference. `resolveSecretRef` (./config) accepts BOTH spellings
- * — `env://ETA_SECRET_ACME` and the bare `ETA_SECRET_ACME` — and must keep
- * doing so for rows written before this rule; but when a ref is stored bare, the
- * stored VALUE and the env KEY NAME are the same characters. That collapse
- * matters because the two are treated differently on purpose: the reference is
- * write-only and must never leave this service, while the key name is
- * deliberately allowed into an error message, since an operator staring at a
- * failed receipt needs to know which variable is unset ("The thrown message
- * names the ENV KEY, which is not itself a secret" — resolveSecretRef). Forcing
- * the scheme on every new save keeps those two strings distinguishable, so the
- * masking guarantee stays checkable rather than resting on a coincidence of
- * format. Legacy bare rows keep resolving; they just cannot be re-saved bare.
- */
-/**
  * The SAVE half of the tenant-bound ref namespace (`etaSecretKeyPrefix` in
  * ./config carries the rationale): every ref this save SETS must name a key in
  * the tenant's own `env://ETA_<TENANT>__<NAME>` namespace, or the save is a form
@@ -241,6 +220,27 @@ async function assertTenantBoundRefs(tx: Tx, tenantId: string, refs: Record<stri
   }
 }
 
+/**
+ * A `*Ref` input: WHERE the credential lives, never the credential. Optional on
+ * every update so the owner can change the RIN or the environment without
+ * re-typing a reference the form cannot show them; `undefined` means "leave
+ * whatever is stored", and the required-on-create check below is what stops a
+ * first save from landing without one.
+ *
+ * THE `env://` SCHEME IS REQUIRED ON SAVE, and that is a masking decision, not
+ * a formatting preference. `resolveSecretRef` (./config) accepts BOTH spellings
+ * — `env://ETA_ACME__CLIENT_SECRET` and the bare `ETA_ACME__CLIENT_SECRET` —
+ * and must keep doing so for rows written before this rule; but when a ref is
+ * stored bare, the stored VALUE and the env KEY NAME are the same characters.
+ * That collapse matters because the two are treated differently on purpose: the
+ * reference is write-only and must never leave this service, while the key name is
+ * deliberately allowed into an error message, since an operator staring at a
+ * failed receipt needs to know which variable is unset ("The thrown message
+ * names the ENV KEY, which is not itself a secret" — resolveSecretRef). Forcing
+ * the scheme on every new save keeps those two strings distinguishable, so the
+ * masking guarantee stays checkable rather than resting on a coincidence of
+ * format. Legacy bare rows keep resolving; they just cannot be re-saved bare.
+ */
 const refSchema = z
   .string()
   .trim()
