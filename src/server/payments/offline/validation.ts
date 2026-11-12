@@ -2,9 +2,12 @@ import type { OfflineMethodType } from "./types";
 import { isValidCustomerPhone, normalizePhone } from "@/lib/phone";
 
 /**
- * Vodafone Cash: exactly 11 digits starting with 010.
+ * Vodafone Cash: a Vodafone Egypt mobile (010…) in any dialable form the
+ * customer-phone rule accepts — national 010XXXXXXXX, or +20 / 0020 followed
+ * by 10XXXXXXXX. The bare country-code (2010…) and zero-less (10…) forms are
+ * refused, exactly as EG_PHONE_RE refuses them (#187 review).
  */
-const VODAFONE_CASH_RE = /^010\d{8}$/;
+const VODAFONE_CASH_RE = /^(?:010|(?:\+20|0020)10)\d{8}$/;
 
 /**
  * InstaPay: handle (@instapay / @ipa or general handle e.g. user@domain) or mobile number (01[0125]XXXXXXXX).
@@ -29,13 +32,8 @@ export function validatePayToDetail(
 
   if (type === "vodafone_cash") {
     // Same normalisation the mobile_wallet branch gets via
-    // isValidCustomerPhone (#187 review): formatted input is the same number,
-    // and an Egyptian international prefix (+20 / 0020 / 20) collapses to the
-    // national 010… form.
-    return VODAFONE_CASH_RE.test((() => {
-      const n = normalizePhone(clean).replace(/^\+?(?:0020|20)/, "");
-      return n.startsWith("0") ? n : "0" + n;
-    })());
+    // isValidCustomerPhone: formatted input is the same number.
+    return VODAFONE_CASH_RE.test(normalizePhone(clean));
   }
 
   if (type === "mobile_wallet") {

@@ -32,6 +32,12 @@ describe("Offline payment method pay-to detail validation (Issue #174)", () => {
       expect(validatePayToDetail("vodafone_cash", null, "EG")).toBe(false);
       expect(validatePayToDetail("vodafone_cash", "", "EG")).toBe(false);
       expect(validatePayToDetail("vodafone_cash", "free text notes", "EG")).toBe(false);
+      // The same dialable forms EG_PHONE_RE accepts — a bare country-code or
+      // zero-less form is not a number a customer can send money to (#187 review).
+      expect(validatePayToDetail("vodafone_cash", "00201012345678", "EG")).toBe(true);
+      expect(validatePayToDetail("vodafone_cash", "201012345678", "EG")).toBe(false);
+      expect(validatePayToDetail("vodafone_cash", "1012345678", "EG")).toBe(false);
+      expect(validatePayToDetail("vodafone_cash", "+2001012345678", "EG")).toBe(false);
     });
 
     it("validates mobile_wallet format for the tenant country", () => {
