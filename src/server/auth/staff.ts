@@ -5,6 +5,7 @@ import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { users, roles, userRoles, sessions, type User } from "./schema";
 import { hashPassword } from "./password";
+import { emailMatches, normalizeEmail } from "./email";
 import { StaffContactTakenError } from "./errors";
 import { getOrCreateRole } from "./roles";
 
@@ -34,12 +35,12 @@ export async function listStaff(tenantId: string): Promise<StaffMember[]> {
 }
 
 export async function createStaff(tenantId: string, input: CreateStaffInput, audit?: AuditActorInput): Promise<User> {
-  const email = input.email?.trim() || null;
+  const email = input.email ? normalizeEmail(input.email) || null : null;
   const phone = input.phone?.trim() || null;
   if (!email && !phone) throw new Error("Staff member needs an email or phone");
 
   const contactConditions = [
-    email ? eq(users.email, email) : null,
+    email ? emailMatches(users.email, email) : null,
     phone ? eq(users.phone, phone) : null,
   ].filter((c): c is NonNullable<typeof c> => c !== null);
 

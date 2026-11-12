@@ -1,6 +1,7 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { users, type User } from "./schema";
+import { emailMatches } from "./email";
 
 /**
  * The dashboard login's user lookup: the tenant's member with this email,
@@ -12,7 +13,7 @@ export async function findTenantUserByEmail(tenantId: string, email: string): Pr
   const [user] = await db
     .select()
     .from(users)
-    .where(and(eq(users.tenantId, tenantId), sql`lower(${users.email}) = ${email.trim().toLowerCase()}`))
+    .where(and(eq(users.tenantId, tenantId), emailMatches(users.email, email)))
     .limit(1);
   return user;
 }

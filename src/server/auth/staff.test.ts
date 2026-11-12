@@ -29,6 +29,20 @@ describe("staff management", () => {
     ).rejects.toBeInstanceOf(StaffContactTakenError);
   });
 
+  it("stores a new staff email lowercased and trimmed", async () => {
+    const t = await makeTenant("staff-lower");
+    const user = await createStaff(t.id, { name: "Sara", email: " Sara@Roma.COM ", password: "pass1234", roleKey: "staff" });
+    expect(user.email).toBe("sara@roma.com");
+  });
+
+  it("rejects an email that differs from an existing one only by case", async () => {
+    const t = await makeTenant("staff-dup-case");
+    await createStaff(t.id, { name: "Nour", email: "nour@roma.com", password: "pass1234", roleKey: "staff" });
+    await expect(
+      createStaff(t.id, { name: "Nour Again", email: "Nour@Roma.com", password: "pass1234", roleKey: "staff" }),
+    ).rejects.toBeInstanceOf(StaffContactTakenError);
+  });
+
   it("rejects a duplicate phone even when a different email is also submitted", async () => {
     const t = await makeTenant("staff-dup-phone");
     await createStaff(t.id, { name: "Nour", phone: "01000000001", password: "pass1234", roleKey: "staff" });

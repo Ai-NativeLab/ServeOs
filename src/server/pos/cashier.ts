@@ -3,6 +3,7 @@ import { and, eq, lt } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { users } from "@/server/auth/schema";
+import { emailMatches } from "@/server/auth/email";
 import { verifyPassword } from "@/server/auth/password";
 import { loadUserRoleKeys } from "@/server/auth/current-user";
 import { ROLE_PERMISSIONS, type Permission } from "@/server/rbac/permissions";
@@ -56,7 +57,7 @@ export async function signInCashier(
     ));
 
   const [user] = await db.select().from(users)
-    .where(and(eq(users.tenantId, tenantId), eq(users.email, email.trim())))
+    .where(and(eq(users.tenantId, tenantId), emailMatches(users.email, email)))
     .limit(1);
 
   if (!user?.passwordHash || user.status !== "active" || !(await verifyPassword(password, user.passwordHash))) {
@@ -117,7 +118,7 @@ export async function verifyAuthorizer(
   permission: Permission,
 ): Promise<{ userId: string; name: string }> {
   const [user] = await db.select().from(users)
-    .where(and(eq(users.tenantId, tenantId), eq(users.email, email.trim())))
+    .where(and(eq(users.tenantId, tenantId), emailMatches(users.email, email)))
     .limit(1);
 
   if (!user?.passwordHash || user.status !== "active" || !(await verifyPassword(password, user.passwordHash))) {
