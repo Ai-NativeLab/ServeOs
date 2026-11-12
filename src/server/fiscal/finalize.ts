@@ -17,7 +17,7 @@ import { loadTenantSlug, signingKeyThunk } from "./config";
 import { stringifyWire } from "./serialize";
 import { getEtaEnv } from "./eta-env";
 import { EtaConfigError } from "./eta-transport-errors";
-import { IrreconcilableOrderError, ParentReceiptNotAcceptedError } from "./errors";
+import { IrreconcilableOrderError, ParentReceiptNotAcceptedError, redactedErrorSummary } from "./errors";
 import {
   allocateLargestRemainder, assertDecimal, compareDecimal, divideDecimal, isZeroDecimal,
   multiplyDecimal, subtractDecimal, sumDecimal,
@@ -547,7 +547,8 @@ export async function enqueueAndFinalizeReceipt(ctx: { tenantId: string }, order
   } catch (err) {
     // Identifiers, never the error alone: this log line is the only trace a
     // failed finalization leaves on the sale path.
-    console.error(`[fiscal] finalize-at-enqueue failed for tenant ${ctx.tenantId} order ${orderId} (row queued; the worker will retry)`, err);
+    // Redacted: a raw Drizzle error carries the failing query's parameters.
+    console.error(`[fiscal] finalize-at-enqueue failed for tenant ${ctx.tenantId} order ${orderId} (row queued; the worker will retry): ${redactedErrorSummary(err)}`);
   }
 }
 
@@ -604,7 +605,7 @@ export async function enqueueAndFinalizeInvoice(
 
     if (row) await finalizeSubmissionRow(ctx.tenantId, row.id);
   } catch (err) {
-    console.error(`[fiscal] finalize-at-enqueue failed for tenant ${ctx.tenantId} order ${orderId} docType e_invoice (row queued; the worker will retry)`, err);
+    console.error(`[fiscal] finalize-at-enqueue failed for tenant ${ctx.tenantId} order ${orderId} docType e_invoice (row queued; the worker will retry): ${redactedErrorSummary(err)}`);
   }
 }
 
@@ -705,7 +706,7 @@ export async function reconcileMissingReceipts(
       await enqueueAndFinalizeReceipt(ctx, order.id);
       enqueued++;
     } catch (err) {
-      console.error(`[fiscal] reconciliation enqueue failed for tenant ${ctx.tenantId} order ${order.id}`, err);
+      console.error(`[fiscal] reconciliation enqueue failed for tenant ${ctx.tenantId} order ${order.id}: ${redactedErrorSummary(err)}`);
     }
   }
 
