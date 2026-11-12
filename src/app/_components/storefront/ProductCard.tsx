@@ -40,12 +40,18 @@ export function ProductCard({
   // The button's ::after stretches over the whole card so a mouse click
   // anywhere outside the controls still opens the product, as before.
   return (
-    <div className="card-lift card-lift-hover group relative flex flex-col overflow-hidden rounded-2xl bg-card text-start">
+    <div className={`card-lift ${clickable ? "card-lift-hover" : ""} group relative flex flex-col overflow-hidden rounded-2xl bg-card text-start`}>
       <button
         type="button"
         onClick={clickable ? onOpen : undefined}
         disabled={!clickable}
-        aria-label={clickable ? `${configurable ? "Configure" : "View"} ${product.nameEn}` : product.nameEn}
+        aria-label={
+          !inStock
+            ? `${product.nameEn} (Out of stock)`
+            : clickable
+              ? `${configurable ? "Configure" : "View"} ${product.nameEn}`
+              : product.nameEn
+        }
         className="flex flex-1 flex-col text-start outline-none after:absolute after:inset-0 after:rounded-2xl after:content-[''] focus-visible:after:ring-2 focus-visible:after:ring-primary disabled:cursor-default"
       >
         <div className="relative aspect-[4/3] w-full">
@@ -78,6 +84,11 @@ export function ProductCard({
         <div className="flex flex-1 flex-col px-3 pt-3">
           <h3 className="line-clamp-2 font-sans text-sm font-semibold leading-tight text-ink">{product.nameEn}</h3>
           <span dir="rtl" className="text-xs text-muted-foreground">{product.nameAr}</span>
+          {/* Both languages, the same way the name above shows both. The Arabic
+              description is stored, editable in the dashboard and carried in the
+              published menu, but no storefront template rendered it — so an
+              Arabic-first storefront showed its customers English prose under a
+              bilingual product name. */}
           {product.descriptionEn && <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{product.descriptionEn}</p>}
           {arabicDescription(product.descriptionEn, product.descriptionAr) && (
             <p dir="rtl" className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">

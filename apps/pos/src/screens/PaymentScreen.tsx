@@ -1,4 +1,14 @@
 import { useState } from "react";
+import {
+  EMPTY_BUYER_DRAFT,
+  OPTIONAL_BUYER_FIELDS,
+  REQUIRED_BUYER_FIELDS,
+  buildPosSaleBuyer,
+  validateBuyerDraft,
+  type BuyerDraft,
+  type BuyerErrors,
+  type PosSaleBuyer,
+} from "../fiscal/buyer";
 
 export type TenderMethod = "cash" | "card" | "other";
 export type TenderDraft = {
@@ -29,9 +39,51 @@ function cashChips(remaining: number): number[] {
   return [remaining, ...up.filter((n) => n !== remaining)];
 }
 
+/**
+ * What `complete()` does with the business-buyer section, as a pure function so
+ * the gate is testable without a DOM: a collapsed section is an ordinary sale
+ * (`buyer: undefined`, never validated); an open one must validate, and then
+ * carries the built buyer; an open, incomplete one blocks the sale with the
+ * field errors to mark.
+ */
+export type BuyerGate =
+  | { ok: true; buyer: PosSaleBuyer | undefined }
+  | { ok: false; errors: BuyerErrors };
+
+export function resolveCompletionBuyer(open: boolean, draft: BuyerDraft): BuyerGate {
+  if (!open) return { ok: true, buyer: undefined };
+  const errors = validateBuyerDraft(draft);
+  if (Object.keys(errors).length > 0) return { ok: false, errors };
+  // Non-null by construction — validation just passed — but read back through
+  // the same builder so there is one place that shapes the payload.
+  return { ok: true, buyer: buildPosSaleBuyer(draft) ?? undefined };
+}
+
+/**
+ * THE BUSINESS-BUYER SECTION, AND WHY IT IS COLLAPSED BY DEFAULT.
+ *
+ * Leaving it shut is an ORDINARY B2C SALE — the same sale this screen has always
+ * rung, unchanged in every respect including the fiscal document it produces.
+ * Opening it and filling it in makes the sale a B2B one, declared to ETA as a
+ * tax invoice (`e_invoice`) INSTEAD of an e-receipt. That is a one-way choice at
+ * the counter: ETA has no mechanism ServeOS knows of for converting a filed
+ * receipt into an invoice afterwards (VERIFY-12), which is exactly why the
+ * capture has to happen here rather than on the dashboard the next morning.
+ *
+ * VALIDATED LOCALLY, BEFORE THE SALE IS SENT. `../fiscal/buyer` mirrors the
+ * server's `buyerSchema` by hand; the sale is refused at this button if the
+ * section is open and incomplete, because the alternative is a permanent
+ * `EtaConfigError` on a `failed` row hours later, with the customer long gone.
+ *
+ * ONLY FOR A TENANT THAT FILES WITH ETA. `fiscalEnabled` (country EG AND ETA
+ * activation `active`, synced with the catalog — `window.pos.fiscalEnabled()`)
+ * decides whether the section exists at all; every other tenant's payment
+ * screen is exactly what it was before ETA, and can never send a buyer.
+ */
 export function PaymentScreen({
   total,
   cashierName,
+  fiscalEnabled,
   hasOpenShift,
   onNeedDrawer,
   onCancel,
@@ -39,11 +91,15 @@ export function PaymentScreen({
 }: {
   total: number;
   cashierName: string;
+  /** EG + ETA activation `active`. False hides the business-buyer section. */
+  fiscalEnabled: boolean;
   /** Cash needs an open drawer. The server enforces it; this is the affordance. */
   hasOpenShift: boolean;
   onNeedDrawer: () => void;
   onCancel: () => void;
-  onComplete: (tenders: TenderDraft[]) => Promise<void>;
+  /** `buyer` is `undefined` for every ordinary sale — the business section left
+   *  collapsed — and the caller's payload is unchanged in that case. */
+  onComplete: (tenders: TenderDraft[], buyer?: PosSaleBuyer) => Promise<void>;
 }) {
   const [tenders, setTenders] = useState<TenderDraft[]>([]);
   const [method, setMethod] = useState<TenderMethod>("cash");
@@ -51,6 +107,18 @@ export function PaymentScreen({
   const [reference, setReference] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [b2bOpen, setB2bOpen] = useState(false);
+  const [buyer, setBuyer] = useState<BuyerDraft>(EMPTY_BUYER_DRAFT);
+  // Populated only once the cashier has tried to complete: marking every box red
+  // while they are still typing the first one is noise, not help.
+  const [buyerErrors, setBuyerErrors] = useState<BuyerErrors>({});
+
+  const setBuyerField = (key: keyof BuyerDraft, value: string) => {
+    setBuyer((prev) => ({ ...prev, [key]: value }));
+    // Clearing this field's own error as it is corrected keeps the marks honest
+    // without re-running a validation the cashier has not asked for again.
+    setBuyerErrors((prev) => (prev[key] ? { ...prev, [key]: undefined } : prev));
+  };
 
   const remaining = splitRemaining(total, tenders);
   const paid = round2(total - remaining);
@@ -88,10 +156,24 @@ export function PaymentScreen({
   }
 
   async function complete() {
+    // THE BUYER GATE, BEFORE ANYTHING IS SENT. A collapsed section is not a B2B
+    // sale and is never validated; an OPEN one must be complete, because a tax
+    // invoice has no partial form and there is no way back to a receipt once
+    // this sale is filed.
+    // `fiscalEnabled &&` so a section opened before the flag turned off can
+    // never smuggle a buyer onto a tenant that does not file with ETA.
+    const gate = resolveCompletionBuyer(fiscalEnabled && b2bOpen, buyer);
+    if (!gate.ok) {
+      setBuyerErrors(gate.errors);
+      setError("Complete the business buyer details, or close that section to ring an ordinary sale");
+      return;
+    }
+    const captured = gate.buyer;
+
     setBusy(true);
     setError(null);
     try {
-      await onComplete(tenders);
+      await onComplete(tenders, captured);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not complete the sale");
       setBusy(false);
@@ -208,7 +290,88 @@ export function PaymentScreen({
             Add {method} tender
           </button>
 
-          <div className="mt-5 flex gap-2">
+          {fiscalEnabled && (
+            <div className="mt-5 rounded-xl border border-border">
+              <button
+                type="button"
+                onClick={() => setB2bOpen(!b2bOpen)}
+                aria-expanded={b2bOpen}
+                className="flex w-full items-center justify-between px-3 py-2.5 text-left text-sm font-medium text-ink"
+              >
+                <span>
+                  Business buyer <span dir="rtl" lang="ar">(فاتورة ضريبية)</span>
+                </span>
+                <span className="text-muted-foreground">{b2bOpen ? "−" : "+"}</span>
+              </button>
+
+              {b2bOpen && (
+                <div className="border-t border-border px-3 py-3">
+                  <p className="text-xs text-muted-foreground">
+                    This sale will be filed with ETA as a tax invoice instead of an e-receipt. All seven
+                    fields are required and cannot be added later.
+                  </p>
+
+                  {/* TRN and name first and on their own: they are what the cashier
+                      asks the customer for, and the address is what the customer
+                      reads off a card. */}
+                  {REQUIRED_BUYER_FIELDS.slice(0, 2).map((field) => (
+                    <div key={field.key} className="mt-2">
+                      <input
+                        value={buyer[field.key]}
+                        onChange={(e) => setBuyerField(field.key, e.target.value)}
+                        placeholder={field.label}
+                        aria-label={field.label}
+                        inputMode={field.key === "rin" ? "numeric" : undefined}
+                        className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                      />
+                      {buyerErrors[field.key] && (
+                        <p role="alert" className="mt-1 text-xs text-destructive">
+                          {field.label}: {buyerErrors[field.key]}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+
+                  {/* The five mandatory address parts, grouped and labelled as one
+                      thing — ETA treats the address as a unit and refuses an
+                      invoice missing any part of it. */}
+                  <p className="mt-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Registered address
+                  </p>
+                  <div className="mt-1 grid grid-cols-2 gap-2">
+                    {REQUIRED_BUYER_FIELDS.slice(2).map((field) => (
+                      <div key={field.key}>
+                        <input
+                          value={buyer[field.key]}
+                          onChange={(e) => setBuyerField(field.key, e.target.value)}
+                          placeholder={field.label}
+                          aria-label={field.label}
+                          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        />
+                        {buyerErrors[field.key] && (
+                          <p role="alert" className="mt-1 text-xs text-destructive">
+                            {field.label}: {buyerErrors[field.key]}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                    {OPTIONAL_BUYER_FIELDS.map((field) => (
+                      <input
+                        key={field.key}
+                        value={buyer[field.key]}
+                        onChange={(e) => setBuyerField(field.key, e.target.value)}
+                        placeholder={`${field.label} (optional)`}
+                        aria-label={`${field.label} (optional)`}
+                        className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="mt-3 flex gap-2">
             <button
               onClick={onCancel}
               className="flex-1 rounded-xl border border-border px-4 py-3 font-semibold text-ink"

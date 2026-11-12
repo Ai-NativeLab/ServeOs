@@ -54,7 +54,12 @@ export function ImageInput({
         data = { error: res.status === 413 ? "Image is too large to upload" : `Upload failed (${res.status})` };
       }
 
-      if (!res.ok || !data.url) throw new Error(data.error ?? `Upload failed (${res.status})`);
+      if (!res.ok || !data.url) {
+        if (res.status === 501 || res.status === 503 || data.error?.toLowerCase().includes("not configured")) {
+          throw new Error(`${data.error ?? "Image storage is not configured"}. Paste an image URL below instead.`);
+        }
+        throw new Error(data.error ?? `Upload failed (${res.status})`);
+      }
       setValue(data.url);
       toast.success("Image uploaded");
     } catch (err) {

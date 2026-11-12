@@ -11,12 +11,16 @@ import { createBranch } from "@/server/branches/service";
 import { createCategory, createProduct, getProduct, setBranchAvailability } from "@/server/catalog/service";
 import { computeEffectivePrice } from "@/server/catalog/pricing";
 import type { DashboardContext } from "@/server/auth/dashboard-context";
-import { UnauthorizedError } from "@/server/rbac/authorize";
 
 // Server-action plumbing: the dashboard session, the request headers the
 // audit fingerprint reads, and Next's cache/redirect.
 const session = vi.hoisted(() => ({ ctx: null as unknown as DashboardContext }));
-vi.mock("@/server/auth/dashboard-context", () => ({ requireDashboardUser: async () => session.ctx }));
+// Only the session is stubbed: the real authorizeDashboardOrRedirect still
+// judges the role, and its redirect lands on the mocked next/navigation below.
+vi.mock("@/server/auth/dashboard-context", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/server/auth/dashboard-context")>()),
+  requireDashboardUser: async () => session.ctx,
+}));
 vi.mock("next/headers", () => ({ headers: async () => new Headers() }));
 const revalidatePath = vi.hoisted(() => vi.fn());
 vi.mock("next/cache", () => ({ revalidatePath }));
@@ -134,9 +138,15 @@ describe("updateProductAction — promotional pricing (#193)", () => {
     expect(rows[0].metadata).toMatchObject({ after: { discountActive: true, discountPercent: 15 } });
   });
 
-  it("refuses a role without menu:manage", async () => {
-    const { product } = await setup("dpa7", "staff");
-    await expect(updateProductAction(product.id, undefined, productForm({}))).rejects.toBeInstanceOf(UnauthorizedError);
+  it("refuses a role without menu:manage, and leaves the product untouched", async () => {
+    const { t, product } = await setup("dpa7", "staff");
+    await expectRedirect(
+      updateProductAction(product.id, undefined, productForm({ discountActive: "true", discountType: "percent", discountPercent: "25" })),
+      "/dashboard/denied?permission=menu%3Amanage",
+    );
+    const after = await getProduct(t.id, product.id);
+    expect(after?.discountActive).toBe(false);
+    expect(after?.discountPercent).toBeNull();
   });
 });
 

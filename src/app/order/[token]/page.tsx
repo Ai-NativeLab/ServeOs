@@ -10,6 +10,9 @@ import { buildOrderWhatsappMessage, whatsappChatLink } from "@/lib/whatsapp";
 import { formatMoney } from "@/lib/money";
 import { formatDayTime } from "@/lib/datetime";
 import { EmptyState } from "@/components/dashboard/EmptyState";
+import { getSaleFiscalStatusByToken } from "@/server/fiscal/read-model";
+import { isEtaActivated } from "@/server/fiscal/enqueue";
+import { orderFiscalView } from "./order-fiscal";
 import { StatusPoller } from "./StatusPoller";
 
 const STEPS_DELIVERY = ["pending", "confirmed", "preparing", "ready", "out_for_delivery", "completed"];
@@ -37,10 +40,25 @@ export default async function OrderStatusPage({ params }: { params: Promise<{ to
     );
   }
 
-  const [whatsappNumber, branches] = await Promise.all([
+  // THE FISCAL GATE — the same thing `@/server/fiscal/enqueue`'s
+  // `isFiscalEnabled` asserts: country EG AND ETA activation `active`. The
+  // country half is spelled from the tenant row already in hand, so a non-EG
+  // storefront issues no extra query at all (its page is unchanged in cost as
+  // well as in bytes); only an EG tenant pays the activation read. An EG tenant
+  // still onboarding with ETA shows no fiscal block — it files nothing.
+  const fiscalEnabled = tenant.country === "EG" && (await isEtaActivated(tenant.id));
+  const [whatsappNumber, branches, fiscal] = await Promise.all([
     getWhatsappNumber(tenant.id),
     listBranches(tenant.id),
+    // Token-scoped: the link the customer is holding is the whole authorisation,
+    // and this read delegates to the one both-families query with its four-rung
+    // precedence rather than asking its own. Deliberately NOT `listSubmissions`
+    // or `getSubmissionById` — those carry `lastError`, which may legitimately
+    // name a deployment env key, and this page's audience is anyone the link
+    // reached.
+    fiscalEnabled ? getSaleFiscalStatusByToken(tenant.id, token) : null,
   ]);
+  const fiscalView = orderFiscalView({ fiscalEnabled, fiscal });
   const branch = branches.find((b) => b.id === order.branchId) ?? null;
   const areas = order.fulfillmentType === "delivery" && order.deliveryAreaId
     ? await listDeliveryAreas(tenant.id, order.branchId)
@@ -119,6 +137,76 @@ export default async function OrderStatusPage({ params }: { params: Promise<{ to
             </div>
           </div>
         </section>
+
+        {/*
+          THE ETA BLOCK. Rendered only for an EG tenant — `fiscalView` is `null`
+          for every other, so this whole section disappears and the page is
+          byte-identical to the one that existed before ETA. The four states and
+          the reasons behind them live in `./order-fiscal`, which is where they
+          are tested; this is only their markup.
+
+          SERVER-RENDERED, AND IT DOES NOT LIVE-UPDATE. `StatusPoller` next door
+          polls `/api/orders/[token]/status` and sets its OWN state — it never
+          calls `router.refresh()`, so nothing re-runs this server component
+          short of a reload. That is left alone deliberately rather than fixed
+          here: an online order is fiscalised by the reconciliation sweep 5-20
+          minutes after payment (addendum §6), the poller stops as soon as the
+          order reaches a terminal status, and no realtime event is published
+          when a fiscal row is written — so there is no trigger to refresh ON,
+          and inventing one would mean a new worker broadcast, a new event type
+          and a refresh path — re-running this page's whole query set every few
+          seconds to catch a change that usually lands after the poller has
+          already stopped. The customer's reliable copy of the QR is the receipt
+          email (Task 7); this block is what a revisit shows.
+        */}
+        {fiscalView && (
+          <section className="card-lift mt-4 rounded-2xl border border-border bg-card p-5 text-sm">
+            <div className="eyebrow text-muted-foreground">
+              {fiscalView.kind === "invoice" || fiscalView.kind === "invoice-pending"
+                ? "Tax invoice"
+                : "Tax receipt"}
+            </div>
+            {fiscalView.kind === "receipt" && (
+              <>
+                {/* eslint-disable-next-line @next/next/no-img-element -- a
+                    rendered data: URL, which the image optimizer cannot take. */}
+                <img
+                  src={fiscalView.qrImageDataUrl}
+                  alt="ETA receipt QR code"
+                  width={128}
+                  height={128}
+                  className="mx-auto mt-3 size-32"
+                />
+                {fiscalView.etaUuid && (
+                  <p className="mt-2 break-all text-center text-xs text-muted-foreground">
+                    ETA UUID: {fiscalView.etaUuid}
+                  </p>
+                )}
+              </>
+            )}
+            {fiscalView.kind === "invoice" && (
+              <p className="mt-1.5 break-all text-ink">ETA number: {fiscalView.etaLongId}</p>
+            )}
+            {/* THE FALLBACK IS `else`-SHAPED, not a third equality test, and
+                that is what makes it total. The two branches above are the
+                states that have something to SHOW (a QR, a number); everything
+                else is "filed, nothing to print yet" — which is true of both
+                pending kinds today and would be true of any kind added to
+                `orderFiscalView` tomorrow. Enumerating `receipt-pending` and
+                `invoice-pending` by name instead would leave a future kind
+                rendering an eyebrow over an empty box, which reads to the
+                customer as a broken page rather than as a pending document.
+                Degrading to the honest pending line costs nothing and cannot
+                be wrong. */}
+            {fiscalView.kind !== "receipt" && fiscalView.kind !== "invoice" && (
+              <p className="mt-1.5 text-muted-foreground">
+                {fiscalView.kind === "invoice-pending"
+                  ? "Tax invoice — pending ETA number"
+                  : "Fiscal receipt pending"}
+              </p>
+            )}
+          </section>
+        )}
 
         <section className="card-lift mt-4 rounded-2xl border border-border bg-card p-5 text-sm">
           <div className="eyebrow text-muted-foreground">

@@ -1,5 +1,4 @@
-import { requireDashboardUser } from "@/server/auth/dashboard-context";
-import { authorize } from "@/server/rbac/authorize";
+import { requireFulfillmentPermission } from "../fulfillment-permission";
 import { getTenantById, getCheckoutPricing } from "@/server/tenancy";
 import { getCapabilities, selectStorefrontTemplate, type VerticalId } from "@/server/verticals";
 import { saveTaxSettingsAction } from "./actions";
@@ -11,8 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 export default async function TaxesSettingsPage() {
-  const ctx = await requireDashboardUser();
-  authorize(ctx.roleKeys, "fulfillment:manage");
+  const ctx = await requireFulfillmentPermission();
   const tenant = await getTenantById(ctx.tenantId);
   const caps = getCapabilities(selectStorefrontTemplate(tenant?.vertical as VerticalId));
   const pricing = await getCheckoutPricing(ctx.tenantId);

@@ -1,8 +1,7 @@
 import Link from "next/link";
 import { Plus, Pencil, ImageIcon } from "lucide-react";
-import { requireDashboardUser } from "@/server/auth/dashboard-context";
-import { authorize } from "@/server/rbac/authorize";
 import { listCategories, listProducts } from "@/server/catalog/service";
+import { requireMenuPermission } from "../menu-permission";
 import { getTenantById } from "@/server/tenancy";
 import { getCapabilities, selectStorefrontTemplate, type VerticalId } from "@/server/verticals";
 import { deleteCategoryAction } from "./categories/actions";
@@ -20,8 +19,9 @@ import {
 } from "@/components/ui/table";
 
 export default async function MenuPage() {
-  const ctx = await requireDashboardUser();
-  authorize(ctx.roleKeys, "menu:manage");
+  // requireMenuPermission redirects to /dashboard/denied when the permission
+  // is missing (#172) — no boundary round-trip, nothing to catch here.
+  const ctx = await requireMenuPermission();
   const cats = await listCategories(ctx.tenantId);
   const prods = await listProducts(ctx.tenantId);
   const tenant = await getTenantById(ctx.tenantId);
