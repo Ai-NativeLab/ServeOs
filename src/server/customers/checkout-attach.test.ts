@@ -29,7 +29,7 @@ describe("checkout attach", () => {
     const me = await registerCustomer(tenantId, { name: "Ahmed", email: "a@x.com", password: "secret123" });
 
     const res = await placeOrder(tenantId, {
-      branchId, fulfillmentType: "pickup", customerName: "Ahmed", customerPhone: "+2011",
+      branchId, fulfillmentType: "pickup", customerName: "Ahmed", customerPhone: "01012345678",
       customerId: me.id, lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
     });
     const [row] = await withTenant(tenantId, (tx) => tx.select().from(orders).where(eq(orders.id, res.orderId)));
@@ -42,7 +42,7 @@ describe("checkout attach", () => {
   it("a guest order keeps customerId null forever", async () => {
     const { tenantId, branchId, productId } = await seed("att-2");
     const res = await placeOrder(tenantId, {
-      branchId, fulfillmentType: "pickup", customerName: "Guest", customerPhone: "+2012",
+      branchId, fulfillmentType: "pickup", customerName: "Guest", customerPhone: "01012345679",
       lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
     });
     const [row] = await withTenant(tenantId, (tx) => tx.select().from(orders).where(eq(orders.id, res.orderId)));

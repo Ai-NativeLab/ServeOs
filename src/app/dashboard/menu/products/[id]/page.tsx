@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { ArrowLeft, Plus } from "lucide-react";
-import { requireDashboardUser } from "@/server/auth/dashboard-context";
-import { authorize } from "@/server/rbac/authorize";
+import { requireMenuPermission } from "../../../menu-permission";
 import { getProduct } from "@/server/catalog/service";
 import { listVariants } from "@/server/catalog";
 import { getTenantById } from "@/server/tenancy";
@@ -22,8 +21,7 @@ import { Label } from "@/components/ui/label";
 
 export default async function EditProductPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const ctx = await requireDashboardUser();
-  authorize(ctx.roleKeys, "menu:manage");
+  const ctx = await requireMenuPermission();
   const product = await getProduct(ctx.tenantId, id);
   const tenant = await getTenantById(ctx.tenantId);
   const caps = getCapabilities(selectStorefrontTemplate(tenant?.vertical as VerticalId));

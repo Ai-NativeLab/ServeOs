@@ -19,9 +19,12 @@ export default defineConfig({
     electron({
       main: {
         entry: "electron/main.ts",
-        // better-sqlite3 is a native module — keep it external so it is
-        // require()'d from node_modules at runtime rather than bundled by Rollup.
-        vite: { build: { rollupOptions: { external: ["better-sqlite3"] } } },
+        // Native/optional modules stay external — require()'d from node_modules
+        // at runtime rather than bundled by Rollup. bufferutil and
+        // utf-8-validate are ws's OPTIONAL native accelerators: bundling them
+        // crashes the main process at load on machines where they aren't built,
+        // while externalising them lets ws fall back to its JS path (#163 QA).
+        vite: { build: { rollupOptions: { external: ["better-sqlite3", "bufferutil", "utf-8-validate"] } } },
       },
       preload: { input: "electron/preload.ts" },
     }),

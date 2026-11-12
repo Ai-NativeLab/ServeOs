@@ -3,7 +3,7 @@ import { NextRequest } from "next/server";
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
-import { tenants } from "@/server/tenancy/schema";
+import { tenants, type Tenant } from "@/server/tenancy/schema";
 import { branches } from "@/server/branches/schema";
 import { orders } from "@/server/ordering/schema";
 import { posDevices } from "@/server/pos/schema";
@@ -61,7 +61,11 @@ let n = 0;
 
 function signIn(tenantId: string, roleKeys: RoleKey[], userId: string) {
   actorUserId = userId;
-  vi.mocked(requireDashboardUser).mockResolvedValue({ user: { id: userId } as User, tenantId, roleKeys });
+  // `tenant` joined DashboardContext on main (#187: suspended-tenant refusal).
+  // These routes read only `tenantId`, so a stub carrying the id suffices.
+  vi.mocked(requireDashboardUser).mockResolvedValue({
+    user: { id: userId } as User, tenantId, tenant: { id: tenantId } as Tenant, roleKeys,
+  });
 }
 
 async function seedTenant() {

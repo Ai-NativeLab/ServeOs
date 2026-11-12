@@ -54,6 +54,7 @@ export function ShopBrowser({
       selectedOptionIds: [],
       modifierSummaryEn: v?.nameEn ?? "", // CartDrawer renders this as the line summary
       dimensions,
+      requiresPrescription: p.requiresPrescription,
     }));
   }
 

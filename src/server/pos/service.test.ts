@@ -10,7 +10,8 @@ import { createPairingCode, redeemPairingCode, resolveDevice, listDevices, revok
 let n = 0;
 async function seedTenantBranchUser() {
   const slug = `pos-${n++}`;
-  const [t] = await db.insert(tenants).values({ slug, name: "Test", country: "EG" }).returning();
+  // #164: pairing refuses non-servable tenants — fixtures run a live store.
+  const [t] = await db.insert(tenants).values({ slug, name: "Test", country: "EG", status: "active" }).returning();
   await seedDefaultPlans();
   await startTrial(t.id, "basic");
   const branch = await createBranch(t.id, { name: "Front counter" });

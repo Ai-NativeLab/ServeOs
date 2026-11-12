@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { pool } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { auditEvents } from "@/server/audit/schema";
@@ -8,7 +8,8 @@ import { openShift, findOpenShift, closeShift, buildXReport, recordMidShiftCount
 import { recordCashMovement } from "./cash-movements";
 import { recordSale } from "./record-sale";
 import { issueGrant } from "./grants";
-import { posShifts, cashCounts } from "./shift-schema";
+import { posShifts, cashCounts, cashMovements } from "./shift-schema";
+import { orderPayments } from "./tender-schema";
 import {
   ShiftAlreadyOpenError, CashCountMismatchError, ShiftClosedError, PosForbiddenError,
 } from "./errors";
@@ -500,5 +501,82 @@ describe("buildXReport", () => {
       { type: "pay_out", total: -50, count: 1 },
       { type: "safe_drop", total: -100, count: 1 },
     ]));
+  });
+});
+
+describe("a drawer holding an amount poisoned before the money() floor existed", () => {
+  // Postgres `numeric` accepts 'NaN'/'Infinity', and money() emitted them until
+  // #169, so a live drawer may already hold one. If gatherShift let it through,
+  // expected cash became non-finite and money() now throws on every count and
+  // close — a till that can never be closed. Instead the poisoned amount is
+  // left out of the arithmetic, the exclusion is reported, and the close is
+  // force-flagged for reconciliation. Nothing non-finite is ever written back.
+  async function poison(tenantId: string, target: "float" | "movement" | "tender", shiftId: string) {
+    await withTenant(tenantId, async (tx) => {
+      if (target === "float") {
+        await tx.update(posShifts).set({ openingFloat: sql`'Infinity'::numeric` }).where(eq(posShifts.id, shiftId));
+      } else if (target === "movement") {
+        await tx.update(cashMovements).set({ amount: sql`'NaN'::numeric` })
+          .where(and(eq(cashMovements.shiftId, shiftId), eq(cashMovements.type, "pay_in")));
+      } else {
+        await tx.update(orderPayments).set({ amount: sql`'Infinity'::numeric` }).where(eq(orderPayments.shiftId, shiftId));
+      }
+    });
+    const [fresh] = await withTenant(tenantId, (tx) => tx.select().from(posShifts).where(eq(posShifts.id, shiftId)));
+    return fresh;
+  }
+
+  it.each([
+    // What expected cash is once the poisoned term is left out.
+    ["float", (e: { expected: number; total: number }) => e.expected - 200],
+    ["movement", (e: { expected: number; total: number }) => e.expected - 30],
+    ["tender", (e: { expected: number; total: number }) => e.expected - e.total],
+  ] as const)("closes a drawer with a poisoned %s, finite and force-flagged", async (target, without) => {
+    const seeded = await tradedShift();
+    const { ctx, shift } = seeded;
+    await poison(ctx.tenantId, target, shift.id);
+    const expected = without(seeded);
+
+    const z = await closeShift(ctx, shift.id, { count: { countedTotal: expected } });
+
+    expect(z.cash.expected).toBe(expected);
+    expect(z.cash.variance).toBe(0);
+    expect(z.nonFiniteAmountsExcluded).toBe(1);
+    expect(z.flagged).toBe(true); // a zero variance against an incomplete expected proves nothing
+
+    const [count] = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(cashCounts).where(eq(cashCounts.kind, "closing")));
+    expect(count.expectedTotal).toBe(expected.toFixed(2));
+    expect(count.variance).toBe("0.00");
+
+    const [event] = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(auditEvents).where(eq(auditEvents.action, "shift.close")));
+    expect(event.metadata).toMatchObject({ flagged: true, nonFiniteAmountsExcluded: 1 });
+  });
+
+  it("records a mid-shift count and an X-report on a drawer with a poisoned float", async () => {
+    const seeded = await tradedShift();
+    const { ctx, shift } = seeded;
+    const poisoned = await poison(ctx.tenantId, "float", shift.id);
+    const expected = seeded.expected - 200;
+
+    const x = await buildXReport(ctx.tenantId, poisoned);
+    expect(x.cash.expected).toBe(expected);
+    expect(x.openingFloat).toBe(0);
+    expect(x.nonFiniteAmountsExcluded).toBe(1);
+
+    const count = await recordMidShiftCount(ctx, shift.id, { countedTotal: expected });
+    expect(count.expectedTotal).toBe(expected.toFixed(2));
+
+    const [event] = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(auditEvents).where(eq(auditEvents.action, "count")));
+    expect(event.metadata).toMatchObject({ nonFiniteAmountsExcluded: 1 });
+  });
+
+  it("reports nothing excluded on a clean drawer", async () => {
+    const { ctx, shift, expected } = await tradedShift();
+    const z = await closeShift(ctx, shift.id, { count: { countedTotal: expected } });
+    expect(z.nonFiniteAmountsExcluded).toBeUndefined();
+    expect(z.flagged).toBe(false);
   });
 });

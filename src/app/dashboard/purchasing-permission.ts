@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { requireDashboardUser, type DashboardContext } from "@/server/auth/dashboard-context";
+import { requireDashboardUser, authorizeDashboardOrRedirect } from "@/server/auth/dashboard-context";
+import type { DashboardContext } from "@/server/auth/dashboard-context";
 import { authorize, UnauthorizedError } from "@/server/rbac/authorize";
 import type { Permission } from "@/server/rbac/permissions";
 import { branches } from "@/server/branches/schema";
@@ -16,7 +17,7 @@ import type { PurchasingActor } from "@/server/purchasing/suppliers";
  */
 export async function requirePurchasingPermission(perm: Permission): Promise<DashboardContext> {
   const ctx = await requireDashboardUser();
-  authorize(ctx.roleKeys, perm);
+  await authorizeDashboardOrRedirect(ctx, perm);
   return ctx;
 }
 
@@ -37,7 +38,12 @@ export async function resolvePurchasingContext(
   perm: Permission,
 ): Promise<{ ctx: DashboardContext; denied: null } | { ctx: null; denied: NextResponse }> {
   try {
-    return { ctx: await requirePurchasingPermission(perm), denied: null };
+    // NOT the page wrapper above: that one redirects to the denial screen
+    // (#172), which this catch would misread as "no session" → 401. An API
+    // caller gets the throwing authorize() and a 403 it can act on.
+    const ctx = await requireDashboardUser();
+    authorize(ctx.roleKeys, perm);
+    return { ctx, denied: null };
   } catch (e) {
     if (e instanceof UnauthorizedError) {
       return { ctx: null, denied: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };

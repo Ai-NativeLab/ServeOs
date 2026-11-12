@@ -11,6 +11,8 @@ export type CartLine = {
   /** P4: the cut-list dimensions this line was priced from (client-computed
    *  preview; the server re-derives unitPrice from these at placeOrder). */
   dimensions?: { lengthMm?: number; widthMm?: number; thicknessMm?: number };
+  /** P3: prescription-only medicine requiring prescription upload at checkout */
+  requiresPrescription?: boolean;
 };
 
 export type Cart = { branchId: string | null; lines: CartLine[] };

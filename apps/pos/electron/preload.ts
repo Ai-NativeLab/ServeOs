@@ -10,6 +10,7 @@ import type {
   CashMovementRow,
   CashMovementInput,
   DrawerResult,
+  AdvanceOrderResult,
   DayReport,
   DayZReport,
   SalesSearch,
@@ -63,7 +64,7 @@ export interface PosBridge {
   login(slug: string, email: string, password: string, branchId?: string): Promise<PosLoginResult>;
   getMenu(): Promise<{ json: string; pricing: CheckoutPricing; syncedAt: string } | null>;
   getOrders(): Promise<OrderSummary[]>;
-  advanceOrder(orderId: string, toStatus: string): Promise<void>;
+  advanceOrder(orderId: string, toStatus: string): Promise<AdvanceOrderResult>;
   listSales(search?: SalesSearch): Promise<SalesRow[]>;
   getSale(orderId: string): Promise<SaleDetail>;
   reprintReceipt(orderId: string): Promise<ReprintReceipt>;

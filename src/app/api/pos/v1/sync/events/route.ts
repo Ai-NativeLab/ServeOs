@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePosDevice } from "@/server/pos/require-device";
 import { ingestEvents, type SyncEvent } from "@/server/pos/sync-ingest";
-import { PosAuthError } from "@/server/pos/errors";
+import { posAuthResponse } from "@/server/pos/errors";
 
 /** Matches the cap advertised to the client (Tasks 8-10): a queue this deep
  *  is flushed in several requests, not one giant one. */
@@ -18,7 +18,8 @@ export async function POST(req: NextRequest) {
   try {
     device = await requirePosDevice(req);
   } catch (e) {
-    if (e instanceof PosAuthError) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const authRes = posAuthResponse(e);
+    if (authRes) return authRes;
     throw e;
   }
 

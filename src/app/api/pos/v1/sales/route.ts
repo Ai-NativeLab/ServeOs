@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requirePosCashier, assertPermission } from "@/server/pos/require-cashier";
 import { recordSale, type RecordSaleInput } from "@/server/pos/record-sale";
 import { listSales, endOfDay, type SalesFilters } from "@/server/pos/sales-history";
-import { NoOpenShiftError, PosAuthError, PosCashierError, PosForbiddenError, PosSaleError } from "@/server/pos/errors";
+import { posAuthResponse, NoOpenShiftError, PosCashierError, PosForbiddenError, PosSaleError } from "@/server/pos/errors";
 import { TotalMismatchError, OrderValidationError, OutOfStockError } from "@/server/ordering/errors";
 
 /** Sales-history search: only pos:sell is needed to LOOK a sale up — returning
@@ -13,8 +13,10 @@ export async function GET(req: NextRequest) {
     ctx = await requirePosCashier(req);
     assertPermission(ctx, "pos:sell");
   } catch (e) {
-    if (e instanceof PosAuthError || e instanceof PosCashierError) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const authRes = posAuthResponse(e);
+    if (authRes) return authRes;
+    if (e instanceof PosCashierError) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     if (e instanceof PosForbiddenError) return NextResponse.json({ error: e.message }, { status: 403 });
     throw e;
@@ -31,13 +33,16 @@ export async function GET(req: NextRequest) {
   const numOrderNumber = orderNumber !== null ? Number(orderNumber) : undefined;
   const numAmount = amount !== null ? Number(amount) : undefined;
   const numPage = page !== null ? Number(page) : undefined;
-  if (numOrderNumber !== undefined && Number.isNaN(numOrderNumber)) {
+  // isFinite, not just !isNaN: `Number("Infinity")` is Infinity, which would
+  // reach money() (amount) or Postgres (orderNumber, page) and fail as a 500
+  // instead of a 400.
+  if (numOrderNumber !== undefined && !Number.isFinite(numOrderNumber)) {
     return NextResponse.json({ error: "Invalid orderNumber" }, { status: 400 });
   }
-  if (numAmount !== undefined && Number.isNaN(numAmount)) {
+  if (numAmount !== undefined && !Number.isFinite(numAmount)) {
     return NextResponse.json({ error: "Invalid amount" }, { status: 400 });
   }
-  if (numPage !== undefined && (Number.isNaN(numPage) || numPage < 1)) {
+  if (numPage !== undefined && (!Number.isFinite(numPage) || numPage < 1)) {
     return NextResponse.json({ error: "Invalid page" }, { status: 400 });
   }
   if ((dateFrom !== undefined && Number.isNaN(dateFrom.getTime())) || (dateTo !== undefined && Number.isNaN(dateTo.getTime()))) {
@@ -64,8 +69,10 @@ export async function POST(req: NextRequest) {
     ctx = await requirePosCashier(req);
     assertPermission(ctx, "pos:sell");
   } catch (e) {
-    if (e instanceof PosAuthError || e instanceof PosCashierError) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const authRes = posAuthResponse(e);
+    if (authRes) return authRes;
+    if (e instanceof PosCashierError) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     if (e instanceof PosForbiddenError) return NextResponse.json({ error: e.message }, { status: 403 });
     throw e;
