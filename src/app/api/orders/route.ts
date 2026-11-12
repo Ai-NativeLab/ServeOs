@@ -6,6 +6,7 @@ import { cookies } from "next/headers";
 import { CUSTOMER_COOKIE } from "@/server/customers/require-customer";
 import { validateCustomerSession } from "@/server/customers/service";
 import { DomainError } from "@/shared/errors";
+import { PriceChangedError } from "@/server/ordering/errors";
 
 /** P4: an explicit allowlist, not a spread — a numeric field only, never a
  *  string that could smuggle something into a jsonb column. */
@@ -63,6 +64,10 @@ export async function POST(req: NextRequest) {
               ? (line.selectedOptionIds as unknown[]).map(String)
               : [],
             dimensions: parseDimensions(line.dimensions),
+            // Compared against the live price, never charged.
+            expectedUnitPrice: typeof line.expectedUnitPrice === "number" && Number.isFinite(line.expectedUnitPrice)
+              ? line.expectedUnitPrice
+              : undefined,
           };
         })
       : [],
@@ -75,6 +80,12 @@ export async function POST(req: NextRequest) {
     const result = await placeOrder(tenant.id, input);
     return NextResponse.json(result, { status: 201 });
   } catch (e) {
+    if (e instanceof PriceChangedError) {
+      return NextResponse.json(
+        { error: e.messageFor(locale), code: e.code, lines: e.lines.map((l) => ({ index: l.index, unitPrice: l.unitPrice })) },
+        { status: 409 },
+      );
+    }
     if (e instanceof DomainError) {
       return NextResponse.json({ error: e.messageFor(locale), code: e.code }, { status: 422 });
     }

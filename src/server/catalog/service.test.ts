@@ -20,7 +20,7 @@ import {
   setBranchAvailability,
   getPublishedMenu,
 } from "./service";
-import { CategoryNotEmptyError, ProductNotFoundError, InvalidModifierRulesError } from "./errors";
+import { CategoryNotEmptyError, ProductNotFoundError, InvalidModifierRulesError, InvalidDiscountError } from "./errors";
 import { createBranch } from "@/server/branches/service";
 import { upsertVariant } from "./variants";
 
@@ -257,5 +257,50 @@ describe("getPublishedMenu retail fields", () => {
     const p2 = menu2.categories[0].products.find((x) => x.nameEn === "Worktop")!;
     expect(p2.inStock).toBe(false);
     expect(p2.variants).toEqual([]);
+  });
+});
+
+describe("catalog: promotional discount validation (#192)", () => {
+  async function product(slug: string) {
+    const t = await makeTenant(slug);
+    const cat = await createCategory(t.id, { nameEn: "C", nameAr: "ج" });
+    const p = await createProduct(t.id, { nameEn: "P", nameAr: "ب", basePrice: "100", categoryId: cat.id });
+    return { t, cat, p };
+  }
+
+  it("rejects a percent outside 1-99 or not a whole number", async () => {
+    const { t, p } = await product("dv1");
+    for (const discountPercent of [0, 100, -5, 12.5]) {
+      await expect(updateProduct(t.id, p.id, { discountActive: true, discountPercent })).rejects.toThrow(InvalidDiscountError);
+    }
+  });
+
+  it("rejects a sale price of zero or less", async () => {
+    const { t, p } = await product("dv2");
+    await expect(updateProduct(t.id, p.id, { discountActive: true, salePrice: "0" })).rejects.toThrow(InvalidDiscountError);
+    await expect(updateProduct(t.id, p.id, { discountActive: true, salePrice: "-1" })).rejects.toThrow(InvalidDiscountError);
+  });
+
+  it("rejects an end that is not after the start, including against the stored start", async () => {
+    const { t, p } = await product("dv3");
+    const start = new Date("2026-05-10T00:00:00Z");
+    await expect(updateProduct(t.id, p.id, { discountStartsAt: start, discountEndsAt: start })).rejects.toThrow(InvalidDiscountError);
+    await updateProduct(t.id, p.id, { discountActive: true, discountPercent: 10, discountStartsAt: start });
+    await expect(updateProduct(t.id, p.id, { discountEndsAt: new Date("2026-05-01T00:00:00Z") })).rejects.toThrow(InvalidDiscountError);
+  });
+
+  it("validates on create too", async () => {
+    const { t, cat } = await product("dv4");
+    await expect(createProduct(t.id, { nameEn: "Q", nameAr: "ق", basePrice: "50", categoryId: cat.id, discountPercent: 150 }))
+      .rejects.toThrow(InvalidDiscountError);
+  });
+
+  it("accepts a valid discount", async () => {
+    const { t, p } = await product("dv5");
+    const row = await updateProduct(t.id, p.id, {
+      discountActive: true, discountPercent: 20,
+      discountStartsAt: new Date("2026-05-01T00:00:00Z"), discountEndsAt: new Date("2026-05-10T00:00:00Z"),
+    });
+    expect(row.discountPercent).toBe(20);
   });
 });

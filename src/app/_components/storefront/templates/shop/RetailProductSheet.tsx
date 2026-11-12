@@ -5,6 +5,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "
 import { Button } from "@/components/ui/button";
 import { formatMoney } from "@/lib/money";
 import type { MenuProduct } from "@/app/_components/storefront/ProductCard";
+import { discountLabel } from "@/app/_components/storefront/Badge";
 import type { CartLine } from "@/app/_components/cart";
 import { computeDimensionalQuantity } from "@/server/catalog/dimensional-pricing";
 import { isDimensionalUom, requiredDimensions, type DimensionField } from "@/server/catalog/uom-values";
@@ -84,11 +85,11 @@ export function RetailProductSheet({
             {product.brand && <span className="eyebrow text-muted-foreground">{product.brand}</span>}
             <div className="flex items-start justify-between gap-2">
               <SheetTitle className="text-xl sm:text-2xl">{product.nameEn}</SheetTitle>
-              {product.hasDiscount && product.discountPercent && !needsVariant && (
+              {!needsVariant && discountLabel(product) ? (
                 <span className="sf-badge bg-destructive text-destructive-foreground font-bold shadow-sm shrink-0">
-                  {`-${product.discountPercent}%`}
+                  {discountLabel(product)}
                 </span>
-              )}
+              ) : null}
             </div>
             {product.nameAr && (
               <span dir="rtl" className="block text-sm text-muted-foreground">{product.nameAr}</span>

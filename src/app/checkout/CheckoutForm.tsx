@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { loadCart, clearCart, cartSubtotal, type Cart } from "../_components/cart";
+import { loadCart, saveCart, clearCart, cartSubtotal, repriceCart, type Cart } from "../_components/cart";
 import { rememberOrder } from "../_components/recent-orders";
 import { formatMoney } from "@/lib/money";
 import { computeOrderTotals, type CheckoutPricing } from "@/lib/order-totals";
@@ -128,12 +128,21 @@ export function CheckoutForm({
           lines: cart.lines.map((l) => ({
             productId: l.productId, variantId: l.variantId, quantity: l.quantity, selectedOptionIds: l.selectedOptionIds,
             dimensions: l.dimensions,
+            expectedUnitPrice: l.unitPrice,
           })),
         }),
       });
       const data = await res.json();
       if (!res.ok) {
-        if (data.code === "out_of_stock") {
+        if (data.code === "price_changed" && Array.isArray(data.lines)) {
+          // The server refused to charge a price the customer never saw.
+          // Reprice the cart from its answer so the totals on screen are the
+          // real ones, and let the customer confirm by placing again.
+          const repriced = repriceCart(cart, data.lines);
+          saveCart(repriced);
+          setCart(repriced);
+          setError(data.error ?? "Some prices changed — please review your cart and place the order again.");
+        } else if (data.code === "out_of_stock") {
           setError(`${data.error} — please remove it from your cart or reduce the quantity.`);
         } else {
           setError(data.error ?? "Something went wrong");

@@ -37,7 +37,7 @@ test.describe("storefront mobile (360px)", () => {
 
   test("shop: add a variant to the cart from a phone viewport", async ({ page }) => {
     await page.goto(SHOP);
-    await page.getByRole("button", { name: "Soft-Close Hinge" }).click();
+    await page.getByRole("button", { name: "Soft-Close Hinge", exact: true }).click();
     const sheet = page.getByRole("dialog");
     await expect(sheet).toBeVisible();
     await sheet.getByText("35mm", { exact: true }).click();
@@ -58,15 +58,19 @@ test.describe("storefront mobile (360px)", () => {
 
   test("shop: out-of-stock card is visible but not clickable", async ({ page }) => {
     await page.goto(SHOP);
-    const card = page.getByRole("button", { name: "Matte Black Knob" });
+    const card = page.getByRole("button", { name: "Matte Black Knob", exact: true });
     await expect(card).toBeVisible();
     await expect(card).toBeDisabled();
   });
 
   test("tap targets: product-card add buttons are at least 40px", async ({ page }) => {
     await page.goto(SHOP);
-    const box = await page.getByRole("button", { name: "Standard Hinge" }).boundingBox();
-    expect(box, "card renders").toBeTruthy();
+    await expect(page.getByRole("button", { name: "Standard Hinge", exact: true })).toBeVisible();
+    // #191 AC6: the card's quick-add control is a >= 40px touch target.
+    const box = await page.getByRole("button", { name: "Add Standard Hinge to cart" }).boundingBox();
+    expect(box, "quick-add renders").toBeTruthy();
+    expect(box!.width).toBeGreaterThanOrEqual(40);
+    expect(box!.height).toBeGreaterThanOrEqual(40);
     // the quantity/add affordances inside sheets are checked manually in Step 3
   });
 
