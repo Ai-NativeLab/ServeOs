@@ -74,14 +74,21 @@ export async function requireDashboardUser(options?: DashboardAuthOptions): Prom
 }
 
 /**
- * PAGE-level permission gate (#172): redirects to the shared denial screen
- * instead of throwing, so a missing permission can never reach a client error
- * boundary as a stripped, unrecognisable crash — in production Next replaces
- * server-error messages with a digest, which defeats any client-side
- * "unauthorized?" heuristic.
+ * Permission gate for PAGES and SERVER ACTIONS (#172): redirects to the shared
+ * denial screen instead of throwing, so a missing permission can never reach a
+ * client error boundary as a stripped, unrecognisable crash — in production
+ * Next replaces server-error messages with a digest, which defeats any
+ * client-side "unauthorized?" heuristic.
  *
- * API routes and server ACTIONS should keep using `authorize()` (throwing) —
- * a redirect is meaningless inside a JSON response or a ToastForm action.
+ * Server actions reach it through the `require*Permission()` wrappers in
+ * src/app/dashboard/*-permission.ts; a redirect thrown from an action
+ * navigates the client to the denial screen. A few older actions still call
+ * the throwing `authorize()` directly.
+ *
+ * API ROUTE HANDLERS must not use it — a JSON caller needs a status, not a
+ * redirect. They go through `resolveInventoryContext` /
+ * `resolvePurchasingContext` (or call `authorize()` themselves), which map a
+ * refusal to 403 and a missing session to 401.
  */
 export async function authorizeDashboardOrRedirect(
   ctx: DashboardContext,
