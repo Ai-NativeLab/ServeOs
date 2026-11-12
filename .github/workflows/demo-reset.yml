@@ -79,6 +79,25 @@ jobs:
             echo "::notice::skipping $THIS_ENV (dispatch selected $SELECTED)"
           fi
 
+      - name: Preflight
+        if: steps.gate.outputs.run == 'true'
+        env:
+          DATABASE_URL: ${{ secrets[matrix.url_secret] }}
+          MIGRATE: ${{ matrix.migrate || false }}
+          REF: ${{ github.ref }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::${{ matrix.url_secret }} is not set"
+            exit 1
+          fi
+          # The migrate step applies the CHECKED-OUT drizzle/ folder. A
+          # dispatch from a feature branch would push that branch's unmerged
+          # migrations into a shared database, so only main may migrate.
+          if [ "$MIGRATE" = "true" ] && [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::refusing to migrate ${{ matrix.env_name }} from $REF — dispatch demo-reset from main"
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
         if: steps.gate.outputs.run == 'true'
 
@@ -107,10 +126,6 @@ jobs:
           ROOT_DOMAIN: ${{ matrix.root_domain }}
           RESET: ${{ github.event_name == 'workflow_dispatch' && inputs.reset || 'true' }}
         run: |
-          if [ -z "$DATABASE_URL" ]; then
-            echo "::error::${{ matrix.url_secret }} is not set"
-            exit 1
-          fi
           if [ "$RESET" = "true" ]; then
             npx tsx scripts/seed-demo-tenants.ts --reset
           else
