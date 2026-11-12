@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { validateSession } from "./session";
@@ -33,14 +34,24 @@ export type DashboardAuthOptions = {
 };
 
 /**
+ * The tenant row, memoised for ONE request with React `cache()` — which Next
+ * scopes to the current request, never shared across requests. The layout,
+ * the page and its permission wrapper each call requireDashboardUser(), and
+ * all of them need the same live status; one read serves them all, and the
+ * next request still sees a fresh one.
+ */
+const getTenantForRequest = cache((tenantId: string) => getTenantById(tenantId));
+
+/**
  * Validates the session cookie, ensures user belongs to a tenant, and verifies
  * that the tenant has an active/trial status. Non-active tenants (suspended,
  * rejected, onboarding) are redirected to the lockout screen unless explicitly
  * allowed by options.
  *
  * The status is re-read from the database on EVERY request — never cached in
- * the session — so suspending or reactivating a tenant takes effect on the
- * next navigation with no re-login (#164).
+ * the session or across requests (getTenantForRequest dedupes within one) —
+ * so suspending or reactivating a tenant takes effect on the next navigation
+ * with no re-login (#164).
  *
  * INVARIANT the whole dashboard leans on: every page enforces its own
  * permission via requireDashboardUser() or a `*-permission.ts` wrapper. The
@@ -54,7 +65,7 @@ export async function requireDashboardUser(options?: DashboardAuthOptions): Prom
   if (!session || !session.user.tenantId) redirect("/login");
 
   const [tenant, roleKeys] = await Promise.all([
-    getTenantById(session.user.tenantId),
+    getTenantForRequest(session.user.tenantId),
     loadUserRoleKeys(session.user.id),
   ]);
 
