@@ -17,7 +17,9 @@
 //   icon-mac.png inset ~10%. macOS does NOT add padding — every system app's
 //                artwork carries its own, so a full-bleed icon sits visibly
 //                larger than its neighbours in the dock.
-import { chromium } from "playwright";
+// @playwright/test, not playwright: it is the package the root declares (the
+// bare `playwright` only resolves because npm happens to hoist it).
+import { chromium } from "@playwright/test";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
