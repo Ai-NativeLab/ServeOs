@@ -3,8 +3,8 @@ import { ArrowLeft } from "lucide-react";
 import { requireDashboardUser } from "@/server/auth/dashboard-context";
 import { authorize } from "@/server/rbac/authorize";
 import { getCatalogDisplaySettings } from "@/server/tenancy/settings";
-import { updateCatalogDisplayAction } from "@/app/dashboard/settings/profile/actions";
-import { CatalogDisplaySettingsCard } from "@/app/dashboard/settings/profile/CatalogDisplaySettingsCard";
+import { updateCatalogDisplayAction } from "./actions";
+import { CatalogDisplaySettingsCard } from "@/components/dashboard/CatalogDisplaySettingsCard";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 
 export default async function MenuDisplaySettingsPage() {

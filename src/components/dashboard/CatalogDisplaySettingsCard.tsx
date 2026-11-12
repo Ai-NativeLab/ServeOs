@@ -60,7 +60,7 @@ export function CatalogDisplaySettingsCard({
 }: {
   initialMode?: CatalogDisplayMode;
   initialItemsPerPage?: number;
-  action: (formData: FormData) => Promise<void>;
+  action: (formData: FormData) => Promise<void | { error: string }>;
 }) {
   const [selectedMode, setSelectedMode] = useState<CatalogDisplayMode>(initialMode);
   const [itemsPerPage, setItemsPerPage] = useState<number>(initialItemsPerPage);

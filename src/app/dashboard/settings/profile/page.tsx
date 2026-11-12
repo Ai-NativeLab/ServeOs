@@ -1,8 +1,9 @@
 import { requireTenantManagePermission } from "../profile-permission";
 import { getTenantById } from "@/server/tenancy";
 import { getCatalogDisplaySettings } from "@/server/tenancy/settings";
-import { updateTenantProfileAction, updateCatalogDisplayAction } from "./actions";
-import { CatalogDisplaySettingsCard } from "./CatalogDisplaySettingsCard";
+import { updateTenantProfileAction } from "./actions";
+import { updateCatalogDisplayAction } from "@/app/dashboard/menu/display/actions";
+import { CatalogDisplaySettingsCard } from "@/components/dashboard/CatalogDisplaySettingsCard";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { ToastForm } from "@/components/dashboard/ToastForm";
 import { ImageInput } from "@/components/dashboard/ImageInput";
