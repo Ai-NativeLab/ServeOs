@@ -1675,6 +1675,33 @@ describe("requestB2bInvoice — buyer validation", () => {
   });
 });
 
+describe("requestB2bInvoice — the fiscal and payment gates (enforced in the service, not only the UI)", () => {
+  it("409s a tenant that does not file with ETA — non-EG, or EG not yet activated — and writes nothing", async () => {
+    const notActive = await seedInvoiceableSale();
+    await withTenant(notActive.tenantId, (tx) =>
+      tx.update(etaTenantConfig).set({ activationStatus: "pending" }).where(eq(etaTenantConfig.tenantId, notActive.tenantId)));
+    expect(await requestB2bInvoice(notActive.tenantId, notActive.receipt.orderId, B2B_BUYER()))
+      .toMatchObject({ ok: false, status: 409, error: expect.stringMatching(/activated with ETA/) });
+    expect(await invoiceRows(notActive.tenantId)).toEqual([]);
+
+    const nonEg = await seedInvoiceableSale();
+    await db.update(tenants).set({ country: "SA" }).where(eq(tenants.id, nonEg.tenantId));
+    expect(await requestB2bInvoice(nonEg.tenantId, nonEg.receipt.orderId, B2B_BUYER()))
+      .toMatchObject({ ok: false, status: 409 });
+    expect(await invoiceRows(nonEg.tenantId)).toEqual([]);
+  });
+
+  it("409s an unpaid or pending_verification order — only a paid sale is invoiced", async () => {
+    const s = await seedInvoiceableSale();
+    for (const paymentStatus of ["unpaid", "pending_verification"] as const) {
+      await withTenant(s.tenantId, (tx) => tx.update(orders).set({ paymentStatus }).where(eq(orders.id, s.receipt.orderId)));
+      expect(await requestB2bInvoice(s.tenantId, s.receipt.orderId, B2B_BUYER()), paymentStatus)
+        .toMatchObject({ ok: false, status: 409, error: expect.stringMatching(/not paid yet/) });
+    }
+    expect(await invoiceRows(s.tenantId)).toEqual([]);
+  });
+});
+
 describe("requestB2bInvoice — ownership and the live-invoice ladder", () => {
   it("404s an unknown order, a malformed id, and another tenant's order alike", async () => {
     const mine = await seedInvoiceableSale();

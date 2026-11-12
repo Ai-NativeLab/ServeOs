@@ -11,7 +11,7 @@ import { users, type User } from "@/server/auth/schema";
 import { auditEvents } from "@/server/audit/schema";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { etaSubmissions } from "@/server/fiscal/schema";
-import { seedPosContext } from "@/server/pos/test-helpers";
+import { seedPosContext, activateFiscal } from "@/server/pos/test-helpers";
 import type { RoleKey } from "@/server/rbac/permissions";
 
 /**
@@ -537,6 +537,9 @@ describe("POST /api/dashboard/fiscal/orders/[id]/invoice", () => {
    */
   async function seedOrder() {
     const { tenantId, userId } = await seedTenant();
+    // ETA-activated (the service refuses any other tenant) and a PAID order
+    // (the service refuses an unpaid one).
+    await activateFiscal(tenantId);
     const [branch] = await withTenant(tenantId, (tx) =>
       tx.insert(branches).values({ tenantId, name: "Main" }).returning(),
     );
@@ -553,6 +556,7 @@ describe("POST /api/dashboard/fiscal/orders/[id]/invoice", () => {
         vatAmount: "14.00",
         total: "114.00",
         statusToken: `tok-invoice-${n++}`,
+        paymentStatus: "paid",
       }).returning(),
     );
     return { tenantId, userId, orderId: order.id };
