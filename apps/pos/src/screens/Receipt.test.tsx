@@ -205,3 +205,39 @@ describe("failed", () => {
     expect(withoutFooter(html)).toBe(baseline);
   });
 });
+
+describe("the first fiscal read still in flight (EG)", () => {
+  const renderFetching = (f: ReceiptFiscal | null) =>
+    renderToStaticMarkup(
+      <Receipt data={SALE} fiscal={f} fiscalFetching onPrint={() => {}} onNewOrder={() => {}} />,
+    );
+
+  it("says the code is on its way instead of printing a footer-less, non-fiscal-looking copy", () => {
+    const html = renderFetching(null);
+    expect(html).toContain("Fetching fiscal code…");
+    expect(html).not.toContain("<img");
+    // Only the footer differs from the pre-ETA receipt.
+    expect(withoutFooter(html)).toBe(baseline);
+  });
+
+  it("gives way to the real footer the moment the record arrives", () => {
+    const html = renderFetching(fiscal());
+    expect(html).not.toContain("Fetching fiscal code");
+    expect(html).toContain(`src="${QR}"`);
+  });
+
+  it("is off by default — a non-EG receipt never shows it", () => {
+    expect(render(null)).not.toContain("Fetching fiscal code");
+  });
+});
+
+describe("the QR image source", () => {
+  it("renders only a PNG data URL — anything else falls back to the pending line", () => {
+    for (const src of ["https://evil.example/qr.png", "javascript:alert(1)", "data:image/svg+xml;base64,PHN2Zz4=", "data:text/html,hi"]) {
+      const html = render(fiscal({ qrImageDataUrl: src }));
+      expect(html, src).not.toContain("<img");
+      expect(html, src).toContain("Fiscal receipt pending");
+    }
+    expect(render(fiscal())).toContain(`src="${QR}"`);
+  });
+});

@@ -100,6 +100,9 @@ export function startSaleFiscalPoll(
     fetchStatus?: (orderId: string) => Promise<SaleFiscalStatus | null>;
     intervalMs?: number;
     maxMs?: number;
+    /** Called once, when the FIRST read has settled (whatever it returned) and
+     *  the poll was not cancelled — what lets a receipt stop saying "fetching". */
+    onFirstPoll?: () => void;
   } = {},
 ): () => void {
   const fetchStatus = opts.fetchStatus ?? fetchSaleFiscal;
@@ -110,6 +113,7 @@ export function startSaleFiscalPoll(
   let cancelled = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let last: SaleFiscalStatus | null = null;
+  let first = true;
 
   async function tick(): Promise<void> {
     let next: SaleFiscalStatus | null = null;
@@ -126,6 +130,10 @@ export function startSaleFiscalPoll(
     if (next !== null && !sameFiscal(last, next)) {
       last = next;
       onFiscal(next);
+    }
+    if (first) {
+      first = false;
+      opts.onFirstPoll?.();
     }
     if (isFiscalPollDone(last)) return;
     // Schedule only while the next attempt still lands inside the window, so
@@ -149,15 +157,75 @@ export function startSaleFiscalPoll(
  *
  * The result is keyed by the order it was fetched for, so a footer can never be
  * carried from one receipt onto the next — and so nothing has to be reset in an
- * effect on the way in.
+ * effect on the way in. `fetching` is true from the moment an order id is set
+ * until its first read settles (and only while nothing is known yet) — the
+ * caller ANDs it with the tenant's fiscal flag before showing anything.
  */
-export function useSaleFiscal(orderId: string | null): SaleFiscalStatus | null {
+export function useSaleFiscal(orderId: string | null): { fiscal: SaleFiscalStatus | null; fetching: boolean } {
   const [state, setState] = useState<{ orderId: string; fiscal: SaleFiscalStatus } | null>(null);
+  // The order whose FIRST read has settled. Keyed like `state`, for the same
+  // reason: a new order id is "still fetching" without a reset effect.
+  const [polledOrderId, setPolledOrderId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!orderId) return;
-    return startSaleFiscalPoll(orderId, (fiscal) => setState({ orderId, fiscal }));
+    return startSaleFiscalPoll(orderId, (fiscal) => setState({ orderId, fiscal }), {
+      onFirstPoll: () => setPolledOrderId(orderId),
+    });
   }, [orderId]);
 
-  return state !== null && state.orderId === orderId ? state.fiscal : null;
+  const fiscal = state !== null && state.orderId === orderId ? state.fiscal : null;
+  return { fiscal, fetching: orderId !== null && fiscal === null && polledOrderId !== orderId };
+}
+
+/**
+ * Whether this till's tenant files with ETA (country EG AND activation
+ * `active`), as cached by the last catalog sync. `false` until main answers and
+ * whenever the read fails — every fiscal affordance (the B2B buyer section, the
+ * "fetching fiscal code" line) stays hidden rather than guessing "on".
+ */
+export function useFiscalEnabled(): boolean {
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => {
+    let live = true;
+    window.pos.fiscalEnabled().then(
+      (v) => { if (live) setEnabled(v === true); },
+      () => { /* stays false */ },
+    );
+    return () => { live = false; };
+  }, []);
+  return enabled;
+}
+
+/**
+ * A one-shot fiscal read (the reprint slip's) KEYED by the order it was asked
+ * for, so a slow answer for sale A can never land on sale B's slip — the race
+ * an unkeyed `useState<SaleFiscalStatus | null>` had when the cashier closed
+ * one reprint and opened another before the first read came back.
+ */
+export type KeyedFiscalRead = { orderId: string; fiscal: SaleFiscalStatus | null; settled: boolean };
+
+/** The state to hold while `orderId`'s read is in flight. */
+export function startKeyedFiscalRead(orderId: string): KeyedFiscalRead {
+  return { orderId, fiscal: null, settled: false };
+}
+
+/** Applies a finished read — or DROPS it when the state has since moved on to
+ *  another order or been cleared (the slip was closed). */
+export function settleKeyedFiscalRead(
+  prev: KeyedFiscalRead | null,
+  orderId: string,
+  fiscal: SaleFiscalStatus | null,
+): KeyedFiscalRead | null {
+  if (prev === null || prev.orderId !== orderId) return prev;
+  return { orderId, fiscal, settled: true };
+}
+
+/** What the slip for `orderId` may show: nothing from another order's read. */
+export function keyedFiscalFor(
+  state: KeyedFiscalRead | null,
+  orderId: string | null,
+): { fiscal: SaleFiscalStatus | null; fetching: boolean } {
+  if (state === null || orderId === null || state.orderId !== orderId) return { fiscal: null, fetching: false };
+  return { fiscal: state.fiscal, fetching: !state.settled };
 }

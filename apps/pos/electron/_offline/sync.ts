@@ -46,9 +46,18 @@ export type CatalogSnapshot = {
    *  rides the same response pricing does (Part B fold-in fix) since it needs
    *  the same reconnect/periodic cadence and the client already caches it. */
   shiftPolicy: unknown;
+  /** Whether this tenant files with ETA (country EG AND activation `active`) —
+   *  the server's `isFiscalEnabled`. Rides the catalog pull for the same reason
+   *  shiftPolicy does: it needs the reconnect/periodic cadence and must survive
+   *  an outage. Absent on an older server, which reads as `false` (the B2B
+   *  section stays hidden), never as "on". */
+  fiscalEnabled?: boolean;
   catalogVersion: number;
   syncedAt: string;
 };
+
+/** `local_state` key holding the last-synced `CatalogSnapshot.fiscalEnabled`. */
+export const FISCAL_ENABLED_KEY = "fiscal_enabled";
 
 /**
  * The four calls the engine makes. Injected rather than constructed so the
@@ -250,6 +259,8 @@ export class SyncEngine {
     this.store.saveCatalog(
       JSON.stringify(c.menu), JSON.stringify(c.pricing), JSON.stringify(c.shiftPolicy), c.catalogVersion, c.syncedAt,
     );
+    // Strictly `true`: an older server that omits the field turns fiscal UI off.
+    this.store.setState(FISCAL_ENABLED_KEY, c.fiscalEnabled === true);
     await this.pullRoster();
   }
 
