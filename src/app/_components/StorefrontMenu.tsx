@@ -5,6 +5,7 @@ import {
   addLine,
   loadCart,
   setLineQuantity,
+  clearCart,
   cartSubtotal,
   getSimpleProductQuantity,
   updateSimpleProductQuantity,
@@ -167,6 +168,10 @@ export function StorefrontMenu({
             open={drawerOpen}
             onOpenChange={setDrawerOpen}
             onSetQuantity={(i, q) => setCart(setLineQuantity(i, q))}
+            onClear={() => {
+              clearCart();
+              setCart({ branchId: null, lines: [] });
+            }}
           />
         </>
       )}

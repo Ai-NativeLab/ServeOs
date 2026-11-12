@@ -5,6 +5,7 @@ import {
   addLine,
   loadCart,
   setLineQuantity,
+  clearCart,
   cartSubtotal,
   getSimpleProductQuantity,
   updateSimpleProductQuantity,
@@ -166,6 +167,10 @@ export function ShopBrowser({
             open={drawerOpen}
             onOpenChange={setDrawerOpen}
             onSetQuantity={(i, q) => setCart(setLineQuantity(i, q))}
+            onClear={() => {
+              clearCart();
+              setCart({ branchId: null, lines: [] });
+            }}
           />
         </>
       )}
