@@ -55,16 +55,22 @@ jobs:
       # Pulls the project's Preview env vars so the build sees the same
       # configuration Vercel's own builder would have used.
       - name: Pull Vercel environment
-        run: vercel pull --yes --environment=preview --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: vercel pull --yes --environment=preview --token="$VERCEL_TOKEN"
 
       - name: Build
-        run: vercel build --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: vercel build --token="$VERCEL_TOKEN"
 
       - name: Deploy prebuilt
         id: deploy
         timeout-minutes: 10
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
-          url=$(vercel deploy --prebuilt --yes --archive=tgz --token=${{ secrets.VERCEL_TOKEN }})
+          url=$(vercel deploy --prebuilt --yes --archive=tgz --token="$VERCEL_TOKEN")
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "Preview: $url" >> "$GITHUB_STEP_SUMMARY"
 
@@ -117,7 +123,9 @@ jobs:
       # so it needs the real production env — which is what `vercel pull`
       # fetches, apart from DATABASE_URL (next step).
       - name: Pull Vercel environment
-        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
 
       # Migrations get DATABASE_URL from a GitHub secret instead of the pulled
       # file, after checking it is on the same host as the Vercel project's
@@ -131,16 +139,19 @@ jobs:
       - name: Build
         id: build
         env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
-        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+        run: vercel build --prod --token="$VERCEL_TOKEN"
 
       - name: Deploy prebuilt to production
         id: deploy
         # Uploads take seconds; a deploy stuck in Vercel's queue should fail
         # loudly here rather than run out the job clock.
         timeout-minutes: 10
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
-          url=$(vercel deploy --prebuilt --prod --yes --archive=tgz --token=${{ secrets.VERCEL_TOKEN }})
+          url=$(vercel deploy --prebuilt --prod --yes --archive=tgz --token="$VERCEL_TOKEN")
           echo "Production: $url" >> "$GITHUB_STEP_SUMMARY"
 
       # The build ran release-migrate, so the schema is already migrated; if
@@ -182,7 +193,9 @@ jobs:
       - run: npm i -g vercel@65.5.0
 
       - name: Pull Vercel environment
-        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
 
       # Same swap and check as the production job.
       - name: Swap in the DATABASE_URL secret (checked against Vercel's)
@@ -193,16 +206,19 @@ jobs:
       - name: Build
         id: build
         env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           DATABASE_URL: ${{ secrets.QA_DATABASE_URL }}
-        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+        run: vercel build --prod --token="$VERCEL_TOKEN"
 
       - name: Deploy prebuilt to QA
         id: deploy
         # Uploads take seconds; a deploy stuck in Vercel's queue should fail
         # loudly here rather than run out the job clock.
         timeout-minutes: 10
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
-          url=$(vercel deploy --prebuilt --prod --yes --archive=tgz --token=${{ secrets.VERCEL_TOKEN }})
+          url=$(vercel deploy --prebuilt --prod --yes --archive=tgz --token="$VERCEL_TOKEN")
           echo "QA: $url" >> "$GITHUB_STEP_SUMMARY"
 
       # The build ran release-migrate, so the schema is already migrated; if
