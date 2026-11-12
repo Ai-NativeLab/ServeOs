@@ -17,18 +17,20 @@
 
 ## Users & Roles
 
-- **Platform Admin**: ServeOS operator who approves tenants, manages billing, and audits the system.
+- **Platform Admin (super admin)**: ServeOS operator. Approves or rejects tenant applications, suspends and reactivates tenants, confirms or rejects subscription invoice payments, and views platform revenue.
 - **Owner**: Tenant business owner — full control over their tenant.
-- **Manager**: Tenant staff with elevated permissions (can authorize voids, manage inventory).
-- **Staff/Cashier**: Tenant employee operating the POS or managing day-to-day operations.
+- **Manager**: Tenant staff with everything an owner has except tenant settings, plan changes, billing and prescription review. Can approve POS discounts and refunds, reconcile drawers, and manage inventory, purchasing and suppliers.
+- **Staff**: Tenant employee who sells at the POS, handles orders, views inventory and takes stock counts.
+- **Pharmacist**: Licensed reviewer in a pharmacy tenant: shop-floor permissions plus prescription review, and nothing administrative.
+- **Cashier**: Not a separate role — any staff user signed in at the POS with the right to sell.
 - **Customer**: End consumer who places orders through the storefront or WhatsApp.
 
 ## Subscription & Billing
 
-- **Plan**: Subscription tier (Basic, Pro, Enterprise) with resource limits and feature entitlements.
+- **Plan**: Subscription tier with resource limits and feature entitlements. Four plans, priced in EGP per month: Free (0), Starter (499), Growth (699), Professional (1099).
 - **Subscription**: A tenant's active plan instance with billing period and status.
-- **Entitlement**: A feature or limit gate derived from the tenant's plan (e.g. max branches, max products, advanced_analytics).
-- **Invoice**: A billing record for manual payment verification (proof upload → admin confirms/rejects).
+- **Entitlement**: A feature or limit gate derived from the tenant's plan. Limits: branches, staff, products, WhatsApp numbers, orders per month, messages per month. Features: WhatsApp, custom domain, custom theme, advanced analytics, online ordering (and a reservations flag that is off on every plan).
+- **Invoice**: A subscription billing record paid manually: the tenant submits payment proof, then a platform admin confirms it (paid) or rejects it (void).
 
 ## Catalog & Products
 
@@ -38,7 +40,7 @@
 - **Modifier Option**: A choice within a modifier group (e.g. "Large +35 EGP"). Has a price delta.
 - **Category**: A classification for organizing products in the catalog (e.g. "Pizza", "Hinges").
 - **Unit of Measure (UoM)**: How a product is measured/priced — each, g, kg, ml, l, m, m², bf (board feet). Platform-wide enumeration covering both sellable and stockable units.
-- **Catalog Version**: Monotonic integer per tenant that increments on any catalog/pricing change. Used for cache invalidation.
+- **Catalog Version**: A per-tenant counter bumped by catalog and pricing changes. The POS caches it with its offline catalog and sends it with replayed sales, so price drift can be detected.
 
 ## Ordering
 
@@ -46,24 +48,24 @@
 - **Order Channel**: Where the order originated — web (storefront), pos (counter POS), or whatsapp.
 - **Fulfillment Type**: How the order is fulfilled — pickup or delivery.
 - **Order Status**: Lifecycle states — pending → confirmed → preparing → ready → out_for_delivery → completed (or rejected/cancelled).
-- **Payment Status**: Payment lifecycle — unpaid → pending_verification → partially_paid → paid → refunded/partially_refunded.
+- **Payment Status**: unpaid, pending_verification (a non-cash online payment awaiting staff confirmation), partially_paid, paid, partially_refunded, refunded.
 - **Status Token**: A unique opaque token per order used for anonymous order tracking URLs.
 
 ## Point of Sale (POS)
 
 - **Device**: A physical POS terminal (Electron desktop app) paired with a specific tenant and branch.
-- **Pairing Code**: A temporary 6-digit code used to authorize a new POS device. Expires in 24 hours.
-- **Cashier Session**: A login session on a POS device. Uses a hashed bearer token, not a web session cookie.
+- **Pairing Code**: An 8-character, single-use code minted in the dashboard to pair a new POS device. Expires 10 minutes after it is created.
+- **Cashier Session**: A staff user's sign-in on a paired POS device, by email and password. Lasts 12 hours and uses its own token (stored hashed), not the web session cookie.
 - **Shift**: A cash drawer session — opened with a float, receives sales, can have cash movements, closed with a count.
 - **Opening Float**: The amount of cash placed in the drawer when a shift opens.
 - **Cash Count**: A physical count of cash in the drawer — can be opening, closing, or mid-shift. Records denominations and calculates variance.
 - **Cash Movement**: Non-sale cash in/out of the drawer — pay-in (adding change), pay-out (expenses), safe-drop (removing excess), no-sale (drawer pop without a transaction).
 - **Tender**: A payment against an order — cash, card, or other. Supports split payments, tips, and change calculation.
-- **Held Ticket**: A parked cart draft stored on the server — allows a cashier to pause an order and resume it on any register.
+- **Held Ticket**: A parked cart draft stored on the server — lets a cashier pause an order and resume it on any register in the same branch.
 - **X Report**: Mid-shift sales summary — non-resetting, can be pulled multiple times.
 - **Z Report**: End-of-shift summary — pulled when closing a shift, tied to the cash count.
 - **Adjustment Event**: An append-only record of a void or discount (line void, order void, line discount, order discount) with who did it and who authorized it.
-- **Manager Override / Grant**: A single-use authorization token from a manager to approve a privileged POS action (void, custom discount).
+- **Manager Override / Grant**: A single-use token, valid for 2 minutes, issued when a manager signs in at the till to approve a privileged action for a cashier (e.g. a discount, a refund, an over-threshold pay-out or closing another cashier's drawer).
 - **Receipt**: The idempotency map between a device's client-side order UUID and the server-created order — prevents duplicate sales.
 
 ## Inventory & Stock
@@ -76,12 +78,12 @@
 - **Recipe / BOM**: A Bill of Materials — defines the ingredient items and quantities consumed when a product is sold. Used in restaurants.
 - **Product Inventory Link**: The binding between a sellable product and its inventory behavior — either recipe (deduct ingredients) or finished_good (deduct the item directly).
 - **Stock Count**: A physical inventory count session — opened, lines are counted, then committed (adjusting ledger to reality).
-- **Reorder Rule**: Per-item per-location reorder point and quantity — triggers low-stock alerts.
+- **Reorder Rule**: Per-item, per-location reorder point and quantity. The reorder check raises low-stock alerts and pre-fills draft purchase orders from it.
 
 ## Purchasing
 
 - **Supplier**: A vendor from whom the tenant buys inventory.
-- **Purchase Order (PO)**: A request to a supplier for inventory items — lifecycle: draft → sent → partially_received → received → closed.
+- **Purchase Order (PO)**: A request to a supplier for inventory items — lifecycle: draft → sent → partially_received → received → closed, or cancelled from draft/sent.
 - **PO Line**: A line item on a purchase order — item, quantity ordered, unit cost, UoM.
 - **Receiving**: The act of accepting delivered goods against a PO — creates inventory lots and stock ledger entries.
 
@@ -110,15 +112,15 @@
 
 ## Prescriptions (Pharmacy Vertical)
 
-- **Prescription**: An uploaded prescription image for pharmacy orders. Goes through: pending → approved/rejected by the pharmacist.
+- **Prescription**: An uploaded prescription image required before ordering prescription-only items. Goes pending → approved or rejected by a user with prescription-review rights (pharmacist or owner).
 
 ## WhatsApp Commerce
 
 - **WhatsApp Account**: A connected WhatsApp Business phone number for a tenant.
-- **WhatsApp Conversation**: A stateful ordering session with a customer over WhatsApp — tracks cart, branch selection, and conversation state.
-- **Cart Handoff Token**: A short-lived token to transfer a WhatsApp cart to the web checkout.
+- **WhatsApp Conversation**: A stateful ordering session with a customer over WhatsApp — tracks cart, branch and step (idle, branch, categories, products, variant, cart, fulfillment, contact, confirm, placed).
+- **Cart Handoff Token**: A single-use token (60 minutes) that carries a WhatsApp cart into the storefront when the chat cannot finish the order — delivery orders and products with required modifiers.
 
-## Fiscal Compliance
+## Fiscal Compliance (planned — not implemented)
 
-- **ETA (Egyptian Tax Authority)**: Egypt's e-invoicing mandate — POS + online sales submit to ETA, receipts carry UUID + QR code.
-- **ZATCA**: Saudi Arabia's e-invoicing authority — Phase 2 compliance specified for expansion.
+- **ETA (Egyptian Tax Authority)**: Egypt's e-invoicing / e-receipt mandate. In scope as Spec 11 (roadmap decision D8); no ETA integration exists in the code yet.
+- **ZATCA**: Saudi Arabia's e-invoicing authority. A high-level PRD exists (`docs/prds/prd-high-zatca-einvoicing.md`); nothing is implemented.

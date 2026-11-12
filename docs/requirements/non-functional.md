@@ -1,160 +1,107 @@
-# Non-Functional Requirements (NFRs)
+# Non-Functional Requirements
 
-This document specifies the architectural qualities, constraints, and non-functional guarantees of the ServeOS platform. It is designed to guide engineering decisions and set clear expectations for system behavior.
-
----
-
-## 1. Performance & Latency Budgets
-
-ServeOS serves three distinct interfaces: Web Storefront, Merchant Dashboard, and POS Desktop App. Each has distinct performance requirements.
-
-### Web Storefront & PWA (Next.js 16)
-- **Time to First Byte (TTFB)**: P95 < 200ms
-- **Largest Contentful Paint (LCP)**: P95 < 1.5s
-- **Architecture**: Next.js App Router with Server-Side Rendering (SSR) and edge caching via CDN. Breaking changes from earlier Next.js versions are adopted to optimize route segments.
-
-### Merchant Dashboard
-- **Page Load**: P95 < 500ms
-- **Mutation Latency**: P95 < 300ms for Server Actions.
-- **Architecture**: Optimistic UI updates where possible to mask network latency.
-
-### POS API (`/api/pos/v1/*`)
-- **Transaction Speed**: P99 response time < 100ms for sales recording and tender processing.
-- **Critical Path**: High-frequency endpoints avoid large payloads and complex aggregations.
-
-### Database Query Constraints
-- **Zero Table Scans**: No full table scans allowed on high-frequency paths.
-- **Tenant Scoping**: All queries must be strictly scoped by the `tenant_id` index.
-- **Connection Management**: Connection pooling is mandatory, utilizing PgBouncer or Supabase AWS poolers to maintain low overhead per query.
-
-### POS Offline Tolerance
-> [!IMPORTANT]
-> The POS must function during network outages to ensure uninterrupted sales.
-
-- **Local Caching**: Local SQLite cache maintains product catalogs, pricing, and active shift state.
-- **Batch Synchronization**: Offline events (sales, tenders, cash movements) are queued and pushed via batch ingestion APIs (up to 50 events/batch) upon network recovery.
+Architectural qualities and the mechanisms that deliver them. Items marked **target** are goals, not measured results; nothing in the repo currently measures them.
 
 ---
 
-## 2. Security & Data Isolation
+## 1. Performance (targets)
 
-As a multi-tenant SaaS platform, strict isolation and security boundaries are paramount.
+| Surface | Target |
+| :--- | :--- |
+| Storefront | TTFB p95 < 200 ms, LCP p95 < 1.5 s |
+| Dashboard | page load p95 < 500 ms, Server Action p95 < 300 ms |
+| POS sale / tender routes | p99 < 100 ms server time |
 
-### Database Multi-Tenancy
-- **Row-Level Security (RLS)**: Enforced via `FORCE ROW LEVEL SECURITY` on all tenant-scoped tables in PostgreSQL.
-- **Transaction Wrapper**: The `withTenant()` utility ensures `SET LOCAL app.tenant_id` is applied to every transaction, eliminating accidental cross-tenant data leaks.
+These are targets only: there is no load test, RUM or latency SLO monitoring in the codebase.
 
-### Role Privilege Enforcement
-- **Database Role**: The application connects using the `serveos_app` role.
-- **Privileges**: Configured with `NOSUPERUSER NOBYPASSRLS` to guarantee RLS policies are always evaluated.
+Mechanisms that exist:
+- The app uses a single lazily created `pg` pool per server instance (`src/db/client.ts`); in production it connects through the Supabase transaction pooler (port 6543 — see `docs/references/environments.md`).
+- `GET /api/health` never touches the database, so a liveness probe stays cheap.
 
-### Authentication Mechanisms
+### POS offline tolerance
+The till keeps working through a network outage:
+- **Local store:** a `better-sqlite3` database in the Electron main process (`apps/pos/electron/_offline/`) caches the catalog, pricing, shift policy and the sign-in roster, and records every action as an event.
+- **Replay:** queued events are sent in batches of at most **50** to `POST /api/pos/v1/sync/events`. Each event is idempotent on its `eventId` (`pos_sync_event_receipts`); replayed sales never fail for stock or price drift — drift is recorded in the audit chain instead.
 
-| Interface | Mechanism | Details |
+---
+
+## 2. Security & data isolation
+
+### Row-Level Security
+- 52 tenant tables have `ENABLE` **and** `FORCE ROW LEVEL SECURITY` with an isolation policy on `app.tenant_id`; 20 control-plane tables (tenants, users/sessions/roles, plans/subscriptions/invoices, POS device and session plumbing, idempotency receipts, email events, enquiries, `whatsapp_accounts`, `audit_logs`) have no RLS. Full list: [tables.md](../database/tables.md).
+- `withTenant(tenantId, fn)` (`src/db/with-tenant.ts`) runs `fn` in a transaction after `SELECT set_config('app.tenant_id', $1, true)`. Outside it, RLS tables return nothing.
+
+### Database roles
+RLS only binds a role that is not a superuser and lacks `BYPASSRLS`. A superuser **bypasses** RLS and sees every tenant's rows.
+- **Production / QA:** the app and build-time migrations use the `app` role (`NOBYPASSRLS`); only the backup/restore workflows use `postgres` (`BYPASSRLS`). See `docs/references/environments.md`.
+- **CI:** tests run as `serveos_ci`, created `NOSUPERUSER NOBYPASSRLS` by `scripts/ci-db-bootstrap.sql`.
+- **Local:** `serveos_app`, created `NOSUPERUSER NOBYPASSRLS` per `docs/NEW-LAPTOP-SETUP.md`.
+
+### Authentication
+
+| Interface | Mechanism |
+| :--- | :--- |
+| Dashboard and admin console | `serveos_session` cookie (httpOnly, `SameSite=Lax`) holding an opaque random token that is the primary key of a `sessions` row. Not a JWT. Admin pages additionally require the `super_admin` role. |
+| Storefront customers | `serveos_customer` cookie; 30-day customer sessions, validated against the storefront's tenant. |
+| POS | Device bearer token from pairing (64 hex chars) + `X-POS-Cashier` token (12 h, stored hashed in `pos_cashier_sessions`). Manager grants: single-use, 2 minutes, stored hashed in `pos_grants`. |
+| WhatsApp webhook | HMAC SHA-256 over the raw body (`x-hub-signature-256`). |
+| Resend webhook | Svix signature (`svix-id`, `svix-timestamp`, `svix-signature`). |
+| Notifications worker | `Authorization: Bearer $CRON_SECRET`. |
+
+Passwords (staff and customers) are hashed with **scrypt** (`src/server/auth/password.ts`).
+
+### Audit trail
+- `audit_events` is a per-tenant hash chain: `entry_hash = sha256(canonical(prev_hash, seq, tenant_id, actor_user_id, action, entity_type, entity_id, metadata, created_at))` (`src/server/audit/canonical.ts`). The head (`seq`, `head_hash`) lives in `audit_chain_heads`.
+- A database trigger (`audit_events_no_mutate`, migration `0018`) rejects UPDATE and DELETE on `audit_events`.
+- `GET /api/audit/chain/status` re-verifies the chain for a tenant.
+- `src/server/audit/coverage.ts` lists the service files whose mutating functions must each emit an audit event; a guardrail test scans them. Some sensitive reads are audited too (e.g. the POS roster pull).
+
+---
+
+## 3. Concurrency control
+
+| Concern | Mechanism | Where |
 | :--- | :--- | :--- |
-| **Dashboard/Admin** | Session Cookies | `serveos_session` & `serveos_admin_session` (HttpOnly, Secure, SameSite). |
-| **POS Register** | Tokens | Long-lived device Bearer tokens + short-lived hashed cashier session tokens (`pos_cashier_sessions`). |
-| **Web Storefront** | Cookies | Ephemeral or authenticated customer session cookies (`CUSTOMER_COOKIE`). |
-| **WhatsApp** | HMAC Webhooks | SHA-256 signature verification (`x-hub-signature-256`). |
-| **Email Webhooks** | Svix Signatures | Verification using `svix-id`, `svix-timestamp`, and `svix-signature`. |
-
-### Cryptographic Audit Trail
-> [!WARNING]
-> Audit logs are highly sensitive and must be immutable.
-
-- **Append-Only Ledger**: The `audit_events` table is an append-only hash-chained ledger.
-- **Chaining Function**: `entry_hash = sha256(canonical(prev_hash, seq, tenant, actor, action, metadata))`
-- **Tamper Detection**: Database triggers prevent updates or deletes to existing audit records.
-
-### Password Hashing
-- **Algorithm**: Secure bcrypt/scrypt hashing for all staff and customer credentials.
-- **Super-Admin**: 192-bit generated passwords, periodically rotated.
+| Order numbers (per-tenant `max + 1`) | `pg_advisory_xact_lock(hashtext(tenant_id))` | `placeOrder`, `src/server/ordering/service.ts` |
+| Audit chain head | the **same** per-tenant advisory lock (one lock order avoids deadlock); correctness rests on the unique `(tenant_id, seq)` index | `recordAuditEvent`, `src/server/audit/service.ts` |
+| Purchase orders | `SELECT … FOR UPDATE` on the PO header before every status guard | `src/server/purchasing/service.ts`, `send.ts`, `variance.ts`, `receiving.ts` |
+| Reorder sweep | `FOR UPDATE` on the `reorder_rules` rows it may stamp (no advisory key — see `src/server/purchasing/locking.ts`) | `src/server/purchasing/reorder.ts` |
+| Held tickets | advisory lock per `(device, clientTicketId)` | `src/server/pos/held-tickets.ts` |
+| One open shift per device | partial unique index `pos_shifts_device_open` on `device_id WHERE status = 'open'` | `src/server/pos/shift-schema.ts` |
+| Order status changes | guarded `UPDATE … WHERE status = <expected>` | `transitionStatus`, `src/server/ordering/service.ts` |
 
 ---
 
-## 3. Scalability & Concurrency Control
+## 4. Reliability & recovery
 
-ServeOS must support thousands of isolated tenants with minimal connection footprint.
-
-### Concurrency & Lock Management
-
-> [!CAUTION]
-> Avoid deadlocks by acquiring locks in a consistent order and minimizing lock duration.
-
-| Domain | Lock Mechanism | Purpose |
-| :--- | :--- | :--- |
-| **Order Numbers** | `pg_advisory_xact_lock(hashtext(tenant_id))` | Guarantees gapless, monotonic sequence generation per tenant without locking entire tables. |
-| **Audit Chain Head** | Row-level Lock (`FOR UPDATE`) | Tenant-scoped transaction locks on `audit_chain_heads` for strictly serialized hash sequencing. |
-| **Inventory FIFO Lots**| Row-level Lock (`FOR UPDATE`) | Prevents race conditions and inventory overselling during recipe deduction. |
-| **Cash Shifts** | Partial Unique Index | `unique(device_id) WHERE status = 'open'` ensures at most one active shift per physical cash drawer. |
+- **Hosting:** Vercel (two projects: `serve-os` for production from `main`, `serve-os-qa` from `qa`); Supabase Postgres in Frankfurt (separate prod and QA projects).
+- **Migrations on deploy:** `vercel-build` runs `scripts/release-migrate.ts` before `next build` when `VERCEL_ENV=production`; a failed migration fails the build, so the new deployment never serves traffic. Preview builds skip it.
+- **Deploy verification:** `.github/workflows/deploy-watch.yml` runs on every push to `main`/`qa` and fails if the push never becomes a deployment, never reaches READY, or never serves the pushed SHA on the domain (via `/api/health`).
+- **Backups:** `.github/workflows/db-backup.yml` takes a nightly `pg_dump --format=custom` of prod and QA at 03:00 UTC to Cloudflare R2 (`serveos-backups`; daily kept 14 days, weekly 90 days). Media in Supabase Storage is **not** backed up (known gap).
+- **Recovery:** nightly dumps bound data loss to roughly a day. The restore runbook and the quarterly restore drill (`db-restore-drill.yml`) are in `docs/references/backup-restore.md`. No RTO is defined.
 
 ---
 
-## 4. Reliability, Availability & Disaster Recovery
+## 5. Compliance
 
-### High Availability
-- **Compute**: Hosted on Vercel Edge/Serverless environments.
-- **Database**: Supabase High-Availability (HA) Postgres clusters.
-
-### Automated Backups
-- **Schedule**: Nightly automated `pg_dump` of both production and QA databases at 03:00 UTC.
-- **Storage**: Encrypted and uploaded to Cloudflare R2 via GitHub Actions (`.github/workflows/db-backup.yml`).
-
-### Disaster Recovery
-- **Recovery Point Objective (RPO)**: < 24 hours.
-- **Recovery Time Objective (RTO)**: < 1 hour.
-- **Validation**: Regular, documented restore drills (`docs/references/backup-restore.md`).
-
-### Zero-Downtime Migration Safety
-> [!NOTE]
-> Database schema migrations are integrated into the deployment pipeline to prevent drift.
-
-- **Process**: `scripts/release-migrate.ts` executes Drizzle ORM migrations during the `vercel-build` phase.
-- **Safety**: Migration failures abort the deployment *before* traffic switch, preventing application/database schema mismatches.
+- **Egyptian Tax Authority (ETA) e-invoicing / e-receipts — planned, not implemented.** In scope as Spec 11 (roadmap decision D8). There is no ETA client, signing, QR generation or tax-code mapping in the code today.
+- **Saudi ZATCA — planned, not implemented.** Only a high-level PRD exists (`docs/prds/prd-high-zatca-einvoicing.md`).
+- **Audit coverage** (roadmap D1) is implemented as described in §2.
 
 ---
 
-## 5. Compliance & Regional Regulations
+## 6. Internationalization
 
-ServeOS targets merchants in the MENA region, necessitating strict adherence to local tax and data regulations.
-
-### Egyptian Tax Authority (ETA)
-- **E-Invoicing & E-Receipts**: Compliant with Spec 11 / Decision D8.
-- **Integration**: Real-time integration with ETA APIs.
-- **Receipts**: Generation of signed QR codes.
-- **Classification**: EGS/GS1 tax classification mappings.
-
-### Saudi Arabia ZATCA
-- **Phase 2 (PRD-003)**: Compliant cryptographic invoice stamping.
-- **Onboarding**: CSID (Cryptographic Stamp Identifier) generation and management.
-- **Format**: UBL 2.1 XML generation for reporting and clearance.
-
-### Data Protection
-- **Audit Logging**: Mandatory logging of all sensitive PII (Personally Identifiable Information) reads and data export actions by staff.
+- English and Arabic copy throughout; catalog data has separate `*_en` / `*_ar` columns.
+- **Marketing site:** Arabic is the default locale and keeps the bare `/` URL; English is under `/en` (`src/marketing-locale.ts`). The proxy sets the `x-locale` request header for marketing pages only, and the root layout uses it for `lang`/`dir`.
+- **Tenants:** each tenant has a `default_locale` column (default `ar`).
+- **Currency:** each tenant has a `currency` (default `EGP`); plan prices are in EGP.
+- **Units:** inventory and dimensional products use the `unit_of_measure` enum (`each`, `g`, `kg`, `ml`, `l`, `m`, `m2`, `bf`) with fractional `numeric` quantities; sellable order-line quantities are integers.
 
 ---
 
-## 6. Internationalization & Localization (i18n / l10n)
+## 7. Observability
 
-### Bilingual Support
-- **Locales**: Native Arabic (`ar`) as default, and English (`en`).
-- **Scope**: Storefronts, merchant dashboard, and marketing pages.
-
-### Bi-directional Typography
-- **Layout**: Dynamic RTL (Right-to-Left) and LTR (Left-to-Right) document layout rendering based on the `x-locale` request header or user preference.
-
-### Currencies & Number Formatting
-- **Currencies**: Native formatting for Egyptian Pound (`EGP`) and Saudi Riyal (`SAR`).
-- **Measurements**: Standard fractional units with explicit Units of Measure (`unit_of_measure`) for inventory and recipe precision.
-
----
-
-## 7. Observability & Health Checks
-
-### Health Probes
-- **Endpoint**: `/api/health` canary endpoint.
-- **Characteristics**: Lightweight, zero-DB dependency to isolate compute health from database health.
-
-### In-App Operational Notifications
-- **Alert Queue**: Real-time staff notifications for critical operational events.
-- **Event Types**: Cash shift variances, stock depletion warnings, and Purchase Order (PO) status changes.
+- `GET /api/health` — DB-free liveness probe returning the deployed SHA.
+- In-app notifications for operational events (`low_stock`, `reorder_suggested`, `po_sent`, `po_received`, `shift_variance`, `reconciliation_exception`, `refund_issued`, `system_alert`), plus email through the outbox.
+- There is no APM, structured logging or metrics pipeline; errors go to `console.error` (Vercel logs).
