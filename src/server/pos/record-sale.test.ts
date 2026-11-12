@@ -351,6 +351,20 @@ describe("addTender", () => {
     expect(orderRow.paymentStatus).toBe("pending_verification");
   });
 
+  it("validates the tender payload before the pending_verification refusal (#183 x #187)", async () => {
+    const { ctx, sale } = await pendingVerificationSale("top-9");
+
+    const refusal = addTender(ctx, sale.orderId, {
+      clientPaymentId: "p-2", method: "card", amount: JSON.parse("1e999") as number,
+    });
+    await expect(refusal).rejects.toBeInstanceOf(PosSaleError);
+    await expect(refusal).rejects.not.toBeInstanceOf(PaymentNeedsVerificationError);
+
+    const [orderRow] = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(orders).where(eq(orders.id, sale.orderId)).limit(1));
+    expect(orderRow.paymentStatus).toBe("pending_verification");
+  });
+
   it("the tender route answers 422 payment_needs_verification, telling the cashier where to resolve it", async () => {
     const { sale, deviceToken, cashierToken } = await pendingVerificationSale("top-8");
     const { POST } = await import("@/app/api/pos/v1/sales/[id]/payments/route");
