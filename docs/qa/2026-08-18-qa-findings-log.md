@@ -2,7 +2,7 @@
 
 **Execution Date:** 2026-08-18  
 **Tester:**  
-**Environment:** Local Dev (`serveos.localhost:3000`) / QA Staging (`qa.serveos.tech`)  
+**Environment:** Local Dev only (`serveos.localhost:3000`), seeded with `npm run db:seed` (tenant `roma`) and `npm run demo:seed` (the `demo-*` tenants). Every repro below is against local dev; QA Staging (`qa.serveos.tech`) was not part of this run.  
 **Branch:** `docs/142-qa-user-journeys`  
 **Reference Document:** [Master User Journeys and Test Scenarios](2026-08-18-user-journeys-and-test-scenarios.md)  
 **Related Issue:** [#142](https://github.com/Ai-NativeLab/ServeOs/issues/142)
@@ -29,12 +29,12 @@
 - 🟩 **PASS** — Feature behaves as expected.
 - 🟥 **FAIL** — Bug found (logged in Section 3).
 - 🟨 **BLOCKED** — Cannot test due to environment or dependency issue.
-- ⬜ **NOT TESTED** — Pending execution.
+- ⬜ **NOT TESTED** — Pending execution. *(code-inspected)* means the code was read but no result was observed in the running app.
 
 | Scenario ID | Surface | Scenario Title | Status | Bug ID / Notes |
 |---|---|---|---|---|
 | **`TC-AUTH-001`** | Dashboard (`app.*`) | Tenant Registration & Validations | 🟩 PASS | Successfully registered Cairo Roasters (`cairoroasters`) |
-| **`TC-AUTH-002`** | Dashboard (`app.*`) | Unapproved / Suspended Tenant Login Lockout | 🟥 FAIL | [BUG-007] Suspended/unapproved tenants can still access dashboard |
+| **`TC-AUTH-002`** | Dashboard (`app.*`) | Unapproved / Suspended Tenant Login Lockout | 🟥 FAIL | [BUG-007] ([#164](https://github.com/Ai-NativeLab/ServeOs/issues/164)) Suspended tenants can still access dashboard; there is no pending-approval lockout either |
 | **`TC-AUTH-003`** | Dashboard (`app.*`) | RBAC Route Protection (Staff restricted) | 🟥 FAIL | [BUG-008] Unhandled UnauthorizedError triggers generic 500 error boundary |
 | **`TC-AUTH-004`** | Dashboard (`app.*`) | Session Logout & Invalidation | 🟩 PASS | Session deleted in DB, cookie cleared, audit event emitted |
 | **`TC-STORE-001`**| Storefront (`{slug}.*`)| Product Catalog & Category Filtering | 🟩 PASS | Verified category & products on Cairo Roasters |
@@ -42,12 +42,12 @@
 | **`TC-STORE-003`**| Storefront (`{slug}.*`)| Out-of-Stock Item Restriction | 🟥 FAIL | [BUG-009] Restaurant template allows configuring and adding OOS items to cart |
 | **`TC-STORE-004`**| Storefront (`{slug}.*`)| Offline Payment & Receipt Attachment | 🟩 PASS | Cash on delivery order placed |
 | **`TC-STORE-005`**| Storefront (`{slug}.*`)| Order Scheduling (Date & Time Picker) | 🟩 PASS | Scheduled outside opening hours (3 AM) |
-| **`TC-STORE-006`**| Storefront (`{slug}.*`)| Order Cancellation while Pending | 🟩 PASS | StatusPoller allows cancelling pending order with confirmation & error handling |
+| **`TC-STORE-006`**| Storefront (`{slug}.*`)| Order Cancellation while Pending | ⬜ NOT TESTED (code-inspected) | `StatusPoller` has a cancel-while-pending path with confirmation & error handling; not exercised in the app |
 | **`TC-DASH-001`** | Dashboard (`app.*`) | Live Order Status State Machine Transitions | 🟩 PASS | Transitions pending->confirmed->preparing->ready->out_for_delivery->completed |
 | **`TC-DASH-002`** | Dashboard (`app.*`) | Offline Payment Verification & Rejection | 🟥 FAIL | [BUG-004], [BUG-005], [BUG-006] logged |
 | **`TC-DASH-003`** | Dashboard (`app.*`) | Menu Category & Product CRUD | 🟥 FAIL | [BUG-001] Direct image binary upload fails without Supabase creds |
 | **`TC-DASH-004`** | Dashboard (`app.*`) | Recipe (BOM) Ingredient Linking & Auto-Deduction | ⬜ NOT TESTED | [BUG-010]/[BUG-011] withdrawn — both routes exist on `main` (commit `fa7506a`, 2026-08-09); scenario needs re-execution |
-| **`TC-DASH-005`** | Dashboard (`app.*`) | Purchase Order Lifecycle & Goods Receiving | 🟥 FAIL | [BUG-012] Goods receipt saves unitCost=0, breaking 3-way match |
+| **`TC-DASH-005`** | Dashboard (`app.*`) | Purchase Order Lifecycle & Goods Receiving | 🟥 FAIL | [BUG-012] ([#155](https://github.com/Ai-NativeLab/ServeOs/issues/155)) Goods receipt saved unitCost=0, breaking 3-way match. **Resolved in #161** — re-test on current `main` |
 | **`TC-DASH-006`** | Dashboard (`app.*`) | POS Device Pairing Code Generation | 🟩 PASS | 8-char secure code with 10-min TTL & audit trail |
 | **`TC-DASH-007`** | Dashboard (`app.*`) | Cross-Channel Financial Analytics Reports | 🟩 PASS | Channel breakdown, AOV, peak hours & plan upgrade prompts |
 | **`TC-POS-001`**  | POS App (`apps/pos`) | First-Time Device Pairing via Code | 🟩 PASS | Device paired, persisted token & loaded till |
@@ -56,14 +56,14 @@
 | **`TC-POS-004`**  | POS App (`apps/pos`) | Line Item Void & Discount with Reason Code| 🟩 PASS | Applied discount, recalculated total & unified with dashboard orders |
 | **`TC-POS-005`**  | POS App (`apps/pos`) | Cash Drawer Movement (Pay-In/Out/Drop) | 🟩 PASS | Recorded 300 EGP safe drop & updated expected cash |
 | **`TC-POS-006`**  | POS App (`apps/pos`) | Shift Close, Blind Count & Z-Report | 🟩 PASS | Recorded blind count (300 EGP), finalized shift & returned till to open state |
-| **`TC-POS-007`**  | POS App (`apps/pos`) | Offline Sales Buffering & Background Sync | 🟨 N/A | Parked in electron/_offline per Roadmap & Issue #142 |
-| **`TC-ADMIN-001`**| Admin (`admin.*`)   | Super Admin Authentication | 🟩 PASS | requireSuperAdminOrRedirect routes non-admins to /admin/no-access |
+| **`TC-POS-007`**  | POS App (`apps/pos`) | Offline Sales Buffering & Background Sync | ⬜ NOT TESTED | Offline sync shipped with #138; not run in this pass. Run the manual script in [`tests/e2e/pos-offline.md`](../../tests/e2e/pos-offline.md) |
+| **`TC-ADMIN-001`**| Admin (`admin.*`)   | Super Admin Authentication | ⬜ NOT TESTED (code-inspected) | `requireSuperAdminOrRedirect` routes non-admins to `/admin/no-access`; login not exercised in the app |
 | **`TC-ADMIN-002`**| Admin (`admin.*`)   | Tenant Review & Approval Workflow | 🟩 PASS | /admin/approvals lists pending stores with approve/reject actions |
 | **`TC-ADMIN-003`**| Admin (`admin.*`)   | Plan Entitlement Override & Gating | 🟩 PASS | Admin detail page manages force active, plan, and invoices |
-| **`TC-ADMIN-004`**| Admin (`admin.*`)   | Tenant Suspension & Reactivation | 🟩 PASS | Storefront stops serving when status = suspended |
-| **`TC-SEC-001`**  | API / Database      | Cross-Tenant RLS Data Isolation | 🟩 PASS | withTenant transaction wrapper sets session app.tenant_id |
-| **`TC-SEC-002`**  | API / Database      | Tamper-Evident Audit Hash Chain Integrity | 🟩 PASS | Append-only prev_hash/head_hash chain with advisory locking |
-| **`TC-SEC-003`**  | API / Proxy         | Host Header Spoofing Prevention | 🟩 PASS | src/proxy.ts strips injected x-tenant-slug on non-storefront hosts |
+| **`TC-ADMIN-004`**| Admin (`admin.*`)   | Tenant Suspension & Reactivation | 🟥 FAIL (partial) | Dashboard is **not** blocked while suspended — [BUG-007] ([#164](https://github.com/Ai-NativeLab/ServeOs/issues/164)). Storefront gating (`isTenantServable`) only code-inspected, not observed |
+| **`TC-SEC-001`**  | API / Database      | Cross-Tenant RLS Data Isolation | ⬜ NOT TESTED (code-inspected) | `withTenant` transaction wrapper sets session `app.tenant_id`; no cross-tenant request attempted |
+| **`TC-SEC-002`**  | API / Database      | Tamper-Evident Audit Hash Chain Integrity | ⬜ NOT TESTED (code-inspected) | Append-only `prev_hash`/`head_hash` chain with advisory locking; no tamper simulation run |
+| **`TC-SEC-003`**  | API / Proxy         | Host Header Spoofing Prevention | ⬜ NOT TESTED (code-inspected) | `src/proxy.ts` strips injected `x-tenant-slug` on non-storefront hosts; no spoofed request sent |
 | **`TC-I18N-001`** | Marketing & Storefront| Arabic (`/ar`) RTL Layout & Typography | 🟩 PASS | RTL dir, Cairo typography, bilingual descriptions |
 | **`TC-I18N-002`** | Storefront & Dash   | Mobile Viewport Layout & Tap Targets ($\ge 40$px) | 🟩 PASS | 44px tap targets, responsive sheets, stacked grids |
 
@@ -83,6 +83,7 @@
 * **Actual Result:** Toast error displays: `"Image storage is not configured"`.
 * **Root Cause:** `/api/media-upload` requires `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` environment variables.
 ### [BUG-002] Storefront Cart Drawer Lacks Explicit Delete / Trash Icon for Line Items
+* **Filed as:** [#181](https://github.com/Ai-NativeLab/ServeOs/issues/181)
 * **Scenario ID:** `TC-STORE-001` / `TC-STORE-002`
 * **Surface / URL:** `http://{slug}.serveos.localhost:3000` (Cart Drawer)
 * **Persona:** Customer
@@ -157,6 +158,7 @@
 ---
 
 ### [BUG-007] Suspended or Unapproved Tenants Can Still Access and Mutate Merchant Dashboard
+* **Filed as:** [#164](https://github.com/Ai-NativeLab/ServeOs/issues/164)
 * **Scenario ID:** `TC-AUTH-002` / `TC-ADMIN-004`
 * **Surface / URL:** `http://app.serveos.localhost:3000/dashboard`
 * **Persona:** Merchant Owner / Manager
@@ -175,16 +177,17 @@
 
 ### [BUG-008] RBAC Unauthorized Errors in Server Components Trigger Generic 500 Error Boundary Instead of 403 Forbidden Screen
 * **Scenario ID:** `TC-AUTH-003`
-* **Surface / URL:** `http://app.serveos.localhost:3000/dashboard/analytics`, `/dashboard/audit`, `/dashboard/menu`
+* **Surface / URL:** `http://app.serveos.localhost:3000/dashboard/analytics`, `/dashboard/menu`
 * **Persona:** Kitchen / Dispatch Staff (`staff@roma.com`)
 * **Severity:** Medium (UX & Observability)
 * **Steps to Reproduce:**
   1. Log in as `staff@roma.com`.
-  2. Manually navigate via address bar to `http://app.serveos.localhost:3000/dashboard/analytics` (or `/dashboard/audit`, `/dashboard/menu`).
+  2. Manually navigate via address bar to `http://app.serveos.localhost:3000/dashboard/analytics` (or `/dashboard/menu`).
+  * `/dashboard/audit` does **not** reproduce: its page catches `UnauthorizedError` and renders a "Not authorized" empty state.
 * **Expected Result:**
   - Staff user should either be gracefully redirected to `/dashboard/orders` or presented with an informative 403 Forbidden / "Access Denied — Insufficient Permissions" state.
 * **Actual Result:**
-  - Page throws uncaught `UnauthorizedError("reports:view")`, which bubbles to `src/app/dashboard/error.tsx`, rendering: `"Something went wrong. This page failed to load. Try again."` with a "Retry" button.
+  - Page throws uncaught `UnauthorizedError` (`reports:view` on `/dashboard/analytics`, `menu:manage` on `/dashboard/menu`), which bubbles to `src/app/dashboard/error.tsx`, rendering: `"Something went wrong. This page failed to load. Try again."` with a "Retry" button.
 
 ---
 
@@ -233,6 +236,8 @@
   - Next.js returns `404: This page could not be found.`
 
 ### [BUG-012] Goods Receipt Stores unitCost as 0.00, Breaking Three-Way Match & Variance Calculations
+* **Filed as:** [#155](https://github.com/Ai-NativeLab/ServeOs/issues/155)
+* **Status:** ✅ Resolved in #161 (merged). `postReceipt` in `src/server/purchasing/receiving.ts` no longer takes a client cost; it values every receipt line from the PO line (`effectiveUnitCost = Number(poLine.unitCost)`). Re-test on current `main`.
 * **Scenario ID:** `TC-DASH-005` / Journey 4 (Purchasing)
 * **Surface / URL:** `http://app.serveos.localhost:3000/dashboard/purchase-orders/[id]`
 * **Persona:** Merchant Owner / Manager
@@ -263,6 +268,7 @@
   - Server throws `Invalid transition ... → closed` toast error because the client component state was stale; only succeeds after manual page refresh.
 
 ### [BUG-014] POS Electron App Default Base URL Resolved to Production Host in Dev Mode
+* **Filed as:** [#163](https://github.com/Ai-NativeLab/ServeOs/issues/163)
 * **Scenario ID:** `TC-POS-001` / Journey 3 (POS)
 * **Surface / URL:** Desktop Electron App (`apps/pos`)
 * **Persona:** Cashier / Staff / Manager
@@ -275,7 +281,7 @@
 * **Actual Result:**
   - Login requests went to `https://app.serveos.tech` and failed with an uncaught fetch network error.
 * **Root-Cause Note (corrected):** The original diagnosis — that `DEFAULT_BASE_URL` "statically evaluated `VITE_DEV_SERVER_URL` before Vite initialized" — does not hold: vite-plugin-electron sets that variable in the spawned Electron process's environment *before* any module evaluates, and the window loader in `main.ts` reads it the same way at module load. The exact trigger of the observed failure was not confirmed (a stale `dist-electron` build or a shell without the variable are the likely candidates).
-* **Resolution:** Base-URL resolution and the window loader now share one dev predicate (`electron/dev-mode.ts`), evaluated at construction time. In dev (vite serving) the POS targets `http://localhost:3000`; everywhere else — packaged **or** unpackaged build output — it targets `https://app.serveos.tech`, so a till paired from source keeps its pairing. `POS_API_URL` still overrides everything.
+* **Resolution:** Not fixed in this PR. The fix lands with #187 / #188: an unpackaged run (`!app.isPackaged`) or a run against the Vite dev server targets `http://localhost:3000`, and only packaged builds target production (`https://app.serveos.tech`).
 
 ### [BUG-015] WhatsApp Cart Handoff URL Omits Local Dev Port and Hardcodes https Protocol
 * **Scenario ID:** `06-whatsapp.md` / WhatsApp Sandbox
@@ -292,6 +298,7 @@
   - Code emits `https://roma.serveos.localhost/?handoff=...` (missing port 3000 and hardcoding https).
 
 ### [BUG-016] Customer Storefront Checkout Form Missing Prescription (Rx) Upload Input
+* **Filed as:** [#168](https://github.com/Ai-NativeLab/ServeOs/issues/168)
 * **Scenario ID:** `TC-STORE-004` / Pharmacy Vertical
 * **Surface / URL:** `http://{slug}.serveos.localhost:3000/checkout` (Pharmacy Storefront)
 * **Persona:** Pharmacy Customer
@@ -309,17 +316,12 @@
 
 ## 4. Execution Summary
 
-* **Total Scenarios:** 34
-* **Passed:** 25
-* **Failed:** 8 (with 16 distinct bugs logged: `BUG-001` through `BUG-016`)
-* **Out of Scope / Parked:** 1 (`TC-POS-007`)
-* **Pending:** 0
+Counts are taken from the matrix in Section 2.
 
-
-
-
-
-
-
-
-
+* **Total Scenarios:** 33
+* **Passed:** 19
+* **Failed:** 7 (`TC-AUTH-002`, `TC-AUTH-003`, `TC-STORE-003`, `TC-DASH-002`, `TC-DASH-003`, `TC-DASH-005`, and `TC-ADMIN-004` partial)
+* **Not Tested:** 7
+  * Code-inspected only, no observed result: 5 (`TC-STORE-006`, `TC-ADMIN-001`, `TC-SEC-001`, `TC-SEC-002`, `TC-SEC-003`)
+  * Needs (re-)execution: 2 (`TC-DASH-004` after its bugs were withdrawn; `TC-POS-007` offline sync, shipped with #138)
+* **Defects logged:** 16 (`BUG-001` to `BUG-016`), of which 2 are withdrawn (`BUG-010`, `BUG-011`), leaving **14 active**. Of the 14, `BUG-012` is already resolved on `main` (#161) and `BUG-014` is being fixed in #187 / #188. Some defects were logged against scenarios whose core path passed (e.g. `BUG-002`, `BUG-003`, `BUG-016`), and `BUG-015` has no scenario ID in the matrix.
