@@ -81,7 +81,7 @@ describe("purchasing tables RLS", () => {
     // UPDATE re-read of the PO runs under tenant A's RLS, where tenant B's PO
     // does not exist. RLS fails closed, and the write never happens.
     await expect(postReceipt(a.actor, b.poId, {
-      lines: [{ poLineId: a.poLineId, receivedQty: 1, uom: "each", unitCost: 1 }],
+      lines: [{ poLineId: a.poLineId, receivedQty: 1, uom: "each" }],
     })).rejects.toBeInstanceOf(PoNotFoundError);
   });
 });

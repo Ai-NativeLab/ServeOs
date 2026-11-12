@@ -3,6 +3,7 @@ import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
+import { bumpCatalogVersion } from "@/server/catalog/version";
 import { tenants, tenantSettings } from "./schema";
 import { InvalidWhatsappNumberError } from "./errors";
 import { getCapabilities } from "@/server/verticals/registry";
@@ -49,6 +50,11 @@ export async function getTenantSettings(tenantId: string): Promise<TenantSetting
   return (row?.data as TenantSettingsData | undefined) ?? {};
 }
 
+// The catalog response's pricing block (getCheckoutPricing) is built from
+// exactly these keys — any other settings key (whatsappNumber, shiftPolicy,
+// ...) is invisible to the catalog and must not move its version.
+const PRICING_KEYS = ["vatRate", "vatEnabled", "pricesIncludeVat", "serviceChargeRate"] as const;
+
 /** Merges `patch` into the tenant's settings bag on the given tx, creating the
  * row if needed. Keys set to `undefined` in `patch` are dropped from the JSON. */
 async function applySettingsPatch(tx: Tx, tenantId: string, patch: Partial<TenantSettingsData>): Promise<TenantSettingsData> {
@@ -60,6 +66,9 @@ async function applySettingsPatch(tx: Tx, tenantId: string, patch: Partial<Tenan
   } else {
     await tx.insert(tenantSettings).values({ tenantId, data });
   }
+  // Bump only when a key the catalog actually surfaces moved — a patch that
+  // only touches, say, the WhatsApp number must not bump it.
+  if (PRICING_KEYS.some((k) => before[k] !== data[k])) await bumpCatalogVersion(tenantId, tx);
   return before;
 }
 

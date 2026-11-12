@@ -75,6 +75,28 @@ describe("recordSale", () => {
     })).rejects.toThrow(/exceed|change/i);
   });
 
+  it("rolls back the order when the in-transaction total check fails (single transaction)", async () => {
+    const { ctx, productId, total } = await seedPosContext("owner");
+    await openShiftForCtx(ctx);
+    // Cash (not card) so the pre-placeOrder tender validation lets this through —
+    // the overpayment is only caught by the paid-exceeds-total guard that now
+    // runs inside placeOrder's onPlaced, on the order's own transaction.
+    await expect(recordSale(ctx, {
+      clientOrderId: "s-atomic",
+      lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: total,
+      payments: [{ clientPaymentId: "p-1", method: "cash", amount: total + 500, tenderedAmount: total + 500 }],
+    })).rejects.toThrow(PosSaleError);
+
+    const allOrders = await withTenant(ctx.tenantId, (tx) => tx.select().from(orders));
+    expect(allOrders).toHaveLength(0); // no orphan order, no stock deducted, no receipt row
+    const tenders = await withTenant(ctx.tenantId, (tx) => tx.select().from(orderPayments));
+    expect(tenders).toHaveLength(0);
+    const receipts = await db.select().from(posOrderReceipts)
+      .where(eq(posOrderReceipts.clientOrderId, "s-atomic"));
+    expect(receipts).toHaveLength(0);
+  });
+
   it("is idempotent on clientOrderId", async () => {
     const { ctx, productId, total } = await seedPosContext("owner");
     await openShiftForCtx(ctx);
@@ -116,7 +138,7 @@ describe("recordSale", () => {
 
   it("records the manager as authorizer when staff spends a grant", async () => {
     const { ctx, productId, managerId, tenantId } = await seedPosContext("staff");
-    const grant = issueGrant(tenantId, "pos:discount", managerId);
+    const grant = await issueGrant(tenantId, "pos:discount", managerId);
     // Derive the discounted total from the shared money math so the assertion
     // does not drift with the tenant's VAT/service-charge defaults.
     const pricing = await getCheckoutPricing(tenantId);

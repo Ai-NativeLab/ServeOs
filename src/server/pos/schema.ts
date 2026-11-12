@@ -1,8 +1,9 @@
-import { pgTable, uuid, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, uniqueIndex, index, jsonb, boolean, integer } from "drizzle-orm/pg-core";
 import { tenants } from "@/server/tenancy/schema";
 import { branches } from "@/server/branches/schema";
 import { users } from "@/server/auth/schema";
 import { orders } from "@/server/ordering/schema";
+import type { Permission } from "@/server/rbac/permissions";
 
 export const posDevices = pgTable("pos_devices", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -38,6 +39,60 @@ export const posOrderReceipts = pgTable("pos_order_receipts", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [uniqueIndex("pos_order_receipts_device_client").on(t.deviceId, t.clientOrderId)]);
 
+/** Cashier sessions. Control-plane like pos_devices: no RLS. Keyed by the
+ *  SHA-256 of the bearer token — a read-only DB leak must not hand out live
+ *  sessions. A row outliving its expiry is inert — resolveCashier checks expiresAt. */
+export const posCashierSessions = pgTable("pos_cashier_sessions", {
+  tokenHash: text("token_hash").primaryKey(),   // sha256 hex of the raw token
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  permissions: jsonb("permissions").$type<Permission[]>().notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("pos_cashier_sessions_expires").on(t.expiresAt)]);
+
+/** Manager grants. Same control-plane shape as pos_cashier_sessions: no RLS,
+ *  keyed by the SHA-256 of the bearer token. Single-use is enforced by
+ *  consumeGrant's DELETE ... RETURNING, not by a column here. */
+export const posGrants = pgTable("pos_grants", {
+  tokenHash: text("token_hash").primaryKey(),   // sha256 hex, same helper as sessions
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  permission: text("permission").notNull(),
+  authorizedByUserId: uuid("authorized_by_user_id").notNull().references(() => users.id),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+});
+
+/** Mirror of pos_order_receipts, for non-sale sync events (shift/cash/ticket
+ *  lifecycle — Task 5): each replayable service inserts its row as the LAST
+ *  statement of its OWN tenant transaction, which is why this table carries
+ *  no RLS — same reasoning as pos_order_receipts. resultJson is the response
+ *  a retry of (deviceId, eventId) replays verbatim instead of re-running the
+ *  effect. No `id` column: the (deviceId, eventId) pair IS the row identity. */
+export const posSyncEventReceipts = pgTable("pos_sync_event_receipts", {
+  deviceId: uuid("device_id").notNull().references(() => posDevices.id, { onDelete: "cascade" }),
+  eventId: uuid("event_id").notNull(),
+  type: text("type").notNull(),
+  /** The device's own ordering position for this event (Task 6b's ingestion
+   *  dispatcher). Nullable, not required: every syncReceipt-accepting service
+   *  (Task 5) just spreads the SyncReceipt descriptor into this insert, and
+   *  most of those call sites have no seq to offer (tests construct receipts
+   *  directly; live services other than the sync dispatcher never will).
+   *  sync-ingest.ts is the only writer that populates it and the only reader
+   *  (lastReceiptSeq: MAX(seq) per device, nulls ignored). */
+  seq: integer("seq"),
+  resultJson: jsonb("result_json").$type<Record<string, unknown>>().notNull(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+  receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+  clockSkewFlagged: boolean("clock_skew_flagged").notNull().default(false),
+}, (t) => [
+  uniqueIndex("pos_sync_event_receipts_key").on(t.deviceId, t.eventId),
+  index("pos_sync_event_receipts_device_seq").on(t.deviceId, t.seq),
+]);
+
 export type PosDevice = typeof posDevices.$inferSelect;
 export type PosPairingCode = typeof posPairingCodes.$inferSelect;
 export type PosOrderReceipt = typeof posOrderReceipts.$inferSelect;
+export type PosCashierSession = typeof posCashierSessions.$inferSelect;
+export type PosGrant = typeof posGrants.$inferSelect;
+export type PosSyncEventReceipt = typeof posSyncEventReceipts.$inferSelect;

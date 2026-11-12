@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, boolean, integer, numeric, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, boolean, integer, numeric, uniqueIndex, bigint } from "drizzle-orm/pg-core";
 import { tenants } from "@/server/tenancy/schema";
 import { branches } from "@/server/branches/schema";
 import { unitOfMeasureEnum, type UnitOfMeasure } from "./uom";
@@ -95,6 +95,23 @@ export const branchProductAvailability = pgTable(
   },
   (t) => [uniqueIndex("bpa_branch_product_unique").on(t.branchId, t.productId)],
 );
+
+/**
+ * Per-tenant monotonic counter — NOT max(updated_at). A MAX over catalog
+ * tables can't see a delete (max is unchanged) or a branch price-override /
+ * VAT / service-charge edit (no catalog row moves at all), so a drift check
+ * built on it would report "same catalog" while pricing genuinely moved.
+ * Bumped by bumpCatalogVersion (./version.ts) from catalog mutations, branch
+ * price-override writes, and tenant tax-settings changes — always on the
+ * caller's transaction, one row per tenant. Tenant data, so RLS-backed like
+ * every other table in this file (same shape as audit_chain_heads).
+ */
+export const catalogVersions = pgTable("catalog_versions", {
+  tenantId: uuid("tenant_id").primaryKey().references(() => tenants.id, { onDelete: "cascade" }),
+  version: bigint("version", { mode: "number" }).notNull(),
+});
+
+export type CatalogVersion = typeof catalogVersions.$inferSelect;
 
 export type Category = typeof categories.$inferSelect;
 export type NewCategory = typeof categories.$inferInsert;

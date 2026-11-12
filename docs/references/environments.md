@@ -55,6 +55,12 @@ QA is on the Free plan: it **auto-pauses after ~7 idle days**. The nightly
 backup doubles as keep-alive, but if QA goes unreachable, check the Supabase
 dashboard first.
 
+Supabase **Realtime** (live propagation to dashboards, storefronts and tills)
+needs two more things per project — a JWT secret in the environment and one
+SQL policy — and stays inert until both exist. See
+[realtime.md](realtime.md), including the concurrent-connection budget to
+check against the plan before enabling it in production.
+
 ## Cloudflare R2
 
 Bucket `serveos-backups` (EU jurisdiction — endpoint

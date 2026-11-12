@@ -237,7 +237,7 @@ describe("closeShift", () => {
   it("blind close reveals the numbers to a reconciliation:manage grant", async () => {
     const { ctx, tenantId, managerId, shift, expected } = await tradedShift("staff");
     await setShiftPolicy(tenantId, { blindClose: true });
-    const token = issueGrant(tenantId, "reconciliation:manage", managerId);
+    const token = await issueGrant(tenantId, "reconciliation:manage", managerId);
 
     const z = await closeShift(ctx, shift.id, {
       count: { countedTotal: expected },
@@ -274,7 +274,7 @@ describe("closeShift", () => {
     const { ctx, tenantId, managerId, shift, expected } = await tradedShift("staff");
     await setShiftPolicy(tenantId, { varianceThreshold: 1 });
     const other = asCashier(ctx, managerId, ["pos:sell"]);
-    const token = issueGrant(tenantId, "reconciliation:manage", managerId);
+    const token = await issueGrant(tenantId, "reconciliation:manage", managerId);
 
     // Grants are single-use, so a close that is BOTH cross-user and flagged must
     // resolve the authorizer once rather than consuming the token twice.

@@ -33,9 +33,10 @@ export async function POST(req: NextRequest) {
 
   try {
     const manager = await verifyAuthorizer(ctx.tenantId, email, password, permission as Permission);
-    const grant = issueGrant(ctx.tenantId, permission as Permission, manager.userId);
-    // The grant itself lives in memory; the durable record that a manager
-    // authorized an over-permission for this cashier is the audit row.
+    const grant = await issueGrant(ctx.tenantId, permission as Permission, manager.userId);
+    // The grant row lives in the database, not this process's memory — the
+    // durable record that a manager authorized an over-permission for this
+    // cashier is the audit row below.
     await withTenant(ctx.tenantId, (tx) => recordAuditEvent(
       { tenantId: ctx.tenantId, branchId: ctx.branchId, actorUserId: manager.userId, fingerprint: ctx.fingerprint },
       { action: "authz.manager_granted", entityType: "authorization", entityId: permission,

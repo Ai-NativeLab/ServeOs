@@ -1,8 +1,10 @@
 import { requireDashboardUser } from "@/server/auth/dashboard-context";
 import { authorize } from "@/server/rbac/authorize";
 import { listAwaitingPaymentOrders } from "@/server/ordering/service";
+import { tenantRealtimeConfig } from "@/server/realtime/token";
 import { confirmOrderPaymentAction, rejectOrderPaymentAction } from "./actions";
 import { PageHeader } from "@/components/dashboard/PageHeader";
+import { RealtimeRefresh } from "@/components/dashboard/RealtimeRefresh";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { ToastForm } from "@/components/dashboard/ToastForm";
 import { SubmitButton } from "@/components/dashboard/SubmitButton";
@@ -20,6 +22,9 @@ export default async function PaymentsQueuePage() {
   const orders = await listAwaitingPaymentOrders(ctx.tenantId);
   return (
     <>
+      {/* A shared work list: an order placed by a customer, or a colleague's
+          confirmation, should reach this screen without a manual reload. */}
+      <RealtimeRefresh config={tenantRealtimeConfig(ctx.tenantId)} types={["orders.changed"]} />
       <PageHeader
         eyebrow="Payments"
         title="Awaiting payment confirmation"

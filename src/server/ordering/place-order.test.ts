@@ -1,6 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { db } from "@/db/client";
 import { eq } from "drizzle-orm";
+import { withTenant } from "@/db/with-tenant";
+import { orders } from "./schema";
 import { tenants } from "@/server/tenancy/schema";
 import { users } from "@/server/auth/schema";
 import { plans, subscriptions } from "@/server/subscription/schema";
@@ -796,5 +798,100 @@ describe("rejectOrderPayment atomicity", () => {
     // The corrupt state this atomicity fix guards against: cancelled status
     // with paymentStatus somehow left/landed on "paid".
     expect(order.status === "cancelled" && order.paymentStatus === "paid").toBe(false);
+  });
+});
+
+/** Every broadcast the ordering service made, plus whether the row it names
+ *  was already committed at the moment the publisher reached for the network. */
+type SeenBroadcast = { event: string; entityIds: string[]; committed: boolean };
+
+function captureBroadcasts(tenantId: string): SeenBroadcast[] {
+  const seen: SeenBroadcast[] = [];
+  vi.stubEnv("SUPABASE_URL", "https://proj.supabase.co");
+  vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "svc-key");
+  vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+    const msg = JSON.parse(String(init.body)).messages[0];
+    const entityIds: string[] = msg.payload.entityIds;
+    // Read on a DIFFERENT connection than the order's transaction used: if the
+    // publish had been made inside that transaction, this select could not see
+    // the row yet.
+    const rows = entityIds.length
+      ? await withTenant(tenantId, (tx) => tx.select().from(orders).where(eq(orders.id, entityIds[0])))
+      : [];
+    seen.push({ event: msg.event, entityIds, committed: rows.length === 1 });
+    return new Response(null, { status: 202 });
+  }));
+  return seen;
+}
+
+describe("placeOrder realtime propagation", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("broadcasts orders.changed with the order id, after the order has committed", async () => {
+    const { t, branch, pizza } = await setup("rt1");
+    const seen = captureBroadcasts(t.id);
+
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+
+    expect(seen).toEqual([{ event: "orders.changed", entityIds: [res.orderId], committed: true }]);
+  });
+
+  it("still places the order when the broadcast fails", async () => {
+    const { t, branch, pizza } = await setup("rt2");
+    vi.stubEnv("SUPABASE_URL", "https://proj.supabase.co");
+    vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "svc-key");
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("realtime is down");
+    }));
+
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+
+    expect(res.orderNumber).toBe(1);
+    const rows = await withTenant(t.id, (tx) => tx.select().from(orders).where(eq(orders.id, res.orderId)));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("broadcasts a customer's own cancel — staff must not wait out the relaxed poll for it", async () => {
+    const { t, branch, pizza } = await setup("rt4");
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+
+    const seen = captureBroadcasts(t.id);
+    const { cancelOrderByToken } = await import("./service");
+    await cancelOrderByToken(t.id, res.statusToken);
+
+    expect(seen).toEqual([{ event: "orders.changed", entityIds: [res.orderId], committed: true }]);
+  });
+
+  it("broadcasts on a status transition and on a payment confirmation", async () => {
+    const { t, branch, pizza, user } = await setup("rt3");
+    const { upsertOfflineMethod } = await import("@/server/payments/offline/methods");
+    await upsertOfflineMethod(t.id, { type: "instapay", label: "InstaPay", payToDetail: "a@instapay" });
+    const res = await placeOrder(t.id, {
+      branchId: branch.id, fulfillmentType: "pickup", customerName: "A", customerPhone: "1",
+      paymentMethod: "instapay", paymentReference: "IP-RT3",
+      lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
+    });
+
+    const seen = captureBroadcasts(t.id);
+    const { confirmOrderPayment, transitionStatus } = await import("./service");
+    await confirmOrderPayment(t.id, res.orderId, user.id);
+    await transitionStatus(t.id, res.orderId, "confirmed", user.id);
+
+    expect(seen).toEqual([
+      { event: "orders.changed", entityIds: [res.orderId], committed: true },
+      { event: "orders.changed", entityIds: [res.orderId], committed: true },
+    ]);
   });
 });

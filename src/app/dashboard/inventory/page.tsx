@@ -5,7 +5,9 @@ import { listItems, getOnHand, listLocations } from "@/server/inventory/read";
 import { listBranches } from "@/server/branches/service";
 import { getTenantById } from "@/server/tenancy";
 import { getCapabilities, type VerticalId } from "@/server/verticals";
+import { tenantRealtimeConfig } from "@/server/realtime/token";
 import { PageHeader } from "@/components/dashboard/PageHeader";
+import { RealtimeRefresh } from "@/components/dashboard/RealtimeRefresh";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -79,6 +81,9 @@ export default async function InventoryPage() {
 
   return (
     <>
+      {/* On-hand moves when a till's offline batch lands, which is exactly the
+          moment nobody is looking at this screen expecting it to be stale. */}
+      <RealtimeRefresh config={tenantRealtimeConfig(ctx.tenantId)} types={["stock.changed"]} />
       <PageHeader eyebrow="Inventory" title="Stock on hand" action={actions} />
 
       <Card className="overflow-x-auto">

@@ -25,8 +25,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (typeof body.itemId !== "string" || !body.itemId) {
     return NextResponse.json({ error: "itemId is required" }, { status: 400 });
   }
-  if (body.lastUnitCost !== undefined && (typeof body.lastUnitCost !== "number" || !Number.isFinite(body.lastUnitCost))) {
-    return NextResponse.json({ error: "lastUnitCost must be a finite number" }, { status: 400 });
+  if (body.lastUnitCost !== undefined
+    && (typeof body.lastUnitCost !== "number" || !Number.isFinite(body.lastUnitCost) || body.lastUnitCost < 0)) {
+    return NextResponse.json({ error: "lastUnitCost must be a finite non-negative number" }, { status: 400 });
   }
   let packUom: Uom | undefined;
   if (body.packUom !== undefined) {

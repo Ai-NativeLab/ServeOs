@@ -9,7 +9,7 @@ import { verifyChain } from "@/server/audit/verifier";
 import { auditEvents } from "@/server/audit/schema";
 import { notifications } from "@/server/notifications/schema";
 import { getLowStock } from "@/server/analytics/service";
-import { purchaseOrders, purchaseOrderLines } from "./schema";
+import { purchaseOrders, purchaseOrderLines, supplierItems } from "./schema";
 import type { PurchasingActor } from "./suppliers";
 import { createSupplier, upsertSupplierItem } from "./suppliers";
 import { reorderRules } from "./reorder-schema";
@@ -130,6 +130,73 @@ describe("reorder rules", () => {
     expect(pos[0]?.supplierId).toBe(supplierId);
     expect(pos[0]?.branchId).toBe(branchId);
     expect(pos[0]?.status).toBe("draft");
+  });
+
+  it("never drafts a PO with a non-finite total from a poisoned supplier cost", async () => {
+    // `upsertSupplierItem` now floors this, but rows written before that floor
+    // existed are still out there — and Postgres numeric stores 'Infinity'
+    // happily. The sweep inserts PO lines directly rather than through
+    // createDraftPo, so it bypasses assertLineNumbers and would otherwise write
+    // an uncorrectable "Infinity" header and re-write it on every run.
+    const { tenantId, actor, supplierId, itemAtPoint, locationId } = await seedReorderContext();
+    await stock(tenantId, itemAtPoint, locationId, 5);
+    await upsertSupplierItem(actor, { supplierId, itemId: itemAtPoint, lastUnitCost: 2 });
+    await withTenant(tenantId, (tx) =>
+      tx.update(supplierItems).set({ lastUnitCost: "Infinity" })
+        .where(eq(supplierItems.itemId, itemAtPoint)));
+    await upsertReorderRule(actor, {
+      itemId: itemAtPoint, locationId, reorderPoint: 20, reorderQty: 10, preferredSupplierId: supplierId,
+    });
+
+    await checkReorder(actor);
+
+    const pos = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders));
+    for (const po of pos) expect(Number.isFinite(Number(po.total))).toBe(true);
+    const poLines = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrderLines));
+    for (const l of poLines) expect(Number.isFinite(Number(l.unitCost))).toBe(true);
+  });
+
+  it("repairs a poisoned header when merging into an open draft, instead of rewriting it", async () => {
+    // The merge branch READS purchase_orders.total back and writes it again, so
+    // an already-poisoned header would make Number() non-finite, money() return
+    // "NaN", and every subsequent sweep re-write it — the fixture above cannot
+    // reach this path because it has no open draft to merge into.
+    const { tenantId, actor, supplierId, itemAtPoint, itemNoLots, locationId } = await seedReorderContext();
+    await stock(tenantId, itemAtPoint, locationId, 5);
+    await upsertSupplierItem(actor, { supplierId, itemId: itemAtPoint, lastUnitCost: 2 });
+    await upsertSupplierItem(actor, { supplierId, itemId: itemNoLots, lastUnitCost: 3 });
+    await upsertReorderRule(actor, {
+      itemId: itemAtPoint, locationId, reorderPoint: 20, reorderQty: 10, preferredSupplierId: supplierId,
+    });
+
+    // Sweep one drafts the PO for itemAtPoint (10 x 2.00 = 20.00).
+    await checkReorder(actor);
+    const [draft] = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders));
+    expect(draft?.total).toBe("20.00");
+
+    // Poison the header, then give the sweep a DIFFERENT low item so the second
+    // run has something to merge — an item already lined on the draft is skipped
+    // and the merge branch never runs.
+    await withTenant(tenantId, (tx) =>
+      tx.update(purchaseOrders).set({ total: "NaN" }).where(eq(purchaseOrders.id, draft!.id)));
+    await upsertReorderRule(actor, {
+      itemId: itemNoLots, locationId, reorderPoint: 20, reorderQty: 10, preferredSupplierId: supplierId,
+    });
+    await withTenant(tenantId, (tx) => tx.update(reorderRules).set({ lastAlertedAt: null }));
+
+    await checkReorder(actor);
+
+    // Merged into the same draft, and the header is REPAIRED from the lines it
+    // holds — 20.00 already there plus 10 x 3.00 added — not zeroed and not NaN.
+    const pos = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrders));
+    expect(pos).toHaveLength(1);
+    expect(pos[0]?.total).toBe("50.00");
+
+    const poLines = await withTenant(tenantId, (tx) => tx.select().from(purchaseOrderLines));
+    expect(poLines).toHaveLength(2);
+    const fromLines = poLines.reduce(
+      (s, l) => s + Number(l.qtyOrdered) * Number(l.unitCost) * (1 + Number(l.taxRate ?? 0)), 0);
+    expect(pos[0]?.total).toBe(fromLines.toFixed(2));
   });
 
   it("rejects a preferredSupplierId from another tenant (I13)", async () => {

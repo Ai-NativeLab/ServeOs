@@ -106,6 +106,18 @@ export type UpsertSupplierItemInput = {
 
 export async function upsertSupplierItem(actor: PurchasingActor, input: UpsertSupplierItemInput): Promise<void> {
   requireCapability(actor.vertical, "inventory");
+  // `unitRate` is String(n) and Postgres numeric ACCEPTS 'NaN' / 'Infinity', so
+  // without this floor a single bad write poisons the column permanently:
+  // `checkReorder` reads it back, multiplies it into `purchase_orders.total`,
+  // and re-poisons on every sweep — with no UI path to repair the row. This is
+  // a service-level floor rather than an HTTP-edge one for the reason spelled
+  // out in ./service.ts: the cron, scripts and tests all reach it directly.
+  if (input.lastUnitCost !== undefined
+    && (!Number.isFinite(input.lastUnitCost) || input.lastUnitCost < 0)) {
+    throw new InvalidPoInputError(
+      `lastUnitCost must be a finite non-negative number (got ${input.lastUnitCost})`,
+    );
+  }
   const packUom = input.packUom ? assertInventoryUom(input.packUom) : null;
   return withTenant(actor.tenantId, async (tx) => {
     // RLS covers the write, not the FK: a body-supplied supplierId/itemId could
@@ -151,12 +163,43 @@ export async function upsertSupplierItem(actor: PurchasingActor, input: UpsertSu
   });
 }
 
+export async function getSupplier(tenantId: string, supplierId: string): Promise<Supplier | null> {
+  return withTenant(tenantId, async (tx) => {
+    const [row] = await tx.select().from(suppliers).where(eq(suppliers.id, supplierId));
+    return row ?? null;
+  });
+}
+
 export async function listSuppliers(tenantId: string) {
   return withTenant(tenantId, async (tx) =>
     tx.select().from(suppliers).orderBy(suppliers.name));
 }
 
+export type SupplierItemWithDetails = {
+  id: string;
+  tenantId: string;
+  supplierId: string;
+  itemId: string;
+  itemNameEn: string | null;
+  supplierSku: string | null;
+  lastUnitCost: string | null;
+  packUom: UnitOfMeasure | null;
+};
+
 export async function listSupplierItems(tenantId: string, supplierId: string) {
-  return withTenant(tenantId, async (tx) =>
-    tx.select().from(supplierItems).where(eq(supplierItems.supplierId, supplierId)));
+  return withTenant(tenantId, async (tx) => {
+    const rows = await tx
+      .select({
+        item: supplierItems,
+        itemNameEn: inventoryItems.nameEn,
+      })
+      .from(supplierItems)
+      .leftJoin(inventoryItems, eq(inventoryItems.id, supplierItems.itemId))
+      .where(eq(supplierItems.supplierId, supplierId));
+
+    return rows.map((r) => ({
+      ...r.item,
+      itemNameEn: r.itemNameEn,
+    }));
+  });
 }

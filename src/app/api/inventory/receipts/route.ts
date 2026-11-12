@@ -33,6 +33,19 @@ export async function POST(req: NextRequest) {
   if (body.qty <= 0) {
     return NextResponse.json({ error: "a receipt quantity must be positive" }, { status: 400 });
   }
+  // `qty` is floored above but the cost was not, and it goes to
+  // `inventory_lots.unit_cost` and `stock_ledger.unit_cost` unmodified. Postgres
+  // numeric accepts 'NaN' and 'Infinity', so a body of {"unitCost":"NaN"}
+  // poisoned a lot's cost basis and, through it, FIFO valuation — with no screen
+  // that could repair it. Same floor the purchasing services carry.
+  if (body.unitCost !== undefined && body.unitCost !== null) {
+    const unitCost = Number(body.unitCost);
+    if (!Number.isFinite(unitCost) || unitCost < 0) {
+      return NextResponse.json(
+        { error: "unitCost must be a finite non-negative number" }, { status: 400 },
+      );
+    }
+  }
 
   try {
     const { lotId } = await withTenant(ctx.tenantId, async (tx) => {

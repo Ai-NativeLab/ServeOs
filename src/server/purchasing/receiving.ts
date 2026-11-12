@@ -4,7 +4,7 @@ import { recordAuditEvent } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { requireCapability } from "@/server/verticals/registry";
 import type { UnitOfMeasure } from "@/server/catalog/uom";
-import { assertInventoryUom, dimensionOf, qty, toBase } from "@/server/inventory/uom";
+import { assertInventoryUom, dimensionOf, qty, roundQty, toBase, QTY_SCALE } from "@/server/inventory/uom";
 import { receiveStock, getOrCreateDefaultLocation } from "@/server/inventory/service";
 import { inventoryItems } from "@/server/inventory/schema";
 import { unitRate } from "./amounts";
@@ -27,7 +27,6 @@ export type PostReceiptLineInput = {
   poLineId: string;
   receivedQty: number;
   uom: UnitOfMeasure;
-  unitCost: number;
   lotCode?: string;
   expiryAt?: Date | null;
 };
@@ -94,20 +93,50 @@ export async function postReceipt(
     const poLines = await tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.poId, poId));
 
     for (const l of input.lines) {
-      // 4. Input guardrail first: NaN / non-positive quantities and non-finite
-      //    unit costs would otherwise reach `money`/`qty` and store junk ledger.
-      if (!Number.isFinite(l.receivedQty) || l.receivedQty <= 0) {
-        throw new InvalidPoInputError(`receivedQty must be a positive finite number (got ${l.receivedQty})`);
-      }
-      if (!Number.isFinite(l.unitCost) || l.unitCost < 0) {
-        throw new InvalidPoInputError(`unitCost must be a finite non-negative number (got ${l.unitCost})`);
-      }
-
       const poLine = poLines.find((x) => x.id === l.poLineId);
       if (!poLine) throw new PoNotFoundError();
 
       const [item] = await tx.select().from(inventoryItems).where(eq(inventoryItems.id, poLine.itemId));
       if (!item) throw new PoNotFoundError();
+
+      // Lot valuation is NEVER caller-stated. A client-supplied cost let any
+      // caller value a lot arbitrarily — passing 0 silently zeroed the lot, the
+      // receipt line and `getPoVariance().receivedTotal`, which is the bug this
+      // reads back from the ordered line to close. If a receive-at-a-different-
+      // price workflow is ever wanted it must be an explicit, audited override,
+      // not an unlabelled optional field.
+      const effectiveUnitCost = Number(poLine.unitCost);
+
+      // 4. Input guardrail first: NaN / non-positive quantities and non-finite
+      //    unit costs would otherwise reach `money`/`qty` and store junk ledger.
+      //
+      //    Snap ONCE, to the scale `po_receipt_lines.received_qty` is actually
+      //    STORED at, and let every consumer below read only this. The raw value
+      //    used to reach `toBase` and the lot valuation while `qty(...)` wrote a
+      //    3dp column, so receiving 1.2345 kg of a gram-based item credited
+      //    1234.5 g to the ledger against a receipt line claiming 1.235 kg, and
+      //    `getPoVariance().receivedTotal` — which sums the stored column —
+      //    disagreed with the lot it had just valued. That is the same phantom
+      //    delta ./amounts.ts and service.ts's `snapQuantities` exist to keep
+      //    out of the three-way match, arriving on the received side instead.
+      //
+      //    Validating AFTER the snap is deliberate: a quantity finer than the
+      //    scale (0.0004 kg against a gram base) used to pass a `> 0` check on
+      //    the raw value, store "0.000", and still credit 0.4 g to the ledger —
+      //    a receipt line for nothing with stock on the shelf behind it. The
+      //    `baseQty > 0` guard below never fired because the conversion did not
+      //    land on zero. Check what gets stored, not what was sent.
+      const receivedQty = roundQty(l.receivedQty);
+      if (!Number.isFinite(receivedQty) || receivedQty <= 0) {
+        throw new InvalidPoInputError(
+          l.receivedQty > 0 && receivedQty === 0
+            ? `receivedQty ${l.receivedQty} rounds to zero at ${QTY_SCALE} decimals — the smallest receivable quantity is ${1 / 10 ** QTY_SCALE}`
+            : `receivedQty must be a positive finite number (got ${l.receivedQty})`,
+        );
+      }
+      if (!Number.isFinite(effectiveUnitCost) || effectiveUnitCost < 0) {
+        throw new InvalidPoInputError(`unitCost must be a finite non-negative number (got ${effectiveUnitCost})`);
+      }
 
       const uom = assertInventoryUom(l.uom);
       // Receipts must be stated in the same unit the line was ordered in:
@@ -122,9 +151,9 @@ export async function postReceipt(
         poReceiptId: receipt.id,
         poLineId: l.poLineId,
         itemId: poLine.itemId,
-        receivedQty: qty(l.receivedQty),
+        receivedQty: qty(receivedQty),
         uom,
-        unitCost: unitRate(l.unitCost),
+        unitCost: unitRate(effectiveUnitCost),
         lotCode: l.lotCode ?? null,
         expiryAt: l.expiryAt ?? null,
       }).returning({ id: poReceiptLines.id });
@@ -148,10 +177,10 @@ export async function postReceipt(
         );
       }
       const factorKind: "purchase" | undefined = uom === item.purchaseUom ? "purchase" : undefined;
-      const baseQty = toBase(l.receivedQty, uom, { ...item, baseUom }, factorKind);
+      const baseQty = toBase(receivedQty, uom, { ...item, baseUom }, factorKind);
       if (!(baseQty > 0)) {
         throw new InvalidPoInputError(
-          `receivedQty ${l.receivedQty} ${uom} converts to zero base units (${baseUom})`,
+          `receivedQty ${receivedQty} ${uom} converts to zero base units (${baseUom})`,
         );
       }
       // The lot's unit cost is per BASE unit: 2 cases @ 50.00 against a factor
@@ -161,14 +190,14 @@ export async function postReceipt(
       // permanent wedge between the lot's value (2.08 × 48 = 99.84) and what
       // was actually paid (100.00). `inventory_lots.unit_cost` is unbounded
       // numeric, so the exact quotient is stored as-is.
-      const baseUnitCost = (l.unitCost * l.receivedQty) / baseQty;
+      const baseUnitCost = (effectiveUnitCost * receivedQty) / baseQty;
       // `receivedQty` and `unitCost` are each finite, but their PRODUCT can
       // still overflow to Infinity, and `String(Infinity)` is accepted by
       // Postgres `numeric` — the same un-correctable ledger poison the NaN
       // guard above exists to stop, arriving through the quotient instead.
       if (!Number.isFinite(baseUnitCost)) {
         throw new InvalidPoInputError(
-          `receivedQty ${l.receivedQty} x unitCost ${l.unitCost} overflows to a non-finite cost`,
+          `receivedQty ${receivedQty} x unitCost ${effectiveUnitCost} overflows to a non-finite cost`,
         );
       }
       await receiveStock(tx, {
@@ -191,7 +220,7 @@ export async function postReceipt(
       // stale value would leave last-write-wins — 6 not 4+6). Under the PO-row
       // lock above this is also safe across concurrent receipts.
       await tx.update(purchaseOrderLines)
-        .set({ qtyReceived: sql`${purchaseOrderLines.qtyReceived} + ${qty(l.receivedQty)}` })
+        .set({ qtyReceived: sql`${purchaseOrderLines.qtyReceived} + ${qty(receivedQty)}` })
         .where(eq(purchaseOrderLines.id, l.poLineId));
     }
 

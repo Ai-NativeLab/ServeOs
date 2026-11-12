@@ -6,6 +6,7 @@ import { users } from "@/server/auth/schema";
 import { seedInventoryTenant, seedItem } from "@/server/inventory/test-helpers";
 import { suppliers, supplierItems } from "./schema";
 import { createSupplier, updateSupplier, upsertSupplierItem, listSuppliers, listSupplierItems } from "./suppliers";
+import { InvalidPoInputError } from "./errors";
 
 async function seedActor(tenantId: string, branchId: string) {
   const [user] = await db.insert(users).values({
@@ -67,6 +68,26 @@ describe("supplier CRUD", () => {
     expect(row?.contactName).toBe("Ali");
     expect(row?.paymentTerms).toBe("NET30");
     expect(row?.isActive).toBe(false);
+  });
+
+  it("upsertSupplierItem rejects a non-finite or negative lastUnitCost and persists nothing", async () => {
+    // `unitRate` is String(n), and Postgres numeric ACCEPTS 'NaN' / 'Infinity'.
+    // checkReorder multiplies this field into a persisted purchase_orders.total,
+    // so a poisoned row re-poisons every sweep and has no UI path to repair it.
+    // Every sibling service carries this floor; see assertLineNumbers.
+    const { tenantId, branchId } = await seedInventoryTenant();
+    const actor = await seedActor(tenantId, branchId);
+    const itemId = await seedItem(tenantId, { baseUom: "each" });
+    const supplierId = await createSupplier(actor, { name: "S" });
+
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number("1e999"), -1]) {
+      await expect(upsertSupplierItem(actor, { supplierId, itemId, lastUnitCost: bad }))
+        .rejects.toThrow(InvalidPoInputError);
+    }
+
+    const rows = await withTenant(tenantId, (tx) =>
+      tx.select().from(supplierItems).where(eq(supplierItems.supplierId, supplierId)));
+    expect(rows).toHaveLength(0);
   });
 
   it("upsertSupplierItem is unique per (supplierId, itemId): the second upsert updates lastUnitCost", async () => {

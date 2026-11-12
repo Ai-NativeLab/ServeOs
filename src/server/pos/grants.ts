@@ -1,30 +1,37 @@
 import { randomBytes } from "node:crypto";
+import { and, eq, lt } from "drizzle-orm";
+import { db } from "@/db/client";
+import { users } from "@/server/auth/schema";
 import type { Permission } from "@/server/rbac/permissions";
+import { posPermissionsFor } from "./cashier";
 import { PosForbiddenError } from "./errors";
+import { posGrants } from "./schema";
+import { tokenHash } from "./token-hash";
 
 /** Long enough for a manager to walk over; short enough to be useless if left on screen. */
 export const GRANT_TTL_MS = 2 * 60 * 1000;
 
-type Grant = { tenantId: string; permission: Permission; authorizedByUserId: string; expiresAt: number };
-
-const grants = new Map<string, Grant>();
-
-export function issueGrant(tenantId: string, permission: Permission, authorizedByUserId: string): string {
+export async function issueGrant(tenantId: string, permission: Permission, authorizedByUserId: string): Promise<string> {
   const token = randomBytes(24).toString("hex");
-  const now = Date.now();
-  for (const [t, g] of grants) if (g.expiresAt <= now) grants.delete(t);
-  grants.set(token, { tenantId, permission, authorizedByUserId, expiresAt: now + GRANT_TTL_MS });
+  // Opportunistic sweep: no cron for this control-plane table, so each issue
+  // clears rows that have aged out before inserting its own.
+  await db.delete(posGrants).where(lt(posGrants.expiresAt, new Date()));
+  await db.insert(posGrants).values({
+    tokenHash: tokenHash(token),
+    tenantId,
+    permission,
+    authorizedByUserId,
+    expiresAt: new Date(Date.now() + GRANT_TTL_MS),
+  });
   return token;
 }
 
 /** Single-use. Deleting before every failure path means a token is spent whether or not it matched. */
-export function consumeGrant(tenantId: string, token: string, permission: Permission): string {
-  const g = grants.get(token);
-  grants.delete(token);
-  if (!g) throw new PosForbiddenError(permission);
-  if (g.expiresAt <= Date.now()) throw new PosForbiddenError(permission);
-  if (g.tenantId !== tenantId) throw new PosForbiddenError(permission);
-  if (g.permission !== permission) throw new PosForbiddenError(permission);
+export async function consumeGrant(tenantId: string, token: string, permission: Permission): Promise<string> {
+  const [g] = await db.delete(posGrants).where(eq(posGrants.tokenHash, tokenHash(token))).returning();
+  if (!g || g.expiresAt.getTime() <= Date.now() || g.tenantId !== tenantId || g.permission !== permission) {
+    throw new PosForbiddenError(permission);
+  }
   return g.authorizedByUserId;
 }
 
@@ -44,12 +51,44 @@ export type PosAuthorizerContext = {
  * themselves; otherwise the manager behind the grant. Throws if neither.
  * Every gated write goes through here — it is the single enforcement point.
  */
-export function resolveAuthorizer(
+export async function resolveAuthorizer(
   ctx: PosAuthorizerContext,
   permission: Permission,
   grantToken?: string,
-): string {
+): Promise<string> {
   if (ctx.permissions.includes(permission)) return ctx.cashierUserId;
   if (!grantToken) throw new PosForbiddenError(permission);
   return consumeGrant(ctx.tenantId, grantToken, permission);
+}
+
+/**
+ * Offline substitute for resolveAuthorizer's live-grant path (the sync
+ * ingestion design doc's decision #2): a live grant token cannot exist after
+ * the outage that produced the event, so a synced gated action names its
+ * manager directly via `authorizedByUserId`. Per "flag, never veto" nothing
+ * here refuses a replayed authorization — the permission was enforced live at
+ * the till when it happened — but the sync endpoint authenticates a DEVICE,
+ * not a cashier, so who was named and whether they could really authorize it
+ * has to reach the audit trail. `deactivated` and `lacksPermission` are those
+ * two flags, mirroring record-sale.ts's discountAuthorizerDeactivated. Throws
+ * PosForbiddenError, like the live path, only when authorizedByUserId names
+ * no one in this tenant.
+ */
+export async function resolveOfflineAuthorizer(
+  tenantId: string,
+  authorizedByUserId: string,
+  permission: Permission,
+): Promise<{ userId: string; deactivated: boolean; lacksPermission: boolean }> {
+  const [user] = await db
+    .select({ id: users.id, status: users.status })
+    .from(users)
+    .where(and(eq(users.id, authorizedByUserId), eq(users.tenantId, tenantId)))
+    .limit(1);
+  if (!user) throw new PosForbiddenError(permission);
+  const permissions = await posPermissionsFor(user.id);
+  return {
+    userId: user.id,
+    deactivated: user.status !== "active",
+    lacksPermission: !permissions.includes(permission),
+  };
 }

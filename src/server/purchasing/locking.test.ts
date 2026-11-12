@@ -262,7 +262,7 @@ describe("lock ordering — deadlock regressions", () => {
         tenantId, itemId, locationId, qtyReceived: "50", qtyRemaining: "50", unitCost: "1",
       }));
       return Promise.allSettled([
-        postReceipt(actor, poId, { lines: [{ poLineId, receivedQty: 5, uom: "each", unitCost: 1 }] }),
+        postReceipt(actor, poId, { lines: [{ poLineId, receivedQty: 5, uom: "each" }] }),
         withTenant(tenantId, (tx) => adjustStock(tx, {
           tenantId, itemId, locationId, baseQty: -1, uom: "each",
           audit: { actorUserId: actor.actorUserId, fingerprint: emptyFingerprint() },
