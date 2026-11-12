@@ -43,6 +43,16 @@ The workflow is **inert until you set one variable**, so merging it is safe:
 
 Reverse it by unsetting `VERCEL_DEPLOY_ENABLED` and reconnecting the Git integration — but note step 5 is the one that matters: **once the repo is private, the Git integration cannot work**, so don't go private until CI deploys are proven.
 
+## Migrated but not activated
+
+The `production` and `qa` jobs migrate the database **during the build** (`release-migrate`), then upload and activate the deployment in a separate step. If the build succeeds and the deploy step fails, hits its 10-minute limit, or is cancelled (for example by a newer push to the same branch), the schema is already migrated but the **previous deployment is still live** against it. The job then fails with `schema migrated, deploy not activated` in the log and the run summary.
+
+What to do:
+
+1. Check what Vercel did with the upload: `vercel ls serve-os` (or `serve-os-qa`) and `vercel inspect <deployment-url>`. A deployment stuck in `UNKNOWN` or `QUEUED` never activated.
+2. Re-run the failed job. Migrations are already applied, so `release-migrate` is a no-op on the second run; only the deploy repeats.
+3. Until the new code is live, the old code runs on the new schema. That is harmless for additive migrations and breaks for anything that drops or renames what the old code reads, which is one more reason to keep migrations additive and drop columns in a later release.
+
 ## What changes for reviewers
 
 | | Git integration (now) | Actions + CLI (after) |
