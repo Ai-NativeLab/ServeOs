@@ -73,8 +73,10 @@ export function computeEffectivePrice(
   // 3. Explicit fixed sale price (e.g. 100 -> 75)
   if (input.salePrice !== null && input.salePrice !== undefined && input.salePrice !== "") {
     const sale = Number(input.salePrice);
-    if (!Number.isNaN(sale) && sale > 0 && sale < original) {
-      const roundedSale = Math.round(sale * 100) / 100;
+    const roundedSale = Math.round(sale * 100) / 100;
+    // Judge the rounded value — that is what would be charged; 0.004 must not
+    // become a free item.
+    if (!Number.isNaN(sale) && roundedSale > 0 && roundedSale < original) {
       const computedPercent = Math.round(((original - roundedSale) / original) * 100);
       return {
         effectivePrice: roundedSale,

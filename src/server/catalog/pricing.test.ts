@@ -149,6 +149,12 @@ describe("computeEffectivePrice", () => {
       expect(result.effectivePrice).toBe(100);
     });
 
+    it("falls back to base price if salePrice rounds to zero", () => {
+      const result = computeEffectivePrice({ basePrice: 100, salePrice: 0.004, discountActive: true });
+      expect(result.hasDiscount).toBe(false);
+      expect(result.effectivePrice).toBe(100);
+    });
+
     it("falls back to base price if discountPercent is invalid (<=0 or >=100)", () => {
       expect(computeEffectivePrice({ basePrice: 100, discountPercent: 0, discountActive: true }).hasDiscount).toBe(false);
       expect(computeEffectivePrice({ basePrice: 100, discountPercent: 100, discountActive: true }).hasDiscount).toBe(false);
