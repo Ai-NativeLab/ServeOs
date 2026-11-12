@@ -41,6 +41,7 @@ import {
 } from "./schema";
 import { enqueueFiscalDocument } from "./enqueue";
 import { finalizeSubmissionRow } from "./finalize";
+import { etaSecretRefPrefix, isTenantBoundSecretRef, loadTenantSlug } from "./config";
 
 /**
  * The fiscal CONFIGURATION surface: everything an owner sets up once, read back
@@ -219,10 +220,28 @@ const wireContextSchema = z.object({
  * masking guarantee stays checkable rather than resting on a coincidence of
  * format. Legacy bare rows keep resolving; they just cannot be re-saved bare.
  */
+/**
+ * The SAVE half of the tenant-bound ref namespace (`etaSecretKeyPrefix` in
+ * ./config carries the rationale): every ref this save SETS must name a key in
+ * the tenant's own `env://ETA_<TENANT>__<NAME>` namespace, or the save is a form
+ * error naming the exact prefix to use. Refs left unset (`undefined`) or cleared
+ * (`null`) are not checked — there is nothing new to point anywhere. The resolve
+ * half refuses anything that got in another way.
+ */
+async function assertTenantBoundRefs(tx: Tx, tenantId: string, refs: Record<string, string | null | undefined>) {
+  const slug = await loadTenantSlug(tx, tenantId);
+  for (const [path, ref] of Object.entries(refs)) {
+    if (ref && !isTenantBoundSecretRef(ref, slug)) {
+      fail(path, `must name a key in this tenant's namespace — ${etaSecretRefPrefix(slug)}<NAME>, where <NAME> is ` +
+        "upper-case words joined by single underscores (e.g. CLIENT_SECRET). Other environment keys cannot be referenced");
+    }
+  }
+}
+
 const refSchema = z
   .string()
   .trim()
-  .regex(/^env:\/\/\S+$/, "must be an env:// reference naming the key that holds the credential, e.g. env://ETA_CLIENT_SECRET_ACME — never the credential itself");
+  .regex(/^env:\/\/\S+$/, "must be an env:// reference naming the key that holds the credential, e.g. env://ETA_ACME__CLIENT_SECRET — never the credential itself");
 
 const updateConfigSchema = z.object({
   rin: rinSchema,
@@ -440,6 +459,7 @@ export async function updateFiscalConfig(
   const parsed = parseOrThrow(updateConfigSchema, input);
 
   return withTenant(tenantId, async (tx) => {
+    await assertTenantBoundRefs(tx, tenantId, { clientSecretRef: parsed.clientSecretRef, signingKeyRef: parsed.signingKeyRef });
     const existing = await loadConfigRow(tx, tenantId);
 
     const clientSecretRef = parsed.clientSecretRef ?? existing?.clientSecretRef;
@@ -659,6 +679,11 @@ export async function upsertDeviceCredential(
 
   return withTenant(tenantId, async (tx) => {
     await assertOwnDevice(tx, tenantId, deviceId, "deviceId");
+    await assertTenantBoundRefs(tx, tenantId, {
+      clientSecret1Ref: parsed.clientSecret1Ref,
+      clientSecret2Ref: parsed.clientSecret2Ref,
+      presharedKeyRef: parsed.presharedKeyRef,
+    });
 
     const [existing] = await tx
       .select()

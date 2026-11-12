@@ -6,7 +6,7 @@ import { branches } from "@/server/branches/schema";
 import { users } from "@/server/auth/schema";
 import { posDevices } from "@/server/pos/schema";
 import { etaTenantConfig, etaPosCredentials } from "./schema";
-import { resolveEtaConfig } from "./config";
+import { resolveEtaConfig, etaSecretKeyPrefix, etaSecretRefPrefix, isTenantBoundSecretRef } from "./config";
 import { EtaConfigError } from "./eta-transport-errors";
 
 /**
@@ -16,11 +16,19 @@ import { EtaConfigError } from "./eta-transport-errors";
  * Secrets live in `process.env` under these keys for the duration of a test
  * and are removed afterwards; the *_REF columns only ever hold the key names.
  */
-const ERP_SECRET_KEY = "TEST_ETA_ERP_SECRET";
-const SIGNING_KEY = "TEST_ETA_SIGNING_KEY";
-const SECRET_1_KEY = "TEST_ETA_DEVICE_SECRET_1";
-const SECRET_2_KEY = "TEST_ETA_DEVICE_SECRET_2";
-const PSK_KEY = "TEST_ETA_DEVICE_PSK";
+/**
+ * Refs are TENANT-BOUND (`etaSecretKeyPrefix`): a key must sit in its own
+ * tenant's `ETA_<SLUG>__` namespace. Every test's FIRST tenant is therefore
+ * created under `PRIMARY_SLUG` (see `makeTenant`), so these fixed keys are in its
+ * namespace; a second tenant in the same test keeps the slug it asked for.
+ */
+const PRIMARY_SLUG = "eta-cfg";
+const NS = etaSecretKeyPrefix(PRIMARY_SLUG);
+const ERP_SECRET_KEY = `${NS}ERP_SECRET`;
+const SIGNING_KEY = `${NS}SIGNING_KEY`;
+const SECRET_1_KEY = `${NS}DEVICE_SECRET_1`;
+const SECRET_2_KEY = `${NS}DEVICE_SECRET_2`;
+const PSK_KEY = `${NS}DEVICE_PSK`;
 const ALL_KEYS = [ERP_SECRET_KEY, SIGNING_KEY, SECRET_1_KEY, SECRET_2_KEY, PSK_KEY];
 
 function setSecrets() {
@@ -31,12 +39,18 @@ function setSecrets() {
   process.env[PSK_KEY] = "device-psk-value";
 }
 
+let tenantsThisTest = 0;
+
 afterEach(() => {
   for (const key of ALL_KEYS) delete process.env[key];
+  tenantsThisTest = 0;
 });
 
+/** `slug` names the scenario; the test's first tenant is created under
+ *  `PRIMARY_SLUG` so the fixed keys above are in its namespace. */
 async function makeTenant(slug: string) {
-  const [tenant] = await db.insert(tenants).values({ slug, name: "Fiscal Co", country: "EG" }).returning();
+  const actual = tenantsThisTest++ === 0 ? PRIMARY_SLUG : slug;
+  const [tenant] = await db.insert(tenants).values({ slug: actual, name: "Fiscal Co", country: "EG" }).returning();
   return tenant;
 }
 
@@ -308,5 +322,51 @@ describe("resolveEtaConfig — tenant isolation", () => {
 
     expect(await db.select().from(etaTenantConfig)).toHaveLength(0);
     expect(await db.select().from(etaPosCredentials)).toHaveLength(0);
+  });
+});
+
+describe("credential refs are bound to the tenant's own namespace", () => {
+  it("refuses to resolve a ref naming any other env key — and never reads it", async () => {
+    setSecrets();
+    const tenant = await makeTenant("eta-ns");
+    const device = await makeDevice(tenant.id, "till-ns");
+    await seedTenantConfig(tenant.id);
+    // A key that IS set in the environment, so only the namespace rule can stop it.
+    process.env.ETA_SOMEONE_ELSE__CLIENT_SECRET = "another-tenants-secret";
+    try {
+      for (const foreign of ["DATABASE_URL", "env://RESEND_API_KEY", "env://ETA_SOMEONE_ELSE__CLIENT_SECRET"]) {
+        await withTenant(tenant.id, (tx) => tx.delete(etaPosCredentials));
+        await seedDeviceCredential(tenant.id, device.id, { clientSecret1Ref: foreign });
+        const error = await resolveEtaConfig(tenant.id, device.id).catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(EtaConfigError);
+        expect((error as EtaConfigError).code).toBe("secret-ref-out-of-namespace");
+        expect((error as EtaConfigError).message).toContain(etaSecretRefPrefix(PRIMARY_SLUG));
+        expect((error as EtaConfigError).message).not.toContain("another-tenants-secret");
+      }
+    } finally {
+      delete process.env.ETA_SOMEONE_ELSE__CLIENT_SECRET;
+    }
+  });
+
+  it("refuses the lazily-resolved ERP and signing refs the same way, at the moment they are asked for", async () => {
+    setSecrets();
+    const tenant = await makeTenant("eta-ns-lazy");
+    await seedTenantConfig(tenant.id, { clientSecretRef: "env://DATABASE_URL", signingKeyRef: "env://RESEND_API_KEY" });
+    const cfg = await resolveEtaConfig(tenant.id);
+    expect(() => cfg!.erp.clientSecret()).toThrow(/outside this tenant's namespace/);
+    expect(() => cfg!.signingKey()).toThrow(/outside this tenant's namespace/);
+  });
+
+  it("cannot be escaped by a slug that prefixes another tenant's", () => {
+    // `acme` owns ETA_ACME__…; `acme--x` owns ETA_ACME__X__…. NAME may not
+    // contain `__`, so neither can claim the other's keys.
+    expect(isTenantBoundSecretRef("env://ETA_ACME__CLIENT_SECRET", "acme")).toBe(true);
+    expect(isTenantBoundSecretRef("env://ETA_ACME__X__CLIENT_SECRET", "acme")).toBe(false);
+    expect(isTenantBoundSecretRef("env://ETA_ACME__X__CLIENT_SECRET", "acme--x")).toBe(true);
+    expect(isTenantBoundSecretRef("env://ETA_ACME__CLIENT_SECRET", "acme--x")).toBe(false);
+    expect(isTenantBoundSecretRef("env://ETA_ACME_X__CLIENT_SECRET", "acme")).toBe(false);
+    expect(isTenantBoundSecretRef("env://ETA_ACME__", "acme")).toBe(false);
+    expect(isTenantBoundSecretRef("env://ETA_ACME___LEADING", "acme")).toBe(false);
+    expect(isTenantBoundSecretRef("ETA_ACME__CLIENT_SECRET", "acme")).toBe(true); // legacy bare spelling
   });
 });

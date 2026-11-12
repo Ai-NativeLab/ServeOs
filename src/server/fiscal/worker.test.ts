@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, afterAll } from "vitest";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
@@ -21,6 +21,7 @@ import {
   type EtaWireContextConfig, type EtaDocType,
 } from "./schema";
 import { drainEtaSubmissions, MAX_ATTEMPTS } from "./worker";
+import { etaSecretKeyPrefix } from "./config";
 import { SUBMISSION_WINDOW_MS } from "./constants";
 import { getSubmissionById, listSubmissions } from "./read-model";
 import { finalizeSubmissionRow, reconcileMissingReceipts } from "./finalize";
@@ -41,22 +42,39 @@ import type {
  * `FiscalProvider` contract puts a network call behind.
  */
 
-const SECRET_KEYS = {
-  erp: "TEST_WORKER_ETA_ERP_SECRET",
-  secret1: "TEST_WORKER_ETA_SECRET_1",
-  secret2: "TEST_WORKER_ETA_SECRET_2",
-  psk: "TEST_WORKER_ETA_PSK",
+/**
+ * Credential refs are TENANT-BOUND (`etaSecretKeyPrefix`): each must name a key
+ * in its own tenant's `ETA_<SLUG>__` namespace. So the env keys are derived per
+ * tenant at seed time, set, and tracked for removal.
+ */
+const SECRET_VALUES = {
+  ERP_SECRET: "erp-secret",
+  SECRET_1: "device-secret-1",
+  SECRET_2: "device-secret-2",
+  PSK: "device-psk",
 } as const;
+const envKeysSet = new Set<string>();
 
-beforeAll(() => {
-  process.env[SECRET_KEYS.erp] = "erp-secret";
-  process.env[SECRET_KEYS.secret1] = "device-secret-1";
-  process.env[SECRET_KEYS.secret2] = "device-secret-2";
-  process.env[SECRET_KEYS.psk] = "device-psk";
-});
+/** Sets `name` = `value` in `tenantId`'s namespace; returns the env:// ref. */
+async function tenantSecretRef(tenantId: string, name: string, value: string): Promise<string> {
+  const [tenant] = await db.select({ slug: tenants.slug }).from(tenants).where(eq(tenants.id, tenantId));
+  const key = `${etaSecretKeyPrefix(tenant.slug)}${name}`;
+  process.env[key] = value;
+  envKeysSet.add(key);
+  return `env://${key}`;
+}
+
+async function tenantSecretRefs(tenantId: string) {
+  return {
+    erp: await tenantSecretRef(tenantId, "ERP_SECRET", SECRET_VALUES.ERP_SECRET),
+    secret1: await tenantSecretRef(tenantId, "SECRET_1", SECRET_VALUES.SECRET_1),
+    secret2: await tenantSecretRef(tenantId, "SECRET_2", SECRET_VALUES.SECRET_2),
+    psk: await tenantSecretRef(tenantId, "PSK", SECRET_VALUES.PSK),
+  };
+}
 
 afterAll(() => {
-  for (const key of Object.values(SECRET_KEYS)) delete process.env[key];
+  for (const key of envKeysSet) delete process.env[key];
 });
 
 const WIRE_CONTEXT: EtaWireContextConfig = {
@@ -250,11 +268,12 @@ async function seedFiscalConfig(
   tenantId: string,
   overrides: Partial<typeof etaTenantConfig.$inferInsert> = {},
 ) {
+  const refs = await tenantSecretRefs(tenantId);
   await withTenant(tenantId, (tx) => tx.insert(etaTenantConfig).values({
     tenantId,
     registrationNumber: "200173707",
     clientId: "erp-client",
-    clientSecretRef: SECRET_KEYS.erp,
+    clientSecretRef: refs.erp,
     environment: "preprod",
     activationStatus: "active",
     wireContextJson: WIRE_CONTEXT,
@@ -263,10 +282,11 @@ async function seedFiscalConfig(
 }
 
 async function seedDeviceCredential(tenantId: string, deviceId: string, etaSerial = "POS-001") {
+  const refs = await tenantSecretRefs(tenantId);
   await withTenant(tenantId, (tx) => tx.insert(etaPosCredentials).values({
     tenantId, deviceId, etaSerial, clientId: "device-client",
-    clientSecret1Ref: SECRET_KEYS.secret1, clientSecret2Ref: SECRET_KEYS.secret2,
-    presharedKeyRef: SECRET_KEYS.psk, posOsVersion: "IOS", posModelFramework: "1", status: "active",
+    clientSecret1Ref: refs.secret1, clientSecret2Ref: refs.secret2,
+    presharedKeyRef: refs.psk, posOsVersion: "IOS", posModelFramework: "1", status: "active",
   }));
 }
 
@@ -285,11 +305,15 @@ type Fixture = Awaited<ReturnType<typeof seedPosContext>> & { receipt: Awaited<R
  * authoritative fallback.
  */
 async function seedSale(
-  opts: { configureFirst?: boolean; clientOrderId?: string; signingKeyRef?: string } = {},
+  opts: { configureFirst?: boolean; clientOrderId?: string; signingKey?: string } = {},
 ): Promise<Fixture> {
   const configureFirst = opts.configureFirst ?? true;
-  const fiscalConfig = opts.signingKeyRef ? { signingKeyRef: opts.signingKeyRef } : {};
   const s = await seedPosContext("owner");
+  // The e-seal material goes in the env key the tenant's `signing_key_ref`
+  // names, inside its own namespace — through the REAL seam.
+  const fiscalConfig = opts.signingKey
+    ? { signingKeyRef: await tenantSecretRef(s.tenantId, "SIGNING_KEY", opts.signingKey) }
+    : {};
   await openShiftForCtx(s.ctx);
   await seedTaxCode(s.tenantId, s.productId);
 
@@ -883,8 +907,11 @@ describe("drainEtaSubmissions — the failure taxonomy", () => {
     // — but while resolveEtaConfig resolved it eagerly, this one unset env var
     // failed the whole tenant, and the worker turned that into a PERMANENT
     // failure on every receipt.
+    // In the tenant's namespace, so the ONLY thing wrong with it is that it is unset.
+    const [tenant] = await db.select({ slug: tenants.slug }).from(tenants).where(eq(tenants.id, s.tenantId));
+    const danglingRef = `env://${etaSecretKeyPrefix(tenant.slug)}SIGNING_KEY_NOT_SET`;
     await withTenant(s.tenantId, (tx) => tx.update(etaTenantConfig)
-      .set({ signingKeyRef: "TEST_WORKER_ETA_SIGNING_KEY_THAT_IS_NOT_SET" })
+      .set({ signingKeyRef: danglingRef })
       .where(eq(etaTenantConfig.tenantId, s.tenantId)));
     const provider = new FakeEta([accepted202("sub-unsigned")]);
 
@@ -1617,10 +1644,6 @@ async function placeWebOrder(
 // row with the buyer in `request_json`, and nothing else.
 // ---------------------------------------------------------------------------
 
-/** The env key a signed tenant's `signing_key_ref` points at. Set and deleted
- *  per test, so no other case sees a configured seal. */
-const SIGNING_KEY_ENV = "TEST_WORKER_ETA_SIGNING_KEY";
-
 const B2B_BUYER: FiscalInvoiceBuyer = {
   rin: "313717919",
   name: "Receiver Company LLC",
@@ -1943,9 +1966,8 @@ describe("B2B e_invoice — the worker's submit/poll path", () => {
     // Through the REAL seam: the bundle goes in the env var the tenant's
     // `signing_key_ref` names, and `resolveInvoiceSigner` parses it back out.
     // Nothing is injected past the config layer.
-    process.env[SIGNING_KEY_ENV] = signer.pemBundle();
-    try {
-      const s = await seedSale({ clientOrderId: "b2b-signed", configureFirst: false, signingKeyRef: `env://${SIGNING_KEY_ENV}` });
+    {
+      const s = await seedSale({ clientOrderId: "b2b-signed", configureFirst: false, signingKey: signer.pemBundle() });
       await enqueueInvoice(s.tenantId, s.receipt.orderId);
       await finalizeSubmissionRow(s.tenantId, (await invoiceRowsFor(s.tenantId))[0].id);
 
@@ -1962,8 +1984,6 @@ describe("B2B e_invoice — the worker's submit/poll path", () => {
       // Still no local uuid and no QR — signing changes neither.
       expect(row.etaUuid).toBeNull();
       expect(row.qrPayload).toBeNull();
-    } finally {
-      delete process.env[SIGNING_KEY_ENV];
     }
 
     // ...and the unsigned control, same code path, no seal configured.
@@ -1977,9 +1997,8 @@ describe("B2B e_invoice — the worker's submit/poll path", () => {
   });
 
   it("fails a signed tenant permanently when the seal material is unusable, never downgrading to v0.9", async () => {
-    process.env[SIGNING_KEY_ENV] = "this is not a PEM bundle";
-    try {
-      const s = await seedSale({ clientOrderId: "b2b-badseal", configureFirst: false, signingKeyRef: `env://${SIGNING_KEY_ENV}` });
+    {
+      const s = await seedSale({ clientOrderId: "b2b-badseal", configureFirst: false, signingKey: "this is not a PEM bundle" });
       await enqueueInvoice(s.tenantId, s.receipt.orderId);
 
       const error = await finalizeSubmissionRow(s.tenantId, (await invoiceRowsFor(s.tenantId))[0].id).catch((e: unknown) => e);
@@ -1989,8 +2008,6 @@ describe("B2B e_invoice — the worker's submit/poll path", () => {
       // unsigned document the tenant did not ask for.
       const [row] = await invoiceRowsFor(s.tenantId);
       expect(Object.keys(row.requestJson)).not.toContain("invoiceLines");
-    } finally {
-      delete process.env[SIGNING_KEY_ENV];
     }
   });
 

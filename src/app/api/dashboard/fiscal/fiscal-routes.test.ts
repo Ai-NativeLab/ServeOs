@@ -51,8 +51,11 @@ import { PUT as putTaxCode } from "./tax-codes/[productId]/route";
 import { POST as postResubmit } from "./submissions/[id]/resubmit/route";
 import { POST as postInvoice } from "./orders/[id]/invoice/route";
 
-const SECRET_REF = "env://ZZ_ROUTE_ETA_SECRET_SENTINEL";
-const SIGNING_REF = "env://ZZ_ROUTE_ETA_SIGNING_SENTINEL";
+// Refs are TENANT-BOUND (`etaSecretKeyPrefix`): they must sit in the saving
+// tenant's own `ETA_<SLUG>__` namespace, so `seedTenant` gives each test's first
+// tenant the slug `zz-route` and these sentinels live under it.
+const SECRET_REF = "env://ETA_ZZ_ROUTE__SECRET_SENTINEL";
+const SIGNING_REF = "env://ETA_ZZ_ROUTE__SIGNING_SENTINEL";
 
 let n = 0;
 
@@ -62,9 +65,10 @@ function signIn(tenantId: string, roleKeys: RoleKey[], userId: string) {
 }
 
 async function seedTenant() {
+  const [taken] = await db.select({ id: tenants.id }).from(tenants).where(eq(tenants.slug, "zz-route"));
   const [tenant] = await db
     .insert(tenants)
-    .values({ slug: `fiscal-route-${n++}`, name: "Fiscal Co", country: "EG" })
+    .values({ slug: taken ? `fiscal-route-${n++}` : "zz-route", name: "Fiscal Co", country: "EG" })
     .returning();
   const [user] = await db
     .insert(users)
@@ -165,8 +169,8 @@ describe("GET/PUT /api/dashboard/fiscal/config", () => {
 });
 
 describe("GET /api/dashboard/fiscal/devices and /devices/[deviceId]", () => {
-  const DEVICE_SECRET_1 = "env://ZZ_ROUTE_ETA_DEVICE_S1_SENTINEL";
-  const DEVICE_SECRET_2 = "env://ZZ_ROUTE_ETA_DEVICE_S2_SENTINEL";
+  const DEVICE_SECRET_1 = "env://ETA_ZZ_ROUTE__DEVICE_S1_SENTINEL";
+  const DEVICE_SECRET_2 = "env://ETA_ZZ_ROUTE__DEVICE_S2_SENTINEL";
 
   const credentialBody = () => ({
     etaSerial: "POS-001",

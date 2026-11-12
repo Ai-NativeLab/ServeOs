@@ -12,7 +12,7 @@ import { buildReceipt, buildReturnReceipt } from "./build-document";
 import { buildInvoice } from "./build-invoice";
 import { finalizeReceipt, type WireContext } from "./eta-wire";
 import { toWireInvoice, attachSignatures } from "./eta-invoice-wire";
-import { signingKeyThunk } from "./config";
+import { loadTenantSlug, signingKeyThunk } from "./config";
 import { stringifyWire } from "./serialize";
 import { getEtaEnv } from "./eta-env";
 import { EtaConfigError } from "./eta-transport-errors";
@@ -843,7 +843,7 @@ async function loadTenantConfig(tx: Tx, tenantId: string): Promise<ResolvedConfi
     registrationNumber: row.registrationNumber,
     environment: row.environment,
     wireContext: requireWireContext(row.wireContextJson),
-    signingKey: signingKeyThunk(row.signingKeyRef),
+    signingKey: signingKeyThunk(row.signingKeyRef, await loadTenantSlug(tx, tenantId)),
   };
 }
 
