@@ -14,6 +14,8 @@ import { openShift } from "./shifts";
 import type { PosShift } from "./shift-schema";
 import type { PosCashierContext } from "./require-cashier";
 import type { VerticalId } from "@/server/verticals";
+import { withTenant } from "@/db/with-tenant";
+import { etaTenantConfig } from "@/server/fiscal/schema";
 
 /**
  * Opens a drawer for a fixture. Cash cannot be taken without one, so any test
@@ -108,4 +110,31 @@ export async function seedPosContext(
     managerId: managerUser.id,
     total,
   };
+}
+
+/**
+ * Turns ETA on for a seeded tenant: an `eta_tenant_config` row with
+ * `activation_status = 'active'` — the second half of `isFiscalEnabled` (the
+ * first, country EG, is `seedPosContext`'s default). Without it an EG tenant is
+ * still onboarding and NOTHING fiscal happens: no enqueue at sale or refund
+ * time, no storefront block, no B2B section on the till.
+ *
+ * Minimal on purpose (no wire context, no device credentials): enough for the
+ * gate and for rows to be queued; a test that needs a row FINALIZED seeds the
+ * rest itself. Upserts, so calling it on a tenant that already has a config
+ * row only flips the status.
+ */
+export async function activateFiscal(
+  tenantId: string,
+  status: "not_configured" | "pending" | "active" | "suspended" = "active",
+): Promise<void> {
+  await withTenant(tenantId, (tx) =>
+    tx.insert(etaTenantConfig).values({
+      tenantId,
+      registrationNumber: "200173707",
+      clientId: "test-client",
+      clientSecretRef: "TEST_ETA_UNUSED_SECRET",
+      activationStatus: status,
+    }).onConflictDoUpdate({ target: etaTenantConfig.tenantId, set: { activationStatus: status } }),
+  );
 }

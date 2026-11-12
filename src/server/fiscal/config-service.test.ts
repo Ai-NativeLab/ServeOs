@@ -10,7 +10,7 @@ import { users } from "@/server/auth/schema";
 import { posDevices } from "@/server/pos/schema";
 import { auditEvents } from "@/server/audit/schema";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
-import { seedPosContext, openShiftForCtx } from "@/server/pos/test-helpers";
+import { seedPosContext, openShiftForCtx, activateFiscal } from "@/server/pos/test-helpers";
 import { recordSale } from "@/server/pos/record-sale";
 import {
   etaSubmissions,
@@ -1133,6 +1133,10 @@ async function seedSale(opts: { configureFirst: boolean }) {
         environment: "preprod",
         activationStatus: "active",
         wireContextJson: WIRE_CONTEXT,
+      }).onConflictDoUpdate({
+        // Completes the config `activateFiscal` opened for a configured-after sale.
+        target: etaTenantConfig.tenantId,
+        set: { clientSecretRef: REFS.erp, activationStatus: "active", wireContextJson: WIRE_CONTEXT },
       }),
     );
     await withTenant(s.tenantId, (tx) =>
@@ -1149,6 +1153,9 @@ async function seedSale(opts: { configureFirst: boolean }) {
     );
   };
 
+  // Active either way (an inactive tenant enqueues nothing — `isFiscalEnabled`);
+  // configured-after means active but incomplete, so finalization fails inline.
+  if (!opts.configureFirst) await activateFiscal(s.tenantId);
   if (opts.configureFirst) await configure();
   const receipt = await recordSale(s.ctx, {
     clientOrderId: `sale-${n++}`,
