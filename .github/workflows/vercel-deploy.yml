@@ -110,20 +110,20 @@ jobs:
       - run: npm i -g vercel@latest
 
       # The production build applies database migrations before the deploy goes
-      # live (see next.config.ts / package.json build script), so it needs the
-      # real production env — which is what `vercel pull` fetches.
+      # live (scripts/release-migrate.ts, run by package.json's vercel-build),
+      # so it needs the real production env — which is what `vercel pull`
+      # fetches, apart from DATABASE_URL (next step).
       - name: Pull Vercel environment
         run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
 
-      # The pulled dotenv file mangles DATABASE_URL — the value round-trips
-      # through a file and comes back with a broken host (it resolved to
-      # "base", a fragment of "supabase"). Vercel's own builder injects env
-      # vars directly and never hit this. So drop it from the pulled file and
-      # pass the real value in from a GitHub secret below, where nothing
-      # re-parses it. Runtime is unaffected: with --prebuilt, the deployed
-      # app still reads env from the Vercel project, not from this file.
-      - name: Use the secret DATABASE_URL, not the round-tripped one
-        run: sed -i '/^DATABASE_URL=/d' .vercel/.env.production.local
+      # Migrations get DATABASE_URL from a GitHub secret instead of the pulled
+      # file, after checking it is on the same host as the Vercel project's
+      # value (which the deployed app uses). Why, and what is still unproven:
+      # the comment in the script and PR #162.
+      - name: Swap in the DATABASE_URL secret (checked against Vercel's)
+        env:
+          DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+        run: bash .github/scripts/use-secret-database-url.sh .vercel/.env.production.local PROD_DATABASE_URL
 
       - name: Build
         env:
@@ -158,15 +158,11 @@ jobs:
       - name: Pull Vercel environment
         run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
 
-      # The pulled dotenv file mangles DATABASE_URL — the value round-trips
-      # through a file and comes back with a broken host (it resolved to
-      # "base", a fragment of "supabase"). Vercel's own builder injects env
-      # vars directly and never hit this. So drop it from the pulled file and
-      # pass the real value in from a GitHub secret below, where nothing
-      # re-parses it. Runtime is unaffected: with --prebuilt, the deployed
-      # app still reads env from the Vercel project, not from this file.
-      - name: Use the secret DATABASE_URL, not the round-tripped one
-        run: sed -i '/^DATABASE_URL=/d' .vercel/.env.production.local
+      # Same swap and check as the production job.
+      - name: Swap in the DATABASE_URL secret (checked against Vercel's)
+        env:
+          DATABASE_URL: ${{ secrets.QA_DATABASE_URL }}
+        run: bash .github/scripts/use-secret-database-url.sh .vercel/.env.production.local QA_DATABASE_URL
 
       - name: Build
         env:
