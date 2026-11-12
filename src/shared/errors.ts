@@ -18,17 +18,18 @@ export abstract class DomainError extends Error {
  * absence of one non-silent. `NaN` and `Infinity` are accepted by Postgres
  * `numeric`, so without it a slip writes permanent, un-arithmetic-able poison
  * into a money column instead of failing.
+ *
+ * Deliberately a plain `Error`, NOT a `DomainError`. Every DomainError handler
+ * treats it as operator feedback: `domainErrorValue` turns it into a toast and
+ * `api/orders` answers 422 — both without logging. A bug that reached the
+ * formatter must instead hit the error boundary / a logged 500, where someone
+ * will see it. `code` is kept so the POS sync dispatcher can still name it.
  */
-export class NonFiniteAmountError extends DomainError {
+export class NonFiniteAmountError extends Error {
   readonly code = "non_finite_amount";
   constructor(public readonly field: string, public readonly value: number) {
     super(`${field} must be a finite number, got ${value}`);
     this.name = "NonFiniteAmountError";
-  }
-  messageFor(locale: Locale): string {
-    return locale === "ar"
-      ? "حدث خطأ في حساب أحد المبالغ، يرجى المحاولة مرة أخرى"
-      : "Something went wrong calculating an amount — please try again";
   }
 }
 
