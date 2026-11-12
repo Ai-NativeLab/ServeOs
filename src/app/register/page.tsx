@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { listPlans } from "@/server/subscription";
 import { LogoMark } from "@/components/brand/LogoMark";
+import { getEnv } from "@/env";
 import { RegisterForm } from "./RegisterForm";
 
 /**
@@ -29,7 +30,7 @@ export default async function RegisterPage({
           Start your free trial. No credit card required.
         </p>
 
-        <RegisterForm plan={planKey} />
+        <RegisterForm plan={planKey} rootDomain={getEnv().ROOT_DOMAIN} />
 
         <p className="mt-5 text-center text-[13px] text-muted-foreground">
           Already have an account?{" "}

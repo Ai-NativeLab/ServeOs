@@ -1,2 +1,8 @@
 export { onboardingApplications, applicationStatus, type OnboardingApplication } from "./schema";
-export { registerTenant, type RegisterInput, type RegisterResult } from "./service";
+export {
+  registerTenant,
+  RegistrationError,
+  type RegisterInput,
+  type RegisterResult,
+  type RegistrationErrorCode,
+} from "./service";
