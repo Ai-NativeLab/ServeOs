@@ -1,3 +1,6 @@
+import { NextResponse } from "next/server";
+import { DomainError, type Locale } from "@/shared/errors";
+
 /** Thrown when a pairing code cannot be redeemed (missing, expired, or already used). */
 export class PosPairingError extends Error {
   constructor(message = "Invalid or expired pairing code") {
@@ -11,6 +14,43 @@ export class PosAuthError extends Error {
   constructor(message = "Invalid or revoked device token") {
     super(message);
     this.name = "PosAuthError";
+  }
+}
+
+/**
+ * Maps a POS auth-layer throw onto its HTTP response, or returns null when the
+ * caller should keep processing other error types.
+ *
+ * ORDER MATTERS (#187 review, C3): PosTenantBlockedError subclasses PosAuthError.
+ * Answering a blocked tenant with the blanket 401 "Unauthorized" makes the till
+ * treat suspension as token death and DELETE its pairing — unrecoverable without
+ * re-pairing even after reactivation. The 403 carries `code: "tenant_blocked"`
+ * so clients can distinguish "retry after reactivation" from "re-pair".
+ */
+export function posAuthResponse(e: unknown): NextResponse | null {
+  if (e instanceof PosTenantBlockedError) {
+    return NextResponse.json(
+      { error: e.message, code: "tenant_blocked" },
+      { status: 403 },
+    );
+  }
+  if (e instanceof PosAuthError) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  return null;
+}
+
+/**
+ * The device token itself is fine — the TENANT behind it is not servable
+ * (suspended, rejected, or still onboarding). Subclasses PosAuthError so every
+ * POS v1 route's existing `catch (e instanceof PosAuthError)` refuses without
+ * needing to know about this case (#164); routes that surface a message to a
+ * human (cashier login) can special-case it for a 403 that says why.
+ */
+export class PosTenantBlockedError extends PosAuthError {
+  constructor(public readonly tenantStatus: string) {
+    super(`This store is ${tenantStatus} — ask the platform team to reactivate it before using the till`);
+    this.name = "PosTenantBlockedError";
   }
 }
 
@@ -91,5 +131,26 @@ export class CashCountMismatchError extends Error {
   constructor(message = "Denominations do not sum to the counted total") {
     super(message);
     this.name = "CashCountMismatchError";
+  }
+}
+
+/**
+ * The order's offline payment (InstaPay / wallet) is still awaiting
+ * verification. Settling it is a `payments:confirm` decision taken in the
+ * dashboard's payments queue — a cashier with `pos:sell` must not be able to
+ * side-step that by ringing a tender against it (#165 / #187 review). A
+ * DomainError so routes can answer `{ error, code }` and the till can say
+ * where the order has to be resolved instead of a generic failure.
+ */
+export class PaymentNeedsVerificationError extends DomainError {
+  readonly code = "payment_needs_verification";
+  constructor() {
+    super("This order's payment is awaiting verification — resolve it in the payments queue");
+    this.name = "PaymentNeedsVerificationError";
+  }
+  messageFor(locale: Locale): string {
+    return locale === "ar"
+      ? "الدفع لهذا الطلب بانتظار التأكيد — راجعه من قائمة المدفوعات في لوحة التحكم"
+      : "This order's payment is awaiting verification — resolve it in the payments queue on the dashboard";
   }
 }

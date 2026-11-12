@@ -1,0 +1,942 @@
+import type {
+  FiscalDocument,
+  FiscalDocLine,
+  FiscalTaxAmount,
+  FiscalSaleInput,
+  FiscalRefundInput,
+  FeeLineConfig,
+} from "./provider";
+import type { ProductTaxCode } from "./schema";
+import type { Order, OrderItem } from "@/server/ordering/schema";
+import type { OrderPayment } from "@/server/pos/tender-schema";
+import {
+  addDecimal, sumDecimal, subtractDecimal, compareDecimal, divideDecimal,
+  multiplyDecimal, allocateLargestRemainder, isZeroDecimal, assertDecimal, hundredAtRateScale,
+} from "./decimal";
+import {
+  MissingTaxCodeError, FeeLineConfigMissingError, IrreconcilableOrderError,
+  EmptyReturnReceiptError, RefundLineOrphanError, DisproportionateRefundLineError,
+} from "./errors";
+import { LINE_TAX_TOLERANCE } from "./constants";
+
+/**
+ * PURE document builders: a sale or refund plus its resolved
+ * `product_tax_codes` in, a wire-agnostic `FiscalDocument` out. No HTTP, no
+ * DB, no config — `./eta-wire` turns the result into receipt v1.2 JSON and
+ * `./serialize` hashes it into a uuid.
+ *
+ * MONEY (F9): amounts are `money(n)` strings copied from the stored row. The
+ * derivations that do happen exist because ETA's published validation rules
+ * (https://sdk.invoicing.eta.gov.eg/main-calculations/) demand them, and all
+ * of them run on scaled `bigint`s — never floats. See `allocateVat` for the
+ * one place a stored total is split.
+ */
+
+/** ServeOS is single-currency; ETA requires an ISO 4217 code and, for a local
+ *  Egyptian issuer, an exchangeRate only when the currency is not EGP. */
+const CURRENCY = "EGP";
+
+/**
+ * Document-level `taxTotals`, aggregated from the lines' OWN `taxableItems`.
+ *
+ * ETA defines it exactly that way and re-derives it on receipt — Main
+ * Calculations rule 26, "taxTotals <taxType> = Sum (itemData[*].taxableItems
+ * [taxType=].amount)" — so the lines are the authority and this is a fold over
+ * them, never a second, independent computation of the same money. For a sale
+ * that means the total still equals `orders.vatAmount` to the cent, because
+ * `allocateVat` split exactly that figure across exactly these lines.
+ *
+ * IT GROUPS BY (taxType, subType), NOT BY taxType ALONE, and the pair matters
+ * even though ETA's own wire structure carries only the type. A group is what
+ * a `rate` belongs to: two subtypes of one tax type are two different rates,
+ * and collapsing them here would leave the document-level entry claiming one
+ * rate for money charged at two. The wire mappers fold the groups back down to
+ * ETA's per-taxType shape at emit time (`foldTaxTotalsByType` in `./eta-wire`),
+ * which is where the "TaxType needs to be unique" rule actually applies.
+ *
+ * WHAT THIS REPLACED, and why it is not a behaviour change for any document
+ * ServeOS emits today: both builders used to take the document's single
+ * `taxTotals` entry's type and subtype from the FIRST taxed draft and pair it
+ * with the whole stored VAT figure. With one tax type in play — every ServeOS
+ * document, since a tenant's `product_tax_codes` are all T1 VAT in practice —
+ * the two produce byte-identical output, which `build-invoice.test.ts` pins
+ * directly. With TWO, the old form was simply wrong: it reported the entire
+ * document's tax under whichever type happened to sort first, and ETA's rule 26
+ * would have refused it. A B2B invoice is the first document that can plausibly
+ * mix them (a table-tax T3 item alongside VAT), which is why this is widened
+ * now rather than left as a known-latent bug.
+ *
+ * Order is FIRST-APPEARANCE, so the emitted array is deterministic — the same
+ * sale must always serialize to the same bytes.
+ */
+export function aggregateTaxTotals(lines: FiscalDocLine[]): FiscalTaxAmount[] {
+  const groups = new Map<string, FiscalTaxAmount>();
+  for (const line of lines) {
+    for (const tax of line.taxes) {
+      const key = `${tax.taxType}|${tax.taxSubType ?? ""}`;
+      const seen = groups.get(key);
+      if (seen) seen.amount = addDecimal("taxTotals", seen.amount, tax.amount);
+      else groups.set(key, { taxType: tax.taxType, taxSubType: tax.taxSubType, rate: tax.rate, amount: tax.amount });
+    }
+  }
+  return [...groups.values()];
+}
+
+/** ETA allows 5 decimal places on `unitPrice`; a VAT-inclusive net unit price
+ *  needs them (see `buildLines`). */
+const UNIT_PRICE_SCALE = 5;
+
+/**
+ * ETA's `dateTimeIssued` examples are second precision (`2022-02-03T00:00:00Z`)
+ * and the same value is echoed into the QR url, so milliseconds are trimmed
+ * here rather than at each consumer.
+ */
+export function toEtaUtc(at: Date): string {
+  return `${at.toISOString().slice(0, 19)}Z`;
+}
+
+/**
+ * `FiscalDocument.feesTotal` for a SALE — the semantic sum of both fee columns.
+ *
+ * Kept for the contract's sake and identical for an e-receipt and a B2B
+ * e-invoice: the fees themselves ship as their own document lines in both
+ * families (receipt v1.2's `feesAmount` "accepts only zero values" and invoice
+ * v1.0 has no document-level fee slot at all), so this is never the thing that
+ * carries them onto the wire.
+ */
+export function feesTotalOf(order: Order): string {
+  return addDecimal("feesTotal", order.serviceChargeAmount ?? "0.00", order.deliveryFee);
+}
+
+/**
+ * `allocateLargestRemainder`, with the ZERO weights held out of the draw.
+ *
+ * READ THE SIGN RULE BEFORE ASSUMING THIS FIXES A BUG — IT DOES NOT, HERE.
+ * A cent landing on a line that weighed nothing is never harmless: it is money
+ * or tax attributed to a line whose own figures cannot carry it (a negative
+ * `netSale`, a tax above what rule 42 permits). But whether the allocator can
+ * DO that depends entirely on the sign of the total, and every call site in this
+ * module passes a non-negative one:
+ *
+ *   POSITIVE total — IMPOSSIBLE. A zero weight's remainder is exactly zero.
+ *     With `leftover = k` cents to hand out, Σ remainders is `k * weightSum` and
+ *     every remainder is strictly below `weightSum`, so at least `k + 1` entries
+ *     hold a POSITIVE remainder; the k cents are taken by the top k of those and
+ *     never reach a zero. (Verified by brute force over ~312k random splits with
+ *     zero weights present: zero hits.)
+ *
+ *   NEGATIVE total — CONSTANT. Every remainder is then ≤ 0, so a remainder of
+ *     zero is the LARGEST and a zero weight sorts FIRST, taking a `-1` cent
+ *     immediately. This is real and reached often (~73% of the same sample) —
+ *     it is exactly the case `@/server/pos/refund-vat`'s `floorLineVatsAt0`
+ *     already excludes zero weights for, and its comment says so.
+ *
+ * So this is HARDENING, not a repair: it makes "no part exceeds its own weight"
+ * true by CONSTRUCTION and independent of the total's sign, rather than resting
+ * on the counting argument above plus the fact that nothing here happens to pass
+ * a negative total today. A future split that does — netting one refund against
+ * another, say, which is precisely what the refund domain already does — cannot
+ * reintroduce the class at these four sites. The counting argument is written
+ * down because without it the next reader cannot tell whether removing this is
+ * safe.
+ *
+ * WHAT IT DOES NOT DO. A `total` larger than Σ weights still over-fills the
+ * positive lines — the method cannot invent capacity, and each call site is
+ * responsible for its own precondition (documented there). And when EVERY
+ * weight is zero this returns all zeros instead of throwing
+ * "cannot allocate — every weight is zero": the callers that care catch that as
+ * a sum mismatch and refuse the document by name, which is a better error than
+ * the allocator's.
+ */
+function shareOverPositive(total: string, weights: string[]): string[] {
+  const taking = weights.map((weight, index) => ({ weight, index })).filter((w) => compareDecimal(w.weight, "0") > 0);
+  if (taking.length === 0 || isZeroDecimal(total)) return weights.map(() => "0.00");
+
+  const shares = allocateLargestRemainder("proportional share", total, taking.map((w) => w.weight));
+  const byIndex = new Map(taking.map((w, position) => [w.index, shares[position]]));
+  return weights.map((_, index) => byIndex.get(index) ?? "0.00");
+}
+
+function taxCodeIndex(taxCodes: ProductTaxCode[]): Map<string, ProductTaxCode> {
+  return new Map(taxCodes.map((code) => [code.productId, code]));
+}
+
+function requireTaxCode(codes: Map<string, ProductTaxCode>, productId: string): ProductTaxCode {
+  const code = codes.get(productId);
+  if (!code) throw new MissingTaxCodeError(productId);
+  return code;
+}
+
+/**
+ * Which VAT convention the stored figures were computed under, derived from
+ * the row alone (`orders` does not persist the tenant's `pricesIncludeVat`
+ * flag). `computeOrderTotals` (src/lib/order-totals.ts) leaves exactly one of
+ * these two identities true, and the delivery fee is outside the taxable base
+ * in both:
+ *
+ *   exclusive: total = subtotal + serviceCharge + vatAmount + deliveryFee
+ *   inclusive: total = subtotal + serviceCharge + deliveryFee
+ *
+ * With no VAT the two coincide and either answer allocates nothing.
+ */
+function vatMode(order: Order): "inclusive" | "exclusive" {
+  const taxable = addDecimal("taxable", order.subtotal, order.serviceChargeAmount ?? "0.00");
+  const exclusive = addDecimal("total", taxable, order.vatAmount, order.deliveryFee);
+  const inclusive = addDecimal("total", taxable, order.deliveryFee);
+
+  if (compareDecimal(order.total, exclusive) === 0) return "exclusive";
+  if (compareDecimal(order.total, inclusive) === 0) return "inclusive";
+  throw new IrreconcilableOrderError(
+    order.id,
+    `stored total ${order.total} matches neither the VAT-exclusive total ${exclusive} nor the VAT-inclusive total ${inclusive} ` +
+      `(subtotal ${order.subtotal}, serviceCharge ${order.serviceChargeAmount ?? "0.00"}, vat ${order.vatAmount}, delivery ${order.deliveryFee})`,
+  );
+}
+
+/** One line's raw ingredients, before VAT is split across them. */
+type LineDraft = {
+  itemCode: string;
+  codeSource: FiscalDocLine["codeSource"];
+  taxType: string;
+  taxSubType: string | null;
+  unitType: string;
+  description: string;
+  internalCode: string;
+  quantity: number;
+  /** The line's amount before VAT is separated out, after every discount. */
+  base: string;
+  /** Discounts to report on the line: the line's own, plus its share of any
+   *  order-level discount. */
+  discounts: string[];
+  /** Whether this line sits in the taxable base ServeOS actually taxed. */
+  bearsVat: boolean;
+};
+
+function feeDraft(config: FeeLineConfig, amount: string, bearsVat: boolean): LineDraft {
+  return {
+    itemCode: config.itemCode,
+    codeSource: config.codeSource,
+    taxType: config.taxType,
+    taxSubType: config.taxSubType,
+    unitType: config.unitType,
+    description: config.description,
+    internalCode: config.internalCode,
+    quantity: 1,
+    base: amount,
+    discounts: [],
+    bearsVat,
+  };
+}
+
+/**
+ * The sale's lines, with `orders.discountAmount` pushed down onto them.
+ *
+ * ETA computes tax per line from that line's own base and validates (Main
+ * Calculations) that
+ *   taxableItems[T1].amount =
+ *     (t2Amount + netSale + TotalTaxableFees[T5-T12] + valueDifference + t3Amount) * rate / 100
+ * which reduces to `netSale * rate / 100` for ServeOS today, because we emit
+ * no T2/T3 line taxes, no T5-T12 taxable fees and no valueDifference. ServeOS
+ * applies the order-level discount BEFORE working out VAT. Reporting it as
+ * `extraReceiptDiscountData` (which ETA subtracts AFTER tax) would therefore
+ * misstate the tax base; allocating it across the lines it actually reduced
+ * keeps every published equation true.
+ */
+/**
+ * The inputs the SALE line pipeline reads — the exact common subset of
+ * `FiscalSaleInput` and `FiscalInvoiceInput`.
+ *
+ * Written as a structural type rather than as a base interface either of those
+ * extends, so neither has to know this one exists: an e-receipt and a B2B
+ * e-invoice describe the SAME sale, and the only honest way to say that is for
+ * both to satisfy the same shape without either being defined in terms of the
+ * other. Anything on this type is sale data; anything either input adds beyond
+ * it (`previousUuid`, `deviceSerial`, `buyer`) is document data.
+ */
+export type SaleLineInput = {
+  order: Order;
+  items: OrderItem[];
+  taxCodes: ProductTaxCode[];
+  feeLines?: { serviceCharge?: FeeLineConfig; delivery?: FeeLineConfig };
+};
+
+function buildLineDrafts(input: SaleLineInput): LineDraft[] {
+  const { order, items, taxCodes } = input;
+  const codes = taxCodeIndex(taxCodes);
+
+  // ZERO-WEIGHT SITE (1 of 4). A cent of order discount handed to a
+  // zero-`lineTotal` item — a comped line, or one whose own discount already
+  // took it to nothing — would make that line's base NEGATIVE: a free line on
+  // an otherwise ordinary discounted order, and a `netSale` ETA has no meaning
+  // for. NOT REACHABLE TODAY: `orders.discountAmount` is non-negative, and the
+  // sign rule on `shareOverPositive` shows a positive total can never reach a
+  // zero weight. Held out anyway so the property does not depend on that.
+  // PRECONDITION: `discountAmount <= Σ lineTotal`, which the ordering layer
+  // guarantees — `placeOrder` stores `subtotal = Σ lineTotal - orderDiscount`
+  // and a negative subtotal is not a shape it can produce (an order whose
+  // figures contradict that is caught by `vatMode`, which runs first).
+  const productShares = shareOverPositive(
+    assertDecimal(order.discountAmount, "orders.discountAmount"),
+    items.map((item) => item.lineTotal),
+  );
+
+  const drafts: LineDraft[] = items.map((item, index) => {
+    const code = requireTaxCode(codes, item.productId);
+    const share = productShares[index];
+    return {
+      itemCode: code.itemCode,
+      codeSource: code.codeSource,
+      taxType: code.taxType,
+      taxSubType: code.taxSubType,
+      unitType: code.unitType,
+      description: item.nameEn,
+      internalCode: item.productId,
+      quantity: item.quantity,
+      base: subtractDecimal("line base", item.lineTotal, share),
+      discounts: [item.discountAmount, share].filter((amount) => !isZeroDecimal(amount)),
+      bearsVat: true,
+    };
+  });
+
+  const serviceCharge = order.serviceChargeAmount ?? "0.00";
+  if (!isZeroDecimal(serviceCharge)) {
+    const config = input.feeLines?.serviceCharge;
+    if (!config) throw new FeeLineConfigMissingError("serviceCharge", serviceCharge);
+    // In the taxable base: computeOrderTotals taxes (subtotal + serviceCharge).
+    drafts.push(feeDraft(config, serviceCharge, true));
+  }
+
+  if (!isZeroDecimal(order.deliveryFee)) {
+    const config = input.feeLines?.delivery;
+    if (!config) throw new FeeLineConfigMissingError("delivery", order.deliveryFee);
+    // NOT in the taxable base: computeOrderTotals adds the delivery fee after
+    // VAT, so this line carries no taxableItems at all. Emitting a zero T1
+    // amount instead would break ETA's `amount = netSale * rate / 100` rule.
+    drafts.push(feeDraft(config, order.deliveryFee, false));
+  }
+
+  return drafts;
+}
+
+/**
+ * Splits `orders.vatAmount` across the VAT-bearing lines in proportion to
+ * their amounts, by largest remainder, so the parts sum to the stored figure
+ * EXACTLY. Lines outside ServeOS's taxable base get nothing.
+ *
+ * ZERO-WEIGHT SITE (2 of 4), with two would-be consequences. A VAT cent handed
+ * to the DELIVERY line (weighed `0.00` because it sits outside the taxable
+ * base) was zeroed back out immediately below, which would make the split stop
+ * summing to `orders.vatAmount` — the invariant would fire and a perfectly
+ * legitimate sale would be refused PERMANENTLY, the whole receipt lost over a
+ * cent of placement. A cent handed to a VAT-bearing line whose own base is
+ * `0.00` would be quieter: under VAT-inclusive pricing that line's
+ * `netSale = base - vat` goes NEGATIVE and ships.
+ *
+ * NEITHER IS REACHABLE — `orders.vatAmount` is positive here (the zero case
+ * returns above), and the sign rule on `shareOverPositive` shows a positive
+ * total never reaches a zero weight. The guard is there so that stays true
+ * without the counting argument; the zeroing pass it replaced is now provably a
+ * no-op, so it is gone rather than left to imply a hazard it never covered.
+ *
+ * PRECONDITION: `vatAmount <= Σ bearing base`. `computeOrderTotals` derives VAT
+ * as `taxable * rate/100` (exclusive) or `taxable * rate/(100+rate)`
+ * (inclusive) over exactly these lines, so it holds for any rate below 100%.
+ * The invariant below is what catches it if it ever does not.
+ */
+function allocateVat(order: Order, drafts: LineDraft[]): string[] {
+  const bearing = drafts.map((draft) => (draft.bearsVat ? draft.base : "0.00"));
+  if (isZeroDecimal(order.vatAmount)) return drafts.map(() => "0.00");
+
+  const shares = shareOverPositive(order.vatAmount, bearing);
+
+  // Invariant, not decoration: ETA re-derives taxTotals as the sum of the
+  // line taxes, so a drifting split would be rejected. It also stands in for
+  // the allocator's "every weight is zero" throw — VAT charged against a
+  // wholly zero base is genuinely irreconcilable, and this names the order.
+  const summed = sumDecimal("vat split", shares);
+  if (compareDecimal(summed, order.vatAmount) !== 0) {
+    throw new IrreconcilableOrderError(order.id, `allocated VAT ${summed} does not equal stored vatAmount ${order.vatAmount}`);
+  }
+  return shares;
+}
+
+/**
+ * ETA Payment Methods (https://sdk.invoicing.eta.gov.eg/codes/payment-methods/):
+ * C Cash | V Visa | CC Cash with contractor | VC Visa with contractor |
+ * VO Vouchers | PR Promotion | GC Gift Card | P Points | O Others.
+ */
+function tenderCode(method: OrderPayment["method"]): string {
+  switch (method) {
+    // Table row "C | Cash".
+    case "cash": return "C";
+    // Table row "V | Visa" — the only card row in ETA's table, so every card
+    // scheme reports as V. Worth revisiting if ETA publishes a generic code.
+    case "card": return "V";
+    // Table row "O | Others".
+    default: return "O";
+  }
+}
+
+/**
+ * Receipt v1.2 carries ONE `paymentMethod` per document (String(50), not a
+ * collection), so a split payment has to resolve to a single code: the
+ * largest tender wins, ties going to the first recorded.
+ *
+ * Web orders have no `order_payments` rows (that table is POS-only), so they
+ * fall back to `orders.paymentMethod`, whose instapay/wallet values have no
+ * counterpart in ETA's table and therefore report as "O | Others".
+ */
+export function paymentMethodCode(order: Order, payments: OrderPayment[]): string {
+  if (payments.length > 0) {
+    const largest = payments.reduce((best, payment) => (compareDecimal(payment.amount, best.amount) > 0 ? payment : best));
+    return tenderCode(largest.method);
+  }
+  return order.paymentMethod === "cash" ? "C" : "O";
+}
+
+/**
+ * A completed sale as an ETA e-receipt.
+ *
+ * `uuid` is null: a receipt's uuid is the SHA-256 of its own *serialized wire
+ * document*, so it cannot exist before the wire mapping — `finalizeReceipt`
+ * (./serialize) computes it and writes it back.
+ *
+ * BUYER: restaurant sales are walk-in, so the buyer defaults to `{ type: "P" }`
+ * (natural person) with no id or name. Receipt v1.2 makes buyer id + name
+ * Mandatory when "type is P and totalAmount equals to or greater than a
+ * configured value (150000 EGP)", and Main Calculations adds that a P-type
+ * id must be 14 digits. Above that threshold this document would be rejected;
+ * capturing a national ID is deferred to the fiscal config work, and nothing
+ * here invents one.
+ */
+export function buildReceipt(input: FiscalSaleInput): FiscalDocument {
+  const { order } = input;
+  const lines = buildSaleLines(input);
+
+  return {
+    docType: "e_receipt",
+    uuid: null,
+    previousUuid: input.previousUuid,
+    referenceUuid: null,
+    referenceOldUuid: null,
+    buyer: { type: "P" },
+    lines,
+    subtotal: order.subtotal,
+    // The order-level discount now rides on the lines (see buildLineDrafts),
+    // so there is no receipt-level discount left for ETA to subtract.
+    discountTotal: "0.00",
+    feesTotal: feesTotalOf(order),
+    // The lines' own taxes, folded — which IS `orders.vatAmount` for a sale,
+    // because `allocateVat` split exactly that figure across exactly them and
+    // throws if the parts stop summing to it. See `aggregateTaxTotals`.
+    taxTotals: aggregateTaxTotals(lines),
+    total: order.total,
+    paymentMethodCode: paymentMethodCode(order, input.payments),
+    currency: CURRENCY,
+    issuedAt: toEtaUtc(order.placedAt),
+  };
+}
+
+/**
+ * THE SALE LINE PIPELINE, shared verbatim by the e-receipt and the B2B
+ * e-invoice.
+ *
+ * This is the whole of `buildReceipt`'s former body, lifted unchanged: draft the
+ * lines with the order discount pushed down onto them, split `orders.vatAmount`
+ * across the VAT-bearing ones by largest remainder, then take the tax back out
+ * of a VAT-INCLUSIVE base to get ETA's tax-exclusive `netSale` and derive the
+ * unit price from the line's own `totalSale`.
+ *
+ * WHY IT IS SHARED RATHER THAN REIMPLEMENTED, and this is the load-bearing part
+ * of Task 3: an invoice and a receipt for the same sale must report the same
+ * money. The two documents' per-line equations are the SAME equations — Main
+ * Calculations is one document covering both families, and the terms simply
+ * change spelling between them:
+ *
+ *     receipt v1.2          invoice v1.0        this pipeline produces
+ *     ------------          ------------        ----------------------
+ *     totalSale             salesTotal          netSale + discounts
+ *     netSale               netTotal            `lineTotal`
+ *     total                 total               netSale + Σ taxes
+ *     unitPrice             unitValue.amountEGP `unitPrice`
+ *     taxableItems[]        taxableItems[]      `taxes`
+ *
+ * (Names verified on https://sdk.invoicing.eta.gov.eg/documents/invoice-v1-0/ —
+ * "salesTotal: Total amount for the invoice line considering quantity and unit
+ * price in EGP"; "netTotal: Total amount for the invoice line after applying
+ * discount"; "total: Total amount for the invoice line after adding all pricing
+ * items, taxes, removing discounts".) Two copies of this arithmetic would be two
+ * chances to disagree about a tenant's output VAT for one sale, which is exactly
+ * the reconciliation break round 2 Task 2 recorded as worth a ticket in the
+ * refund direction.
+ *
+ * WHAT IT DOES NOT DECIDE. Buyer, chain position, document type, totals and the
+ * date all belong to the document, not the sale, and stay with each builder.
+ */
+export function buildSaleLines(input: SaleLineInput): FiscalDocLine[] {
+  const { order } = input;
+  const mode = vatMode(order);
+  const drafts = buildLineDrafts(input);
+  const vatShares = allocateVat(order, drafts);
+
+  return drafts.map((draft, index) => {
+    const vat = vatShares[index];
+    // netSale is tax-EXCLUSIVE by ETA's definition, so VAT-inclusive prices
+    // have their allocated tax taken back out; exclusive prices pass through
+    // untouched (F9).
+    const netSale = mode === "inclusive" ? subtractDecimal("netSale", draft.base, vat) : draft.base;
+    const grossDiscount = sumDecimal("line discounts", draft.discounts);
+    // The discount must be in netSale's terms or `totalSale = netSale +
+    // discounts` mixes a net figure with a gross one — see `netDiscount`.
+    const discountTotal = mode === "inclusive"
+      ? netDiscount(grossDiscount, draft.base, netSale, order.vatRateSnapshot)
+      : grossDiscount;
+    // Main Calculations: "netSale = totalSale - Sum(commercialDiscountData.amount)".
+    const totalSale = addDecimal("totalSale", netSale, discountTotal);
+    // Main Calculations: "totalSale = quantity * unitPrice" — so the unit
+    // price is ALWAYS derived from the line's own totalSale, never taken from
+    // the stored column. `order_items.unitBasePrice` excludes modifier price
+    // deltas for a plain product line (ordering/service.ts stores the base,
+    // with the deltas only in selectedModifiers) while `lineTotal` includes
+    // them, so passing it through would break the equation on any modified
+    // line; VAT-inclusive pricing needs a net price for the same reason.
+    // 5 decimal places is the precision ETA permits on unitPrice.
+    const unitPrice = divideDecimal("unitPrice", totalSale, String(draft.quantity), UNIT_PRICE_SCALE);
+
+    return {
+      itemCode: draft.itemCode,
+      internalCode: draft.internalCode,
+      codeSource: draft.codeSource,
+      taxType: draft.taxType,
+      taxSubType: draft.taxSubType,
+      unitType: draft.unitType,
+      description: draft.description,
+      quantity: draft.quantity,
+      unitPrice,
+      discountAmount: discountTotal,
+      taxes: isZeroDecimal(vat)
+        ? []
+        : [{ taxType: draft.taxType, taxSubType: draft.taxSubType, rate: order.vatRateSnapshot, amount: vat }],
+      lineTotal: netSale,
+    };
+  });
+}
+
+/**
+ * A VAT-INCLUSIVE line's discounts, restated TAX-EXCLUSIVE.
+ *
+ * Under inclusive pricing every stored figure carries its VAT — `lineTotal`,
+ * the item discount, the order discount's share — while ETA's `netSale` is
+ * tax-exclusive by definition. Adding the stored (gross) discount to `netSale`
+ * produced a `totalSale` that was neither price: a 114.00 item with a 14.00
+ * discount at 14% reported a 101.72 unit price and a 14.00 discount, where the
+ * honest figures are a 100.00 net price and a 12.28 net discount (12.28 + the
+ * 87.72 netSale = 100.00 = 114.00 / 1.14).
+ *
+ * The line's OWN effective tax ratio does the netting — `netSale / base`, where
+ * `base` is the gross after-discount amount and `netSale` is what is left once
+ * this line's allocated VAT is taken out. So a discount is netted at exactly the
+ * rate its line was taxed at (including a line whose VAT share rounded to zero,
+ * whose ratio is 1), and every published equation holds by construction:
+ * `totalSale = netSale + discount` is how `totalSale` is DEFINED from this, and
+ * `unitPrice` is derived from that `totalSale`. A line whose gross base is zero
+ * (fully discounted) has no ratio to read and nets at the snapshot rate.
+ * 2dp half-up, matching every other money figure on the line.
+ */
+function netDiscount(grossDiscount: string, base: string, netSale: string, rate: string): string {
+  if (isZeroDecimal(grossDiscount)) return grossDiscount;
+  if (!isZeroDecimal(base)) {
+    return divideDecimal("net discount", multiplyDecimal("net discount", grossDiscount, netSale), base, 2);
+  }
+  return divideDecimal(
+    "net discount",
+    multiplyDecimal("net discount", grossDiscount, "100"),
+    addDecimal("net discount", "100", rate),
+    2,
+  );
+}
+
+/**
+ * Which convention a REFUND's stored line amounts were written in, and
+ * therefore how much tax each one can carry.
+ *
+ * `refund_lines.amount` is copied from `order_items.lineTotal` by both refund
+ * surfaces (`apps/pos/src/screens/SalesHistory.tsx` builds a line as
+ * `amount: Number(r.item.lineTotal)`), so it inherits the ORDER's convention:
+ * gross under VAT-inclusive pricing, net under VAT-exclusive pricing. The two
+ * make opposite documents — under `"gross"` the reversed tax comes OUT of the
+ * line's amount, under `"net"` it goes ON TOP — so the choice is what decides
+ * whether ETA's `totalAmount = Sum(itemData.total)` holds.
+ */
+export type ReturnAmountBasis = "gross" | "net";
+
+/** The tax a line of `amount` may carry under `basis`, per Main Calculations
+ *  rule 42 (`amount = netSale * rate / 100`), 2dp half-up:
+ *
+ *    net    netSale IS the amount        ->  amount * rate / 100
+ *    gross  netSale is the amount minus  ->  amount * rate / (100 + rate)
+ *           the tax inside it
+ *
+ *  It is a CEILING as much as a value: a line cannot honestly report more tax
+ *  than the money it accounts for contains, and reporting more is precisely
+ *  what ETA's per-line equation rejects. */
+export function lineTaxCapacity(amount: string, rate: string, basis: ReturnAmountBasis): string {
+  return divideDecimal(
+    "line tax capacity",
+    multiplyDecimal("line tax capacity", amount, rate),
+    basis === "net" ? hundredAtRateScale(rate) : addDecimal("line tax capacity", "100", rate),
+    2,
+  );
+}
+
+/** One return line before its VAT is settled. */
+export type ReturnDraft = {
+  line: Omit<FiscalDocLine, "unitPrice" | "taxes" | "lineTotal">;
+  /** The money this line accounts for — `refund_lines.amount`, or the
+   *  unattributed remainder, verbatim. Read under `ReturnAmountBasis`. */
+  amount: string;
+  /** What the refund domain stored against it (`refund_lines.vatAmount`). The
+   *  remainder line stores nothing, so it claims only from the residual. */
+  storedVat: string;
+};
+
+/**
+ * Spreads a refund's stored VAT across the lines that will report it, with no
+ * line ever pushed past the tax its own money contains.
+ *
+ * Each line starts from its STORED figure (capped), and whatever the caps hold
+ * back is re-offered to the lines that still have headroom — which is how the
+ * service charge's share, which the refund domain tops into item lines it has
+ * no other home for, lands on the line that actually carries its money.
+ *
+ * `unreported` is what no line could take. It is zero for every refund whose
+ * money and VAT agree; see THE DOCUMENT'S VAT CEILING on `buildReturnReceipt`
+ * for the one shape where it is not.
+ *
+ * Exported for the property hammer in `build-document.test.ts`; the builder is
+ * the only caller.
+ */
+export function attributeReturnVat(
+  drafts: ReturnDraft[], headerVat: string, rate: string, basis: ReturnAmountBasis,
+): { vats: string[]; unreported: string } {
+  const caps = drafts.map((draft) => lineTaxCapacity(draft.amount, rate, basis));
+  const base = drafts.map((draft, index) =>
+    compareDecimal(draft.storedVat, caps[index]) > 0 ? caps[index] : draft.storedVat);
+
+  const residual = subtractDecimal("return VAT residual", headerVat, sumDecimal("return line VAT", base));
+  if (isZeroDecimal(residual)) return { vats: base, unreported: "0.00" };
+  if (compareDecimal(residual, "0") < 0) {
+    // The lines store MORE than the refund itself does — `issueRefund` makes
+    // that unreachable (Σ lines IS the header for an itemised refund, and the
+    // resolved lines of a headerless one are built to sum to it), so this is a
+    // corrupted row rather than a shape to honour. Shrink to the header
+    // proportionally rather than reporting past it; every part only moves down,
+    // so no line is pushed over its cap, and the proportionality assert still
+    // has the last word on whether the result is emittable at all.
+    //
+    // ZERO-WEIGHT SITE (3 of 4): a cent handed to a line already holding no tax
+    // would put it above a capacity of zero. Same sign rule — `headerVat` is
+    // positive, so unreachable; held out anyway. PRECONDITION
+    // `headerVat < Σ base` is this branch's own condition.
+    return { vats: shareOverPositive(headerVat, base), unreported: "0.00" };
+  }
+
+  const headroom = base.map((vat, index) => subtractDecimal("return VAT headroom", caps[index], vat));
+  const available = sumDecimal("return VAT headroom", headroom);
+  const placed = compareDecimal(residual, available) > 0 ? available : residual;
+  // ZERO-WEIGHT SITE (4 of 4): a cent handed to a line with no headroom left is
+  // the rule-42 breach the caps exist to prevent. Same sign rule — `placed` is
+  // non-negative, so unreachable; held out anyway. PRECONDITION
+  // `placed <= Σ headroom` is enforced on the line above.
+  const extra = shareOverPositive(placed, headroom);
+
+  return {
+    vats: base.map((vat, index) => addDecimal("return line VAT", vat, extra[index])),
+    unreported: subtractDecimal("unreported return VAT", residual, placed),
+  };
+}
+
+/**
+ * Refuses a return whose lines report materially LESS tax than their own
+ * netSale implies — the one failure `attributeReturnVat` can produce but not
+ * repair.
+ *
+ * Every line is capped at the tax its money contains, so a line can only ever
+ * come out UNDER rule 42, never over; and it comes out under only when the
+ * refund's line amounts are distributed differently from the VAT stored against
+ * them (`DisproportionateRefundLineError` says which shapes do that). Lines
+ * carrying no tax at all are skipped: they emit no `taxableItems`, so rule 42
+ * does not reach them.
+ *
+ * WHY HERE AND NOT AT THE WIRE. `assertLineTaxesDerivable` (./eta-wire) already
+ * catches this and stays the deep backstop — it guards every document from
+ * every builder. But it can only name the equation that failed ("expected 0.56,
+ * computed 1.32"), which tells a tenant's owner nothing they can act on. This
+ * runs first, on the one input shape that reaches it, and names the cause and
+ * the remedy instead. The two use the SAME drift and the SAME published
+ * tolerance, so this never refuses a document the wire would have accepted.
+ *
+ * Exported for the property hammer in `build-document.test.ts`; the builder is
+ * the only caller.
+ */
+export function assertLinesCarryTheirOwnVat(
+  lines: FiscalDocLine[], drafts: ReturnDraft[], refundId: string, rate: string,
+): void {
+  for (const [index, line] of lines.entries()) {
+    for (const tax of line.taxes) {
+      // Rule 42's own right-hand side: what ETA will re-derive for this line.
+      const capacity = divideDecimal(
+        "line tax capacity",
+        multiplyDecimal("line tax capacity", line.lineTotal, rate),
+        hundredAtRateScale(rate),
+        2,
+      );
+      if (compareDecimal(subtractDecimal("line tax shortfall", capacity, tax.amount), LINE_TAX_TOLERANCE) > 0) {
+        throw new DisproportionateRefundLineError(refundId, drafts[index].amount, tax.amount, capacity);
+      }
+    }
+  }
+}
+
+/**
+ * A refund as an ETA return receipt.
+ *
+ * THE PIPELINE. Five stages, each stated with what it MAY and MAY NOT change
+ * (the standard `@/server/pos/refund-vat` sets for the half that runs at
+ * issuance — this is the half that runs at document time):
+ *
+ *   refunds.totalAmount + refunds.vatAmount   (the stored pair, authoritative)
+ *        │
+ *   [1] DRAFT        one line per refund_lines row, money + stored VAT verbatim
+ *        │           MAY refuse an orphan or negative row; MAY NOT alter a stored figure.
+ *   [2] BASIS        net or gross, from the order's vatMode where it reconciles
+ *        │           MAY decide whether tax sits IN a line or ON TOP of it; MAY NOT move money.
+ *   [3] FEE MONEY    the money no refund_lines row names becomes its own line
+ *        │           MAY issue the order-level charge the refund returned; MAY NOT invent money.
+ *   [4] ATTRIBUTE    cap each line at rule 42, re-offer the rest to the headroom
+ *        │           MAY move tax BETWEEN lines; MAY NOT report above the stored header.
+ *   [5] MATERIALIZE  netSale / unitPrice / taxes, then the proportionality assert
+ *        ▼           MAY refuse a document ETA would reject; MAY NOT repair one.
+ *
+ *   Σ itemData.total == refunds.totalAmount   and   Σ taxableItems == taxTotals
+ *
+ * AMOUNTS ARE POSITIVE. Return Receipt v1.2 describes totalSales / netAmount /
+ * totalAmount in exactly the same words as the sale receipt and defines no
+ * negative-amount convention anywhere; the document is identified as a return
+ * by `documentType.receiptType = "r"` plus the Mandatory `referenceUUID`
+ * pointing at the original sale receipt. So the sign convention is: none.
+ *
+ * A partial refund produces a partial document — only the refunded lines, at
+ * the refunded quantity and amount.
+ *
+ * ---------------------------------------------------------------------------
+ * HOW THE VAT IS REVERSED (round 2 Task 2 — this closes the round-1 exposure
+ * where a return carried no `taxableItems` at all, so every EG tenant issuing
+ * refunds over-declared output VAT).
+ *
+ * THE MONEY IS MAPPED, NEVER DERIVED (F9). `total` is `refunds.totalAmount` and
+ * every line's money is `refund_lines.amount`, both verbatim; the reversed tax
+ * starts from `refunds.vatAmount` and `refund_lines.vatAmount`, the figures
+ * `issueRefund` computed ONCE from the order's own stored VAT (see
+ * `@/server/pos/refund-vat`). Nothing here re-derives how much a refund gave
+ * back — it decides only which LINE reports which part of the tax, because ETA
+ * validates that per line and the refund domain does not.
+ *
+ * WHY PER-LINE ATTRIBUTION IS NOT SIMPLY THE STORED PER-LINE FIGURE. Main
+ * Calculations rule 42 ties a line's tax to its OWN base — quoted in full on
+ * `assertLineTaxesDerivable` in `./eta-wire` — within ETA's published
+ * "(± 0.5) tolerance". The refund domain deliberately breaks that for one
+ * shape: an itemised FULL refund TOPS UP its line VATs with the service
+ * charge's share, because that share belongs to the refund and has no product
+ * line of its own (`refund-vat.ts`, stage [4]). A 150.00 line topped up to
+ * 20.26 at 14% reports netSale 129.74, which rule 42 prices at 18.16 — off by
+ * 2.10, four times ETA's allowance, and rejected.
+ *
+ * SO THE TOP-UP IS UN-DONE AT THE WIRE, ONTO THE MONEY IT CAME FROM. Each
+ * product line is capped at the tax its own amount contains, and the money the
+ * refund returned that no `refund_lines` row names —
+ * `refunds.totalAmount - Σ line amounts`, which is the order-level service
+ * charge — becomes its OWN return line carrying the capped-off remainder. That
+ * is the same fees-as-item-lines decision the sale side already makes, with the
+ * same `feeLines.serviceCharge` classification and the same
+ * `FeeLineConfigMissingError` when a tenant has not configured one. In the
+ * example above the item line reports 18.42 on netSale 131.58 and the
+ * service-charge line 1.84 on netSale 13.16: both exact under rule 42, and
+ * 18.42 + 1.84 = 20.26 = the stored header, to the cent.
+ *
+ * NOTHING CHANGES FOR THE ORDINARY REFUND. A partial refund's stored line VAT
+ * already IS the tax inside that line's money (the refund domain allocates it
+ * over the same `lineTotal`s), so cap and stored coincide, the stored figure
+ * ships verbatim and there is no extra line at all. The de-topping only ever
+ * moves the cents the refund domain could not attribute honestly in the first
+ * place.
+ *
+ * NET VS GROSS LINE AMOUNTS. Both refund surfaces copy a line's amount from
+ * `order_items.lineTotal`, so the amounts are gross under VAT-inclusive pricing
+ * and NET under VAT-exclusive pricing — where the reversed tax has to be added
+ * ON TOP of the line rather than taken out of it. `basis` picks whichever
+ * reading makes ETA's `totalAmount = Sum(itemData.total)` hold against the
+ * stored refund total, preferring the order's own convention (`vatMode`) and
+ * falling back to gross when the net reading would over-run the money the
+ * refund actually paid out.
+ *
+ * THE DOCUMENT'S VAT CEILING, and the one place a stored figure is not
+ * reported in full. A return may report at most the tax its own
+ * `refunds.totalAmount` contains at the sale's rate — that is rule 42 summed
+ * over the lines, not a policy of ours. A refund CAN store more: the POS builds
+ * a partial refund's line at the item's NET `lineTotal` and requires the tender
+ * to equal it, so a VAT-exclusive tenant refunding one 100.00 item pays back
+ * 100.00 while the refund domain attributes that item's whole 14.00 of VAT to
+ * it. 100.00 of money contains 12.28 of VAT, not 14.00, so 12.28 is what this
+ * document reports and `taxTotals` (which ETA DEFINES as
+ * "taxTotals <taxType> = Sum (itemData[*].taxableItems[taxType=].amount)")
+ * follows the lines. Reporting the stored 14.00 would claim credit for tax the
+ * customer was never handed back AND be rejected outright; under-reversing is
+ * the safe side of the same trade `refund-vat.ts` documents for the service
+ * charge. The gap is fully derivable from the two stored figures and is zero
+ * for every refund whose money and VAT agree.
+ *
+ * ZERO AND LEGACY REFUNDS. `refunds.vatAmount` of `0.00` — a non-VAT order —
+ * and the legacy `'0'` written before the column existed both emit NO
+ * `taxableItems` and NO `taxTotals`: round 1's omission rule, and rule 42's
+ * direct consequence, since a zero amount at a non-zero rate is arithmetically
+ * false.
+ */
+export function buildReturnReceipt(input: FiscalRefundInput): FiscalDocument {
+  const { refund, lines: refundLines, items, taxCodes, order } = input;
+  if (refundLines.length === 0) throw new EmptyReturnReceiptError(refund.id);
+  const codes = taxCodeIndex(taxCodes);
+  const itemsById = new Map(items.map((item) => [item.id, item]));
+  const rate = assertDecimal(order.vatRateSnapshot, "orders.vatRateSnapshot");
+  const headerVat = assertDecimal(refund.vatAmount, "refunds.vatAmount");
+  const noVat = isZeroDecimal(headerVat);
+
+  const drafts: ReturnDraft[] = refundLines.map((refundLine) => {
+    const item = itemsById.get(refundLine.orderItemId);
+    if (!item) throw new RefundLineOrphanError(refundLine.id, refundLine.orderItemId);
+    const code = requireTaxCode(codes, item.productId);
+    if (compareDecimal(assertDecimal(refundLine.vatAmount, "refund_lines.vatAmount"), "0") < 0) {
+      throw new IrreconcilableOrderError(
+        refund.orderId,
+        `refund ${refund.id} stores a negative VAT of ${refundLine.vatAmount} on the line returning ${refundLine.amount}; ` +
+          "a return may not claim back tax that was never charged",
+      );
+    }
+    return {
+      line: {
+        itemCode: code.itemCode,
+        internalCode: item.productId,
+        codeSource: code.codeSource,
+        taxType: code.taxType,
+        taxSubType: code.taxSubType,
+        unitType: code.unitType,
+        description: item.nameEn,
+        quantity: refundLine.quantity,
+        discountAmount: "0.00",
+      },
+      amount: assertDecimal(refundLine.amount, "refund_lines.amount"),
+      storedVat: refundLine.vatAmount,
+    };
+  });
+
+  // Net or gross? See NET VS GROSS LINE AMOUNTS above: the order's own
+  // convention decides, but only where it still fits inside the money the
+  // refund paid out.
+  const returnedByLines = sumDecimal("refund line amounts", drafts.map((draft) => draft.amount));
+  const withTaxOnTop = addDecimal("refund line amounts", returnedByLines, headerVat);
+  const basis: ReturnAmountBasis =
+    !noVat && vatMode(order) === "exclusive" && compareDecimal(withTaxOnTop, refund.totalAmount) <= 0 ? "net" : "gross";
+
+  // The money the refund returned that no `refund_lines` row accounts for — the
+  // service charge, which is order-level and so has no order_items row to hang
+  // a refund line on. Negative means the lines claim more than the refund
+  // itself recorded, which no attribution can fix and ETA's totalAmount
+  // equation would reject anyway.
+  const feeMoney = subtractDecimal(
+    "service charge returned", refund.totalAmount, basis === "net" ? withTaxOnTop : returnedByLines);
+  if (compareDecimal(feeMoney, "0") < 0) {
+    throw new IrreconcilableOrderError(
+      refund.orderId,
+      `refund ${refund.id} records a total of ${refund.totalAmount} but its lines account for ${
+        basis === "net" ? withTaxOnTop : returnedByLines}; ` +
+        "a return receipt's totalAmount is the sum of its line totals, so the stored line amounts cannot exceed it",
+    );
+  }
+
+  if (compareDecimal(feeMoney, "0") > 0) {
+    const config = input.feeLines?.serviceCharge;
+    if (!config) throw new FeeLineConfigMissingError("serviceCharge", feeMoney);
+    drafts.push({
+      line: {
+        itemCode: config.itemCode,
+        internalCode: config.internalCode,
+        codeSource: config.codeSource,
+        taxType: config.taxType,
+        taxSubType: config.taxSubType,
+        unitType: config.unitType,
+        description: config.description,
+        quantity: 1,
+        discountAmount: "0.00",
+      },
+      amount: feeMoney,
+      // It stores no VAT of its own: what it reports is whatever the product
+      // lines' rule-42 caps handed back — which is exactly the charge's share.
+      storedVat: "0.00",
+    });
+  }
+
+  const { vats } = noVat
+    ? { vats: drafts.map(() => "0.00") }
+    : attributeReturnVat(drafts, headerVat, rate, basis);
+
+  const lines: FiscalDocLine[] = drafts.map((draft, index) => {
+    const vat = vats[index];
+    // netSale is tax-EXCLUSIVE by ETA's definition, so a gross amount has its
+    // reversed tax taken back out and a net one passes through untouched (F9)
+    // — the same rule `buildReceipt` applies to a sale line. Either way
+    // `total = netSale + t1` lands back on the money the line accounts for,
+    // which is what keeps `totalAmount = Sum(itemData.total)` equal to
+    // `refunds.totalAmount`.
+    const netSale = basis === "net" ? draft.amount : subtractDecimal("netSale", draft.amount, vat);
+    return {
+      ...draft.line,
+      // Main Calculations: "totalSale = quantity * unitPrice", and a return
+      // carries no discounts, so totalSale is netSale.
+      unitPrice: divideDecimal("unitPrice", netSale, String(draft.line.quantity), UNIT_PRICE_SCALE),
+      taxes: isZeroDecimal(vat)
+        ? []
+        : [{ taxType: draft.line.taxType, taxSubType: draft.line.taxSubType, rate, amount: vat }],
+      lineTotal: netSale,
+    };
+  });
+
+  assertLinesCarryTheirOwnVat(lines, drafts, refund.id, rate);
+
+  return {
+    docType: "return_receipt",
+    uuid: null,
+    previousUuid: input.previousUuid,
+    referenceUuid: input.parentUuid,
+    referenceOldUuid: null,
+    buyer: { type: "P" },
+    lines,
+    subtotal: sumDecimal("subtotal", lines.map((line) => line.lineTotal)),
+    discountTotal: "0.00",
+    feesTotal: feeMoney,
+    // ETA defines this as the sum of the lines' taxableItems, and
+    // `assertTotalsReconcile` holds us to that. It IS `refunds.vatAmount` for
+    // every refund whose money and VAT agree — see THE DOCUMENT'S VAT CEILING.
+    // `aggregateTaxTotals` is that definition applied literally; it replaced a
+    // hand-rolled "first taxed draft's type, whole reported figure" that agreed
+    // with it for every single-tax-type document and quietly misreported a
+    // mixed one.
+    taxTotals: aggregateTaxTotals(lines),
+    total: refund.totalAmount,
+    // A refund reverses the sale's tender; ServeOS records the outgoing
+    // method on `refund_payments`, which this input does not carry, so the
+    // conservative "Others" code applies until it does.
+    paymentMethodCode: "O",
+    currency: CURRENCY,
+    issuedAt: toEtaUtc(refund.createdAt),
+  };
+}

@@ -7,7 +7,14 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-/** Two-decimal money formatting, matching `money()` so PO line totals agree with totals. */
+/**
+ * Two-decimal money formatting, matching `money()` so PO line totals agree with totals.
+ *
+ * Deliberately local and UNfloored: this renderer is display-only (the PO
+ * document), never writes a `numeric` column, and must still render a PO
+ * whose stored figures were poisoned before `money()` gained its non-finite
+ * floor — so it prints "NaN" rather than throwing, like `formatUnitRate`.
+ */
 function money(n: number): string { return (Math.round(n * 100) / 100).toFixed(2); }
 
 /**

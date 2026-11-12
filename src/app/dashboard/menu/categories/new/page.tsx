@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
-import { requireDashboardUser } from "@/server/auth/dashboard-context";
-import { authorize } from "@/server/rbac/authorize";
+import { requireMenuPermission } from "../../../menu-permission";
 import { createCategoryAction } from "../actions";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { SubmitButton } from "@/components/dashboard/SubmitButton";
@@ -11,8 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 export default async function NewCategoryPage() {
-  const ctx = await requireDashboardUser();
-  authorize(ctx.roleKeys, "menu:manage");
+  await requireMenuPermission();
 
   return (
     <>

@@ -1,0 +1,1 @@
+ALTER TABLE "eta_submissions" ADD COLUMN "late_notified_at" timestamp with time zone;

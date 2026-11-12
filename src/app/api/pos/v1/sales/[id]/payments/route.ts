@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePosCashier, assertPermission } from "@/server/pos/require-cashier";
 import { addTender, type TenderInput } from "@/server/pos/record-sale";
-import { NoOpenShiftError, PosAuthError, PosCashierError, PosForbiddenError, PosSaleError } from "@/server/pos/errors";
+import { posAuthResponse, NoOpenShiftError, PosCashierError, PosForbiddenError, PosSaleError } from "@/server/pos/errors";
+import { DomainError } from "@/shared/errors";
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -11,7 +12,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     ctx = await requirePosCashier(req);
     assertPermission(ctx, "pos:sell");
   } catch (e) {
-    if (e instanceof PosAuthError || e instanceof PosCashierError) {
+    const authRes = posAuthResponse(e);
+    if (authRes) return authRes;
+    if (e instanceof PosCashierError) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     if (e instanceof PosForbiddenError) return NextResponse.json({ error: e.message }, { status: 403 });
@@ -31,6 +34,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({ error: "Open a shift before taking cash" }, { status: 409 });
     }
     if (e instanceof PosSaleError) return NextResponse.json({ error: e.message }, { status: 400 });
+    // e.g. payment_needs_verification: the order is legal, the till just isn't
+    // where it gets settled — say so with a code the client can branch on.
+    if (e instanceof DomainError) return NextResponse.json({ error: e.messageFor("en"), code: e.code }, { status: 422 });
     throw e;
   }
 }

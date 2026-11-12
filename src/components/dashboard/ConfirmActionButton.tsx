@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 export function ConfirmActionButton({
   action, label, title, description, confirmLabel, variant = "destructive", successMessage, size,
 }: {
-  action: () => Promise<void>;
+  action: () => Promise<void | { error?: string } | undefined>;
   label: string;
   title: string;
   description: string;
@@ -38,8 +38,12 @@ export function ConfirmActionButton({
             onClick={() =>
               startTransition(async () => {
                 try {
-                  await action();
-                  if (successMessage) toast.success(successMessage);
+                  const res = await action();
+                  if (res && "error" in res && res.error) {
+                    toast.error(res.error);
+                  } else if (successMessage) {
+                    toast.success(successMessage);
+                  }
                 } catch (err) {
                   unstable_rethrow(err);
                   toast.error("Something went wrong. Please try again.");

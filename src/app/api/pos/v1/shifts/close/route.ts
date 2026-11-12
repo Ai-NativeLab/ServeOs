@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requirePosCashier, assertPermission } from "@/server/pos/require-cashier";
 import { closeShift, findOpenShift, type CloseShiftInput } from "@/server/pos/shifts";
 import {
-  CashCountMismatchError, NoOpenShiftError, PosAuthError, PosCashierError, PosForbiddenError,
+  CashCountMismatchError, NoOpenShiftError, posAuthResponse, PosCashierError, PosForbiddenError,
   ShiftClosedError,
 } from "@/server/pos/errors";
 
@@ -16,16 +16,19 @@ export async function POST(req: NextRequest) {
     // settling a flagged variance, is enforced inside closeShift.
     assertPermission(ctx, "pos:sell");
   } catch (e) {
-    if (e instanceof PosAuthError || e instanceof PosCashierError) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const authRes = posAuthResponse(e);
+    if (authRes) return authRes;
+    if (e instanceof PosCashierError) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     if (e instanceof PosForbiddenError) return NextResponse.json({ error: e.message }, { status: 403 });
     throw e;
   }
 
   const body = (await req.json()) as CloseBody;
-  if (typeof body.count?.countedTotal !== "number") {
-    return NextResponse.json({ error: "Missing count.countedTotal" }, { status: 400 });
+  // See shifts/open: typeof admits Infinity, which JSON expresses as 1e999.
+  if (typeof body.count?.countedTotal !== "number" || !Number.isFinite(body.count.countedTotal)) {
+    return NextResponse.json({ error: "count.countedTotal must be a finite number" }, { status: 400 });
   }
 
   const shiftId = body.shiftId ?? (await findOpenShift(ctx.tenantId, ctx.deviceId))?.id;

@@ -3,7 +3,14 @@ import { can } from "@/server/rbac/authorize";
 
 export type NavItem = { label: string; href: string; icon: string };
 
-export function dashboardNavItems(roleKeys: RoleKey[], catalogLabel = "Menu"): NavItem[] {
+/**
+ * @param country the tenant's ISO country, which gates the ETA fiscal screen.
+ * E-invoicing is an Egypt-specific obligation (the same F1/F2 gate
+ * `resolveFiscalProvider` applies), so showing the item to a UAE owner would
+ * advertise a setup screen that can never do anything. Optional and defaulting
+ * to hidden: a caller with no tenant in hand gets the pre-fiscal nav unchanged.
+ */
+export function dashboardNavItems(roleKeys: RoleKey[], catalogLabel = "Menu", country?: string | null): NavItem[] {
   const has = (p: Permission) => can(roleKeys, p);
   const items: NavItem[] = [];
 
@@ -24,6 +31,11 @@ export function dashboardNavItems(roleKeys: RoleKey[], catalogLabel = "Menu"): N
   if (has("fulfillment:manage")) items.push({ label: "Settings", href: "/dashboard/settings", icon: "settings" });
   // Audit log is an oversight surface — owner + manager (audit:view), never staff.
   if (has("audit:view")) items.push({ label: "Audit", href: "/dashboard/audit", icon: "audit" });
+  // ETA setup: owner only (fiscal:manage) AND Egypt only. Both halves matter —
+  // the permission is narrower than every other admin screen because this one
+  // names the taxpayer, and the country gate keeps it out of a nav where it
+  // could never be used.
+  if (country === "EG" && has("fiscal:manage")) items.push({ label: "Fiscal", href: "/dashboard/fiscal", icon: "fiscal" });
   if (has("customers:manage")) items.push({ label: "Customers", href: "/dashboard/customers", icon: "customers" });
   // Pharmacy only in practice — the permission exists nowhere else.
   if (has("rx:review")) items.push({ label: "Prescriptions", href: "/dashboard/prescriptions", icon: "prescriptions" });

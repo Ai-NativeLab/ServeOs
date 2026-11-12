@@ -7,7 +7,7 @@ import { listBranches } from "@/server/branches/service";
 import { listProducts } from "@/server/catalog/service";
 import { listOrders } from "@/server/ordering/service";
 import { getTenantById } from "@/server/tenancy";
-import { getEnv } from "@/env";
+import { buildTenantUrl } from "@/lib/urls";
 import { onboardingSteps } from "@/lib/onboarding";
 import { orderStatusMeta } from "@/lib/order-status";
 import { PageHeader } from "@/components/dashboard/PageHeader";
@@ -52,9 +52,7 @@ export default async function DashboardHome() {
   // Storefront share — only render when we can safely resolve the tenant/host.
   let storefrontShare: { url: string; qrDataUrl: string } | null = null;
   if (tenant) {
-    const rootDomain = getEnv().ROOT_DOMAIN;
-    const protocol = rootDomain.includes("localhost") ? "http" : "https";
-    const storefrontUrl = `${protocol}://${tenant.slug}.${rootDomain}`;
+    const storefrontUrl = buildTenantUrl(tenant.slug);
     try {
       const qrDataUrl = await QRCode.toDataURL(storefrontUrl, { width: 512, margin: 1 });
       storefrontShare = { url: storefrontUrl, qrDataUrl };

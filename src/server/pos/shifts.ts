@@ -67,6 +67,9 @@ export type ShiftReportCore = {
   /** Zero until Spec 3 lands refunds. */
   refundTotal: number;
   movements: MovementTotal[];
+  /** Present only when stored amounts on this shift were non-finite and so
+   *  left out of every total above and of expected cash — see gatherShift. */
+  nonFiniteAmountsExcluded?: number;
 };
 
 /** Mid-shift snapshot. Reading it changes nothing. */
@@ -240,20 +243,47 @@ export async function findOpenShift(tenantId: string, deviceId: string): Promise
  * Everything both reports are built from, gathered once: the shift's tenders,
  * its drawer movements, the adjustments on its orders, and the expected cash
  * those imply. Read-only — it is what makes the X-report non-resetting.
+ *
+ * Decision (#169 step 3, throw-vs-coerce per site): a stored amount that is
+ * not finite is COERCED to 0 here, not thrown on. Postgres `numeric` accepts
+ * 'NaN'/'Infinity' and money() emitted them until it gained its floor, so a
+ * live drawer may already hold one. Throwing would make that drawer
+ * permanently uncountable and unclosable — every count and close formats
+ * expected cash through money() — and a cashier who cannot close a till is
+ * worse than an expected figure that is known to be incomplete. The coercion
+ * is never silent: `nonFiniteAmountsExcluded` rides on both reports and the
+ * count/close audit events, and closeShift force-flags the variance so the
+ * drawer goes to reconciliation. New writes stay floored by money().
  */
-async function gatherShift(tx: Tx, shift: PosShift): Promise<{ core: ShiftReportCore; expected: number }> {
-  const tenders = await tx.select().from(orderPayments).where(eq(orderPayments.shiftId, shift.id));
-  const movements = await tx.select().from(cashMovements).where(eq(cashMovements.shiftId, shift.id));
-  const orderIds = [...new Set(tenders.map((t) => t.orderId))];
-  const adjustments = orderIds.length
+async function gatherShift(
+  tx: Tx, shift: PosShift,
+): Promise<{ core: ShiftReportCore; expected: number; nonFiniteAmountsExcluded: number }> {
+  let nonFiniteAmountsExcluded = 0;
+  const amount = (stored: string | null): number => {
+    const n = Number(stored ?? 0);
+    if (Number.isFinite(n)) return n;
+    nonFiniteAmountsExcluded += 1;
+    return 0;
+  };
+
+  const tenderRows = await tx.select().from(orderPayments).where(eq(orderPayments.shiftId, shift.id));
+  const movementRows = await tx.select().from(cashMovements).where(eq(cashMovements.shiftId, shift.id));
+  const orderIds = [...new Set(tenderRows.map((t) => t.orderId))];
+  const adjustmentRows = orderIds.length
     ? await tx.select().from(posAdjustmentEvents).where(inArray(posAdjustmentEvents.orderId, orderIds))
     : [];
+
+  // Each stored amount is read exactly once, so a poisoned one is counted once.
+  const openingFloat = amount(shift.openingFloat);
+  const tenders = tenderRows.map((t) => ({ method: t.method, amount: amount(t.amount), tip: amount(t.tipAmount) }));
+  const movements = movementRows.map((m) => ({ type: m.type, amount: amount(m.amount) }));
+  const adjustments = adjustmentRows.map((a) => ({ type: a.type, amount: amount(a.amount) }));
 
   const byMethod = new Map<OrderPayment["method"], TenderTotal>();
   for (const t of tenders) {
     const row = byMethod.get(t.method) ?? { method: t.method, amount: 0, tips: 0, count: 0 };
-    row.amount = round2(row.amount + Number(t.amount));
-    row.tips = round2(row.tips + Number(t.tipAmount));
+    row.amount = round2(row.amount + t.amount);
+    row.tips = round2(row.tips + t.tip);
     row.count += 1;
     byMethod.set(t.method, row);
   }
@@ -263,15 +293,15 @@ async function gatherShift(tx: Tx, shift: PosShift): Promise<{ core: ShiftReport
   const byType = new Map<CashMovementType, MovementTotal>();
   for (const m of movements) {
     const row = byType.get(m.type) ?? { type: m.type, total: 0, count: 0 };
-    row.total = round2(row.total + Number(m.amount));
+    row.total = round2(row.total + m.amount);
     row.count += 1;
     byType.set(m.type, row);
   }
   const magnitude = (type: CashMovementType) =>
-    round2(movements.filter((m) => m.type === type).reduce((s, m) => s + Math.abs(Number(m.amount)), 0));
+    round2(movements.filter((m) => m.type === type).reduce((s, m) => s + Math.abs(m.amount), 0));
 
   const expected = computeExpectedCash({
-    openingFloat: Number(shift.openingFloat),
+    openingFloat,
     cashTenders: byMethod.get("cash")?.amount ?? 0,
     cashRefunds: 0,
     payIns: magnitude("pay_in"),
@@ -281,7 +311,7 @@ async function gatherShift(tx: Tx, shift: PosShift): Promise<{ core: ShiftReport
 
   const isDiscount = (type: string) => type === "line_discount" || type === "order_discount";
   const sumAdjustments = (want: boolean) =>
-    round2(adjustments.filter((a) => isDiscount(a.type) === want).reduce((s, a) => s + Number(a.amount), 0));
+    round2(adjustments.filter((a) => isDiscount(a.type) === want).reduce((s, a) => s + a.amount, 0));
 
   return {
     core: {
@@ -290,15 +320,17 @@ async function gatherShift(tx: Tx, shift: PosShift): Promise<{ core: ShiftReport
       branchId: shift.branchId,
       openedByUserId: shift.openedByUserId,
       openedAt: shift.openedAt.toISOString(),
-      openingFloat: Number(shift.openingFloat),
+      openingFloat,
       tenders: [...byMethod.values()],
       salesCount: orderIds.length,
       discountTotal: sumAdjustments(true),
       voidTotal: sumAdjustments(false),
       refundTotal: 0,
       movements: [...byType.values()],
+      ...(nonFiniteAmountsExcluded > 0 ? { nonFiniteAmountsExcluded } : {}),
     },
     expected,
+    nonFiniteAmountsExcluded,
   };
 }
 
@@ -369,7 +401,7 @@ export async function recordMidShiftCount(
     const shiftClosedAtReplay = shift.status === "closed" && Boolean(count.syncReceipt);
     if (shift.status === "closed" && !shiftClosedAtReplay) throw new ShiftClosedError();
 
-    const { expected } = await gatherShift(tx, shift);
+    const { expected, nonFiniteAmountsExcluded } = await gatherShift(tx, shift);
     const counted = round2(count.countedTotal);
     const variance = computeVariance(counted, expected);
 
@@ -398,6 +430,7 @@ export async function recordMidShiftCount(
         expected: money(expected),
         counted: money(counted),
         variance: money(variance),
+        ...(nonFiniteAmountsExcluded > 0 ? { nonFiniteAmountsExcluded } : {}),
         ...(shiftClosedAtReplay ? { shiftClosedAtReplay: true } : {}),
       },
       actorType: "user",
@@ -514,10 +547,13 @@ export async function closeShift(
     // Throws PosForbiddenError unless the permission is held or granted.
     if (shift.openedByUserId !== ctx.cashierUserId) await authorize();
 
-    const { core, expected } = await gatherShift(tx, shift);
+    const { core, expected, nonFiniteAmountsExcluded } = await gatherShift(tx, shift);
     const counted = round2(input.count.countedTotal);
     const variance = computeVariance(counted, expected);
-    const flagged = isVarianceFlagged(variance, policy.varianceThreshold);
+    // An expected figure missing a poisoned amount (see gatherShift) proves
+    // nothing about the drawer, however small the variance looks — so the
+    // close always goes to reconciliation.
+    const flagged = nonFiniteAmountsExcluded > 0 || isVarianceFlagged(variance, policy.varianceThreshold);
     // Who settled the discrepancy. Durable reconciliation state is Spec 7; this
     // is the approval as recorded on the count and in the audit chain.
     const approvedByUserId = flagged && canManage ? await authorize() : null;
@@ -573,6 +609,7 @@ export async function closeShift(
         flagged,
         approvedByUserId,
         closedByUserId: ctx.cashierUserId,
+        ...(nonFiniteAmountsExcluded > 0 ? { nonFiniteAmountsExcluded } : {}),
         ...(authorizerDeactivated ? { authorizerDeactivated: true } : {}),
         ...(authorizerLacksPermission ? { authorizerLacksPermission: true } : {}),
         ...(alreadyClosedAtReplay ? { alreadyClosedAtReplay: true, claimedClosedAt: closedAt.toISOString() } : {}),

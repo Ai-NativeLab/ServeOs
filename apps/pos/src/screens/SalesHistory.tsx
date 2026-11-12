@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RefundSaleInput, ReprintReceipt, SaleDetail, SalesRow } from "../../electron/preload";
+import {
+  fetchSaleFiscal,
+  keyedFiscalFor,
+  settleKeyedFiscalRead,
+  startKeyedFiscalRead,
+  useFiscalEnabled,
+  type KeyedFiscalRead,
+} from "../fiscal/sale-fiscal";
+import { ReceiptFiscalFooter } from "./Receipt";
 import { ManagerAuthModal } from "./ManagerAuthModal";
 
 const REASON_CODES = ["staff_meal", "comp_service", "promo", "manager_discretion", "wrong_item", "customer_changed_mind", "other"] as const;
@@ -68,6 +77,15 @@ export function SalesHistory({ offline }: { offline: boolean }) {
   const [clientRefundId, setClientRefundId] = useState("");
 
   const [reprint, setReprint] = useState<ReprintReceipt | null>(null);
+  // The order the open slip is for — `ReprintReceipt` carries no id of its own.
+  const [reprintOrderId, setReprintOrderId] = useState<string | null>(null);
+  // The reprinted sale's STORED fiscal identity. Read once when the slip opens
+  // — a reprint is a read, never a resubmission, and there is nothing to wait
+  // for: whatever the row holds now is what the original receipt carried.
+  // KEYED by order id, so a late answer for a closed slip is dropped rather
+  // than painted onto the next one (see `KeyedFiscalRead`).
+  const [reprintFiscal, setReprintFiscal] = useState<KeyedFiscalRead | null>(null);
+  const fiscalEnabled = useFiscalEnabled();
   const [busySale, setBusySale] = useState<string | null>(null);
 
   const searchRef = useRef(search);
@@ -116,14 +134,30 @@ export function SalesHistory({ offline }: { offline: boolean }) {
   async function doReprint(sale: SaleDetail) {
     setBusySale(sale.id);
     setError(null);
+    setReprintFiscal(startKeyedFiscalRead(sale.id));
     try {
       setReprint(await window.pos.reprintReceipt(sale.id));
+      setReprintOrderId(sale.id);
     } catch {
+      setReprintFiscal(null);
       setError("Could not reprint the receipt");
+      return;
     } finally {
       setBusySale(null);
     }
+    // Off the critical path on purpose: the slip is already on screen and
+    // printable, the read swallows its own failures, and a footer that never
+    // arrives costs the QR — never the reprint.
+    const fiscal = await fetchSaleFiscal(sale.id);
+    setReprintFiscal((prev) => settleKeyedFiscalRead(prev, sale.id, fiscal));
   }
+
+  function closeReprint() {
+    setReprint(null);
+    setReprintOrderId(null);
+    setReprintFiscal(null);
+  }
+  const reprintSlip = keyedFiscalFor(reprintFiscal, reprintOrderId);
 
   function openRefund(sale: SaleDetail) {
     const remaining = sale.items
@@ -516,7 +550,7 @@ export function SalesHistory({ offline }: { offline: boolean }) {
 
       {/* Reprint modal */}
       {reprint && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onClick={() => setReprint(null)}>
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onClick={closeReprint}>
           <div className="w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
             <div id="receipt" className="rounded-2xl border border-border bg-card p-6 text-ink font-mono text-sm">
               <div className="text-center">
@@ -576,6 +610,7 @@ export function SalesHistory({ offline }: { offline: boolean }) {
               )}
               <div className="mt-4 text-center text-xs text-muted-foreground">{reprint.sale.customerName}</div>
               <div className="mt-1 text-center text-xs text-muted-foreground">Thank you!</div>
+              <ReceiptFiscalFooter fiscal={reprintSlip.fiscal} fetching={fiscalEnabled && reprintSlip.fetching} />
             </div>
 
             <div className="no-print mt-4 flex gap-2">
@@ -583,7 +618,7 @@ export function SalesHistory({ offline }: { offline: boolean }) {
                 className="flex-1 rounded-xl bg-primary px-4 py-3 font-semibold text-primary-foreground">
                 Print
               </button>
-              <button onClick={() => setReprint(null)}
+              <button onClick={closeReprint}
                 className="flex-1 rounded-xl border border-border bg-card px-4 py-3 font-semibold text-ink">
                 Close
               </button>

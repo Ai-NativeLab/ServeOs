@@ -36,7 +36,7 @@ describe("dimensional cut-list ordering", () => {
     const { tenantId, branchId, productId } = await seed("dim-1", { unitOfMeasure: "m2" });
     // 2.4m x 0.6m = 1.44 m2 x 50.00 = 72.00 per sheet, 2 sheets = 144.00 pre-tax.
     const res = await placeOrder(tenantId, {
-      branchId, fulfillmentType: "pickup", customerName: "Y", customerPhone: "+2011",
+      branchId, fulfillmentType: "pickup", customerName: "Y", customerPhone: "01012345678",
       lines: [{
         productId, quantity: 2, selectedOptionIds: [],
         dimensions: { lengthMm: 2400, widthMm: 600 },
@@ -52,7 +52,7 @@ describe("dimensional cut-list ordering", () => {
   it("rejects a dimensional product ordered without dimensions", async () => {
     const { tenantId, branchId, productId } = await seed("dim-2", { unitOfMeasure: "m" });
     await expect(placeOrder(tenantId, {
-      branchId, fulfillmentType: "pickup", customerName: "Y", customerPhone: "+2011",
+      branchId, fulfillmentType: "pickup", customerName: "Y", customerPhone: "01012345678",
       lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(OrderValidationError);
   });
@@ -60,7 +60,7 @@ describe("dimensional cut-list ordering", () => {
   it("rejects dimensions supplied on a NON-dimensional product rather than silently ignoring them", async () => {
     const { tenantId, branchId, productId } = await seed("dim-3"); // no unitOfMeasure
     await expect(placeOrder(tenantId, {
-      branchId, fulfillmentType: "pickup", customerName: "Y", customerPhone: "+2011",
+      branchId, fulfillmentType: "pickup", customerName: "Y", customerPhone: "01012345678",
       lines: [{ productId, quantity: 1, selectedOptionIds: [], dimensions: { lengthMm: 1000 } }],
     })).rejects.toThrow(OrderValidationError);
   });
@@ -68,7 +68,7 @@ describe("dimensional cut-list ordering", () => {
   it("a normal fixed-price order is provably unaffected (regression)", async () => {
     const { tenantId, branchId, productId } = await seed("dim-4"); // no unitOfMeasure
     const res = await placeOrder(tenantId, {
-      branchId, fulfillmentType: "pickup", customerName: "Y", customerPhone: "+2011",
+      branchId, fulfillmentType: "pickup", customerName: "Y", customerPhone: "01012345678",
       lines: [{ productId, quantity: 3, selectedOptionIds: [] }],
     });
     const [item] = await withTenant(tenantId, (tx) => tx.select().from(orderItems).where(eq(orderItems.orderId, res.orderId)));

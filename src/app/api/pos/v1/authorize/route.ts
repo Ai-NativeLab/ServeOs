@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requirePosCashier } from "@/server/pos/require-cashier";
 import { verifyAuthorizer } from "@/server/pos/cashier";
 import { issueGrant } from "@/server/pos/grants";
-import { PosAuthError, PosCashierError } from "@/server/pos/errors";
+import { posAuthResponse, PosCashierError } from "@/server/pos/errors";
 import { PERMISSIONS, type Permission } from "@/server/rbac/permissions";
 import { withTenant } from "@/db/with-tenant";
 import { recordAuditEvent } from "@/server/audit/service";
@@ -12,8 +12,10 @@ export async function POST(req: NextRequest) {
   try {
     ctx = await requirePosCashier(req);
   } catch (e) {
-    if (e instanceof PosAuthError || e instanceof PosCashierError) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const authRes = posAuthResponse(e);
+    if (authRes) return authRes;
+    if (e instanceof PosCashierError) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     throw e;
   }

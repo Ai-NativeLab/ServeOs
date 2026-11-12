@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePosCashier } from "@/server/pos/require-cashier";
-import { PosAuthError, PosCashierError } from "@/server/pos/errors";
+import { posAuthResponse, PosCashierError } from "@/server/pos/errors";
 import { listPosUsers } from "@/server/pos/auth-sync";
 import { recordRosterSynced } from "@/server/audit/read-events";
 
@@ -17,8 +17,10 @@ export async function GET(req: NextRequest) {
   try {
     ctx = await requirePosCashier(req);
   } catch (e) {
-    if (e instanceof PosAuthError || e instanceof PosCashierError) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const authRes = posAuthResponse(e);
+    if (authRes) return authRes;
+    if (e instanceof PosCashierError) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     throw e;
   }
