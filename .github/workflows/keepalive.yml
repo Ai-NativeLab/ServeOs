@@ -1,0 +1,40 @@
+# Stops GitHub switching off this repo's scheduled workflows (#211).
+#
+# In a public repository GitHub disables scheduled workflows after 60 days with
+# no repository activity. In Nov 2026 that silently stopped db-backup, demo-reset,
+# reorder-check and inventory-backfill — and, with demo-reset gone, Supabase
+# paused the idle QA database (#205).
+#
+# Weekly, well inside the 60 days, this re-enables every workflow that is active
+# or was disabled for inactivity — itself included — through the Actions API,
+# which resets the counter. No commits: a push to main is a production deploy.
+# A red run means something HAD lapsed (and has just been turned back on);
+# see scripts/ci/keepalive-workflows.sh.
+name: keepalive
+
+on:
+  schedule:
+    # Mondays 06:17 UTC — off the top of the hour, when GitHub's scheduler is busiest.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  keepalive:
+    name: keepalive
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Re-enable scheduled workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/keepalive-workflows.sh
