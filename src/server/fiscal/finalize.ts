@@ -1064,10 +1064,12 @@ async function resolveFullRefundLines(
     );
   }
 
+  // EARLIER refunds only — the state "when it was issued". A refund written
+  // after this one must not shrink what this one returned.
   const priorLines = await tx.select({ orderItemId: refundLines.orderItemId, quantity: refundLines.quantity })
     .from(refundLines)
     .innerJoin(refunds, eq(refundLines.refundId, refunds.id))
-    .where(and(eq(refunds.tenantId, tenantId), eq(refunds.orderId, refund.orderId)));
+    .where(and(eq(refunds.tenantId, tenantId), eq(refunds.orderId, refund.orderId), issuedBefore(refund)));
 
   const takenBack = new Map<string, number>();
   for (const line of priorLines) {
@@ -1132,17 +1134,23 @@ async function resolveFullRefundLines(
 async function outstandingNetPaid(tx: Tx, tenantId: string, refund: Refund): Promise<string> {
   const tenders = await tx.select({ amount: orderPayments.amount }).from(orderPayments)
     .where(and(eq(orderPayments.tenantId, tenantId), eq(orderPayments.orderId, refund.orderId)));
-  const priorPayments = await tx.select({ amount: refundPayments.amount, refundId: refundPayments.refundId })
+  const priorPayments = await tx.select({ amount: refundPayments.amount })
     .from(refundPayments)
     .innerJoin(refunds, eq(refundPayments.refundId, refunds.id))
-    .where(and(eq(refunds.tenantId, tenantId), eq(refunds.orderId, refund.orderId)));
+    .where(and(eq(refunds.tenantId, tenantId), eq(refunds.orderId, refund.orderId), issuedBefore(refund)));
 
   const paid = sumDecimal("order tenders", tenders.map((t) => t.amount));
-  const returned = sumDecimal(
-    "prior refund payments",
-    priorPayments.filter((p) => p.refundId !== refund.id).map((p) => p.amount),
-  );
+  const returned = sumDecimal("prior refund payments", priorPayments.map((p) => p.amount));
   return subtractDecimal("outstanding", paid, returned);
+}
+
+/** Refunds of the same order issued strictly BEFORE `refund` — the same
+ *  (createdAt, id) total order `returnReceiptNumber` numbers them by, so a tie
+ *  on the clock still has exactly one answer. Excludes `refund` itself. The
+ *  bound is read from the row in SQL rather than from the JS `Date`, which
+ *  would drop the timestamp's microseconds. */
+function issuedBefore(refund: Refund) {
+  return sql`(${refunds.createdAt}, ${refunds.id}) < (select b.created_at, b.id from refunds b where b.id = ${refund.id})`;
 }
 
 /**
