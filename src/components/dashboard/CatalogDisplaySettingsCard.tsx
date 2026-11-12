@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import { Check, LayoutGrid, Rows3, Layers } from "lucide-react";
-import type { CatalogDisplayMode } from "@/server/tenancy/settings";
+import { CATALOG_ITEMS_PER_PAGE, type CatalogDisplayMode } from "@/server/tenancy/catalog-display-values";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { SubmitButton } from "@/components/dashboard/SubmitButton";
@@ -84,7 +84,7 @@ export function CatalogDisplaySettingsCard({
       <ToastForm action={action} successMessage="Catalog display settings saved" className="space-y-4">
         <input type="hidden" name="catalogDisplayMode" value={selectedMode} />
 
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div role="radiogroup" aria-label="Catalog display mode" className="grid gap-3 sm:grid-cols-3">
           {DISPLAY_OPTIONS.map((opt) => {
             const isSelected = selectedMode === opt.id;
             const Icon = opt.icon;
@@ -92,31 +92,33 @@ export function CatalogDisplaySettingsCard({
               <button
                 key={opt.id}
                 type="button"
+                role="radio"
+                aria-checked={isSelected}
                 onClick={() => setSelectedMode(opt.id)}
-                className={`relative flex flex-col justify-between rounded-xl border p-4 text-left transition-all cursor-pointer ${
+                className={`relative flex flex-col justify-between rounded-xl border p-4 text-start transition-all cursor-pointer ${
                   isSelected
                     ? "border-primary bg-primary/5 shadow-xs ring-2 ring-primary/20"
                     : "border-border bg-card hover:border-primary/40 hover:bg-muted/30"
                 }`}
               >
                 {isSelected && (
-                  <div className="absolute top-2.5 right-2.5 rounded-full bg-primary p-0.5 text-primary-foreground">
+                  <div aria-hidden="true" className="absolute top-2.5 end-2.5 rounded-full bg-primary p-0.5 text-primary-foreground">
                     <Check className="size-3.5 stroke-[3]" />
                   </div>
                 )}
 
                 <div>
-                  <div className="mb-2.5 flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <div aria-hidden="true" className="mb-2.5 flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
                     <Icon className="size-5" />
                   </div>
 
                   <span className="inline-block rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold text-muted-foreground mb-1.5">
-                    {opt.tagEn}
+                    {opt.tagEn} · <span dir="rtl">{opt.tagAr}</span>
                   </span>
 
-                  <h3 className="font-sans text-xs font-bold text-ink">
+                  <span className="block font-sans text-xs font-bold text-ink">
                     {opt.titleEn}
-                  </h3>
+                  </span>
                   <div dir="rtl" className="text-[11px] text-muted-foreground">
                     {opt.titleAr}
                   </div>
@@ -143,9 +145,9 @@ export function CatalogDisplaySettingsCard({
                 onChange={(e) => setItemsPerPage(Number(e.target.value))}
                 className={selectClass}
               >
-                <option value={12}>12 products per page</option>
-                <option value={24}>24 products per page</option>
-                <option value={48}>48 products per page</option>
+                {CATALOG_ITEMS_PER_PAGE.map((n) => (
+                  <option key={n} value={n}>{n} products per page</option>
+                ))}
               </select>
               <p className="text-[11px] text-muted-foreground mt-0.5">
                 Controls the grid size before navigating to the next page.
