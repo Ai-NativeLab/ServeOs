@@ -31,6 +31,13 @@ on:
 permissions:
   contents: read
 
+# One run at a time: a manual dispatch overlapping the nightly run would have
+# two jobs migrating and --reset-ing the same database at once. Queue, never
+# cancel — killing a run mid-reset leaves the demo tenants half-built.
+concurrency:
+  group: demo-reset
+  cancel-in-progress: false
+
 jobs:
   reset:
     runs-on: ubuntu-latest
@@ -48,6 +55,16 @@ jobs:
           - env_name: qa
             url_secret: QA_DATABASE_URL
             root_domain: qa.serveos.tech
+            # Nothing else reliably migrates QA. release-migrate runs only in
+            # Vercel *production* builds, and serve-os-qa's production deploys
+            # come from its production branch (`qa`, see
+            # docs/references/environments.md), not from main — a main push
+            # only gets a Preview deploy on serve-os-qa, which skips
+            # migrations. So QA's schema lags main until someone migrates it,
+            # which is how the nightly reset broke when 0045 added
+            # catalog_versions. Migrating here is idempotent. Prod stays off —
+            # release-migrate owns that schema at deploy time.
+            migrate: true
     steps:
       - name: Skip environments not selected for this dispatch
         id: gate
@@ -60,6 +77,25 @@ jobs:
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "::notice::skipping $THIS_ENV (dispatch selected $SELECTED)"
+          fi
+
+      - name: Preflight
+        if: steps.gate.outputs.run == 'true'
+        env:
+          DATABASE_URL: ${{ secrets[matrix.url_secret] }}
+          MIGRATE: ${{ matrix.migrate || false }}
+          REF: ${{ github.ref }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::${{ matrix.url_secret }} is not set"
+            exit 1
+          fi
+          # The migrate step applies the CHECKED-OUT drizzle/ folder. A
+          # dispatch from a feature branch would push that branch's unmerged
+          # migrations into a shared database, so only main may migrate.
+          if [ "$MIGRATE" = "true" ] && [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::refusing to migrate ${{ matrix.env_name }} from $REF — dispatch demo-reset from main"
+            exit 1
           fi
 
       - uses: actions/checkout@v4
@@ -75,19 +111,26 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         run: npm ci
 
+      - name: Apply migrations
+        if: steps.gate.outputs.run == 'true' && matrix.migrate
+        env:
+          DATABASE_URL: ${{ secrets[matrix.url_secret] }}
+          # migrate.ts loads ENV_FILE (default .env.local) with override: true;
+          # point it at nothing so the secret above is always the target.
+          ENV_FILE: /dev/null
+        run: npx tsx scripts/migrate.ts
+
       - name: Rebuild the demo tenants
         if: steps.gate.outputs.run == 'true'
         env:
           # The seed reads DATABASE_URL directly; no .env file is written to
           # the runner, so the credential never touches disk.
           DATABASE_URL: ${{ secrets[matrix.url_secret] }}
+          # Same override: true dotenv load as migrate.ts — keep it inert.
+          ENV_FILE: /dev/null
           ROOT_DOMAIN: ${{ matrix.root_domain }}
           RESET: ${{ github.event_name == 'workflow_dispatch' && inputs.reset || 'true' }}
         run: |
-          if [ -z "$DATABASE_URL" ]; then
-            echo "::error::${{ matrix.url_secret }} is not set"
-            exit 1
-          fi
           if [ "$RESET" = "true" ]; then
             npx tsx scripts/seed-demo-tenants.ts --reset
           else
