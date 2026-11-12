@@ -1172,7 +1172,8 @@ describe("drainEtaSubmissions — reconciliation sweep", () => {
   it("never visits a non-EG tenant", async () => {
     const s = await seedPosContext("owner");
     await db.update(tenants).set({ country: "SA" }).where(eq(tenants.id, s.tenantId));
-    await placeWebOrder(s.tenantId, s.branchId, s.productId, { minutesAgo: 30 });
+    // A Saudi mobile: placeOrder validates the phone against the tenant's country (#173).
+    await placeWebOrder(s.tenantId, s.branchId, s.productId, { minutesAgo: 30, customerPhone: "0512345678" });
 
     await drainEtaSubmissions({ provider: new FakeEta([]), limit: 10 });
     expect(await rowsFor(s.tenantId)).toHaveLength(0);
@@ -1709,10 +1710,10 @@ async function seedUnclassifiedProduct(tenantId: string): Promise<string> {
  */
 async function placeWebOrder(
   tenantId: string, branchId: string, productId: string,
-  opts: { minutesAgo?: number; paymentStatus?: "paid" | "unpaid" } = {},
+  opts: { minutesAgo?: number; paymentStatus?: "paid" | "unpaid"; customerPhone?: string } = {},
 ): Promise<string> {
   const placed = await placeOrder(tenantId, {
-    branchId, fulfillmentType: "pickup", customerName: "Web Buyer", customerPhone: "01000000000",
+    branchId, fulfillmentType: "pickup", customerName: "Web Buyer", customerPhone: opts.customerPhone ?? "01000000000",
     channel: "web", lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
   });
 

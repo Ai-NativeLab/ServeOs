@@ -1063,7 +1063,7 @@ describe("placeOrder — the optional fiscal email", () => {
     const { t, branch, pizza } = await setup("po-email-1");
     const res = await placeOrder(t.id, {
       branchId: branch.id, fulfillmentType: "pickup",
-      customerName: "Ahmed", customerPhone: "0100", customerEmail: "  ahmed@example.test  ",
+      customerName: "Ahmed", customerPhone: "01000000001", customerEmail: "  ahmed@example.test  ",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
 
@@ -1076,7 +1076,7 @@ describe("placeOrder — the optional fiscal email", () => {
     const { t, branch, pizza } = await setup("po-email-2");
     const res = await placeOrder(t.id, {
       branchId: branch.id, fulfillmentType: "pickup",
-      customerName: "Ahmed", customerPhone: "0100",
+      customerName: "Ahmed", customerPhone: "01000000001",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
 
@@ -1090,7 +1090,7 @@ describe("placeOrder — the optional fiscal email", () => {
     const { t, branch, pizza } = await setup("po-email-3");
     const res = await placeOrder(t.id, {
       branchId: branch.id, fulfillmentType: "pickup",
-      customerName: "Ahmed", customerPhone: "0100", customerEmail: "   ",
+      customerName: "Ahmed", customerPhone: "01000000001", customerEmail: "   ",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
 
@@ -1106,7 +1106,7 @@ describe("placeOrder — the optional fiscal email", () => {
     // hours after they closed the page, which nobody can act on.
     await expect(placeOrder(t.id, {
       branchId: branch.id, fulfillmentType: "pickup",
-      customerName: "Ahmed", customerPhone: "0100", customerEmail: "ahmed@@example",
+      customerName: "Ahmed", customerPhone: "01000000001", customerEmail: "ahmed@@example",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     })).rejects.toThrow(OrderValidationError);
   });
@@ -1118,7 +1118,7 @@ describe("placeOrder — the optional fiscal email", () => {
     // tenant's at all, so it is dropped before any rule about it applies.
     const res = await placeOrder(t.id, {
       branchId: branch.id, fulfillmentType: "pickup",
-      customerName: "Ahmed", customerPhone: "0100", customerEmail: "ahmed@@example",
+      customerName: "Ahmed", customerPhone: "0512345678", customerEmail: "ahmed@@example",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
     const [row] = await withTenant(t.id, (tx) => tx.select().from(orders).where(eq(orders.id, res.orderId)));
@@ -1126,7 +1126,7 @@ describe("placeOrder — the optional fiscal email", () => {
 
     const ok = await placeOrder(t.id, {
       branchId: branch.id, fulfillmentType: "pickup",
-      customerName: "Ahmed", customerPhone: "0100", customerEmail: "ahmed@example.test",
+      customerName: "Ahmed", customerPhone: "0512345678", customerEmail: "ahmed@example.test",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
     const [row2] = await withTenant(t.id, (tx) => tx.select().from(orders).where(eq(orders.id, ok.orderId)));
@@ -1140,7 +1140,7 @@ describe("placeOrder — the optional fiscal email", () => {
     // FILING is the compliance act, and no order may be refused for want of one.
     const res = await placeOrder(t.id, {
       branchId: branch.id, fulfillmentType: "pickup",
-      customerName: "Ahmed", customerPhone: "0100",
+      customerName: "Ahmed", customerPhone: "01000000001",
       lines: [{ productId: pizza.id, quantity: 1, selectedOptionIds: [] }],
     });
     expect(res.orderNumber).toBeGreaterThan(0);
