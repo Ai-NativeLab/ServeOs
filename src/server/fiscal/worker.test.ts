@@ -2074,6 +2074,19 @@ describe("B2B e_invoice — the worker's submit/poll path", () => {
     expect(Object.keys(unsigned.requestJson)).not.toContain("signatures");
   });
 
+  it("refuses to file an UNSIGNED v0.9 invoice in production — no seal, no prod invoice", async () => {
+    const s = await seedSale({ clientOrderId: "b2b-prod-unsigned", configureFirst: false });
+    await withTenant(s.tenantId, (tx) => tx.update(etaTenantConfig).set({ environment: "prod" })
+      .where(eq(etaTenantConfig.tenantId, s.tenantId)));
+    await enqueueInvoice(s.tenantId, s.receipt.orderId);
+
+    const error = await finalizeSubmissionRow(s.tenantId, (await invoiceRowsFor(s.tenantId))[0].id).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(EtaConfigError);
+    expect((error as EtaConfigError).code).toBe("invoice-signer-required");
+    const [row] = await invoiceRowsFor(s.tenantId);
+    expect(Object.keys(row.requestJson)).not.toContain("invoiceLines");
+  });
+
   it("fails a signed tenant permanently when the seal material is unusable, never downgrading to v0.9", async () => {
     {
       const s = await seedSale({ clientOrderId: "b2b-badseal", configureFirst: false, signingKey: "this is not a PEM bundle" });

@@ -409,6 +409,18 @@ async function finalizeInvoiceRow(tx: Tx, tenantId: string, row: EtaSubmission):
   // takes. B2B invoices are the only caller, and they arrive through the worker.
   const { resolveInvoiceSigner, invoiceDigest, signInvoice } = await import("./sign-invoice");
   const signer = resolveInvoiceSigner({ signingKey: config.signingKey });
+  // UNSIGNED v0.9 IS A PREPROD AFFORDANCE, NOT A PRODUCTION FILING. Whether ETA
+  // still accepts v0.9 at all is VERIFY-gated, and filing a real B2B invoice
+  // with signature validation disabled is not a decision to take by default on
+  // a taxpayer's live account. In prod, no seal means no invoice — a permanent,
+  // owner-actionable config failure — rather than a quiet v0.9.
+  if (!signer && config.environment === "prod") {
+    throw new EtaConfigError(
+      "invoice-signer-required",
+      "fiscal: this tenant files to ETA PRODUCTION but has no e-seal configured (eta_tenant_config.signing_key_ref). " +
+        "An unsigned v0.9 invoice is only filed in preprod; configure the ITIDA e-seal to issue B2B invoices in production.",
+    );
+  }
 
   const unsigned = toWireInvoice(doc, {
     rin: config.registrationNumber,
