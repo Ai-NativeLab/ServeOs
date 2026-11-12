@@ -194,6 +194,44 @@ describe("suspended tenant (#164 / #187 C3)", () => {
   });
 });
 
+describe("advancing a web order (#187 review)", () => {
+  // The route answers 422 {error, code} when the state machine refuses — most
+  // importantly payment_not_verified (#165). advanceOrder used to drop the
+  // response, so the cashier's "Mark ready" silently did nothing.
+  it("hands the server's refusal to the renderer", async () => {
+    const pos = await pairedPos(BACKEND_A);
+    stubFetch(jsonResponse(422, {
+      error: "Payment unverified — resolve it in the payments queue before handing over",
+      code: "payment_not_verified",
+    }));
+
+    const res = await pos.advanceOrder("order-1", "ready");
+
+    expect(res).toEqual({
+      ok: false,
+      code: "payment_not_verified",
+      message: "Payment unverified — resolve it in the payments queue before handing over",
+    });
+  });
+
+  it("says the server could not be reached on a network failure", async () => {
+    const pos = await pairedPos(BACKEND_A);
+    globalThis.fetch = vi.fn().mockRejectedValue(new TypeError("fetch failed")) as unknown as typeof fetch;
+
+    const res = await pos.advanceOrder("order-1", "ready");
+
+    expect(res.ok).toBe(false);
+    expect(res.ok === false && res.message).toMatch(/reach/i);
+  });
+
+  it("reports success with the new status", async () => {
+    const pos = await pairedPos(BACKEND_A);
+    stubFetch(jsonResponse(200, { id: "order-1", status: "ready" }));
+
+    expect(await pos.advanceOrder("order-1", "ready")).toEqual({ ok: true, status: "ready" });
+  });
+});
+
 /** Skips the login round-trip (roster tick + shift adoption make its fetch
  *  sequence brittle to stub) and installs the session state a successful
  *  signInCashier would have left behind. */

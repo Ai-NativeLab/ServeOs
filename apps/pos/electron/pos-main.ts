@@ -361,6 +361,13 @@ export type DayZReport = DayReport & {
  * properties do not survive the boundary. So the drawer calls return an outcome
  * the renderer can branch on structurally, rather than matching error strings.
  */
+/** What advancing a web order tells the renderer. A refusal carries the
+ *  server's own words (e.g. payment_not_verified: "resolve it in the payments
+ *  queue") so the queue can show them instead of silently doing nothing. */
+export type AdvanceOrderResult =
+  | { ok: true; status: string }
+  | { ok: false; code: string; message: string };
+
 export type DrawerResult<T> =
   | { ok: true; data: T }
   | { ok: false; code: "conflict" | "needs_manager" | "bad_count" | "error"; message: string };
@@ -887,15 +894,24 @@ export class PosMain {
     }
   }
 
-  async advanceOrder(orderId: string, toStatus: string): Promise<void> {
-    if (!this.device) return;
+  async advanceOrder(orderId: string, toStatus: string): Promise<AdvanceOrderResult> {
+    if (!this.device) return { ok: false, code: "error", message: "Not paired" };
+    let res: Response;
     try {
-      await fetch(`${this.baseUrl}/api/pos/v1/orders/status`, {
+      res = await fetch(`${this.baseUrl}/api/pos/v1/orders/status`, {
         method: "POST",
         headers: this.authHeaders(),
         body: JSON.stringify({ orderId, toStatus }),
       });
-    } catch { /* the queue is server-owned; the next poll shows the truth */ }
+    } catch {
+      // The queue is server-owned, so nothing changed; the next poll shows the truth.
+      return { ok: false, code: "offline", message: "Could not reach the server — try again" };
+    }
+    const body = (await res.json().catch(() => ({}))) as { status?: string; error?: string; code?: string };
+    if (!res.ok) {
+      return { ok: false, code: body.code ?? "error", message: body.error ?? `Could not update the order (${res.status})` };
+    }
+    return { ok: true, status: body.status ?? toStatus };
   }
 
   /** Finalized-sale search. Only pos:sell is needed to LOOK a sale up — the

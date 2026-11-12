@@ -29,6 +29,10 @@ const RELAXED_POLL_MS = 60_000;
 export function OrdersQueue({ offline }: { offline: boolean }) {
   const [orders, setOrders] = useState<OrderSummary[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
+  /** The server's refusal for the last order the cashier tried to advance —
+   *  e.g. an unverified offline payment that must be resolved in the payments
+   *  queue first (#165). Cleared on the next attempt. */
+  const [refusal, setRefusal] = useState<{ orderId: string; message: string } | null>(null);
   /** Only true while main's channel is actually joined. Realtime off, blocked
    *  by the café's network, or unauthorized → this stays false and the queue
    *  polls exactly as it did before. */
@@ -58,8 +62,10 @@ export function OrdersQueue({ offline }: { offline: boolean }) {
     const next = NEXT[o.status];
     if (!next) return;
     setBusy(o.id);
+    setRefusal(null);
     try {
-      await window.pos.advanceOrder(o.id, next.to);
+      const res = await window.pos.advanceOrder(o.id, next.to);
+      if (!res.ok) setRefusal({ orderId: o.id, message: res.message });
       await refresh();
     } finally {
       setBusy(null);
@@ -111,6 +117,11 @@ export function OrdersQueue({ offline }: { offline: boolean }) {
                 </button>
               )}
             </div>
+            {refusal?.orderId === o.id && (
+              <p role="alert" className="mt-2 text-sm text-destructive">
+                {refusal.message}
+              </p>
+            )}
           </div>
         );
       })}
