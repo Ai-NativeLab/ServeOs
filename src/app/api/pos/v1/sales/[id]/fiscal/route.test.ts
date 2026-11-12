@@ -1,6 +1,10 @@
-import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, vi, afterAll } from "vitest";
 import { NextRequest } from "next/server";
+import { eq } from "drizzle-orm";
+import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
+import { tenants } from "@/server/tenancy/schema";
+import { etaSecretKeyPrefix } from "@/server/fiscal/config";
 import { seedPosContext, openShiftForCtx } from "@/server/pos/test-helpers";
 import { recordSale } from "@/server/pos/record-sale";
 import { PosAuthError, PosCashierError } from "@/server/pos/errors";
@@ -27,18 +31,23 @@ vi.mock("@/server/pos/require-cashier", async (importOriginal) => ({
 import { requirePosCashier } from "@/server/pos/require-cashier";
 import { GET } from "./route";
 
-const SECRET_KEYS = {
-  erp: "ZZ_POSROUTE_ETA_ERP",
-  secret1: "ZZ_POSROUTE_ETA_S1",
-  secret2: "ZZ_POSROUTE_ETA_S2",
-} as const;
+/**
+ * Credential refs live in each tenant's own `env://ETA_<SLUG>__` namespace (the
+ * rule `resolveSecretRef` enforces), so they are minted per seeded tenant and
+ * the env keys they name are set here and removed after the file.
+ */
+const envKeysSet = new Set<string>();
 
-beforeAll(() => {
-  for (const key of Object.values(SECRET_KEYS)) process.env[key] = `${key}-value`;
-});
+async function tenantSecretRef(tenantId: string, name: string): Promise<string> {
+  const [tenant] = await db.select({ slug: tenants.slug }).from(tenants).where(eq(tenants.id, tenantId));
+  const key = `${etaSecretKeyPrefix(tenant.slug)}${name}`;
+  process.env[key] = `${key}-value`;
+  envKeysSet.add(key);
+  return `env://${key}`;
+}
 
 afterAll(() => {
-  for (const key of Object.values(SECRET_KEYS)) delete process.env[key];
+  for (const key of envKeysSet) delete process.env[key];
   vi.restoreAllMocks();
 });
 
@@ -61,6 +70,11 @@ const params = (id: string) => ({ params: Promise.resolve({ id }) });
  *  row is finalized inline and carries its uuid + QR (the production path). */
 async function seedFiscalSale() {
   const s = await seedPosContext("owner");
+  const refs = {
+    erp: await tenantSecretRef(s.tenantId, "ERP_SECRET"),
+    secret1: await tenantSecretRef(s.tenantId, "SECRET_1"),
+    secret2: await tenantSecretRef(s.tenantId, "SECRET_2"),
+  };
   await openShiftForCtx(s.ctx);
   await withTenant(s.tenantId, (tx) =>
     tx.insert(productTaxCodes).values({
@@ -71,15 +85,15 @@ async function seedFiscalSale() {
   await withTenant(s.tenantId, (tx) =>
     tx.insert(etaTenantConfig).values({
       tenantId: s.tenantId, registrationNumber: "200173707", clientId: "erp-client",
-      clientSecretRef: SECRET_KEYS.erp, environment: "preprod",
+      clientSecretRef: refs.erp, environment: "preprod",
       activationStatus: "active", wireContextJson: WIRE_CONTEXT,
     }),
   );
   await withTenant(s.tenantId, (tx) =>
     tx.insert(etaPosCredentials).values({
       tenantId: s.tenantId, deviceId: s.ctx.deviceId, etaSerial: "POS-001",
-      clientId: "device-client", clientSecret1Ref: SECRET_KEYS.secret1,
-      clientSecret2Ref: SECRET_KEYS.secret2, status: "active",
+      clientId: "device-client", clientSecret1Ref: refs.secret1,
+      clientSecret2Ref: refs.secret2, status: "active",
     }),
   );
   const receipt = await recordSale(s.ctx, {
