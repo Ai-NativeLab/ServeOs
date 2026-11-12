@@ -1,3 +1,5 @@
+import { EtaConfigError, EtaTransportError } from "./eta-transport-errors";
+
 /**
  * Every way building a fiscal document can fail.
  *
@@ -250,4 +252,38 @@ export class ParentReceiptNotAcceptedError extends FiscalDocumentError {
     );
     this.name = "ParentReceiptNotAcceptedError";
   }
+}
+
+/** How much of a fiscal error message `last_error` / a log line keeps. */
+const ERROR_SUMMARY_MAX = 500;
+
+/**
+ * A storable, loggable summary of a failure on a fiscal path — the server-side
+ * twin of the dashboard routes' `redactedCause`, and for the same reason.
+ *
+ * Drizzle puts a failing query's PARAMETERS into `error.message` (`Failed
+ * query: … params: <tenant>,<rin>,<client_secret_ref>,…`), so writing a raw
+ * error into `last_error` or a log line copies credential REFERENCES — and
+ * whatever else the query carried — into places with a wider audience than the
+ * rows themselves. So the message is kept only for this subsystem's OWN error
+ * classes, whose text is bounded by construction (and may name an env KEY, which
+ * is the documented stance: the key is not the secret); anything else is reduced
+ * to its class name plus, for a Postgres error, its SQLSTATE and constraint.
+ * Capped either way.
+ */
+export function redactedErrorSummary(e: unknown): string {
+  const own = e instanceof FiscalDocumentError || e instanceof EtaConfigError || e instanceof EtaTransportError;
+  let raw: string;
+  if (own) {
+    raw = `${(e as Error).name}: ${(e as Error).message}`;
+  } else {
+    const pg = e as { code?: unknown; constraint?: unknown } | null;
+    raw = [
+      e instanceof Error ? e.name : typeof e,
+      typeof pg?.code === "string" ? `SQLSTATE ${pg.code}` : null,
+      typeof pg?.constraint === "string" ? `constraint ${pg.constraint}` : null,
+    ].filter(Boolean).join(" ");
+    raw = `${raw} (details withheld: an unclassified error's message can carry query parameters)`;
+  }
+  return raw.length > ERROR_SUMMARY_MAX ? `${raw.slice(0, ERROR_SUMMARY_MAX - 1)}…` : raw;
 }

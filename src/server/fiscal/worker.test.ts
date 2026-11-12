@@ -159,6 +159,39 @@ function unwrap(outcomes: SubmitOutcome[], call: number, what: string): FiscalSu
 }
 
 /**
+ * A FakeEta that also answers `lookupReceipt` — the worker's "does ETA already
+ * hold this receipt?" question before re-POSTing a row that may have been sent.
+ * `null` scripts a 404. Over-calls fail exactly as `unwrap` does.
+ */
+class FakeEtaWithLookup extends FakeEta {
+  readonly looked: string[] = [];
+
+  constructor(
+    submitOutcomes: SubmitOutcome[],
+    pollOutcomes: SubmitOutcome[],
+    private readonly lookupOutcomes: (FiscalSubmitResult | null | Error)[],
+  ) {
+    super(submitOutcomes, pollOutcomes);
+  }
+
+  async lookupReceipt(uuid: string, _cfg: EtaConfig): Promise<FiscalSubmitResult | null> {
+    this.looked.push(uuid);
+    if (this.looked.length > this.lookupOutcomes.length) {
+      throw new Error(`FakeEta: call ${this.looked.length} exceeds ${this.lookupOutcomes.length} scripted outcomes for lookup`);
+    }
+    const outcome = this.lookupOutcomes[this.looked.length - 1];
+    if (outcome instanceof Error) throw outcome;
+    return outcome;
+  }
+}
+
+/** A per-document refusal whose text says the uuid is already on file. */
+const duplicateRejection = (): FiscalSubmitResult => ({
+  status: "rejected",
+  responseJson: { rejectedDocuments: [{ error: { message: "Duplicate receipt: a receipt with this uuid was already submitted" } }] },
+});
+
+/**
  * A provider that makes THIS drain the loser of the one race the claim lease
  * cannot rule out: the lease can expire while a submit is in flight, so a
  * second drain may finish the row while this one is still waiting on ETA.
@@ -541,6 +574,165 @@ describe("drainEtaSubmissions — accept path", () => {
     expect(row.status).toBe("submitted");
     expect(row.attempts).toBe(0); // a poll is not an attempt
     expect(row.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
+  });
+});
+
+describe("drainEtaSubmissions — maybe-sent receipts are looked up, never blindly re-POSTed", () => {
+  const timeout = () => new EtaTransportError("fiscal: ETA request timed out after 60000ms with no response (x)");
+
+  it("settles a timed-out submit from ETA's own record instead of sending it again", async () => {
+    const s = await seedSale();
+    const provider = new FakeEtaWithLookup(
+      [timeout()],
+      [],
+      [{ status: "accepted", submissionUuid: "sub-first", etaLongId: "LONG-FIRST", responseJson: { receipt: { status: "valid" } } }],
+    );
+
+    await drainEtaSubmissions({ provider, reconcile: false });
+    const [afterTimeout] = await rowsFor(s.tenantId);
+    expect(afterTimeout.status).toBe("failed");
+    // The dispatch marker: the POST left, so the document MAY be with ETA.
+    expect(afterTimeout.submittedAt).not.toBeNull();
+    expect(afterTimeout.submissionUuid).toBeNull();
+
+    await makeEligibleAll(s.tenantId);
+    await drainEtaSubmissions({ provider, reconcile: false });
+
+    expect(provider.submitted).toHaveLength(1);
+    expect(provider.looked).toEqual([afterTimeout.etaUuid]);
+    const [row] = await rowsFor(s.tenantId);
+    expect(row.status).toBe("accepted");
+    expect(row.submissionUuid).toBe("sub-first");
+    expect(row.etaLongId).toBe("LONG-FIRST");
+  });
+
+  it("does not look anything up for a row that was never dispatched", async () => {
+    const s = await seedSale();
+    const provider = new FakeEtaWithLookup([accepted202("sub-plain")], [], []);
+    await drainEtaSubmissions({ provider, reconcile: false });
+    expect(provider.looked).toEqual([]);
+    expect((await rowsFor(s.tenantId))[0].status).toBe("submitted");
+  });
+
+  it("never marks a duplicate-refused receipt rejected: it retries the lookup until ETA returns it", async () => {
+    const s = await seedSale();
+    const provider = new FakeEtaWithLookup(
+      // 1st POST times out (it DID reach ETA); 2nd is refused as a duplicate.
+      [timeout(), duplicateRejection()],
+      [],
+      // Pass 2: not retrievable yet (still validating) -> re-POST -> duplicate
+      // -> looked up again, still not retrievable. Pass 3: there it is.
+      [null, null, { status: "accepted", submissionUuid: "sub-first", etaLongId: "LONG-DUP", responseJson: {} }],
+    );
+
+    await drainEtaSubmissions({ provider, reconcile: false });
+    await makeEligibleAll(s.tenantId);
+    await drainEtaSubmissions({ provider, reconcile: false });
+
+    const [waiting] = await rowsFor(s.tenantId);
+    expect(waiting.status).toBe("failed");
+    expect(waiting.lastError).toMatch(/already filed/);
+
+    await makeEligibleAll(s.tenantId);
+    await drainEtaSubmissions({ provider, reconcile: false });
+
+    const [row] = await rowsFor(s.tenantId);
+    expect(row.status).toBe("accepted");
+    expect(row.etaLongId).toBe("LONG-DUP");
+    expect(provider.submitted).toHaveLength(2);
+    const audits = await auditsFor(s.tenantId);
+    expect(audits.map((a) => a.action)).not.toContain("eta.submission.rejected");
+  });
+
+  it("settles a poll that refuses a re-sent copy as a duplicate on the copy ETA accepted", async () => {
+    const s = await seedSale();
+    const provider = new FakeEtaWithLookup(
+      [accepted202("sub-second-copy")],
+      [{ status: "rejected", responseJson: { status: "Invalid", receipts: [{ status: "Invalid", errors: [{ errorCode: "DuplicateUUID", error: "uuid already exists" }] }] } }],
+      [{ status: "accepted", submissionUuid: "sub-first-copy", etaLongId: "LONG-ORIG", responseJson: {} }],
+    );
+
+    await drainEtaSubmissions({ provider, reconcile: false });
+    await makeEligibleAll(s.tenantId);
+    await drainEtaSubmissions({ provider, reconcile: false });
+
+    const [row] = await rowsFor(s.tenantId);
+    expect(row.status).toBe("accepted");
+    expect(row.submissionUuid).toBe("sub-first-copy");
+    expect(row.etaLongId).toBe("LONG-ORIG");
+  });
+
+  it("does not spend the attempt budget on a failed POLL — the document is already with ETA", async () => {
+    const s = await seedSale();
+    const provider = new FakeEta(
+      [accepted202("sub-held")],
+      [new EtaTransportError("gateway down", { status: 502 }), new EtaTransportError("gateway down", { status: 502 })],
+    );
+    await drainEtaSubmissions({ provider, reconcile: false });
+    for (let pass = 0; pass < 2; pass++) {
+      await makeEligibleAll(s.tenantId);
+      await drainEtaSubmissions({ provider, reconcile: false });
+    }
+    const [row] = await rowsFor(s.tenantId);
+    expect(row.submissionUuid).toBe("sub-held");
+    expect(row.attempts).toBe(0);
+    expect(row.lastError).toContain("gateway down");
+  });
+});
+
+describe("drainEtaSubmissions — the write fence", () => {
+  /** A provider whose submit lands a NEWER verdict on the row mid-flight — what
+   *  another drain does after this one's lease expired — then answers with a
+   *  stale rejection of its own. */
+  function staleDrain(tenantId: string, opts: { reclaim: boolean }): FiscalProvider {
+    return {
+      name: "stale-drain",
+      buildReceipt: () => { throw new Error("not used"); },
+      buildReturnReceipt: () => { throw new Error("not used"); },
+      buildInvoice: () => { throw new Error("not used"); },
+      poll: () => { throw new Error("not used"); },
+      submit: async () => {
+        await withTenant(tenantId, (tx) => tx.update(etaSubmissions)
+          .set({
+            status: "accepted", submissionUuid: "sub-winner", etaLongId: "LONG-WINNER",
+            ...(opts.reclaim ? { nextAttemptAt: sql`now() + interval '7 minutes'` } : {}),
+          })
+          .where(eq(etaSubmissions.tenantId, tenantId)));
+        return rejection();
+      },
+    };
+  }
+
+  for (const reclaim of [true, false]) {
+    it(`a stale drain cannot regress an ACCEPTED row to rejected (${reclaim ? "lease re-claimed" : "status fence alone"})`, async () => {
+      const s = await seedSale();
+      const result = await drainEtaSubmissions({ provider: staleDrain(s.tenantId, { reclaim }), reconcile: false });
+
+      expect(result.rejected).toBe(0);
+      const [row] = await rowsFor(s.tenantId);
+      expect(row.status).toBe("accepted");
+      expect(row.etaLongId).toBe("LONG-WINNER");
+      expect(row.lastError).toBeNull();
+      expect((await auditsFor(s.tenantId)).map((a) => a.action)).not.toContain("eta.submission.rejected");
+      expect(await notificationsFor(s.tenantId)).toHaveLength(0);
+    });
+  }
+
+  it("a stale drain whose lease was re-claimed cannot fail the row either", async () => {
+    const s = await seedSale();
+    const provider: FiscalProvider = {
+      ...staleDrain(s.tenantId, { reclaim: true }),
+      submit: async () => {
+        await withTenant(s.tenantId, (tx) => tx.update(etaSubmissions)
+          .set({ status: "accepted", nextAttemptAt: sql`now() + interval '7 minutes'` })
+          .where(eq(etaSubmissions.tenantId, s.tenantId)));
+        throw new EtaTransportError("late timeout");
+      },
+    };
+    await drainEtaSubmissions({ provider, reconcile: false });
+    const [row] = await rowsFor(s.tenantId);
+    expect(row.status).toBe("accepted");
+    expect(row.attempts).toBe(0);
   });
 });
 
