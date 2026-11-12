@@ -50,7 +50,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm i -g vercel@latest
+      - run: npm i -g vercel@65.5.0
 
       # Pulls the project's Preview env vars so the build sees the same
       # configuration Vercel's own builder would have used.
@@ -110,7 +110,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm i -g vercel@latest
+      - run: npm i -g vercel@65.5.0
 
       # The production build applies database migrations before the deploy goes
       # live (scripts/release-migrate.ts, run by package.json's vercel-build),
@@ -179,7 +179,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm i -g vercel@latest
+      - run: npm i -g vercel@65.5.0
 
       - name: Pull Vercel environment
         run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}

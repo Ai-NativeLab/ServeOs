@@ -20,7 +20,7 @@ Building in GitHub Actions and uploading a *prebuilt* deployment sidesteps the r
 | `VERCEL_PROJECT_ID_QA` | same, after linking **serve-os-qa** |
 
 ```bash
-npm i -g vercel
+npm i -g vercel@65.5.0
 vercel link            # choose serve-os      → cat .vercel/project.json
 vercel link            # choose serve-os-qa   → cat .vercel/project.json
 ```
