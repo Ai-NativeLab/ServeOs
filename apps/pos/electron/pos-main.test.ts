@@ -7,9 +7,16 @@ import path from "node:path";
 // the one unavoidable mock here. Everything else is real: real fs, real JSON,
 // real PosMain. safeStorage reports encryption unavailable so the device file
 // round-trips as plaintext and the test can assert on what was actually stored.
-const hoisted = vi.hoisted(() => ({ userDataDir: "" }));
+// isPackaged defaults to true (a shipped build) and is flipped per test: base
+// URL resolution keys off it (#163).
+const hoisted = vi.hoisted(() => ({ userDataDir: "", isPackaged: true }));
 vi.mock("electron", () => ({
-  app: { getPath: () => hoisted.userDataDir },
+  app: {
+    getPath: () => hoisted.userDataDir,
+    get isPackaged() {
+      return hoisted.isPackaged;
+    },
+  },
   safeStorage: { isEncryptionAvailable: () => false },
 }));
 
@@ -97,6 +104,7 @@ async function pairedPos(baseUrl: string) {
 
 beforeEach(() => {
   hoisted.userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "pos-main-test-"));
+  hoisted.isPackaged = true;
   dbMock.reset();
 });
 
@@ -295,25 +303,33 @@ describe("device file is scoped to the backend it was paired against", () => {
 });
 
 describe("base URL resolution (Issue #163)", () => {
-  it("resolves to localhost:3000 lazily when VITE_DEV_SERVER_URL is set after module load", () => {
-    delete process.env.POS_API_URL;
-    process.env.VITE_DEV_SERVER_URL = "http://localhost:5173";
-    const pos = new PosMain();
-    expect(pos.getBaseUrl()).toBe("http://localhost:3000");
-  });
-
-  it("defaults to production host when neither POS_API_URL nor VITE_DEV_SERVER_URL is set", () => {
+  it("an unpackaged run (npm run pos:dev) reaches localhost:3000 with no env var", () => {
     delete process.env.POS_API_URL;
     delete process.env.VITE_DEV_SERVER_URL;
-    const pos = new PosMain();
-    expect(pos.getBaseUrl()).toBe("https://app.serveos.tech");
+    hoisted.isPackaged = false;
+    expect(new PosMain().getBaseUrl()).toBe("http://localhost:3000");
   });
 
-  it("prioritizes POS_API_URL over VITE_DEV_SERVER_URL and production fallback", () => {
+  it("a Vite dev server also means localhost:3000", () => {
+    delete process.env.POS_API_URL;
+    process.env.VITE_DEV_SERVER_URL = "http://localhost:5173";
+    expect(new PosMain().getBaseUrl()).toBe("http://localhost:3000");
+  });
+
+  it("a packaged build defaults to the production host", () => {
+    delete process.env.POS_API_URL;
+    delete process.env.VITE_DEV_SERVER_URL;
+    hoisted.isPackaged = true;
+    expect(new PosMain().getBaseUrl()).toBe("https://app.serveos.tech");
+  });
+
+  it("POS_API_URL overrides both, packaged or not", () => {
     process.env.POS_API_URL = "http://custom-api.test";
     process.env.VITE_DEV_SERVER_URL = "http://localhost:5173";
-    const pos = new PosMain();
-    expect(pos.getBaseUrl()).toBe("http://custom-api.test");
+    hoisted.isPackaged = false;
+    expect(new PosMain().getBaseUrl()).toBe("http://custom-api.test");
+    hoisted.isPackaged = true;
+    expect(new PosMain().getBaseUrl()).toBe("http://custom-api.test");
   });
 
   it("logs the resolved base URL at startup", () => {
@@ -321,5 +337,33 @@ describe("base URL resolution (Issue #163)", () => {
     process.env.POS_API_URL = "http://logged-backend.test";
     new PosMain();
     expect(spy).toHaveBeenCalledWith(expect.stringContaining("http://logged-backend.test"));
+  });
+
+  // AC6: a dev build cannot SILENTLY authenticate against production. The only
+  // way an unpackaged run resolves there is an explicit POS_API_URL, which is
+  // allowed — but it must be loud.
+  it("warns loudly when an unpackaged run is pointed at production", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    process.env.POS_API_URL = "https://app.serveos.tech/";
+    hoisted.isPackaged = false;
+
+    new PosMain();
+
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/PRODUCTION/));
+    const bootLog = fs.readFileSync(path.join(hoisted.userDataDir, "pos-boot.log"), "utf8");
+    expect(bootLog).toMatch(/PRODUCTION/);
+  });
+
+  it("does not warn for a packaged build on production, or a dev build on localhost", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    hoisted.isPackaged = true;
+    new PosMain();
+    hoisted.isPackaged = false;
+    new PosMain();
+
+    expect(warn).not.toHaveBeenCalled();
   });
 });

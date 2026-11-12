@@ -45,18 +45,34 @@ const authCacheCipher: AtRestCipher = {
   decryptString: (b) => safeStorage.decryptString(b),
 };
 
-// In dev (vite serving), default to the local backend; otherwise the live
-// dashboard host on serveos.tech (serveos.com only 302-redirects there, which
-// a packaged build cannot follow for POSTs with an Authorization header).
-// POS_API_URL always wins.
+/** The live dashboard host. serveos.com only 302-redirects here, which a
+ *  packaged build cannot follow for POSTs with an Authorization header. */
+const PRODUCTION_BASE_URL = "https://app.serveos.tech";
+
+// #163: which backend the till talks to.
+//   1. POS_API_URL always wins.
+//   2. An UNPACKAGED run (`npm run pos:dev`, or electron launched by hand) or a
+//      Vite dev server → the local backend on localhost:3000.
+//   3. Only a packaged build defaults to production.
 //
-// Resolved per PosMain CONSTRUCTION — which is after vite-plugin-electron has
-// populated VITE_DEV_SERVER_URL and before any network call — rather than at
-// module load. Not literally lazy, but every consumer reaches it post-env.
+// Root cause of #163: evaluation time was never the problem —
+// vite-plugin-electron sets VITE_DEV_SERVER_URL before it spawns Electron, so
+// the env var is already there at module load. The dev run reached
+// production because "am I a dev build?" was inferred from that one env var
+// alone; `app.isPackaged` is the authoritative answer, so it decides here.
 function resolveDefaultBaseUrl(): string {
   if (process.env.POS_API_URL) return process.env.POS_API_URL;
-  if (process.env.VITE_DEV_SERVER_URL) return "http://localhost:3000";
-  return "https://app.serveos.tech";
+  if (process.env.VITE_DEV_SERVER_URL || !app.isPackaged) return "http://localhost:3000";
+  return PRODUCTION_BASE_URL;
+}
+
+/** True when `baseUrl` points at the production host (any path/trailing slash). */
+function isProductionHost(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).host === new URL(PRODUCTION_BASE_URL).host;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -443,12 +459,25 @@ export class PosMain {
     // #163 AC5: a wrong base URL must be OBVIOUS. stdout vanishes in packaged
     // Windows builds, so the same line lands in userData/pos-boot.log where it
     // survives; logging must never crash boot, hence the swallow.
-    const bootLine = `[POS] API Base URL: ${this.getBaseUrl()}`;
-    console.log(bootLine);
+    const bootLines = [`[POS] API Base URL: ${this.getBaseUrl()}`];
+    console.log(bootLines[0]);
+    // AC6: a dev build must never SILENTLY authenticate against production.
+    // Only an explicit POS_API_URL can get an unpackaged run there — allowed
+    // (e.g. reproducing a live issue), but impossible to miss.
+    if (!app.isPackaged && isProductionHost(this.getBaseUrl())) {
+      const warning = "[POS] WARNING: this unpackaged dev build is pointed at PRODUCTION (POS_API_URL). " +
+        "Sign-ins, sales and pairings will hit live tenant data.";
+      console.warn(warning);
+      bootLines.push(warning);
+    }
     try {
-      fs.appendFileSync(path.join(app.getPath("userData"), "pos-boot.log"), `${new Date().toISOString()} ${bootLine}\n`);
+      const stamp = new Date().toISOString();
+      fs.appendFileSync(
+        path.join(app.getPath("userData"), "pos-boot.log"),
+        bootLines.map((l) => `${stamp} ${l}\n`).join(""),
+      );
     } catch {
-      // No userData write access — the console line is still emitted above.
+      // No userData write access — the console lines are still emitted above.
     }
     this.load();
     // Retention (Task 14): synced rows older than the window are dead weight
