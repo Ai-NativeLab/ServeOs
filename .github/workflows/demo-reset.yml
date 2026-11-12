@@ -31,6 +31,13 @@ on:
 permissions:
   contents: read
 
+# One run at a time: a manual dispatch overlapping the nightly run would have
+# two jobs migrating and --reset-ing the same database at once. Queue, never
+# cancel — killing a run mid-reset leaves the demo tenants half-built.
+concurrency:
+  group: demo-reset
+  cancel-in-progress: false
+
 jobs:
   reset:
     runs-on: ubuntu-latest
