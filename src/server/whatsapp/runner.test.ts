@@ -3,6 +3,7 @@ import { withTenant } from "@/db/with-tenant";
 import { orders } from "@/server/ordering/schema";
 import { auditEvents } from "@/server/audit/schema";
 import { whatsappConversations, whatsappOrderReceipts } from "./schema";
+import { getTenantById } from "@/server/tenancy/service";
 import { FakeWhatsAppProvider } from "./fake-provider";
 import { handleInbound } from "./runner";
 import { seedWhatsappContext, inboundText, inboundTap } from "./test-helpers";
@@ -135,4 +136,23 @@ describe("handleInbound", () => {
     const rows = await withTenant(tenantId, (tx) => tx.select().from(auditEvents));
     expect(rows.some((r) => r.action === "whatsapp.order_placed")).toBe(true);
   });
+
+  it("mints handoff with a local dev URL honoring port and scheme", async () => {
+    const { account, tenantId, categoryId, productId } = await seedWhatsappContext();
+    const p = new FakeWhatsAppProvider();
+
+    await handleInbound(account, inboundText("menu"), p);
+    await handleInbound(account, await inboundTap(tenantId, WA, "start", "go"), p);
+    await handleInbound(account, await inboundTap(tenantId, WA, "cat", categoryId), p);
+    await handleInbound(account, await inboundTap(tenantId, WA, "add", productId), p);
+    await handleInbound(account, await inboundTap(tenantId, WA, "checkout", "x"), p);
+    await handleInbound(account, await inboundTap(tenantId, WA, "ful", "delivery"), p);
+
+    const tenant = await getTenantById(tenantId);
+    const last = p.sent[p.sent.length - 1];
+    expect(last?.msg.kind).toBe("text");
+    const body = (last?.msg as { body: string }).body;
+    expect(body).toContain(`Finish your order here:\nhttp://${tenant!.slug}.serveos.localhost:3000/?handoff=`);
+  });
 });
+

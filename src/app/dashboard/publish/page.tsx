@@ -1,7 +1,7 @@
 import QRCode from "qrcode";
 import { requireMenuPermission } from "../menu-permission";
 import { getTenantById } from "@/server/tenancy";
-import { getEnv } from "@/env";
+import { buildTenantUrl } from "@/lib/urls";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { CopyLinkButton } from "@/components/dashboard/CopyLinkButton";
 import { Card } from "@/components/ui/card";
@@ -13,9 +13,7 @@ export default async function PublishMenuPage() {
   const tenant = await getTenantById(tenantId);
   if (!tenant) throw new Error(`Tenant not found: ${tenantId}`);
 
-  const rootDomain = getEnv().ROOT_DOMAIN;
-  const protocol = rootDomain.includes("localhost") ? "http" : "https";
-  const storefrontUrl = `${protocol}://${tenant.slug}.${rootDomain}`;
+  const storefrontUrl = buildTenantUrl(tenant.slug);
 
   const qrDataUrl = await QRCode.toDataURL(storefrontUrl, { width: 512, margin: 1 });
 

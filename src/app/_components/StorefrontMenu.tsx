@@ -74,6 +74,7 @@ export function StorefrontMenu({
     setCart(addLine(branchId, {
       productId: p.id, nameEn: p.nameEn, nameAr: p.nameAr, quantity,
       unitPrice: p.effectivePrice + deltas, selectedOptionIds: optionIds, modifierSummaryEn: summary,
+      requiresPrescription: p.requiresPrescription,
     }));
   }
 

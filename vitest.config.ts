@@ -15,5 +15,12 @@ export default defineConfig({
     hookTimeout: 60000,
     env: { NODE_ENV: "test" },
   },
-  resolve: { alias: { "@": path.resolve(__dirname, "src") } },
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "src"),
+      // `import "server-only"` is resolved by Next's compiler, not by a package;
+      // under vitest (plain Node, i.e. the server) it is a no-op module.
+      "server-only": path.resolve(__dirname, "src/server/fiscal/test-support/server-only-stub.ts"),
+    },
+  },
 });

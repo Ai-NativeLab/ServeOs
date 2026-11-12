@@ -5,11 +5,11 @@ import { withTenant } from "@/db/with-tenant";
 import { branches } from "@/server/branches/schema";
 import { users } from "@/server/auth/schema";
 import { verifyPassword } from "@/server/auth/password";
-import { getTenantBySlug } from "@/server/tenancy";
+import { getTenantById, getTenantBySlug, isTenantServable } from "@/server/tenancy";
 import { recordAuditEvent, type AuditActorInput, type AuditFingerprint } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { posDevices, posPairingCodes, type PosDevice } from "./schema";
-import { PosPairingError, PosLoginError } from "./errors";
+import { PosPairingError, PosLoginError, PosTenantBlockedError } from "./errors";
 
 export type PosBranch = { id: string; name: string };
 export type PosLoginResult =
@@ -74,6 +74,12 @@ export async function redeemPairingCode(
 
   if (!pairing) throw new PosPairingError();
 
+  // #164 / #187 review: same gate requirePosDevice applies to every paired
+  // request — a suspended store must not bring a NEW till online either.
+  // Refused before the code is spent, so it still works after reactivation.
+  const tenant = await getTenantById(pairing.tenantId);
+  if (!tenant || !isTenantServable(tenant)) throw new PosTenantBlockedError(tenant?.status ?? "unknown");
+
   // branches enforces RLS, so the lookup must run inside the tenant's context.
   const [branch] = await withTenant(pairing.tenantId, (tx) =>
     tx.select({ name: branches.name })
@@ -137,6 +143,9 @@ export async function loginForPos(
     ));
     throw new PosLoginError();
   }
+  // Only AFTER the credentials check, so the store's status is never revealed
+  // to someone who can't sign in (#187 review: consistent with the device gate).
+  if (!isTenantServable(tenant)) throw new PosTenantBlockedError(tenant.status);
 
   // branches enforce RLS, so the lookup must run inside the tenant's context.
   const branchRows = await withTenant(tenant.id, (tx) =>

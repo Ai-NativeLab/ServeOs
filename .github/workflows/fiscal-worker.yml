@@ -1,0 +1,61 @@
+# Drives the ETA submission drain (GET /api/fiscal/worker) every 15 minutes.
+#
+# WHY THIS IS A GITHUB SCHEDULE AND NOT A VERCEL CRON. ETA gives ~24h from
+# issuance to submit a receipt, and the worker's lease/backoff constants are
+# sized for a sub-hourly cadence (see src/app/api/fiscal/worker/route.ts). The
+# Vercel Hobby plan REJECTS any sub-daily cron at deploy time (it failed the
+# whole deployment once already: commit ab3b8f2), so vercel.json only keeps a
+# daily safety-net entry and this workflow provides the real cadence.
+#
+# Configuration (repo settings, both required; until they exist every run warns
+# and exits 0 so the schedule never paints the repo red):
+#   - variable FISCAL_WORKER_URL: the production route, e.g.
+#     https://<prod host>/api/fiscal/worker
+#   - secret   CRON_SECRET: the same value as the production Vercel env var;
+#     the route only accepts `Authorization: Bearer ${CRON_SECRET}`.
+#
+# GitHub may delay or drop scheduled runs under load. That is fine: the drain is
+# idempotent (lease-based claim), and the daily Vercel entry is the backstop.
+name: fiscal-worker
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never let two drains overlap; a late run waits for the current one instead of
+# cancelling it mid-submission.
+concurrency:
+  group: fiscal-worker
+  cancel-in-progress: false
+
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Call the fiscal worker
+        env:
+          FISCAL_WORKER_URL: ${{ vars.FISCAL_WORKER_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FISCAL_WORKER_URL:-}" ]; then
+            echo "::warning::repo variable FISCAL_WORKER_URL is not set; skipping the fiscal drain"
+            exit 0
+          fi
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "::warning::repo secret CRON_SECRET is not set; skipping the fiscal drain"
+            exit 0
+          fi
+          # The header is passed via a file descriptor so the secret never
+          # appears in the process list or the log (GitHub also masks it).
+          # No --retry: a timed-out drain may still be running server-side, and
+          # the next scheduled run (15 min) is the retry.
+          curl --silent --show-error --fail-with-body --max-time 280 \
+            -H @<(printf 'Authorization: Bearer %s\n' "$CRON_SECRET") \
+            "$FISCAL_WORKER_URL"
+          echo

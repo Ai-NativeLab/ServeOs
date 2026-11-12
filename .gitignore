@@ -58,3 +58,6 @@ next-env.d.ts
 
 # brainstorm visual companion sessions
 .moai/
+
+# Local copies of published Claude artifact pages (not source)
+claude-artifacts/

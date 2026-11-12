@@ -10,7 +10,7 @@ import {
 } from "./_offline/offline-auth";
 import { EMPTY_TILL_STATE, reduce, type TillState } from "./_offline/reducer";
 import { createApiClient, type PosApi } from "./_offline/api";
-import { SyncEngine, type SyncStatus } from "./_offline/sync";
+import { FISCAL_ENABLED_KEY, SyncEngine, type SyncStatus } from "./_offline/sync";
 import { TenantSignal, type RealtimeEvent, type TenantEventType } from "./_offline/realtime";
 import { createRealtimeTransport } from "./_offline/realtime-transport";
 import {
@@ -45,11 +45,35 @@ const authCacheCipher: AtRestCipher = {
   decryptString: (b) => safeStorage.decryptString(b),
 };
 
-// In dev (vite serving), default to the local backend; otherwise the live
-// dashboard host on serveos.tech (serveos.com only 302-redirects there, which
-// a packaged build cannot follow for POSTs with an Authorization header).
-// POS_API_URL always wins.
-const DEFAULT_BASE_URL = process.env.VITE_DEV_SERVER_URL ? "http://localhost:3000" : "https://app.serveos.tech";
+/** The live dashboard host. serveos.com only 302-redirects here, which a
+ *  packaged build cannot follow for POSTs with an Authorization header. */
+const PRODUCTION_BASE_URL = "https://app.serveos.tech";
+
+// #163: which backend the till talks to.
+//   1. POS_API_URL always wins.
+//   2. An UNPACKAGED run (`npm run pos:dev`, or electron launched by hand) or a
+//      Vite dev server → the local backend on localhost:3000.
+//   3. Only a packaged build defaults to production.
+//
+// Root cause of #163: evaluation time was never the problem —
+// vite-plugin-electron sets VITE_DEV_SERVER_URL before it spawns Electron, so
+// the env var is already there at module load. The dev run reached
+// production because "am I a dev build?" was inferred from that one env var
+// alone; `app.isPackaged` is the authoritative answer, so it decides here.
+function resolveDefaultBaseUrl(): string {
+  if (process.env.POS_API_URL) return process.env.POS_API_URL;
+  if (process.env.VITE_DEV_SERVER_URL || !app.isPackaged) return "http://localhost:3000";
+  return PRODUCTION_BASE_URL;
+}
+
+/** True when `baseUrl` points at the production host (any path/trailing slash). */
+function isProductionHost(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).host === new URL(PRODUCTION_BASE_URL).host;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * The body a POS route returns when the *device* token is missing, unknown or
@@ -121,6 +145,31 @@ export type SaleLine = {
   discountAmount?: number;
   discountReason?: string;
 };
+/**
+ * The B2B buyer, as the renderer captured it. Structurally identical to
+ * `PosSaleBuyer` in `../src/fiscal/buyer.ts` and to `EtaSubmissionBuyer` in
+ * `src/server/fiscal/schema.ts`, and — like `SaleFiscalStatus` below — linked to
+ * neither by anything a compiler checks. Main and the renderer are separate
+ * bundles with separate tsconfigs, so the type is written out here rather than
+ * imported across that boundary.
+ */
+export type SaleBuyer = {
+  rin: string;
+  name: string;
+  address: {
+    country: string;
+    governate: string;
+    regionCity: string;
+    street: string;
+    buildingNumber: string;
+    postalCode?: string;
+    floor?: string;
+    room?: string;
+    landmark?: string;
+    additionalInformation?: string;
+  };
+};
+
 export type RecordSaleInput = {
   lines: SaleLine[];
   orderDiscountAmount?: number;
@@ -129,6 +178,10 @@ export type RecordSaleInput = {
   payments: TenderInput[];
   grants?: { permission: string; token: string }[];
   notes?: string;
+  /** Present ⇒ this sale is filed with ETA as a tax invoice instead of an
+   *  e-receipt. Absent on every ordinary sale, and its absence leaves the
+   *  appended event byte-identical to what it was before B2B capture existed. */
+  buyer?: SaleBuyer;
 };
 export type SaleReceipt = {
   orderId: string;
@@ -284,6 +337,49 @@ export type ReprintReceipt = {
   }[];
 };
 
+/**
+ * One sale's ETA fiscal state, as `GET /api/pos/v1/sales/:id/fiscal` returns it.
+ *
+ * ---------------------------------------------------------------------------
+ * A HAND-WRITTEN MIRROR OF `SaleFiscalStatus` IN
+ * `src/server/fiscal/read-model.ts`, AND NOTHING COMPILER-CHECKS THE LINK.
+ *
+ * This is not a stylistic duplication — main is a separate bundle with its own
+ * tsconfig and no path into the Next.js server tree, and the value arrives here
+ * through `res.json()` behind a bare `as SaleFiscalStatus` cast, so a server
+ * field this type does not know about is simply invisible and a field this type
+ * INVENTS reads as `undefined` at runtime with no complaint from anywhere.
+ *
+ * WHEN THE SERVER TYPE CHANGES, EDIT THIS ONE IN THE SAME COMMIT. The failure
+ * mode is not a crash: it is a receipt footer that renders the wrong thing, or
+ * nothing at all, on a document ETA holds — which is exactly what happened to
+ * B2B sales before round 2 Task 5, where the server's `docType = 'e_receipt'`
+ * filter made every business sale read as `null` here and print no fiscal block
+ * whatsoever, silently, with no failing row and no log line anywhere to find it
+ * by. Assume the next drift will be as quiet as that one was.
+ *
+ * The whole block is `null` when the order has no submission row — the ORDINARY
+ * state of a non-EG tenant and of an EG sale in the moment before its enqueue
+ * lands. Never an error, and never a footer: see `saleFiscalStatus` below.
+ */
+export type SaleFiscalStatus = {
+  /** Which family this sale was declared as. An `e_invoice` (a B2B sale, buyer
+   *  captured at the till) never has a QR and shows `etaLongId` instead; an
+   *  `e_receipt` prints the QR. Not inferrable from the absence of a QR — an
+   *  unfinalized receipt has none either. */
+  docType: "e_receipt" | "e_invoice";
+  status: "pending" | "submitted" | "accepted" | "rejected" | "failed";
+  etaUuid: string | null;
+  /** ETA's own document number, assigned by ETA. This IS the B2B footer: an
+   *  invoice has no QR and no self-computed uuid, so until ETA answers there is
+   *  nothing to print but "pending". */
+  etaLongId: string | null;
+  qrPayload: string | null;
+  /** `data:image/png;base64,…`, re-rendered server-side on every call from an
+   *  immutable payload — so it is byte-identical each time. Render it once. */
+  qrImageDataUrl: string | null;
+};
+
 export type PosShiftSummary = {
   id: string;
   status: "open" | "closed";
@@ -353,6 +449,13 @@ export type DayZReport = DayReport & {
  * properties do not survive the boundary. So the drawer calls return an outcome
  * the renderer can branch on structurally, rather than matching error strings.
  */
+/** What advancing a web order tells the renderer. A refusal carries the
+ *  server's own words (e.g. payment_not_verified: "resolve it in the payments
+ *  queue") so the queue can show them instead of silently doing nothing. */
+export type AdvanceOrderResult =
+  | { ok: true; status: string }
+  | { ok: false; code: string; message: string };
+
 export type DrawerResult<T> =
   | { ok: true; data: T }
   | { ok: false; code: "conflict" | "needs_manager" | "bad_count" | "error"; message: string };
@@ -386,7 +489,7 @@ const CONFIRM_WAIT_MAX_QUEUE = 20;
  * disables their entry points from the sync state instead.
  */
 export class PosMain {
-  private baseUrl = process.env.POS_API_URL || DEFAULT_BASE_URL;
+  private baseUrl = resolveDefaultBaseUrl();
   private device: Device | null = null;
   /** In memory only: closing the app signs the cashier out but leaves the device paired. */
   private cashier: Cashier | null = null;
@@ -425,6 +528,29 @@ export class PosMain {
     onSyncState?: (status: SyncStatus) => void,
     onRealtime?: (message: PosRealtimeMessage) => void,
   ) {
+    // #163 AC5: a wrong base URL must be OBVIOUS. stdout vanishes in packaged
+    // Windows builds, so the same line lands in userData/pos-boot.log where it
+    // survives; logging must never crash boot, hence the swallow.
+    const bootLines = [`[POS] API Base URL: ${this.getBaseUrl()}`];
+    console.log(bootLines[0]);
+    // AC6: a dev build must never SILENTLY authenticate against production.
+    // Only an explicit POS_API_URL can get an unpackaged run there — allowed
+    // (e.g. reproducing a live issue), but impossible to miss.
+    if (!app.isPackaged && isProductionHost(this.getBaseUrl())) {
+      const warning = "[POS] WARNING: this unpackaged dev build is pointed at PRODUCTION (POS_API_URL). " +
+        "Sign-ins, sales and pairings will hit live tenant data.";
+      console.warn(warning);
+      bootLines.push(warning);
+    }
+    try {
+      const stamp = new Date().toISOString();
+      fs.appendFileSync(
+        path.join(app.getPath("userData"), "pos-boot.log"),
+        bootLines.map((l) => `${stamp} ${l}\n`).join(""),
+      );
+    } catch {
+      // No userData write access — the console lines are still emitted above.
+    }
     this.load();
     // Retention (Task 14): synced rows older than the window are dead weight
     // on every pendingEvents/unsyncedEvents scan — pending and failed rows are
@@ -573,6 +699,10 @@ export class PosMain {
     return h;
   }
 
+  getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
   isPaired(): boolean {
     return this.device !== null;
   }
@@ -641,6 +771,10 @@ export class PosMain {
     } catch (e) {
       // A revoked device token only surfaces here, on the one call that still
       // blocks — the engine treats every refusal as "try again later".
+      // NOT an unpair trigger: a suspended TENANT answers 403
+      // {code:"tenant_blocked"} (#164) — suspension must be reversible, and
+      // deleting the pairing would force a manager re-pair after reactivation.
+      // Only the literal 401 sentinel means the token itself is dead.
       if (e instanceof Error && e.message.includes("401")) {
         this.unpair();
         throw new Error("Device unpaired — please pair again");
@@ -795,6 +929,17 @@ export class PosMain {
       expectedTotal: input.expectedTotal,
       payments: input.payments,
       notes: input.notes,
+      // THE BUYER RIDES THE EVENT, which is what makes an offline B2B sale still
+      // a B2B sale when it syncs. Every sale is appended here before it is
+      // flushed — this log is not the exceptional path, it is the ONLY path a
+      // POS sale takes — so a buyer omitted from this object would be discarded
+      // before it ever reached the queue, and the sale would come back from an
+      // outage as a consumer e-receipt with the details already gone.
+      //
+      // Spread-omitted so an ordinary sale's payload is byte-identical to what
+      // it was before this field existed (the queue hashes and replays these
+      // objects; an extra `"buyer": undefined` is not the same JSON).
+      ...(input.buyer ? { buyer: input.buyer } : {}),
       // Wire contract rule 1: name the drawer on EVERY sale, card-only
       // included — a sale that replays after its shift closed would otherwise
       // drop out of that shift's Z-report entirely.
@@ -861,15 +1006,24 @@ export class PosMain {
     }
   }
 
-  async advanceOrder(orderId: string, toStatus: string): Promise<void> {
-    if (!this.device) return;
+  async advanceOrder(orderId: string, toStatus: string): Promise<AdvanceOrderResult> {
+    if (!this.device) return { ok: false, code: "error", message: "Not paired" };
+    let res: Response;
     try {
-      await fetch(`${this.baseUrl}/api/pos/v1/orders/status`, {
+      res = await fetch(`${this.baseUrl}/api/pos/v1/orders/status`, {
         method: "POST",
         headers: this.authHeaders(),
         body: JSON.stringify({ orderId, toStatus }),
       });
-    } catch { /* the queue is server-owned; the next poll shows the truth */ }
+    } catch {
+      // The queue is server-owned, so nothing changed; the next poll shows the truth.
+      return { ok: false, code: "offline", message: "Could not reach the server — try again" };
+    }
+    const body = (await res.json().catch(() => ({}))) as { status?: string; error?: string; code?: string };
+    if (!res.ok) {
+      return { ok: false, code: body.code ?? "error", message: body.error ?? `Could not update the order (${res.status})` };
+    }
+    return { ok: true, status: body.status ?? toStatus };
   }
 
   /** Finalized-sale search. Only pos:sell is needed to LOOK a sale up — the
@@ -909,6 +1063,48 @@ export class PosMain {
     return (await res.json()) as ReprintReceipt;
   }
 
+  /**
+   * The ETA fiscal state of one finalized sale, for the receipt footer (Task 7).
+   * Read-only and `pos:sell`-gated server-side — it never submits anything, so a
+   * reprint may call it as freely as the sale that minted the receipt.
+   *
+   * NEVER THROWS, and answers `null` for every "we do not have one": no server
+   * order id yet (an offline sale), no pairing, no cashier, an unreachable
+   * backend, a refused request, or the endpoint's own literal `null` body — a
+   * non-EG tenant, and every EG sale until its enqueue lands. All of them mean
+   * the same thing to the receipt: print it exactly as a non-fiscal till would.
+   * Mirrors `getOrders`, which swallows for the same reason — the till is
+   * offline-first and no fiscal read may cost a cashier a printed receipt.
+   *
+   * THE COLLAPSE IS DELIBERATE BUT NOT FREE: a future consumer that needs to
+   * tell non-EG from not-yet from transport-failure must WIDEN THIS RETURN TYPE
+   * — never infer meaning from `null`, which says only "nothing to print".
+   */
+  /**
+   * Whether this tenant files with ETA (EG + activation `active`), as of the
+   * last catalog pull — the server's `isFiscalEnabled`, cached in local_state so
+   * it survives an outage. `false` until the first pull (and on an unpaired
+   * till): every fiscal affordance — the B2B buyer section, the "fetching
+   * fiscal code" line — stays hidden rather than guessing "on".
+   */
+  fiscalEnabled(): boolean {
+    if (!this.device) return false;
+    return this.store.getState<boolean>(FISCAL_ENABLED_KEY) === true;
+  }
+
+  async saleFiscalStatus(orderId: string): Promise<SaleFiscalStatus | null> {
+    if (!this.device || !this.cashier) return null;
+    try {
+      const res = await fetch(`${this.baseUrl}/api/pos/v1/sales/${orderId}/fiscal`, {
+        headers: this.authHeaders(),
+      });
+      if (!res.ok) return null;
+      return (await res.json()) as SaleFiscalStatus | null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Full or partial refund. A 403 (missing pos:refund) is surfaced with a
    *  code so the renderer can open ManagerAuthModal and resubmit with the grant. */
   async refundSale(input: RefundSaleInput): Promise<RefundSaleResult> {
@@ -921,9 +1117,12 @@ export class PosMain {
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      const err = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
       const e = new Error(err.error ?? `Refund failed (${res.status})`) as Error & { code?: string };
-      if (res.status === 403) e.code = "NEEDS_MANAGER";
+      // A 403 usually means "missing pos:refund" — but a suspended tenant also
+      // answers 403 (code:"tenant_blocked", #164), and no manager override can
+      // fix a suspension, so that one must not open ManagerAuthModal.
+      if (res.status === 403 && err.code !== "tenant_blocked") e.code = "NEEDS_MANAGER";
       throw e;
     }
     return (await res.json()) as RefundSaleResult;

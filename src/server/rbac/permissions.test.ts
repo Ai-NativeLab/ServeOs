@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ROLE_PERMISSIONS } from "./permissions";
+import { PERMISSIONS, ROLE_PERMISSIONS } from "./permissions";
 
 describe("POS permissions", () => {
   it("lets staff sell but not discount, void, or refund", () => {
@@ -99,5 +99,26 @@ describe("purchasing permissions", () => {
   it("staff holds neither", () => {
     expect(ROLE_PERMISSIONS.staff).not.toContain("purchasing:manage");
     expect(ROLE_PERMISSIONS.staff).not.toContain("suppliers:manage");
+  });
+});
+
+describe("fiscal:manage (Spec 11)", () => {
+  it("is held by owner ONLY — not manager, not staff", () => {
+    // ETA config holds the taxpayer's credential REFERENCES, the RIN every
+    // receipt files under, and the branch identity it is issued from. Getting
+    // one wrong misfiles a legal document under the wrong taxpayer, so the gate
+    // is the account owner rather than the shift manager who holds every other
+    // administrative permission (audit:view, reconciliation:manage, …).
+    expect(ROLE_PERMISSIONS.owner).toContain("fiscal:manage");
+    expect(ROLE_PERMISSIONS.manager).not.toContain("fiscal:manage");
+    expect(ROLE_PERMISSIONS.staff).not.toContain("fiscal:manage");
+    expect(ROLE_PERMISSIONS.pharmacist).not.toContain("fiscal:manage");
+    // A platform super-admin operates the control plane, not a taxpayer's
+    // fiscal identity — it holds no tenant-scoped permission at all.
+    expect(ROLE_PERMISSIONS.super_admin).not.toContain("fiscal:manage");
+  });
+
+  it("is a declared permission, so authorize() can be called with it", () => {
+    expect(PERMISSIONS).toContain("fiscal:manage");
   });
 });

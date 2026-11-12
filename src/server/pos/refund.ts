@@ -1,9 +1,10 @@
 import { and, eq } from "drizzle-orm";
 import { withTenant } from "@/db/with-tenant";
+import type { db } from "@/db/client";
 import { recordAuditEvent } from "@/server/audit/service";
 import { publishTenantEvent } from "@/server/realtime/publish";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
-import { money, restockRefundedLines } from "@/server/ordering/service";
+import { money, restockRefundedLines, resolveRestockCapabilities } from "@/server/ordering/service";
 import { orders, orderItems, type Order } from "@/server/ordering/schema";
 import { branches } from "@/server/branches/schema";
 import { orderPayments } from "./tender-schema";
@@ -12,6 +13,11 @@ import { resolveAuthorizer } from "./grants";
 import { REASON_CODES, type ReasonCode } from "./record-sale";
 import { PosRefundError } from "./errors";
 import type { Permission } from "@/server/rbac/permissions";
+import { isFiscalEnabled, enqueueFiscalDocument } from "@/server/fiscal/enqueue";
+import { etaSubmissions } from "@/server/fiscal/schema";
+import { notifyFiscalFailure } from "@/server/fiscal/effects";
+import { redactedCause } from "@/lib/redacted-cause";
+import { computeRefundVat } from "./refund-vat";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -63,7 +69,14 @@ export type RefundResult = {
  * pos:refund through resolveAuthorizer (a manager grant lets a pos:sell-only
  * cashier refund, captured as authorizedByUserId). The original order is never
  * mutated: only the three refund tables are written plus the DERIVED
- * payment_status on the order. Any failure rolls back the whole refund.
+ * payment_status on the order. Each refund also stores the VAT it takes back
+ * (header and per line — see computeRefundVat), computed once here from the
+ * order's stored figures so the fiscal layer reverses a recorded number rather
+ * than re-deriving one months later. Any failure rolls back the whole refund —
+ * including, for an EG tenant, its fiscal `return_receipt` enqueue (step 10
+ * below): unlike the sale path's after-commit, catch-and-log enqueue
+ * (record-sale.ts), this one runs INSIDE the refund's own transaction on
+ * purpose, because the refund has not yet been handed to a customer.
  */
 export async function issueRefund(
   actor: RefundActor,
@@ -108,6 +121,41 @@ export async function issueRefund(
   );
   const authorizedByUserId =
     authorizer === actor.actorUserId ? null : authorizer;
+
+  // Fiscal (Spec 11): read BEFORE the transaction — same reason as
+  // resolveAuthorizer just above, not just the same convention. `withTenant`
+  // below holds ONE pool connection for the whole transaction;
+  // isFiscalEnabled queries through the global `db`, i.e. a SECOND
+  // connection. pg-pool here defaults to max=10 with connectionTimeoutMillis
+  // =0 (wait forever for a free connection) — ten concurrent EG refunds each
+  // holding their tx's connection while blocked waiting on a second one
+  // deadlocks the whole pool permanently. Reading it here, before `tx`
+  // exists, means this path only ever holds one connection at a time.
+  // `country` is a stable tenant attribute (see isFiscalEnabled's own JSDoc)
+  // so a pre-transaction read is not a staleness risk. DO NOT move this back
+  // inside the transaction.
+  const fiscalEnabled = await isFiscalEnabled(actor.tenantId);
+
+  // Restock capability (round 2 Task 10a): read BEFORE the transaction, for
+  // EXACTLY the reason above and not merely alongside it. `restockRefundedLines`
+  // used to resolve this itself, deep inside the tx — `getTenantById` through
+  // the global `db`, a second pool connection taken while this request's
+  // `withTenant` still holds its own — so the deadlock the fiscal hoist closed
+  // stayed open one call further down. It survived that sweep because it is
+  // TRANSITIVE and NARROWER: the read is two calls from this file and only
+  // happens on a refund carrying at least one restockable line, so nothing here
+  // looked like a database read and most refunds never reached it.
+  //
+  // Resolved UNCONDITIONALLY rather than behind the same "any restockable line?"
+  // gate. The gate still exists where it belongs — inside `restockRefundedLines`,
+  // which returns before touching `caps` when there is nothing to restock — and
+  // duplicating it here would buy one skipped tenant read on a cold path at the
+  // cost of a second copy of the condition that decides whether stock moves.
+  // `cancelOrderByToken` resolves its caps the same unconditional way.
+  //
+  // Vertical is a stable tenant attribute, so a pre-transaction read is not a
+  // staleness risk. DO NOT move this back inside the transaction.
+  const restockCaps = await resolveRestockCapabilities(actor.tenantId);
 
   const result = await withTenant(actor.tenantId, async (tx) => {
     // 1. SERIALIZE refunds per order. The net-paid ceiling is a read-then-write
@@ -172,6 +220,7 @@ export async function issueRefund(
         totalAmount: Number(dup.totalAmount),
         paymentStatus: order.paymentStatus,
         idempotent: true,
+        fiscalFollowUp: "none" as RefundFiscalFollowUp,
       };
     }
 
@@ -199,23 +248,31 @@ export async function issueRefund(
     // 5. Per-line quantity bounds. Applied to ANY refund that names lines (an
     //    itemised full refund included) — "return three of two" is wrong in
     //    every kind. Already-refunded quantities count against the remaining.
+    //    Both reads are hoisted out of the loop because step 5b needs the same
+    //    two facts — what was sold and what has come back — to split the VAT.
+    const items = lines.length
+      ? await tx.select().from(orderItems).where(eq(orderItems.orderId, input.orderId))
+      : [];
+    const priorLines = lines.length
+      ? await tx
+          .select({ refundLine: refundLines })
+          .from(refundLines)
+          .innerJoin(refunds, eq(refundLines.refundId, refunds.id))
+          .where(eq(refunds.orderId, input.orderId))
+      : [];
+    const alreadyReturned = new Map<string, number>();
+    for (const p of priorLines) {
+      alreadyReturned.set(
+        p.refundLine.orderItemId,
+        (alreadyReturned.get(p.refundLine.orderItemId) ?? 0) + p.refundLine.quantity,
+      );
+    }
     if (lines.length > 0) {
-      const items = await tx
-        .select()
-        .from(orderItems)
-        .where(eq(orderItems.orderId, input.orderId));
-      const priorLines = await tx
-        .select({ refundLine: refundLines })
-        .from(refundLines)
-        .innerJoin(refunds, eq(refundLines.refundId, refunds.id))
-        .where(eq(refunds.orderId, input.orderId));
       for (const l of lines) {
         const item = items.find((i) => i.id === l.orderItemId);
         if (!item)
           throw new PosRefundError("Refund line does not belong to this order");
-        const already = priorLines
-          .filter((p) => p.refundLine.orderItemId === l.orderItemId)
-          .reduce((s, p) => s + p.refundLine.quantity, 0);
+        const already = alreadyReturned.get(l.orderItemId) ?? 0;
         if (l.quantity < 1 || l.quantity > item.quantity - already)
           throw new PosRefundError("Cannot return more than was sold");
       }
@@ -234,6 +291,28 @@ export async function issueRefund(
         );
     }
 
+    // 5b. The VAT this refund takes back, computed from the order's STORED
+    //     figures now that the line amounts are settled. The math itself lives
+    //     in `./refund-vat` as PURE functions — this reads the rows they need
+    //     (including every earlier refund's stored VAT) and passes them in.
+    //     `netPaid` is the balance outstanding immediately before this refund,
+    //     the same figure the ceiling above enforces, so a goodwill full refund
+    //     scales against what was actually still owed back.
+    const priorRefundVat = await tx
+      .select({ vatAmount: refunds.vatAmount })
+      .from(refunds)
+      .where(eq(refunds.orderId, input.orderId));
+    const { headerVat, lineVats } = computeRefundVat({
+      order,
+      kind: input.kind,
+      lines: lines.map((l) => ({ orderItemId: l.orderItemId, quantity: l.quantity, amount: money(l.amount) })),
+      items,
+      alreadyReturned,
+      priorVatAmounts: priorRefundVat.map((r) => r.vatAmount),
+      thisTotal: money(thisTotal),
+      outstanding: money(netPaid),
+    });
+
     // 6. Insert header → lines → payments. All-or-nothing inside withTenant.
     const [refund] = await tx
       .insert(refunds)
@@ -245,6 +324,7 @@ export async function issueRefund(
         reasonCode: input.reasonCode,
         reasonText: input.reasonText ?? null,
         totalAmount: money(thisTotal),
+        vatAmount: headerVat,
         byUserId: actor.actorUserId,
         authorizedByUserId,
         shiftId: input.shiftId ?? null,
@@ -254,12 +334,13 @@ export async function issueRefund(
 
     if (lines.length) {
       await tx.insert(refundLines).values(
-        lines.map((l) => ({
+        lines.map((l, i) => ({
           tenantId: actor.tenantId,
           refundId: refund.id,
           orderItemId: l.orderItemId,
           quantity: l.quantity,
           amount: money(l.amount),
+          vatAmount: lineVats[i],
           restock: l.restock,
         })),
       );
@@ -280,7 +361,7 @@ export async function issueRefund(
     //    NOTE for merge coordination: feat/inventory-core-and-recipes reworks
     //    stock math — this restock path must be realigned to the new inventory
     //    core when that branch lands, or line restocks will double-count.
-    await restockRefundedLines(tx, actor.tenantId, lines);
+    await restockRefundedLines(tx, lines, restockCaps);
 
     // 8. payment_status is DERIVED from the math, never set by hand. If this
     //    refund clears net-paid, the order is fully refunded; else partially.
@@ -290,6 +371,13 @@ export async function issueRefund(
       .update(orders)
       .set({ paymentStatus, updatedAt: new Date() })
       .where(eq(orders.id, input.orderId));
+
+    // 8b. Fiscal family of the sale being refunded (EG + ETA-active only) — see
+    //     step 10 for what each answer does. Read here so the audit event below
+    //     records which fiscal consequence this refund had.
+    const fiscalFollowUp: RefundFiscalFollowUp = fiscalEnabled
+      ? await refundFiscalFollowUp(tx, actor.tenantId, input.orderId)
+      : "none";
 
     // 9. Audit — DIRECT recordAuditEvent, same tx, so the refund.issued row
     //    commits/rolls back with the refund. The audit chain is live on-branch
@@ -318,18 +406,74 @@ export async function issueRefund(
           paymentStatus,
           byUserId: actor.actorUserId,
           authorizedByUserId,
+          // Only on a fiscal tenant, so every other tenant's event is unchanged.
+          ...(fiscalEnabled ? { fiscalFollowUp } : {}),
         },
       },
       tx,
     );
+
+    // 10. Fiscal (Spec 11): enqueue a pending return_receipt IN THIS SAME
+    //     transaction, atomic with the refund — deliberately unlike the sale
+    //     path (record-sale.ts), whose enqueue runs AFTER commit and
+    //     swallows its own errors. Here a failed insert rolls the refund
+    //     back WITH it, which is correct: unlike a completed sale, this
+    //     refund has not yet been handed to a customer, so refusing the
+    //     whole operation on a fiscal-write failure is safe and keeps "a
+    //     refund exists" and "its fiscal record was durably queued" from
+    //     ever diverging. docType is `return_receipt` — the addendum's B2C
+    //     refund document (see eta_submissions' JSDoc) — never `credit_note`,
+    //     which stays reserved for the deferred B2B e-invoice correction.
+    //     `fiscalEnabled` was read ABOVE the transaction (pool-deadlock
+    //     avoidance — see that comment); only the WRITE belongs in here.
+    //
+    //     FAMILY-AWARE (step 8b). A return receipt references the sale's
+    //     ORIGINAL e-receipt, so it is only enqueued when one exists:
+    //       - "return_receipt": the sale was filed as an e-receipt.
+    //       - "credit_note_required": the sale was filed as a B2B tax invoice.
+    //         Its correction is a CREDIT NOTE, which ServeOS does not build yet
+    //         (the worker leaves `credit_note` rows inert). The row is still
+    //         queued — `pending`, docType `credit_note` — because it is the
+    //         durable, visible record that a credit note is owed: it shows on the
+    //         fiscal dashboard's submissions feed (and ages into "overdue"), and
+    //         the owner is alerted after commit. A `return_receipt` here would
+    //         wait forever on a parent receipt that does not exist.
+    //       - "none": the sale has NO fiscal document (rung before fiscal was
+    //         enabled/activated): there is nothing to reverse, so nothing is
+    //         queued.
+    if (fiscalFollowUp === "return_receipt") {
+      await enqueueFiscalDocument({ tenantId: actor.tenantId }, { docType: "return_receipt", refundId: refund.id }, tx);
+    } else if (fiscalFollowUp === "credit_note_required") {
+      await enqueueFiscalDocument({ tenantId: actor.tenantId }, { docType: "credit_note", refundId: refund.id }, tx);
+    }
 
     return {
       refundId: refund.id,
       totalAmount: thisTotal,
       paymentStatus,
       idempotent: false,
+      fiscalFollowUp,
     };
   });
+
+  // The owner alert for a refund of a B2B-invoiced sale. AFTER commit and
+  // best-effort: the refund and its `credit_note` row are already durable, and
+  // a notification failure must never fail a refund the customer has been given.
+  if (!result.idempotent && result.fiscalFollowUp === "credit_note_required") {
+    console.warn(`[fiscal] refund ${result.refundId} on order ${input.orderId} (tenant ${actor.tenantId}) needs a B2B credit note — queued as credit_note, not filed automatically`);
+    try {
+      await notifyFiscalFailure({ tenantId: actor.tenantId }, {
+        title: "Credit note required",
+        body: `A refund was issued on a sale filed with ETA as a tax invoice. ETA needs a credit note for it, which ServeOS does not file automatically yet — it is listed as a pending credit_note on the Fiscal page.`,
+        entityType: "refund",
+        entityId: result.refundId,
+        targets: [{ role: "owner" }],
+        channels: ["in_app"],
+      });
+    } catch (err) {
+      console.error(`[fiscal] credit-note alert failed for refund ${result.refundId} (refund unaffected)`, redactedCause(err));
+    }
+  }
 
   // Post-commit, and only for a refund that actually happened: the sale's row
   // and the stock it put back both moved, and neither screen should wait out a
@@ -338,5 +482,36 @@ export async function issueRefund(
     await publishTenantEvent(actor.tenantId, { type: "orders.changed", entityIds: [input.orderId] });
     await publishTenantEvent(actor.tenantId, { type: "stock.changed", entityIds: [input.orderId] });
   }
-  return result;
+  return {
+    refundId: result.refundId,
+    totalAmount: result.totalAmount,
+    paymentStatus: result.paymentStatus,
+    idempotent: result.idempotent,
+  };
+}
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** What a fiscal tenant's refund owes ETA — see `issueRefund` step 10. */
+type RefundFiscalFollowUp = "return_receipt" | "credit_note_required" | "none";
+
+/**
+ * The document family the refunded sale was filed under, read on the refund's
+ * own transaction (RLS-scoped, no second connection). An invoice anywhere in
+ * the order's history wins: the one permitted family switch (every receipt
+ * rejected, then invoiced — `requestB2bInvoice`) leaves rejected receipt rows
+ * behind, and the sale's live document is then the invoice.
+ */
+async function refundFiscalFollowUp(
+  tx: Tx,
+  tenantId: string,
+  orderId: string,
+): Promise<RefundFiscalFollowUp> {
+  const rows = await tx
+    .select({ docType: etaSubmissions.docType })
+    .from(etaSubmissions)
+    .where(and(eq(etaSubmissions.tenantId, tenantId), eq(etaSubmissions.orderId, orderId)));
+  if (rows.some((r) => r.docType === "e_invoice")) return "credit_note_required";
+  if (rows.some((r) => r.docType === "e_receipt")) return "return_receipt";
+  return "none";
 }
