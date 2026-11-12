@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { loadCart, clearCart, cartSubtotal, type Cart } from "../_components/cart";
 import { rememberOrder } from "../_components/recent-orders";
+import { submitCheckoutOrder } from "./submit-order";
 import { formatMoney } from "@/lib/money";
 import { computeOrderTotals, type CheckoutPricing } from "@/lib/order-totals";
 import { isValidCustomerPhone, getPhoneFormatHint } from "@/lib/phone";
@@ -153,40 +154,35 @@ export function CheckoutForm({
     }
     setSubmitting(true);
     try {
-      if (hasRxLine && rxFile && !rxUploadedId) {
-        const fd = new FormData();
-        fd.append("file", rxFile);
-        const rxRes = await fetch("/api/prescriptions", { method: "POST", body: fd });
-        if (!rxRes.ok) {
-          const rxData = (await rxRes.json().catch(() => ({}))) as { error?: string };
-          setError(rxData.error ?? "Failed to upload prescription");
-          setSubmitting(false);
-          return;
-        }
-        const rxData = (await rxRes.json()) as { id: string };
-        setRxUploadedId(rxData.id);
-      }
-
-      const res = await fetch("/api/orders", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
+      // The upload's id is threaded through as a local value inside
+      // submitCheckoutOrder — state set here would not reach this submit's
+      // POST body (#187 review).
+      const outcome = await submitCheckoutOrder({
+        rxFile: hasRxLine ? rxFile : null,
+        rxUploadedId,
+        body: {
           slug, branchId, fulfillmentType: fulfillment,
           customerName: name, customerPhone: phone, notes,
           areaId: fulfillment === "delivery" ? areaId : undefined,
           addressText: fulfillment === "delivery" ? address : undefined,
           scheduledFor: when === "scheduled" ? slotIso : undefined,
-          prescriptionId: rxUploadedId ?? undefined,
           paymentMethod: payMethod,
           paymentReference: selectedMethod ? payRef.trim() : undefined,
           lines: cart.lines.map((l) => ({
             productId: l.productId, variantId: l.variantId, quantity: l.quantity, selectedOptionIds: l.selectedOptionIds,
             dimensions: l.dimensions,
           })),
-        }),
+        },
       });
-      const data = await res.json();
-      if (!res.ok) {
+      if (outcome.kind === "upload_failed") {
+        setError(outcome.error);
+        setSubmitting(false);
+        return;
+      }
+      // Remember a fresh upload so a retry after a non-Rx refusal reuses it.
+      if (outcome.prescriptionId) setRxUploadedId(outcome.prescriptionId);
+      const { data } = outcome;
+      if (!outcome.ok) {
         if (data.code === "out_of_stock") {
           setError(`${data.error} — please remove it from your cart or reduce the quantity.`);
         } else if (data.code === "rx_required") {
@@ -203,12 +199,14 @@ export function CheckoutForm({
       try {
         window.localStorage.setItem(CUSTOMER_KEY, JSON.stringify({ name, phone, address }));
       } catch { /* best-effort */ }
+      // A 201 from /api/orders always carries both (placeOrder's result).
+      const placed = data as { statusToken: string; orderNumber: number };
       rememberOrder({
-        token: data.statusToken, orderNumber: data.orderNumber,
+        token: placed.statusToken, orderNumber: placed.orderNumber,
         placedAt: new Date().toISOString(), status: "pending",
       });
       clearCart();
-      window.location.href = `/order/${data.statusToken}`;
+      window.location.href = `/order/${placed.statusToken}`;
     } catch {
       setError("Network error — please try again.");
       setSubmitting(false);
