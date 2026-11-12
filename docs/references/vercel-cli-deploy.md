@@ -18,6 +18,8 @@ Building in GitHub Actions and uploading a *prebuilt* deployment sidesteps the r
 | `VERCEL_ORG_ID` | `vercel link` in the repo, then read `.vercel/project.json` → `orgId`. Same for both projects. |
 | `VERCEL_PROJECT_ID_PROD` | `.vercel/project.json` → `projectId` after linking **serve-os** |
 | `VERCEL_PROJECT_ID_QA` | same, after linking **serve-os-qa** |
+| `PROD_DATABASE_URL` | The **same** connection string as `DATABASE_URL` in the serve-os project's Production env. The `production` job migrates with it. |
+| `QA_DATABASE_URL` | The **same** connection string as `DATABASE_URL` in the serve-os-qa project's Production env. The `qa` job migrates with it. |
 
 ```bash
 npm i -g vercel@65.5.0
@@ -27,13 +29,13 @@ vercel link            # choose serve-os-qa   → cat .vercel/project.json
 
 `.vercel/` is gitignored — read the ids, don't commit them.
 
-Add all four under **Settings → Secrets and variables → Actions → Secrets**.
+Add all six under **Settings → Secrets and variables → Actions → Secrets** (repository secrets, or the `production` / `qa` environment secrets for the two database URLs).
 
 ## Cutover
 
 The workflow is **inert until you set one variable**, so merging it is safe:
 
-1. Add the four secrets above.
+1. Add the six secrets above.
 2. **Settings → Secrets and variables → Actions → Variables** → add `VERCEL_DEPLOY_ENABLED` = `true`.
 3. Push a no-op commit to `main` and confirm the `production` job deploys and `serveos.tech` serves it.
 4. **Only then** disconnect Vercel's Git integration — Vercel → each project → Settings → Git → Disconnect.
@@ -67,7 +69,9 @@ That last row is the real cost. Each preview now runs `npm ci` + a full Next bui
 
 ## Notes specific to this repo
 
-- The production build **applies database migrations** before the deploy goes live, so the `production` job must have the real production env. `vercel pull --environment=production` fetches it — do not hand-roll the env vars.
+- The production build **applies database migrations** before the deploy goes live, so the `production` job must have the real production env. `vercel pull --environment=production` fetches it, and apart from `DATABASE_URL` it is the only source: do not hand-roll env vars in the workflow.
+- **`DATABASE_URL` is the one exception.** The `production` and `qa` jobs delete it from the pulled file and build (so migrate) with `PROD_DATABASE_URL` / `QA_DATABASE_URL` instead, because the pulled value reached `release-migrate` with a broken host (`base`). Why that happens is not confirmed; see PR #162. The deployed app still reads `DATABASE_URL` from the Vercel project at runtime, so **migrations and runtime now read two different copies of the same connection string**.
+- **Rotate the database password in two places:** the Vercel project's `DATABASE_URL` **and** the matching GitHub secret. Before every build, `.github/scripts/use-secret-database-url.sh` compares the host and username of the two (printing only the hosts) and fails the job if they differ, so a half-done rotation stops the deploy before anything migrates rather than migrating one database and serving another. It cannot see a password-only change: if only the password was rotated in one place, either the migration fails to connect or the app does.
 - The QA project treats the **`qa` branch as its production environment**, which is why the `qa` job also deploys with `--prod`, just against a different project id.
 - `ELECTRON_SKIP_BINARY_DOWNLOAD=1` is set for the same reason as in `ci.yml`: `apps/pos` carries electron as a devDependency and its postinstall pulls ~100 MB that nothing here needs.
 - Preview deploys use the **prod project's** preview environment. If you'd rather previews point at the QA database, swap `VERCEL_PROJECT_ID_PROD` for `VERCEL_PROJECT_ID_QA` in the `preview` job.
