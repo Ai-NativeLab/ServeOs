@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, timestamp, boolean, integer, numeric, uniqueIndex, bigint } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, boolean, integer, numeric, uniqueIndex, bigint, check } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { tenants } from "@/server/tenancy/schema";
 import { branches } from "@/server/branches/schema";
 import { unitOfMeasureEnum, type UnitOfMeasure } from "./uom";
@@ -29,6 +30,11 @@ export const products = pgTable("products", {
   // — one number, one meaning per row, no second price column.
   unitOfMeasure: unitOfMeasureEnum("unit_of_measure"),
   basePrice: numeric("base_price").notNull(),
+  salePrice: numeric("sale_price"),
+  discountPercent: integer("discount_percent"),
+  discountStartsAt: timestamp("discount_starts_at", { withTimezone: true }),
+  discountEndsAt: timestamp("discount_ends_at", { withTimezone: true }),
+  discountActive: boolean("discount_active").notNull().default(false),
   imageUrl: text("image_url"),
   brand: text("brand"),
   sku: text("sku"),
@@ -40,7 +46,13 @@ export const products = pgTable("products", {
   isPublished: boolean("is_published").notNull().default(false),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  // Promotional discount (#192): the service validates these too; the
+  // constraints keep a bad row out even if a write skips the service.
+  check("products_discount_percent_range", sql`${t.discountPercent} IS NULL OR (${t.discountPercent} > 0 AND ${t.discountPercent} < 100)`),
+  check("products_sale_price_positive", sql`${t.salePrice} IS NULL OR ${t.salePrice} > 0`),
+  check("products_discount_window_order", sql`${t.discountStartsAt} IS NULL OR ${t.discountEndsAt} IS NULL OR ${t.discountEndsAt} > ${t.discountStartsAt}`),
+]);
 
 export const productVariants = pgTable("product_variants", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -137,6 +149,9 @@ export interface PublishedMenu {
       descriptionEn: string | null;
       descriptionAr: string | null;
       effectivePrice: number;
+      originalPrice: number;
+      discountPercent: number | null;
+      hasDiscount: boolean;
       /** P4: set only for dimensional products — effectivePrice is then the
        *  price PER UNIT OF MEASURE, not a fixed each-price. */
       unitOfMeasure: UnitOfMeasure | null;

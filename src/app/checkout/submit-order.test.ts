@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
-import { submitCheckoutOrder } from "./submit-order";
+import { submitCheckoutOrder, checkoutOrderLines, priceChangedLines } from "./submit-order";
 import { checkoutEmailPayload } from "./checkout-email";
+import { repriceCart, type Cart, type CartLine } from "../_components/cart";
 
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -113,5 +114,71 @@ describe("submitCheckoutOrder: the fiscal tax-receipt email", () => {
     });
 
     expect(orderPost(fetchImpl)).not.toHaveProperty("customerEmail");
+  });
+});
+
+describe("checkout price guard (#192: expectedUnitPrice and the price_changed reprice)", () => {
+  const cartLine = (over: Partial<CartLine>): CartLine => ({
+    productId: "p-1", nameEn: "Panadol", nameAr: "بنادول", quantity: 2, unitPrice: 45,
+    selectedOptionIds: [], modifierSummaryEn: "", ...over,
+  });
+
+  it("sends each line's displayed unit price as expectedUnitPrice, next to the fiscal email", async () => {
+    const lines = [
+      cartLine({ productId: "p-1", unitPrice: 45 }),
+      cartLine({ productId: "p-2", variantId: "v-1", quantity: 1, unitPrice: 12.5, selectedOptionIds: ["o-1"] }),
+    ];
+    const fetchImpl = vi.fn().mockResolvedValueOnce(json(201, { statusToken: "tok", orderNumber: 4 }));
+
+    await submitCheckoutOrder({
+      rxFile: null,
+      rxUploadedId: null,
+      body: { ...orderBody, ...checkoutEmailPayload(true, "buyer@example.com"), lines: checkoutOrderLines(lines) },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(orderPost(fetchImpl)).toMatchObject({
+      customerEmail: "buyer@example.com",
+      lines: [
+        { productId: "p-1", quantity: 2, selectedOptionIds: [], expectedUnitPrice: 45 },
+        { productId: "p-2", variantId: "v-1", quantity: 1, selectedOptionIds: ["o-1"], expectedUnitPrice: 12.5 },
+      ],
+    });
+  });
+
+  it("never sends the cart's line total or display-only fields", () => {
+    const [sent] = checkoutOrderLines([cartLine({ unitPrice: 45 })]);
+    expect(Object.keys(sent).sort()).toEqual(
+      ["dimensions", "expectedUnitPrice", "productId", "quantity", "selectedOptionIds", "variantId"],
+    );
+  });
+
+  it("surfaces a 409 price_changed answer with its live prices, keeping the prescription id", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(json(409, {
+      error: "Some prices changed", code: "price_changed", lines: [{ index: 1, unitPrice: 60 }],
+    }));
+
+    const out = await submitCheckoutOrder({
+      rxFile: null,
+      rxUploadedId: "rx-earlier",
+      body: { ...orderBody, lines: checkoutOrderLines([cartLine({}), cartLine({ productId: "p-2", unitPrice: 50 })]) },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(out).toMatchObject({ kind: "response", ok: false, prescriptionId: "rx-earlier" });
+    if (out.kind !== "response") throw new Error("unreachable");
+    const changed = priceChangedLines(out.data);
+    expect(changed).toEqual([{ index: 1, unitPrice: 60 }]);
+
+    const cart: Cart = { branchId: "b-1", lines: [cartLine({}), cartLine({ productId: "p-2", unitPrice: 50 })] };
+    expect(repriceCart(cart, changed!).lines.map((l) => l.unitPrice)).toEqual([45, 60]);
+  });
+
+  it("is not a price change for any other refusal, or a malformed one", () => {
+    expect(priceChangedLines({ code: "out_of_stock", error: "Out of stock" })).toBeNull();
+    expect(priceChangedLines({ code: "price_changed" })).toBeNull();
+    expect(priceChangedLines({ code: "price_changed", lines: "nope" })).toBeNull();
+    expect(priceChangedLines({ code: "price_changed", lines: [null, 3, { index: 0, unitPrice: 9 }] }))
+      .toEqual([{ index: 0, unitPrice: 9 }]);
   });
 });

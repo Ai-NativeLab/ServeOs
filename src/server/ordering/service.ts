@@ -7,6 +7,7 @@ import { deductForOrderLine, reverseOrderDeductions } from "@/server/inventory/s
 import { computeOrderTotals, computeLineTotal } from "@/lib/order-totals";
 import { computeDimensionalUnitPrice } from "@/server/catalog/dimensional-pricing";
 import { isDimensionalUom } from "@/server/catalog/uom";
+import { computeEffectivePrice } from "@/server/catalog/pricing";
 import { customers } from "@/server/customers/schema";
 import { prescriptions } from "@/server/prescriptions/schema";
 import { isBranchOrderableAt, isWithinSchedulingHorizon, MIN_LEAD_MINUTES } from "@/server/branches/slots";
@@ -26,7 +27,7 @@ import { canTransition } from "./state-machine";
 // inventory FIFO deduction re-checks inside this same transaction as a backstop
 // against stock changing between menu render and checkout.
 import { isValidCustomerPhone, normalizePhone } from "@/lib/phone";
-import { OrderValidationError, PrescriptionRequiredError, InvalidPhoneError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, TotalMismatchError, PaymentNotVerifiedError, OutOfStockError } from "./errors";
+import { OrderValidationError, PrescriptionRequiredError, InvalidPhoneError, BranchNotAcceptingOrdersError, AreaNotDeliverableError, MinimumOrderNotMetError, OrderNotFoundError, InvalidTransitionError, InvalidScheduleError, TotalMismatchError, PaymentNotVerifiedError, OutOfStockError, PriceChangedError, type ChangedLinePrice } from "./errors";
 import { recordAuditEvent, type AuditFingerprint } from "@/server/audit/service";
 import { publishTenantEvent } from "@/server/realtime/publish";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
@@ -45,6 +46,11 @@ export type PlaceOrderLine = {
   /** P4: required when the product is dimensional (unitOfMeasure set),
    *  rejected when it isn't — never silently ignored either way. */
   dimensions?: { lengthMm?: number; widthMm?: number; thicknessMm?: number };
+  /** The per-unit price the client's cart showed for this line. Compared,
+   *  never used for charging: a mismatch (e.g. a promotion ended after the
+   *  item was carted) rejects the order with PriceChangedError so the
+   *  customer confirms the new price instead of being charged it silently. */
+  expectedUnitPrice?: number;
 };
 /** One modifier selection as the till itself recorded it — ids AND names,
  *  because a replayed line may resolve against a catalog where the id no
@@ -323,7 +329,16 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       const [avail] = await tx.select().from(branchProductAvailability)
         .where(and(eq(branchProductAvailability.branchId, input.branchId), eq(branchProductAvailability.productId, product.id))).limit(1);
       if (avail && !avail.isAvailable) throw new OrderValidationError("product unavailable at branch");
-      const effectiveBase = avail?.priceOverride ?? product.basePrice;
+      const baseBeforeDiscount = avail?.priceOverride ?? product.basePrice;
+      const promoPricing = computeEffectivePrice({
+        basePrice: baseBeforeDiscount,
+        salePrice: product.salePrice,
+        discountPercent: product.discountPercent,
+        discountStartsAt: product.discountStartsAt,
+        discountEndsAt: product.discountEndsAt,
+        discountActive: product.discountActive,
+      }, now);
+      const effectiveBase = promoPricing.effectivePrice;
 
       const requiresRxReview = Boolean(product.requiresPrescription && caps.pharmacistReview);
 
@@ -442,6 +457,8 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
       dimensions: null,
     });
 
+    const changedPrices: ChangedLinePrice[] = [];
+
     for (let i = 0; i < input.lines.length; i++) {
       const line = input.lines[i];
       if (!Number.isInteger(line.quantity) || line.quantity < 1) throw new OrderValidationError("bad quantity");
@@ -471,6 +488,13 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
         }
       }
 
+      if (
+        live && !input.replay && line.expectedUnitPrice !== undefined
+        && Math.abs(live.unit - line.expectedUnitPrice) > 0.001
+      ) {
+        changedPrices.push({ index: i, productId: line.productId, expectedUnitPrice: line.expectedUnitPrice, unitPrice: live.unit });
+      }
+
       const priceDrifted = live !== null && snap !== undefined && Math.abs(live.unit - snap.unitPrice) > 0.001;
       if (live && !priceDrifted) {
         itemsToInsert.push(live.row);
@@ -490,6 +514,10 @@ export async function placeOrder(tenantId: string, input: PlaceOrderInput): Prom
         missingEntities.push({ lineIndex: i, productId: line.productId, variantId: line.variantId, reason: missingReason });
       }
     }
+
+    // Every stale line is reported at once so the client can reprice its
+    // whole cart in one go. Thrown before anything is written.
+    if (changedPrices.length > 0) throw new PriceChangedError(changedPrices);
 
     // 3. Fulfillment: delivery fee + area, or pickup.
     let deliveryFee = 0;
