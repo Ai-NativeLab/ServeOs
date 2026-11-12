@@ -68,6 +68,24 @@ describe("recordCashMovement", () => {
     expect(rows).toHaveLength(0);
   });
 
+  it("rejects an infinite amount, which the positive-magnitude check lets through", async () => {
+    // `!(magnitude > 0)` rejects NaN as a side effect but ADMITS Infinity,
+    // because `Infinity > 0` is true. It reached `money()` and stored the
+    // literal "Infinity" — Postgres numeric accepts it — which wrecks the
+    // shift's reconciliation permanently with no screen able to repair it.
+    // JSON expresses this as 1e999, so it is reachable from an ordinary body.
+    const { ctx } = await seedPosContext("owner");
+    await openShiftForCtx(ctx);
+
+    for (const amount of [Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NaN]) {
+      await expect(recordCashMovement(ctx, { type: "pay_in", amount, reasonCode: "x" }))
+        .rejects.toBeInstanceOf(CashMovementError);
+    }
+
+    const rows = await withTenant(ctx.tenantId, (tx) => tx.select().from(cashMovements));
+    expect(rows).toHaveLength(0);
+  });
+
   it("lets a staff cashier pay out at or under the threshold unaided", async () => {
     const { ctx, tenantId } = await seedPosContext("staff");
     await setPayoutThreshold(tenantId, 100);

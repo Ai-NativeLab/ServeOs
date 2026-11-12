@@ -19,8 +19,11 @@ export async function POST(req: NextRequest) {
   }
 
   const body = (await req.json()) as Partial<CashMovementInput>;
-  if (!body.type || typeof body.amount !== "number" || !body.reasonCode) {
-    return NextResponse.json({ error: "Missing type, amount, or reasonCode" }, { status: 400 });
+  // See shifts/open: typeof admits Infinity, which JSON expresses as 1e999. The
+  // service guard rejects NaN but NOT Infinity — `Infinity > 0` is true, so it
+  // walked straight past the positive-magnitude check into `money()`.
+  if (!body.type || typeof body.amount !== "number" || !Number.isFinite(body.amount) || !body.reasonCode) {
+    return NextResponse.json({ error: "Missing type or reasonCode, or a non-finite amount" }, { status: 400 });
   }
 
   try {

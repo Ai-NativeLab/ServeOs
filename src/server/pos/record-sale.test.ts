@@ -303,3 +303,53 @@ describe("addTender", () => {
     expect(tenders).toHaveLength(1); // only the original card tender
   });
 });
+
+describe("tender amounts must be finite", () => {
+  // `!(amount > 0)` rejects NaN but admits Infinity, and tip/tendered had no
+  // check at all — while JSON's `1e999` parses to Infinity, so an ordinary
+  // request body (e.g. {"tipAmount":1e999}) carries one. Each must be refused
+  // as a PosSaleError (the route's 400), not reach money() as a 500.
+  const inf = JSON.parse("1e999") as number;
+  const fromWire = (body: string) => JSON.parse(body) as Record<string, number>;
+
+  it.each([
+    ["amount", (total: number) => ({ amount: inf, tenderedAmount: total })],
+    ["tipAmount", (total: number) => ({ amount: total, ...fromWire('{"tipAmount":1e999}') })],
+    ["tenderedAmount", (total: number) => ({ amount: total, tenderedAmount: inf })],
+    ["tipAmount NaN", (total: number) => ({ amount: total, tipAmount: Number.NaN })],
+  ] as const)("recordSale refuses a non-finite %s and places no order", async (_field, tender) => {
+    const { ctx, productId, total } = await seedPosContext("owner");
+    await openShiftForCtx(ctx);
+
+    await expect(recordSale(ctx, {
+      clientOrderId: "inf-1",
+      lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: total,
+      payments: [{ clientPaymentId: "p-1", method: "cash", ...tender(total) }],
+    })).rejects.toBeInstanceOf(PosSaleError);
+
+    expect(await withTenant(ctx.tenantId, (tx) => tx.select().from(orders))).toHaveLength(0);
+  });
+
+  it.each([
+    ["amount", { amount: inf }],
+    ["tipAmount", { amount: 1, tipAmount: inf }],
+    ["tenderedAmount", { amount: 1, tenderedAmount: inf }],
+  ] as const)("addTender refuses a non-finite %s and writes no tender", async (_field, tender) => {
+    const { ctx, productId, total } = await seedPosContext("owner");
+    await openShiftForCtx(ctx);
+    const sale = await recordSale(ctx, {
+      clientOrderId: "inf-top",
+      lines: [{ productId, quantity: 1, selectedOptionIds: [] }],
+      expectedTotal: total,
+      payments: [{ clientPaymentId: "p-1", method: "card", amount: 1 }],
+    });
+
+    await expect(addTender(ctx, sale.orderId, { clientPaymentId: "p-2", method: "cash", ...tender }))
+      .rejects.toBeInstanceOf(PosSaleError);
+
+    const tenders = await withTenant(ctx.tenantId, (tx) =>
+      tx.select().from(orderPayments).where(eq(orderPayments.orderId, sale.orderId)));
+    expect(tenders).toHaveLength(1);
+  });
+});

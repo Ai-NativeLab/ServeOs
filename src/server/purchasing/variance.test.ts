@@ -1,12 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withTenant } from "@/db/with-tenant";
 import { users } from "@/server/auth/schema";
 import { seedInventoryTenant, seedItem } from "@/server/inventory/test-helpers";
 import { verifyChain } from "@/server/audit/verifier";
 import { auditEvents } from "@/server/audit/schema";
-import { purchaseOrders, purchaseOrderLines } from "./schema";
+import { purchaseOrders, purchaseOrderLines, poReceiptLines } from "./schema";
 import { createSupplier } from "./suppliers";
 import { createDraftPo } from "./service";
 import { postReceipt } from "./receiving";
@@ -207,5 +207,42 @@ describe("tax basis — all three variance figures agree", () => {
     const [line] = await withTenant(tenantId, (tx) =>
       tx.select().from(purchaseOrderLines).where(eq(purchaseOrderLines.id, poLineId)));
     expect(Number(line!.unitCost)).toBe(0.0035);
+  });
+});
+
+describe("getPoVariance on a row poisoned before the money() floor existed", () => {
+  // Postgres `numeric` accepts 'NaN' and 'Infinity', and money() emitted them
+  // until #169, so such rows may already be stored. getPoVariance is a pure
+  // read: it must render them (so a buyer can see and fix the PO), not throw
+  // on them the way a write would. The raw value is surfaced, never coerced
+  // to a plausible-looking number.
+  it("surfaces a poisoned header total and invoice total instead of throwing", async () => {
+    const { tenantId, actor, poId, poLineId } = await seedSentPo(10, 10);
+    await postReceipt(actor, poId, { lines: [{ poLineId, receivedQty: 9, uom: "each" }] });
+    await withTenant(tenantId, (tx) => tx.update(purchaseOrders)
+      .set({ total: sql`'NaN'::numeric`, invoiceTotal: sql`'Infinity'::numeric` })
+      .where(eq(purchaseOrders.id, poId)));
+
+    const v = await getPoVariance(tenantId, poId);
+
+    expect(v.total).toBe("NaN");
+    expect(v.receivedTotal).toBe("90.00");
+    expect(v.invoiceTotal).toBe("Infinity");
+    expect(v.receivedVsOrdered).toBe("NaN");
+    expect(v.invoiceVsReceived).toBe("Infinity");
+  });
+
+  it("surfaces a poisoned receipt line in the received total", async () => {
+    const { tenantId, actor, poId, poLineId } = await seedSentPo(10, 10);
+    await postReceipt(actor, poId, { lines: [{ poLineId, receivedQty: 9, uom: "each" }] });
+    await withTenant(tenantId, (tx) => tx.update(poReceiptLines)
+      .set({ unitCost: sql`'NaN'::numeric` })
+      .where(eq(poReceiptLines.poLineId, poLineId)));
+
+    const v = await getPoVariance(tenantId, poId);
+
+    expect(v.total).toBe("100.00");
+    expect(v.receivedTotal).toBe("NaN");
+    expect(v.receivedVsOrdered).toBe("NaN");
   });
 });

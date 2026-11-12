@@ -31,13 +31,16 @@ export async function GET(req: NextRequest) {
   const numOrderNumber = orderNumber !== null ? Number(orderNumber) : undefined;
   const numAmount = amount !== null ? Number(amount) : undefined;
   const numPage = page !== null ? Number(page) : undefined;
-  if (numOrderNumber !== undefined && Number.isNaN(numOrderNumber)) {
+  // isFinite, not just !isNaN: `Number("Infinity")` is Infinity, which would
+  // reach money() (amount) or Postgres (orderNumber, page) and fail as a 500
+  // instead of a 400.
+  if (numOrderNumber !== undefined && !Number.isFinite(numOrderNumber)) {
     return NextResponse.json({ error: "Invalid orderNumber" }, { status: 400 });
   }
-  if (numAmount !== undefined && Number.isNaN(numAmount)) {
+  if (numAmount !== undefined && !Number.isFinite(numAmount)) {
     return NextResponse.json({ error: "Invalid amount" }, { status: 400 });
   }
-  if (numPage !== undefined && (Number.isNaN(numPage) || numPage < 1)) {
+  if (numPage !== undefined && (!Number.isFinite(numPage) || numPage < 1)) {
     return NextResponse.json({ error: "Invalid page" }, { status: 400 });
   }
   if ((dateFrom !== undefined && Number.isNaN(dateFrom.getTime())) || (dateTo !== undefined && Number.isNaN(dateTo.getTime()))) {
