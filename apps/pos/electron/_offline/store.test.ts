@@ -417,6 +417,15 @@ describe("Store — auth_cache roster (Task 8)", () => {
     expect(s.findAuthUser("nobody@example.com")).toBeNull();
   });
 
+  // Offline sign-in must accept what online sign-in accepts: the server
+  // matches emails ignoring case and spaces (#204), so the cached roster does too.
+  it("findAuthUser ignores email casing and surrounding spaces", () => {
+    const s = makeStore();
+    s.saveAuthRoster([alice, { ...bob, email: "Bob.Legacy@Example.com" }], "2026-08-13T00:00:00Z");
+    expect(s.findAuthUser(" Alice@Example.COM ")?.userId).toBe("u1");
+    expect(s.findAuthUser("bob.legacy@example.com")?.userId).toBe("u2");
+  });
+
   it("saveAuthRoster replace-all removes departed users", () => {
     const s = makeStore();
     s.saveAuthRoster([alice, bob], "t1");

@@ -50,11 +50,19 @@ describe("registerTenant", () => {
     ).rejects.toThrow();
   });
 
+  it("reports a taken slug as a RegistrationError the form can show, not a raw unique violation", async () => {
+    await seedDefaultPlans();
+    await registerTenant({ restaurantName: "A", slug: "taken", country: "EG", ownerName: "A", email: "a@a.com", password: "x", vertical: "restaurant" });
+    await expect(
+      registerTenant({ restaurantName: "B", slug: "taken", country: "EG", ownerName: "B", email: "b@b.com", password: "x", vertical: "restaurant" }),
+    ).rejects.toMatchObject({ name: "RegistrationError", field: "slug", code: "slug_taken" });
+  });
+
   it("rejects an invalid slug", async () => {
     await seedDefaultPlans();
     await expect(
       registerTenant({ restaurantName: "X", slug: "A_B!", country: "EG", ownerName: "X", email: "x@x.com", password: "x", vertical: "restaurant" }),
-    ).rejects.toThrow(/slug/i);
+    ).rejects.toMatchObject({ name: "RegistrationError", field: "slug", code: "invalid_slug", message: expect.stringMatching(/slug/i) });
   });
 
   it("rolls back fully when registration fails partway (no orphan tenant)", async () => {
@@ -87,7 +95,7 @@ describe("registerTenant", () => {
         restaurantName: "X", slug: "demo-pharmacy", country: "EG",
         ownerName: "X", email: "squatter@x.com", password: "x", vertical: "pharmacy",
       }),
-    ).rejects.toThrow(/reserved/i);
+    ).rejects.toMatchObject({ name: "RegistrationError", field: "slug", code: "reserved_slug", message: expect.stringMatching(/reserved/i) });
   });
 
   it("rejects an invalid vertical", async () => {

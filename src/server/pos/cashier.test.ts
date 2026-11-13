@@ -4,7 +4,7 @@ import { db } from "@/db/client";
 import { tenants } from "@/server/tenancy/schema";
 import { users, roles, userRoles } from "@/server/auth/schema";
 import { hashPassword } from "@/server/auth/password";
-import { signInCashier, resolveCashier } from "./cashier";
+import { signInCashier, resolveCashier, verifyAuthorizer } from "./cashier";
 import { posCashierSessions } from "./schema";
 import { tokenHash } from "./token-hash";
 import { PosCashierError } from "./errors";
@@ -49,6 +49,18 @@ describe("signInCashier", () => {
     // unique index). Lower-casing the lookup would miss this row entirely.
     const { tenantId, userId } = await seedUser("owner", "Mixed.Case@X.com");
     const res = await signInCashier(tenantId, "Mixed.Case@X.com", "pw123456");
+    expect(res.userId).toBe(userId);
+  });
+
+  it("signs in when the email is typed with different casing and spaces", async () => {
+    const { tenantId, userId } = await seedUser("staff", "sara@x.com");
+    const res = await signInCashier(tenantId, " Sara@X.COM ", "pw123456");
+    expect(res.userId).toBe(userId);
+  });
+
+  it("authorizes a manager whose email is typed with different casing", async () => {
+    const { tenantId, userId } = await seedUser("owner", "boss@x.com");
+    const res = await verifyAuthorizer(tenantId, "Boss@X.com", "pw123456", "pos:discount");
     expect(res.userId).toBe(userId);
   });
 
