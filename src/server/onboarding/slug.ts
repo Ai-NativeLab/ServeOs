@@ -7,7 +7,9 @@
  * 3–32 characters, lowercase letters, digits and hyphens, not starting or
  * ending with a hyphen.
  */
-export const SLUG_PATTERN = "[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])";
+// The `-` in the class is escaped because browsers compile `pattern` with the
+// `v` flag, where a bare `-` there is a syntax error and the check is skipped.
+export const SLUG_PATTERN = "[a-z0-9](?:[a-z0-9\\-]{1,30}[a-z0-9])";
 export const SLUG_RE = new RegExp(`^${SLUG_PATTERN}$`);
 export const SLUG_RULE =
   "Use 3–32 lowercase letters, numbers or hyphens, not starting or ending with a hyphen.";
