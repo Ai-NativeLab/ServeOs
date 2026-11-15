@@ -1,27 +1,35 @@
 "use server";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { registerTenant } from "@/server/onboarding";
+import { registerTenant, RegistrationError } from "@/server/onboarding";
 import { listPlans } from "@/server/subscription";
 import { isFreePrice } from "@/shared/plans";
 import { postRegisterHref } from "./plan-redirect";
-import type { VerticalId } from "@/server/verticals";
+import { parseRegistration, SLUG_ERROR_MESSAGES, type RegisterState } from "./registration-form";
 import { createSession } from "@/server/auth/session";
 import { SESSION_COOKIE } from "@/server/auth/current-user";
 import { recordAuthEvent } from "@/server/audit/auth-events";
 import { headersFingerprint } from "@/server/audit/fingerprint";
 
-export async function registerAction(formData: FormData) {
-  const vertical = String(formData.get("vertical") || "restaurant");
-  const result = await registerTenant({
-    restaurantName: String(formData.get("restaurantName")),
-    slug: String(formData.get("slug")),
-    country: String(formData.get("country")) === "SA" ? "SA" : "EG",
-    ownerName: String(formData.get("ownerName")),
-    email: String(formData.get("email")),
-    password: String(formData.get("password")),
-    vertical: vertical as VerticalId,
-  });
+/**
+ * Anything the visitor can fix comes back as RegisterState for the form to
+ * show beside the field (#204). Only a genuine fault is thrown — a throw here
+ * is Next's "This page couldn't load" with the form wiped.
+ */
+export async function registerAction(_prev: RegisterState | null, formData: FormData): Promise<RegisterState> {
+  const parsed = parseRegistration(formData);
+  if (!parsed.ok) return parsed.state;
+
+  let result: Awaited<ReturnType<typeof registerTenant>>;
+  try {
+    result = await registerTenant(parsed.input);
+  } catch (err) {
+    if (err instanceof RegistrationError) {
+      return { values: parsed.values, errors: { [err.field]: SLUG_ERROR_MESSAGES[err.code] } };
+    }
+    throw err;
+  }
+
   const token = await createSession(result.ownerUserId, "dashboard");
   // tenant.registered (genesis) already came from registerTenant; this records the
   // owner's first sign-in.

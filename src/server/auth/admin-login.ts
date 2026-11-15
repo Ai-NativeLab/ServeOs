@@ -1,6 +1,7 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, isNull } from "drizzle-orm";
 import { db } from "@/db/client";
 import { users, type User } from "./schema";
+import { emailMatches } from "./email";
 import { hashPassword, verifyPassword } from "./password";
 import { loadUserRoleKeys } from "./current-user";
 
@@ -26,7 +27,7 @@ export async function authenticatePlatformAdmin(
   const [user] = await db
     .select()
     .from(users)
-    .where(and(eq(users.email, email), isNull(users.tenantId)))
+    .where(and(emailMatches(users.email, email), isNull(users.tenantId)))
     .limit(1);
 
   if (!user?.passwordHash || !(await verifyPassword(password, user.passwordHash))) {
@@ -50,7 +51,7 @@ export async function setPlatformAdminPassword(email: string, password: string):
   const [updated] = await db
     .update(users)
     .set({ passwordHash: await hashPassword(password) })
-    .where(and(eq(users.email, email), isNull(users.tenantId)))
+    .where(and(emailMatches(users.email, email), isNull(users.tenantId)))
     .returning();
   if (!updated) throw new Error(`No platform user with email ${email}`);
 }

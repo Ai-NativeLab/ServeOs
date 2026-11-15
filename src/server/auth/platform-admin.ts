@@ -1,6 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/db/client";
 import { users, roles, userRoles } from "./schema";
+import { emailMatches } from "./email";
 import { getOrCreateRole } from "./roles";
 
 export type EnsureSuperAdminResult = {
@@ -26,7 +27,7 @@ export async function ensurePlatformSuperAdmin(email: string): Promise<EnsureSup
     const [user] = await tx
       .select()
       .from(users)
-      .where(and(eq(users.email, email), isNull(users.tenantId)))
+      .where(and(emailMatches(users.email, email), isNull(users.tenantId)))
       .limit(1);
     if (!user) throw new Error(`No platform user with email ${email}`);
 

@@ -324,8 +324,11 @@ export class Store {
 
   findAuthUser(email: string): AuthUser | null {
     const row = this.db
-      .prepare("SELECT * FROM auth_cache WHERE email = ?")
-      .get(email) as AuthCacheRow | undefined;
+      // Same rule as the server's emailMatches (#204): ignore case and
+      // surrounding spaces on both sides, so offline sign-in accepts exactly
+      // what online sign-in does — including older mixed-case accounts.
+      .prepare("SELECT * FROM auth_cache WHERE lower(email) = ?")
+      .get(email.trim().toLowerCase()) as AuthCacheRow | undefined;
     if (!row) return null;
     return {
       userId: row.user_id,

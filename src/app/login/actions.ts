@@ -1,10 +1,8 @@
 "use server";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { and, eq } from "drizzle-orm";
-import { db } from "@/db/client";
-import { users } from "@/server/auth/schema";
 import { getTenantBySlug } from "@/server/tenancy";
+import { findTenantUserByEmail } from "@/server/auth/tenant-login";
 import { verifyPassword } from "@/server/auth/password";
 import { createSession } from "@/server/auth/session";
 import { SESSION_COOKIE } from "@/server/auth/current-user";
@@ -25,11 +23,7 @@ export async function loginAction(formData: FormData) {
   const tenant = await getTenantBySlug(slug);
   if (!tenant) redirect(retry);
 
-  const [user] = await db
-    .select()
-    .from(users)
-    .where(and(eq(users.tenantId, tenant!.id), eq(users.email, email)))
-    .limit(1);
+  const user = await findTenantUserByEmail(tenant!.id, email);
   if (!user?.passwordHash || !(await verifyPassword(password, user.passwordHash))) {
     await recordAuthEvent(tenant!.id, "auth.login_failed", { actorUserId: null, email, fingerprint: headersFingerprint(await headers()) });
     redirect(retry);

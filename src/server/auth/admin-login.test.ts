@@ -30,6 +30,13 @@ describe("authenticatePlatformAdmin", () => {
     if (res.ok) expect(res.user.id).toBe(u.id);
   });
 
+  it("accepts the admin's email typed with different casing and spaces", async () => {
+    const u = await platformUser("case@serveos.com");
+    await grantSuperAdmin(u.id);
+    const res = await authenticatePlatformAdmin(" Case@ServeOS.com ", "pw1234");
+    expect(res.ok && res.user.id).toBe(u.id);
+  });
+
   it("rejects a platform user with valid credentials but no super_admin role", async () => {
     // The production failure: authentication succeeds, authorization does not.
     // The session must never be created, or the admin is handed a cookie that
