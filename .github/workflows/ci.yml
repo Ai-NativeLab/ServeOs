@@ -71,6 +71,22 @@ jobs:
       - name: POS unit tests
         run: npm run pos:test
 
+  # The CI shell scripts run unattended on a schedule (keepalive.yml, #211), so
+  # a regression there is only found when backups have already stopped. Both
+  # shellcheck and jq ship on ubuntu-latest — no install step.
+  ci-scripts:
+    name: ci-scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ShellCheck
+        run: shellcheck scripts/ci/*.sh
+
+      - name: Keepalive decision tests
+        run: bash scripts/ci/keepalive-workflows.test.sh
+
   test:
     name: test
     runs-on: ubuntu-latest
