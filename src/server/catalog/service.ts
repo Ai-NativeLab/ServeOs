@@ -24,10 +24,12 @@ import {
   CategoryNotEmptyError,
   ProductNotFoundError,
   InvalidModifierRulesError,
+  InvalidDiscountError,
 } from "./errors";
 import { recordAuditEvent, type AuditActorInput } from "@/server/audit/service";
 import { emptyFingerprint } from "@/server/audit/fingerprint";
 import { bumpCatalogVersion } from "./version";
+import { computeEffectivePrice, discountFieldsError, type DiscountFields } from "./pricing";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -109,7 +111,7 @@ export async function deleteCategory(tenantId: string, categoryId: string, audit
 
 // ── products ─────────────────────────────────────────────────────────────────
 
-export type CreateProductInput = Pick<NewProduct, "nameEn" | "nameAr" | "descriptionEn" | "descriptionAr" | "basePrice" | "imageUrl" | "sortOrder" | "categoryId" | "isFeatured" | "brand" | "sku" | "trackStock" | "stockQuantity">;
+export type CreateProductInput = Pick<NewProduct, "nameEn" | "nameAr" | "descriptionEn" | "descriptionAr" | "basePrice" | "salePrice" | "discountPercent" | "discountStartsAt" | "discountEndsAt" | "discountActive" | "imageUrl" | "sortOrder" | "categoryId" | "isFeatured" | "brand" | "sku" | "trackStock" | "stockQuantity">;
 export type UpdateProductInput = Partial<CreateProductInput & { isPublished: boolean }>;
 
 export async function listProducts(tenantId: string, categoryId?: string): Promise<Product[]> {
@@ -158,6 +160,11 @@ export async function getProduct(tenantId: string, productId: string): Promise<P
   };
 }
 
+function assertValidDiscount(fields: DiscountFields): void {
+  const problem = discountFieldsError(fields);
+  if (problem) throw new InvalidDiscountError(problem);
+}
+
 export async function createProduct(tenantId: string, input: CreateProductInput, audit?: AuditActorInput): Promise<Product> {
   // Explicitly this tenant's products — see the note in createBranch on why a
   // quota count must not lean on RLS alone.
@@ -165,6 +172,7 @@ export async function createProduct(tenantId: string, input: CreateProductInput,
     tx.select({ value: count() }).from(products).where(eq(products.tenantId, tenantId)),
   );
   await checkQuota(tenantId, "products", Number(value));
+  assertValidDiscount(input);
   return withTenant(tenantId, async (tx) => {
     const [row] = await tx.insert(products).values({ ...input, tenantId }).returning();
     await recordAuditEvent(auditCtx(tenantId, audit), {
@@ -180,6 +188,14 @@ export async function createProduct(tenantId: string, input: CreateProductInput,
 export async function updateProduct(tenantId: string, productId: string, input: UpdateProductInput, audit?: AuditActorInput): Promise<Product> {
   return withTenant(tenantId, async (tx) => {
     const [before] = await tx.select().from(products).where(eq(products.id, productId)).limit(1);
+    // A partial update is judged against what it will leave stored, so a new
+    // end date can't land before the start that is already there.
+    assertValidDiscount({
+      salePrice: "salePrice" in input ? input.salePrice : before?.salePrice,
+      discountPercent: "discountPercent" in input ? input.discountPercent : before?.discountPercent,
+      discountStartsAt: "discountStartsAt" in input ? input.discountStartsAt : before?.discountStartsAt,
+      discountEndsAt: "discountEndsAt" in input ? input.discountEndsAt : before?.discountEndsAt,
+    });
     const [row] = await tx.update(products)
       .set(input)
       .where(and(eq(products.id, productId), eq(products.tenantId, tenantId)))
@@ -361,6 +377,11 @@ export async function getPublishedMenu(tenantId: string, branchId?: string): Pro
           descriptionEn: products.descriptionEn,
           descriptionAr: products.descriptionAr,
           basePrice: products.basePrice,
+          salePrice: products.salePrice,
+          discountPercent: products.discountPercent,
+          discountStartsAt: products.discountStartsAt,
+          discountEndsAt: products.discountEndsAt,
+          discountActive: products.discountActive,
           unitOfMeasure: products.unitOfMeasure,
           requiresPrescription: products.requiresPrescription,
           imageUrl: products.imageUrl,
@@ -400,6 +421,11 @@ export async function getPublishedMenu(tenantId: string, branchId?: string): Pro
         descriptionEn: r.descriptionEn,
         descriptionAr: r.descriptionAr,
         basePrice: r.bpaPriceOverride ?? r.basePrice,
+        salePrice: r.salePrice,
+        discountPercent: r.discountPercent,
+        discountStartsAt: r.discountStartsAt,
+        discountEndsAt: r.discountEndsAt,
+        discountActive: r.discountActive,
         unitOfMeasure: r.unitOfMeasure,
         requiresPrescription: r.requiresPrescription,
         imageUrl: r.imageUrl,
@@ -441,32 +467,46 @@ export async function getPublishedMenu(tenantId: string, branchId?: string): Pro
     const variantsByProduct = groupBy(variantRows, (v) => v.productId);
 
     const prodsByCat = groupBy(
-      prodRows.map((p) => ({
-        id: p.id,
-        nameEn: p.nameEn,
-        nameAr: p.nameAr,
-        descriptionEn: p.descriptionEn,
-        descriptionAr: p.descriptionAr,
-        effectivePrice: Number(p.basePrice),
-        unitOfMeasure: p.unitOfMeasure,
-        requiresPrescription: p.requiresPrescription,
-        imageUrl: p.imageUrl,
-        brand: p.brand,
-        variants: (variantsByProduct[p.id] ?? []).map((v) => ({
-          id: v.id, nameEn: v.nameEn, nameAr: v.nameAr,
-          price: Number(v.price),
-          inStock: v.stockQuantity === null || v.stockQuantity > 0,
-        })),
-        inStock: (variantsByProduct[p.id] ?? []).length > 0
-          ? (variantsByProduct[p.id] ?? []).some((v) => v.stockQuantity === null || v.stockQuantity > 0)
-          : p.trackStock
-            ? (p.stockQuantity ?? 0) > 0
-            : true,
-        isFeatured: p.isFeatured,
-        createdAt: p.createdAt.toISOString(),
-        modifierGroups: groupsByProduct[p.id] ?? [],
-        categoryId: p.categoryId,
-      })),
+      prodRows.map((p) => {
+        const pricing = computeEffectivePrice({
+          basePrice: p.basePrice,
+          salePrice: p.salePrice,
+          discountPercent: p.discountPercent,
+          discountStartsAt: p.discountStartsAt,
+          discountEndsAt: p.discountEndsAt,
+          discountActive: p.discountActive,
+        });
+
+        return {
+          id: p.id,
+          nameEn: p.nameEn,
+          nameAr: p.nameAr,
+          descriptionEn: p.descriptionEn,
+          descriptionAr: p.descriptionAr,
+          effectivePrice: pricing.effectivePrice,
+          originalPrice: pricing.originalPrice,
+          discountPercent: pricing.discountPercent,
+          hasDiscount: pricing.hasDiscount,
+          unitOfMeasure: p.unitOfMeasure,
+          requiresPrescription: p.requiresPrescription,
+          imageUrl: p.imageUrl,
+          brand: p.brand,
+          variants: (variantsByProduct[p.id] ?? []).map((v) => ({
+            id: v.id, nameEn: v.nameEn, nameAr: v.nameAr,
+            price: Number(v.price),
+            inStock: v.stockQuantity === null || v.stockQuantity > 0,
+          })),
+          inStock: (variantsByProduct[p.id] ?? []).length > 0
+            ? (variantsByProduct[p.id] ?? []).some((v) => v.stockQuantity === null || v.stockQuantity > 0)
+            : p.trackStock
+              ? (p.stockQuantity ?? 0) > 0
+              : true,
+          isFeatured: p.isFeatured,
+          createdAt: p.createdAt.toISOString(),
+          modifierGroups: groupsByProduct[p.id] ?? [],
+          categoryId: p.categoryId,
+        };
+      }),
       (p) => p.categoryId,
     );
 

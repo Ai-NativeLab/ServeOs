@@ -1,8 +1,8 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { loadCart, clearCart, cartSubtotal, type Cart } from "../_components/cart";
+import { loadCart, saveCart, clearCart, cartSubtotal, repriceCart, type Cart } from "../_components/cart";
 import { rememberOrder } from "../_components/recent-orders";
-import { submitCheckoutOrder } from "./submit-order";
+import { submitCheckoutOrder, checkoutOrderLines, priceChangedLines } from "./submit-order";
 import { formatMoney } from "@/lib/money";
 import { computeOrderTotals, type CheckoutPricing } from "@/lib/order-totals";
 import { isValidCustomerPhone, getPhoneFormatHint } from "@/lib/phone";
@@ -191,10 +191,7 @@ export function CheckoutForm({
           scheduledFor: when === "scheduled" ? slotIso : undefined,
           paymentMethod: payMethod,
           paymentReference: selectedMethod ? payRef.trim() : undefined,
-          lines: cart.lines.map((l) => ({
-            productId: l.productId, variantId: l.variantId, quantity: l.quantity, selectedOptionIds: l.selectedOptionIds,
-            dimensions: l.dimensions,
-          })),
+          lines: checkoutOrderLines(cart.lines),
         },
       });
       if (outcome.kind === "upload_failed") {
@@ -206,7 +203,16 @@ export function CheckoutForm({
       if (outcome.prescriptionId) setRxUploadedId(outcome.prescriptionId);
       const { data } = outcome;
       if (!outcome.ok) {
-        if (data.code === "out_of_stock") {
+        const changedPrices = priceChangedLines(data);
+        if (changedPrices) {
+          // The server refused to charge a price the customer never saw.
+          // Reprice the cart from its answer so the totals on screen are the
+          // real ones, and let the customer confirm by placing again.
+          const repriced = repriceCart(cart, changedPrices);
+          saveCart(repriced);
+          setCart(repriced);
+          setError(data.error ?? "Some prices changed — please review your cart and place the order again.");
+        } else if (data.code === "out_of_stock") {
           setError(`${data.error} — please remove it from your cart or reduce the quantity.`);
         } else if (data.code === "rx_required") {
           // The server judged this basket prescription-gated. Drop a consumed

@@ -43,3 +43,15 @@ export class InvalidVariantError extends DomainError {
     return locale === "ar" ? "خيار المنتج غير متاح" : "That product option is unavailable";
   }
 }
+
+export class InvalidDiscountError extends DomainError {
+  readonly code = "invalid_discount";
+  constructor(public readonly detail: string) {
+    super(`Invalid discount: ${detail}`);
+    this.name = "InvalidDiscountError";
+  }
+  messageFor(locale: Locale): string {
+    if (locale === "ar") return "بيانات الخصم غير صالحة";
+    return `Invalid discount: ${this.detail}`;
+  }
+}

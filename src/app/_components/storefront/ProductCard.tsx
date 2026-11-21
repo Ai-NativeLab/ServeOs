@@ -2,7 +2,7 @@
 import type { PublishedMenu } from "@/server/catalog/schema";
 import { arabicDescription } from "./bilingual";
 import { formatMoney } from "@/lib/money";
-import { Badge } from "./Badge";
+import { Badge, discountLabel } from "./Badge";
 import { isProductConfigurable } from "../cart";
 import { QuickAddControl } from "./QuickAddControl";
 
@@ -33,6 +33,7 @@ export function ProductCard({
   const inStock = product.inStock !== false;
 
   const clickable = interactive && inStock;
+  const discount = discountLabel(product);
 
   // The card body is a real <button> and the add/stepper controls sit beside
   // it (not inside it), so their Enter/Space never bubble into "open sheet".
@@ -65,9 +66,13 @@ export function ProductCard({
           ) : (
             <div className="sf-img h-full w-full" />
           )}
-          {(badge || !inStock) && (
+          {(badge || discount || !inStock) && (
             <span className="absolute start-2 top-2 flex flex-wrap gap-1">
-              {badge && <Badge kind={badge} />}
+              {discount ? (
+                <Badge kind="discount" label={discount} />
+              ) : badge ? (
+                <Badge kind={badge} />
+              ) : null}
               {!inStock && (
                 <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
                   Out of stock
@@ -93,7 +98,14 @@ export function ProductCard({
         </div>
       </button>
       <div className="flex flex-wrap items-center justify-between gap-2 px-3 pb-3 pt-2.5">
-        <span className="font-display font-bold text-ink">{formatMoney(product.effectivePrice, currency)}</span>
+        <div className="flex items-baseline gap-1.5">
+          <span className="font-display font-bold text-ink">{formatMoney(product.effectivePrice, currency)}</span>
+          {product.hasDiscount && (
+            <span className="text-xs text-muted-foreground line-through font-sans">
+              {formatMoney(product.originalPrice, currency)}
+            </span>
+          )}
+        </div>
         {clickable && (
           <div className="relative z-10">
             <QuickAddControl

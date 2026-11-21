@@ -393,6 +393,13 @@
       "when": 1788289735962,
       "tag": "0055_chunky_trish_tilby",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1794509541794,
+      "tag": "0056_product_discounts",
+      "breakpoints": true
     }
   ]
 }
